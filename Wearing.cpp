@@ -1,5 +1,16 @@
 VERSION 2
 
+
+f
+f
+f
+f
+f
+f
+f
+f
+f
+f
 // Wearing.cpp : Defines the entry point for the console application.
 //
 
