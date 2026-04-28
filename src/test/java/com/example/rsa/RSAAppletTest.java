@@ -23,9 +23,13 @@ import static org.junit.Assert.*;
  *
  * APDU summary:
  *   SELECT      00 A4 04 00 07 A0 00 00 00 01 01 02
- *   GEN_KEY     80 01 00 00               → 90 00
- *   SIGN        80 02 00 00 Lc <data> Le  → <128-byte sig> 90 00
- *   GET_PUB_KEY 80 03 00 00 Le            → <pubkey TLV> 90 00
+ *   GEN_KEY     80 01 00 00                       → 90 00
+ *   SIGN        80 02 00 00 Lc <data [1..200]> Le → <128-byte sig> 90 00
+ *   GET_PUB_KEY 80 03 00 00 Le                    → <pubkey TLV> 90 00
+ *   VERIFY step 1 (load data)
+ *               80 04 00 00 Lc <data [1..200]>    → 90 00
+ *   VERIFY step 2 (check signature)
+ *               80 04 01 00 80 <sig [128]>        → 90 00 (valid) | 63 00 (invalid)
  */
 public class RSAAppletTest {
 
@@ -39,13 +43,17 @@ public class RSAAppletTest {
     private static final int  INS_GEN_KEY      = 0x01;
     private static final int  INS_SIGN         = 0x02;
     private static final int  INS_GET_PUB_KEY  = 0x03;
+    private static final int  INS_VERIFY       = 0x04;
 
     // ── Expected status words ────────────────────────────────────────────────
-    private static final int SW_SUCCESS           = 0x9000;
-    private static final int SW_KEY_NOT_INIT      = 0x6985;
-    private static final int SW_WRONG_LENGTH      = 0x6700;
-    private static final int SW_CLA_NOT_SUPPORTED = 0x6E00;
-    private static final int SW_INS_NOT_SUPPORTED = 0x6D00;
+    private static final int SW_SUCCESS              = 0x9000;
+    private static final int SW_VERIFICATION_FAILED = 0x6300;
+    private static final int SW_DATA_NOT_LOADED      = 0x6984;
+    private static final int SW_KEY_NOT_INIT         = 0x6985;
+    private static final int SW_WRONG_LENGTH         = 0x6700;
+    private static final int SW_INCORRECT_P1P2       = 0x6A86;
+    private static final int SW_CLA_NOT_SUPPORTED    = 0x6E00;
+    private static final int SW_INS_NOT_SUPPORTED    = 0x6D00;
 
     private JavaxSmartCardInterface simulator;
 
@@ -245,6 +253,164 @@ public class RSAAppletTest {
     }
 
     // ════════════════════════════════════════════════════════════════════════
+    // INS 0x04 – Verify signature  (two-step: P1=0x00 load, P1=0x01 check)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Nominal path: load data, then verify with the correct signature → 9000.
+     *
+     * APDUs:
+     *   80 01 00 00                   → 90 00   (generate key)
+     *   80 02 00 00 10 <16B data> 80  → <sig>   (sign)
+     *   80 04 00 00 10 <16B data>     → 90 00   (load)
+     *   80 04 01 00 80 <sig 128B>     → 90 00   (verify → valid)
+     */
+    @Test
+    public void testVerify_validSignature_succeeds() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        byte[] data      = "Hello, JavaCard!".getBytes();
+        byte[] signature = signRaw(data);
+        assertSW(SW_SUCCESS,  verifyLoad(data));
+        assertSW(SW_SUCCESS,  verifyCheck(signature));
+    }
+
+    /**
+     * Load data-A, verify with sig-of-data-B → 6300.
+     *
+     * APDUs:
+     *   80 04 00 00 0A <data-B>  → 90 00
+     *   80 04 01 00 80 <sig-A>   → 63 00
+     */
+    @Test
+    public void testVerify_tamperedData_fails() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        byte[] original  = buildSequentialBytes(10);
+        byte[] tampered  = buildSequentialBytes(10);
+        tampered[0] ^= 0xFF;
+        byte[] signature = signRaw(original);
+
+        assertSW(SW_SUCCESS,             verifyLoad(tampered));   // load wrong data
+        assertSW(SW_VERIFICATION_FAILED, verifyCheck(signature)); // sig doesn't match
+    }
+
+    /**
+     * Load data, then verify with a corrupted signature (one bit flipped) → 6300.
+     *
+     * APDUs:
+     *   80 04 00 00 0A <data>        → 90 00
+     *   80 04 01 00 80 <bad sig>     → 63 00
+     */
+    @Test
+    public void testVerify_tamperedSignature_fails() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        byte[] data      = buildSequentialBytes(10);
+        byte[] signature = signRaw(data).clone();
+        signature[0] ^= 0x01;
+
+        assertSW(SW_SUCCESS,             verifyLoad(data));
+        assertSW(SW_VERIFICATION_FAILED, verifyCheck(signature));
+    }
+
+    /**
+     * Step 2 (check) without step 1 (load) → 6984.
+     *
+     * APDU: 80 04 01 00 80 <128 bytes>
+     * Expected: 69 84
+     */
+    @Test
+    public void testVerify_checkWithoutLoad_fails() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        assertSW(SW_DATA_NOT_LOADED, verifyCheck(new byte[128]));
+    }
+
+    /**
+     * Step 2 without any key generation → 6985.
+     *
+     * APDUs:
+     *   80 04 00 00 05 <5 bytes>  → 90 00
+     *   80 04 01 00 80 <128B>     → 69 85
+     */
+    @Test
+    public void testVerify_checkWithoutKey_fails() {
+        assertSW(SW_SUCCESS,      verifyLoad(new byte[5]));
+        assertSW(SW_KEY_NOT_INIT, verifyCheck(new byte[128]));
+    }
+
+    /**
+     * Step 1 with empty data (Lc=0) → 6700.
+     *
+     * APDU: 80 04 00 00  (no data)
+     * Expected: 67 00
+     */
+    @Test
+    public void testVerify_loadEmptyData_fails() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        assertSW(SW_WRONG_LENGTH,
+                simulator.transmitCommand(new CommandAPDU(CLA, INS_VERIFY, 0x00, 0x00)));
+    }
+
+    /**
+     * Step 2 with wrong signature length (not exactly 128 bytes) → 6700.
+     *
+     * APDU: 80 04 01 00 10 <16 bytes>  (only 16 bytes instead of 128)
+     * Expected: 67 00
+     */
+    @Test
+    public void testVerify_wrongSignatureLength_fails() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        assertSW(SW_SUCCESS, verifyLoad(buildSequentialBytes(5)));
+        assertSW(SW_WRONG_LENGTH,
+                simulator.transmitCommand(
+                        new CommandAPDU(CLA, INS_VERIFY, 0x01, 0x00, new byte[16])));
+    }
+
+    /**
+     * Unknown P1 value → 6A86.
+     *
+     * APDU: 80 04 FF 00
+     * Expected: 6A 86
+     */
+    @Test
+    public void testVerify_unknownP1_fails() {
+        assertSW(SW_INCORRECT_P1P2,
+                simulator.transmitCommand(new CommandAPDU(CLA, INS_VERIFY, 0xFF, 0x00)));
+    }
+
+    /**
+     * End-to-end with maximum data (200 bytes, standard APDU) → 9000.
+     * Body of each step fits in a standard APDU (≤ 255 bytes).
+     *
+     * APDUs:
+     *   80 04 00 00 C8 <200B>  → 90 00
+     *   80 04 01 00 80 <128B>  → 90 00
+     */
+    @Test
+    public void testVerify_200ByteData_succeeds() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        byte[] data      = buildSequentialBytes(200);
+        byte[] signature = signRaw(data);
+        assertSW(SW_SUCCESS, verifyLoad(data));
+        assertSW(SW_SUCCESS, verifyCheck(signature));
+    }
+
+    /**
+     * After a failed verification (wrong sig), the loaded data is cleared;
+     * a second check without re-loading must return 6984, not 6300.
+     *
+     * This ensures the applet does not retain sensitive data after a failed attempt.
+     */
+    @Test
+    public void testVerify_dataCleared_afterFailedVerify() {
+        simulator.transmitCommand(new CommandAPDU(CLA, INS_GEN_KEY, 0x00, 0x00));
+        byte[] data      = buildSequentialBytes(10);
+        byte[] badSig    = new byte[128]; // all zeros → invalid
+
+        assertSW(SW_SUCCESS,             verifyLoad(data));
+        assertSW(SW_VERIFICATION_FAILED, verifyCheck(badSig)); // data cleared here
+        assertSW(SW_DATA_NOT_LOADED,     verifyCheck(badSig)); // no data anymore
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
     // Error / edge-case tests
     // ════════════════════════════════════════════════════════════════════════
 
@@ -273,6 +439,18 @@ public class RSAAppletTest {
     // ════════════════════════════════════════════════════════════════════════
     // Private helpers
     // ════════════════════════════════════════════════════════════════════════
+
+    /** INS 0x04 P1=0x00 – load data into the card's transient verify buffer. */
+    private ResponseAPDU verifyLoad(byte[] data) {
+        return simulator.transmitCommand(
+                new CommandAPDU(CLA, INS_VERIFY, 0x00, 0x00, data));
+    }
+
+    /** INS 0x04 P1=0x01 – submit a 128-byte signature for verification. */
+    private ResponseAPDU verifyCheck(byte[] signature) {
+        return simulator.transmitCommand(
+                new CommandAPDU(CLA, INS_VERIFY, 0x01, 0x00, signature));
+    }
 
     /** Parse a big-endian unsigned short from buf[offset..offset+1]. */
     private static int parseShort(byte[] buf, int offset) {
