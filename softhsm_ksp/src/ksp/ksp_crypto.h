@@ -1,11 +1,11 @@
-/* ksp_crypto.h — Opérations cryptographiques : signature, déchiffrement, export/import */
+/* ksp_crypto.h — Cryptographic operations: signing, decryption, export/import */
 #ifndef KSP_CRYPTO_H
 #define KSP_CRYPTO_H
 
 #include <windows.h>
 #include <ncrypt.h>
 
-/* Signe un hash avec la clé privée */
+/* Sign a hash with the private key */
 SECURITY_STATUS WINAPI KSP_SignHash(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -17,7 +17,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     DWORD             *pcbResult,
     DWORD              dwFlags);
 
-/* Déchiffre des données avec la clé privée */
+/* Decrypt data with the private key */
 SECURITY_STATUS WINAPI KSP_Decrypt(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -29,7 +29,7 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
     DWORD             *pcbResult,
     DWORD              dwFlags);
 
-/* Exporte une clé au format BCRYPT */
+/* Export a key in BCRYPT format */
 SECURITY_STATUS WINAPI KSP_ExportKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -41,7 +41,7 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
     DWORD             *pcbResult,
     DWORD              dwFlags);
 
-/* Importe une clé depuis un format BCRYPT */
+/* Import a key from a BCRYPT format */
 SECURITY_STATUS WINAPI KSP_ImportKey(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE   hImportKey,

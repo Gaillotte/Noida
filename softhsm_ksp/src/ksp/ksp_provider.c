@@ -1,4 +1,4 @@
-/* ksp_provider.c — Implémentation des fonctions de gestion du fournisseur */
+/* ksp_provider.c — Provider management function implementation */
 #include "ksp_provider.h"
 #include "../pkcs11/p11_context.h"
 #include "../pkcs11/p11_session.h"
@@ -8,14 +8,14 @@
 #include <string.h>
 #include <wchar.h>
 
-/* Valide un handle de fournisseur */
+/* Validate a provider handle */
 BOOL KSP_IsValidProvider(NCRYPT_PROV_HANDLE hProvider)
 {
     KSP_PROVIDER *pProv = (KSP_PROVIDER *)(ULONG_PTR)hProvider;
     return (pProv && pProv->dwMagic == KSP_PROVIDER_MAGIC);
 }
 
-/* Ouvre le fournisseur et initialise la couche PKCS#11 */
+/* Open the provider and initialise the PKCS#11 layer */
 SECURITY_STATUS WINAPI KSP_OpenProvider(
     NCRYPT_PROV_HANDLE *phProvider,
     LPCWSTR             pszProviderName,
@@ -32,14 +32,14 @@ SECURITY_STATUS WINAPI KSP_OpenProvider(
         return NTE_INVALID_PARAMETER;
     }
 
-    /* Initialise la couche PKCS#11 (idempotent) */
+    /* Initialise the PKCS#11 layer (idempotent) */
     ss = P11_Initialize();
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_OpenProvider", ss);
         return ss;
     }
 
-    /* Initialise le pool de sessions */
+    /* Initialise the session pool */
     ss = P11_SessionPool_Initialize();
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_OpenProvider", ss);
@@ -62,7 +62,7 @@ SECURITY_STATUS WINAPI KSP_OpenProvider(
     return ERROR_SUCCESS;
 }
 
-/* Libère le fournisseur */
+/* Free the provider */
 SECURITY_STATUS WINAPI KSP_FreeProvider(NCRYPT_PROV_HANDLE hProvider)
 {
     KSP_PROVIDER *pProv;
@@ -82,7 +82,7 @@ SECURITY_STATUS WINAPI KSP_FreeProvider(NCRYPT_PROV_HANDLE hProvider)
     return ERROR_SUCCESS;
 }
 
-/* Retourne une propriété du fournisseur */
+/* Return a provider property */
 SECURITY_STATUS WINAPI KSP_GetProviderProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     LPCWSTR             pszProperty,
@@ -140,7 +140,7 @@ SECURITY_STATUS WINAPI KSP_GetProviderProperty(
     return ss;
 }
 
-/* Définit une propriété du fournisseur */
+/* Set a provider property */
 SECURITY_STATUS WINAPI KSP_SetProviderProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     LPCWSTR             pszProperty,
@@ -157,21 +157,21 @@ SECURITY_STATUS WINAPI KSP_SetProviderProperty(
     return NTE_NOT_SUPPORTED;
 }
 
-/* Libère un buffer alloué par le KSP */
+/* Free a buffer allocated by the KSP */
 SECURITY_STATUS WINAPI KSP_FreeBuffer(PVOID pvInput)
 {
     KSP_Free(pvInput);
     return ERROR_SUCCESS;
 }
 
-/* Libère un objet opaque */
+/* Free an opaque object */
 SECURITY_STATUS WINAPI KSP_FreeObject(PVOID pvInput)
 {
     KSP_Free(pvInput);
     return ERROR_SUCCESS;
 }
 
-/* Notifie un changement de clé (stub) */
+/* Notify a key change (stub) */
 SECURITY_STATUS WINAPI KSP_NotifyChangeKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -184,7 +184,7 @@ SECURITY_STATUS WINAPI KSP_NotifyChangeKey(
     return ERROR_SUCCESS;
 }
 
-/* Invite l'utilisateur (non supporté) */
+/* Prompt the user (not supported) */
 SECURITY_STATUS WINAPI KSP_PromptUser(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -199,7 +199,7 @@ SECURITY_STATUS WINAPI KSP_PromptUser(
     return NTE_NOT_SUPPORTED;
 }
 
-/* Retourne une propriété d'opération (non supporté) */
+/* Return an operation property (not supported) */
 SECURITY_STATUS WINAPI KSP_GetOperationProperty(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,

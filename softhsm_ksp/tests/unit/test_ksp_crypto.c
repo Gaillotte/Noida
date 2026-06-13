@@ -1,5 +1,5 @@
-/* test_ksp_crypto.c — Couverture de ksp_crypto.c
- * Tests : SignHash (RSA PKCS1, PSS, ECDSA), Decrypt (PKCS1, OAEP), ExportKey, ImportKey
+/* test_ksp_crypto.c — Coverage of ksp_crypto.c
+ * Tests: SignHash (RSA PKCS1, PSS, ECDSA), Decrypt (PKCS1, OAEP), ExportKey, ImportKey
  */
 #include "../mock/windows_compat.h"
 #include "../mock/p11_mock.h"
@@ -9,7 +9,7 @@
 #include <wchar.h>
 #include <string.h>
 
-/* ── Stubs du contexte PKCS#11 ──────────────────────────────────────────── */
+/* ── PKCS#11 context stubs ──────────────────────────────────────────────── */
 typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
                  CK_SLOT_ID slotId; BOOL bInitialized; } P11_CONTEXT;
 static P11_CONTEXT g_testCtx;
@@ -25,7 +25,7 @@ void *KSP_Alloc(SIZE_T n);
 void *KSP_AllocZero(SIZE_T n);
 void  KSP_Free(void *p);
 
-/* ── Stubs de session ────────────────────────────────────────────────────── */
+/* ── Session stubs ────────────────────────────────────────────────────────── */
 SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
 {
     *ph = (CK_SESSION_HANDLE)0xBEEF;
@@ -33,7 +33,7 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
 }
 void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
-/* ── Stub KSP_IsValidKey (défini dans ksp_key.c, non lié ici) ───────────── */
+/* ── KSP_IsValidKey stub (defined in ksp_key.c, not linked here) ───────────── */
 #include "../../src/ksp/ksp_key.h"
 BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey)
 {
@@ -44,7 +44,7 @@ BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey)
 #include "../../src/ksp/ksp_provider.h"
 #include "../../src/ksp/ksp_crypto.h"
 
-/* ── Constructeur de clé de test ────────────────────────────────────────── */
+/* ── Test key constructor ────────────────────────────────────────────────── */
 static NCRYPT_KEY_HANDLE make_test_key(
     LPCWSTR szAlg, DWORD bits, DWORD spec, BOOL finalized)
 {
@@ -61,7 +61,7 @@ static NCRYPT_KEY_HANDLE make_test_key(
     return (NCRYPT_KEY_HANDLE)(ULONG_PTR)k;
 }
 
-/* ── Signature ECDSA DER P256 fictive ───────────────────────────────────── */
+/* ── Dummy DER P256 ECDSA signature ───────────────────────────────────────── */
 /* 30 44 02 20 [r=0x11×32] 02 20 [s=0x22×32] */
 static BYTE g_derSigP256[70];
 
@@ -97,16 +97,16 @@ int main(void)
     NCRYPT_KEY_HANDLE hRsa = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
     BYTE hash[32]; memset(hash, 0xAA, sizeof hash);
 
-    /* Mode taille seule (pbSignature=NULL) */
+    /* Size-only mode (pbSignature=NULL) */
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsa, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_OK("SignHash RSA PKCS1 taille → OK", ss);
+    ASSERT_OK("SignHash RSA PKCS1 size → OK", ss);
     ASSERT_EQ("cbResult = 256", cbResult, 256U);
-    ASSERT_EQ("SignInit appelé", P11Mock_GetCalls()->nSignInit, 1);
-    ASSERT_EQ("Sign appelé (taille)", P11Mock_GetCalls()->nSign, 1);
+    ASSERT_EQ("SignInit called", P11Mock_GetCalls()->nSignInit, 1);
+    ASSERT_EQ("Sign called (size)", P11Mock_GetCalls()->nSign, 1);
 
-    /* Mode signature effective */
+    /* Actual signing mode */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
@@ -115,11 +115,11 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsa, NULL, hash, sizeof hash,
         sigBuf, sizeof sigBuf, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_OK("SignHash RSA PKCS1 effectif → OK", ss);
+    ASSERT_OK("SignHash RSA PKCS1 actual → OK", ss);
     ASSERT_EQ("cbResult = 256", cbResult, 256U);
-    ASSERT_EQ("Sign appelé 2× (taille + données)",
+    ASSERT_EQ("Sign called 2× (size + data)",
         P11Mock_GetCalls()->nSign, 2);
-    ASSERT_EQ("premier octet signature = 0xAB",
+    ASSERT_EQ("first signature byte = 0xAB",
         sigBuf[0], (BYTE)0xAB);
 
     KSP_Free((void *)(ULONG_PTR)hRsa); hRsa = 0;
@@ -140,10 +140,10 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfo, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
-    ASSERT_OK("SignHash RSA PSS taille → OK", ss);
+    ASSERT_OK("SignHash RSA PSS size → OK", ss);
     ASSERT_EQ("cbResult PSS = 256", cbResult, 256U);
 
-    /* PSS avec SHA1 */
+    /* PSS with SHA1 */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
@@ -155,9 +155,9 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha1, hash, 20,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
-    ASSERT_OK("SignHash RSA PSS SHA1 taille → OK", ss);
+    ASSERT_OK("SignHash RSA PSS SHA1 size → OK", ss);
 
-    /* PSS avec SHA512 */
+    /* PSS with SHA512 */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
@@ -169,9 +169,9 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha512, hash, 32,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
-    ASSERT_OK("SignHash RSA PSS SHA512 taille → OK", ss);
+    ASSERT_OK("SignHash RSA PSS SHA512 size → OK", ss);
 
-    /* PSS avec SHA384 */
+    /* PSS with SHA384 */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
@@ -183,9 +183,9 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha384, hash, 32,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
-    ASSERT_OK("SignHash RSA PSS SHA384 taille → OK", ss);
+    ASSERT_OK("SignHash RSA PSS SHA384 size → OK", ss);
 
-    /* PSS sans pPaddingInfo → paramètres par défaut */
+    /* PSS without pPaddingInfo → default parameters */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
@@ -193,7 +193,7 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
-    ASSERT_OK("SignHash RSA PSS sans info → OK (défaut SHA256)", ss);
+    ASSERT_OK("SignHash RSA PSS without info → OK (default SHA256)", ss);
 
     KSP_Free((void *)(ULONG_PTR)hRsaPss); hRsaPss = 0;
 
@@ -207,14 +207,14 @@ int main(void)
 
     NCRYPT_KEY_HANDLE hEc = make_test_key(ALG_ECDSA_P256, 256, AT_SIGNATURE, TRUE);
 
-    /* Taille seule */
+    /* Size only */
     cbResult = 0;
     ss = KSP_SignHash(hProv, hEc, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, 0);
-    ASSERT_OK("SignHash ECDSA P256 taille → OK", ss);
+    ASSERT_OK("SignHash ECDSA P256 size → OK", ss);
     ASSERT_EQ("cbResult ECDSA = 64 (r||s)", cbResult, 64U);
 
-    /* Signature effective */
+    /* Actual signature */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->pbSignature = g_derSigP256;
@@ -224,9 +224,9 @@ int main(void)
     cbResult = sizeof ecSigBuf;
     ss = KSP_SignHash(hProv, hEc, NULL, hash, sizeof hash,
         ecSigBuf, sizeof ecSigBuf, &cbResult, 0);
-    ASSERT_OK("SignHash ECDSA P256 effectif → OK", ss);
+    ASSERT_OK("SignHash ECDSA P256 actual → OK", ss);
     ASSERT_EQ("cbResult = 64", cbResult, 64U);
-    /* r = 0x11 * 32 octets */
+    /* r = 0x11 * 32 bytes */
     ASSERT_EQ("r[0] = 0x11", ecSigBuf[0], (BYTE)0x11);
     ASSERT_EQ("s[0] = 0x22", ecSigBuf[32], (BYTE)0x22);
 
@@ -253,53 +253,53 @@ int main(void)
     ASSERT_EQ("pbHash=NULL → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* hKey invalide */
+    /* invalid hKey */
     ss = KSP_SignHash(hProv, 0, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
     ASSERT_EQ("hKey=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* hProv invalide */
+    /* invalid hProv */
     ss = KSP_SignHash(0, hErrKey, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* Clé non finalisée → NTE_KEY_DOES_NOT_EXIST */
+    /* Unfinalized key → NTE_KEY_DOES_NOT_EXIST */
     NCRYPT_KEY_HANDLE hUnfin = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, FALSE);
     ss = KSP_SignHash(hProv, hUnfin, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_EQ("Clé non finalisée → NTE_KEY_DOES_NOT_EXIST",
+    ASSERT_EQ("Unfinalized key → NTE_KEY_DOES_NOT_EXIST",
         ss, (SECURITY_STATUS)NTE_KEY_DOES_NOT_EXIST);
     KSP_Free((void *)(ULONG_PTR)hUnfin);
 
-    /* Mécanisme inconnu */
+    /* Unknown mechanism */
     NCRYPT_KEY_HANDLE hBadAlg = make_test_key(L"DES", 0, AT_SIGNATURE, TRUE);
     ss = KSP_SignHash(hProv, hBadAlg, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Mécanisme inconnu → NTE_BAD_ALGID",
+    ASSERT_EQ("Unknown mechanism → NTE_BAD_ALGID",
         ss, (SECURITY_STATUS)NTE_BAD_ALGID);
     KSP_Free((void *)(ULONG_PTR)hBadAlg);
 
-    /* C_SignInit échoue */
+    /* C_SignInit fails */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
     P11Mock_GetConfig()->rv_SignInit  = CKR_FUNCTION_FAILED;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_ERR("C_SignInit échoue → erreur", ss);
+    ASSERT_ERR("C_SignInit fails → error", ss);
 
-    /* C_Sign (taille) échoue */
+    /* C_Sign (size) fails */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
     P11Mock_GetConfig()->rv_Sign     = CKR_FUNCTION_FAILED;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_ERR("C_Sign (taille) échoue → erreur", ss);
+    ASSERT_ERR("C_Sign (size) fails → error", ss);
 
-    /* Buffer de sortie trop petit (RSA) */
+    /* Output buffer too small (RSA) */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->cbSignature = 256;
@@ -308,7 +308,7 @@ int main(void)
     cbResult = 0;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
         smallBuf, sizeof smallBuf, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_EQ("Buffer RSA trop petit → NTE_BUFFER_TOO_SMALL",
+    ASSERT_EQ("RSA buffer too small → NTE_BUFFER_TOO_SMALL",
         ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
 
     KSP_Free((void *)(ULONG_PTR)hErrKey);
@@ -322,14 +322,14 @@ int main(void)
     NCRYPT_KEY_HANDLE hDecRsa = make_test_key(ALG_RSA, 2048, AT_KEYEXCHANGE, TRUE);
     BYTE ciphertext[256]; memset(ciphertext, 0xCC, sizeof ciphertext);
 
-    /* Mode taille seule (pbOutput=NULL) */
+    /* Size-only mode (pbOutput=NULL) */
     cbResult = 0;
     ss = KSP_Decrypt(hProv, hDecRsa, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_OK("Decrypt RSA PKCS1 taille → OK", ss);
+    ASSERT_OK("Decrypt RSA PKCS1 size → OK", ss);
     ASSERT_EQ("cbResult = 32 (mock)", cbResult, 32U);
 
-    /* Déchiffrement effectif */
+    /* Actual decryption */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
@@ -337,7 +337,7 @@ int main(void)
     cbResult = sizeof plain;
     ss = KSP_Decrypt(hProv, hDecRsa, ciphertext, sizeof ciphertext,
         NULL, plain, sizeof plain, &cbResult, 0);
-    ASSERT_OK("Decrypt RSA PKCS1 effectif → OK", ss);
+    ASSERT_OK("Decrypt RSA PKCS1 actual → OK", ss);
     ASSERT_EQ("cbResult = 32", cbResult, 32U);
     ASSERT_EQ("plain[0] = 0x42 (mock)", plain[0], (BYTE)0x42);
 
@@ -364,7 +364,7 @@ int main(void)
         NCRYPT_PAD_OAEP_FLAG);
     ASSERT_OK("Decrypt RSA OAEP SHA256 → OK", ss);
 
-    /* OAEP sans info (SHA1 par défaut) */
+    /* OAEP without info (SHA1 default) */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
@@ -372,9 +372,9 @@ int main(void)
     ss = KSP_Decrypt(hProv, hDecOaep, ciphertext, sizeof ciphertext,
         NULL, plainOaep, sizeof plainOaep, &cbResult,
         NCRYPT_PAD_OAEP_FLAG);
-    ASSERT_OK("Decrypt RSA OAEP sans info (SHA1) → OK", ss);
+    ASSERT_OK("Decrypt RSA OAEP without info (SHA1) → OK", ss);
 
-    /* OAEP avec SHA1 explicite */
+    /* OAEP with explicit SHA1 */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
@@ -399,15 +399,15 @@ int main(void)
 
     NCRYPT_KEY_HANDLE hDecErr = make_test_key(ALG_RSA, 2048, AT_KEYEXCHANGE, TRUE);
 
-    /* Clé non finalisée */
+    /* Unfinalized key */
     NCRYPT_KEY_HANDLE hDecUnfin = make_test_key(ALG_RSA, 2048, AT_KEYEXCHANGE, FALSE);
     ss = KSP_Decrypt(hProv, hDecUnfin, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Clé non finalisée → NTE_KEY_DOES_NOT_EXIST",
+    ASSERT_EQ("Unfinalized key → NTE_KEY_DOES_NOT_EXIST",
         ss, (SECURITY_STATUS)NTE_KEY_DOES_NOT_EXIST);
     KSP_Free((void *)(ULONG_PTR)hDecUnfin);
 
-    /* Paramètres invalides */
+    /* Invalid parameters */
     ss = KSP_Decrypt(hProv, hDecErr, NULL, 0, NULL, NULL, 0, &cbResult, 0);
     ASSERT_EQ("pbInput=NULL → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
@@ -427,22 +427,22 @@ int main(void)
     ASSERT_EQ("hKey=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* C_DecryptInit échoue */
+    /* C_DecryptInit fails */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_DecryptInit = CKR_FUNCTION_FAILED;
     ss = KSP_Decrypt(hProv, hDecErr, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_ERR("C_DecryptInit échoue → erreur", ss);
+    ASSERT_ERR("C_DecryptInit fails → error", ss);
 
-    /* C_Decrypt échoue */
+    /* C_Decrypt fails */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_Decrypt = CKR_FUNCTION_FAILED;
     BYTE plainTmp[64]; cbResult = sizeof plainTmp;
     ss = KSP_Decrypt(hProv, hDecErr, ciphertext, sizeof ciphertext,
         NULL, plainTmp, sizeof plainTmp, &cbResult, 0);
-    ASSERT_ERR("C_Decrypt échoue → erreur", ss);
+    ASSERT_ERR("C_Decrypt fails → error", ss);
 
     KSP_Free((void *)(ULONG_PTR)hDecErr);
 
@@ -454,18 +454,18 @@ int main(void)
 
     NCRYPT_KEY_HANDLE hExpRsa = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
 
-    /* Taille du blob RSA public */
+    /* RSA public blob size */
     cbResult = 0;
     ss = KSP_ExportKey(hProv, hExpRsa, 0, BCRYPT_RSAPUBLIC_BLOB,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_OK("ExportKey RSA public taille → OK", ss);
+    ASSERT_OK("ExportKey RSA public size → OK", ss);
     ASSERT("cbResult RSA > 0", cbResult > 0);
 
-    /* Blob RSA public effectif */
+    /* Actual RSA public blob */
     BYTE *pbBlob = (BYTE *)KSP_Alloc(cbResult);
     ss = KSP_ExportKey(hProv, hExpRsa, 0, BCRYPT_RSAPUBLIC_BLOB,
         NULL, pbBlob, cbResult, &cbResult, 0);
-    ASSERT_OK("ExportKey RSA public contenu → OK", ss);
+    ASSERT_OK("ExportKey RSA public content → OK", ss);
     {
         BCRYPT_RSAKEY_BLOB *pHdr = (BCRYPT_RSAKEY_BLOB *)pbBlob;
         ASSERT_EQ("Magic = RSAPUBLIC", pHdr->Magic, (DWORD)BCRYPT_RSAPUBLIC_MAGIC);
@@ -484,13 +484,13 @@ int main(void)
     cbResult = 0;
     ss = KSP_ExportKey(hProv, hExpEc, 0, BCRYPT_ECCPUBLIC_BLOB,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_OK("ExportKey EC P256 taille → OK", ss);
+    ASSERT_OK("ExportKey EC P256 size → OK", ss);
     ASSERT("cbResult EC > 0", cbResult > 0);
 
     pbBlob = (BYTE *)KSP_Alloc(cbResult);
     ss = KSP_ExportKey(hProv, hExpEc, 0, BCRYPT_ECCPUBLIC_BLOB,
         NULL, pbBlob, cbResult, &cbResult, 0);
-    ASSERT_OK("ExportKey EC P256 contenu → OK", ss);
+    ASSERT_OK("ExportKey EC P256 content → OK", ss);
     {
         BCRYPT_ECCKEY_BLOB *pHdr = (BCRYPT_ECCKEY_BLOB *)pbBlob;
         ASSERT_EQ("Magic = ECDSA_P256",
@@ -499,50 +499,50 @@ int main(void)
     }
     KSP_Free(pbBlob); pbBlob = NULL;
 
-    /* Buffer trop petit */
+    /* Buffer too small */
     ss = KSP_ExportKey(hProv, hExpEc, 0, BCRYPT_ECCPUBLIC_BLOB,
         NULL, (BYTE *)1, 1, &cbResult, 0);
-    ASSERT_EQ("Buffer trop petit → NTE_BUFFER_TOO_SMALL",
+    ASSERT_EQ("Buffer too small → NTE_BUFFER_TOO_SMALL",
         ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
 
     KSP_Free((void *)(ULONG_PTR)hExpEc); hExpEc = 0;
 
-    /* Types de blob privés → NTE_NOT_SUPPORTED */
+    /* Private blob types → NTE_NOT_SUPPORTED */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     NCRYPT_KEY_HANDLE hPrivExp = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
 
     ss = KSP_ExportKey(hProv, hPrivExp, 0, BCRYPT_RSAPRIVATE_BLOB,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Export RSA privé → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("Export RSA private → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
     ss = KSP_ExportKey(hProv, hPrivExp, 0, BCRYPT_RSAFULLPRIVATE_BLOB,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Export RSA full privé → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("Export RSA full private → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
     ss = KSP_ExportKey(hProv, hPrivExp, 0, BCRYPT_ECCPRIVATE_BLOB,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Export EC privé → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("Export EC private → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
-    /* Type inconnu */
+    /* Unknown type */
     ss = KSP_ExportKey(hProv, hPrivExp, 0, L"UNKNOWNBLOB",
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Type inconnu → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("Unknown type → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
-    /* Clé sans hPubKey */
+    /* Key without hPubKey */
     ((KSP_KEY *)(ULONG_PTR)hPrivExp)->hPubKey = CK_INVALID_HANDLE;
     ss = KSP_ExportKey(hProv, hPrivExp, 0, BCRYPT_RSAPUBLIC_BLOB,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Clé sans pub → NTE_BAD_KEY",
+    ASSERT_EQ("Key without pub → NTE_BAD_KEY",
         ss, (SECURITY_STATUS)NTE_BAD_KEY);
 
     KSP_Free((void *)(ULONG_PTR)hPrivExp);
 
-    /* Paramètres invalides */
+    /* Invalid parameters */
     NCRYPT_KEY_HANDLE hExpValid = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
     ss = KSP_ExportKey(hProv, hExpValid, 0, BCRYPT_RSAPUBLIC_BLOB,
         NULL, NULL, 0, NULL, 0);
@@ -567,7 +567,7 @@ int main(void)
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
-    /* Importe un blob RSA public (construit manuellement) */
+    /* Import a manually-built RSA public blob */
     BYTE modulus[256]; memset(modulus, 0xCC, sizeof modulus);
     BYTE exponent[3] = { 0x01, 0x00, 0x01 };
 
@@ -589,7 +589,7 @@ int main(void)
     ss = KSP_ImportKey(hProv, 0, BCRYPT_RSAPUBLIC_BLOB, NULL,
         &hImpRsa, pbRsaBlob, cbRsaBlob, 0);
     ASSERT_OK("ImportKey RSA public → OK", ss);
-    ASSERT_NOTNULL("hImpRsa non nul", (void *)(ULONG_PTR)hImpRsa);
+    ASSERT_NOTNULL("hImpRsa non-null", (void *)(ULONG_PTR)hImpRsa);
     {
         KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hImpRsa;
         ASSERT("szAlgId = RSA", _wcsicmp(k->szAlgId, ALG_RSA) == 0);
@@ -601,7 +601,7 @@ int main(void)
     KSP_Free(pbRsaBlob);
     KSP_Free((void *)(ULONG_PTR)hImpRsa); hImpRsa = 0;
 
-    /* CreateObject échoue → erreur */
+    /* CreateObject fails → error */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_CreateObject = CKR_FUNCTION_FAILED;
@@ -610,10 +610,10 @@ int main(void)
     memcpy(pbRsaBlob, pRsaHdr, sizeof(BCRYPT_RSAKEY_BLOB));
     ss = KSP_ImportKey(hProv, 0, BCRYPT_RSAPUBLIC_BLOB, NULL,
         &hImpRsa, pbRsaBlob, cbRsaBlob, 0);
-    ASSERT_ERR("ImportKey RSA CreateObject échoue → erreur", ss);
+    ASSERT_ERR("ImportKey RSA CreateObject fails → error", ss);
     KSP_Free(pbRsaBlob);
 
-    /* Importe un blob EC public P256 */
+    /* Import an EC P256 public blob */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
@@ -660,7 +660,7 @@ int main(void)
     KSP_Free(pbEcc384);
     KSP_Free((void *)(ULONG_PTR)hImpEc384);
 
-    /* Import blob trop court pour EC (< sizeof BCRYPT_ECCKEY_BLOB) */
+    /* Import EC blob too short (< sizeof BCRYPT_ECCKEY_BLOB) */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
@@ -668,25 +668,25 @@ int main(void)
     NCRYPT_KEY_HANDLE hSmallEc = 0;
     ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
         &hSmallEc, smallEcc, sizeof smallEcc, 0);
-    ASSERT_OK("ImportKey EC blob court → OK (alg par défaut)", ss);
+    ASSERT_OK("ImportKey EC blob short → OK (default alg)", ss);
     KSP_Free((void *)(ULONG_PTR)hSmallEc);
 
-    /* Blob privé → NTE_NOT_SUPPORTED */
+    /* Private blob → NTE_NOT_SUPPORTED */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
     NCRYPT_KEY_HANDLE hPrivImp = 0;
     ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPRIVATE_BLOB, NULL,
         &hPrivImp, (BYTE *)1, 1, 0);
-    ASSERT_EQ("ImportKey privé → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("ImportKey private → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
     ss = KSP_ImportKey(hProv, 0, BCRYPT_RSAPRIVATE_BLOB, NULL,
         &hPrivImp, (BYTE *)1, 1, 0);
-    ASSERT_EQ("ImportKey RSA privé → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("ImportKey RSA private → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
-    /* Paramètres invalides */
+    /* Invalid parameters */
     ss = KSP_ImportKey(hProv, 0, BCRYPT_RSAPUBLIC_BLOB, NULL,
         NULL, (BYTE *)1, 1, 0);
     ASSERT_EQ("phKey=NULL → NTE_INVALID_PARAMETER",

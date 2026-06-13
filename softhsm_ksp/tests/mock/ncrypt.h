@@ -1,2 +1,2 @@
-/* ncrypt.h — Stub Linux : types NCrypt déjà définis dans windows_compat.h */
+/* ncrypt.h — Linux stub: NCrypt types already defined in windows_compat.h */
 #include "windows_compat.h"

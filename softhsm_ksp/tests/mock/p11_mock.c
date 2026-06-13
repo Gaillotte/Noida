@@ -1,28 +1,28 @@
-/* p11_mock.c — Implémentation du mock PKCS#11 */
+/* p11_mock.c — PKCS#11 mock implementation */
 #include "p11_mock.h"
 #include <string.h>
 #include <stdlib.h>
 
 /* OID P-256 */
 static const char g_oidP256[] = "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
-/* Point EC non compressé P-256 fictif (1 + 32 + 32 = 65 octets), wrappé DER */
+/* Simulated uncompressed P-256 EC point (1 + 32 + 32 = 65 bytes), DER-wrapped */
 static const char g_ecPoint256[] =
     "\x04\x41"             /* DER OCTET STRING wrapper */
-    "\x04"                 /* point non compressé */
+    "\x04"                 /* uncompressed point */
     "\xAA\xBB\xCC\xDD\xEE\xFF\x11\x22\x33\x44\x55\x66\x77\x88\x99\x00"
     "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10" /* Qx 32 */
     "\xDD\xEE\xFF\x00\x11\x22\x33\x44\x55\x66\x77\x88\x99\xAA\xBB\xCC"
     "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10" /* Qy 32 */
     ;
 
-/* Modulus RSA 2048 fictif (256 octets) et exposant */
+/* Simulated RSA-2048 modulus (256 bytes) and exponent */
 static BYTE g_modulus[256];
 static const BYTE g_exponent[] = { 0x01, 0x00, 0x01 };
 
 static P11_MOCK_CONFIG g_cfg;
 static P11_MOCK_CALLS  g_calls;
 
-/* ── Fonctions mock ────────────────────────────────────────────────────── */
+/* ── Mock functions ────────────────────────────────────────────────────── */
 
 static CK_RV mock_Initialize(CK_VOID_PTR p) {
     (void)p;
@@ -146,7 +146,7 @@ static CK_RV mock_GetObjectSize(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
     (void)h; (void)o; if (n) *n = 0; return CKR_OK;
 }
 
-/* État de FindObjects */
+/* FindObjects state */
 static int g_findCallCount = 0;
 
 static CK_RV mock_GetAttributeValue(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
@@ -466,7 +466,7 @@ static CK_FUNCTION_LIST g_fnList = {
     mock_GetFunctionStatus, mock_CancelFunction, mock_WaitForSlotEvent
 };
 
-/* ── API publique ─────────────────────────────────────────────────────────── */
+/* ── Public API ─────────────────────────────────────────────────────────── */
 
 void P11Mock_Reset(void)
 {
@@ -494,9 +494,9 @@ void P11Mock_Reset(void)
     g_cfg.cbSignature = 256;
     strcpy(g_cfg.szKeyLabel, "TestKey");
 
-    /* Initialise le modulus fictif */
+    /* Initialise the dummy modulus */
     memset(g_modulus, 0xCC, sizeof g_modulus);
-    g_modulus[0] = 0x00; g_modulus[1] = 0xBF; /* Évite bit de signe */
+    g_modulus[0] = 0x00; g_modulus[1] = 0xBF; /* Avoid sign bit */
 
     g_cfg.pbModulus  = g_modulus;
     g_cfg.cbModulus  = 256;

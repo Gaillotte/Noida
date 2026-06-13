@@ -1,4 +1,4 @@
-/* ksp_main.c — DllMain et initialisation de la table des fonctions CNG */
+/* ksp_main.c — DllMain and CNG function table initialisation */
 #include "ksp_main.h"
 #include "ksp_provider.h"
 #include "ksp_key.h"
@@ -9,7 +9,7 @@
 #include "../common/config.h"
 #include "../common/logging.h"
 
-/* Table globale des fonctions du KSP */
+/* Global KSP function table */
 NCRYPT_KEY_STORAGE_FUNCTION_TABLE g_KspFunctionTable = {
     NCRYPT_KEY_STORAGE_INTERFACE_VERSION,
     KSP_OpenProvider,
@@ -35,7 +35,7 @@ NCRYPT_KEY_STORAGE_FUNCTION_TABLE g_KspFunctionTable = {
     KSP_PromptUser
 };
 
-/* Point d'entrée exporté : retourne la table des fonctions */
+/* Exported entry point: returns the function table */
 SECURITY_STATUS WINAPI GetKeyStorageInterface(
     LPCWSTR                             pszProviderName,
     NCRYPT_KEY_STORAGE_FUNCTION_TABLE **ppFunctionTable,
@@ -62,7 +62,7 @@ SECURITY_STATUS WINAPI GetKeyStorageInterface(
     return ERROR_SUCCESS;
 }
 
-/* Point d'entrée DLL */
+/* DLL entry point */
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
     UNREFERENCED_PARAMETER(hinstDLL);

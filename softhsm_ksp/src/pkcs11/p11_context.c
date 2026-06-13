@@ -1,4 +1,4 @@
-/* p11_context.c — Implémentation du singleton de contexte PKCS#11 */
+/* p11_context.c — PKCS#11 context singleton implementation */
 #include "p11_context.h"
 #include "p11_utils.h"
 #include "../common/config.h"
@@ -6,12 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Singleton protégé par InitOnceExecuteOnce */
+/* Singleton protected by InitOnceExecuteOnce */
 static P11_CONTEXT  g_ctx;
 static INIT_ONCE    g_initOnce = INIT_ONCE_STATIC_INIT;
 static SECURITY_STATUS g_initStatus = NTE_PROVIDER_DLL_FAIL;
 
-/* Charge softhsm2.dll et récupère la liste des fonctions */
+/* Load softhsm2.dll and retrieve the function list */
 static BOOL LoadSoftHSM2(P11_CONTEXT *pCtx)
 {
     WCHAR   wszLibPath[MAX_PATH];
@@ -19,16 +19,16 @@ static BOOL LoadSoftHSM2(P11_CONTEXT *pCtx)
     DWORD   dwLen;
     CK_C_GetFunctionList pfnGetFunctionList;
 
-    /* Lit le chemin depuis la variable d'environnement */
+    /* Read the path from the environment variable */
     dwLen = GetEnvironmentVariableA(SOFTHSM2_LIB_ENV, szLibPath, MAX_PATH);
     if (dwLen == 0 || dwLen >= MAX_PATH) {
-        /* Utilise le chemin par défaut */
+        /* Use the default path */
         wcscpy_s(wszLibPath, MAX_PATH, SOFTHSM2_LIB_DEFAULT);
     } else {
         MultiByteToWideChar(CP_ACP, 0, szLibPath, -1, wszLibPath, MAX_PATH);
     }
 
-    LOG_INFO("Chargement SoftHSM2 : %ls", wszLibPath);
+    LOG_INFO("Loading SoftHSM2: %ls", wszLibPath);
 
     pCtx->hModule = LoadLibraryW(wszLibPath);
     if (!pCtx->hModule) {
@@ -53,7 +53,7 @@ static BOOL LoadSoftHSM2(P11_CONTEXT *pCtx)
     return TRUE;
 }
 
-/* Sélectionne le premier slot avec un token présent */
+/* Select the first slot with a token present */
 static BOOL SelectSlot(P11_CONTEXT *pCtx)
 {
     CK_SLOT_ID  aSlots[64];
@@ -67,11 +67,11 @@ static BOOL SelectSlot(P11_CONTEXT *pCtx)
     }
 
     pCtx->slotId = aSlots[0];
-    LOG_INFO("Slot selectionne : %lu", (unsigned long)pCtx->slotId);
+    LOG_INFO("Selected slot: %lu", (unsigned long)pCtx->slotId);
     return TRUE;
 }
 
-/* Callback pour InitOnceExecuteOnce */
+/* Callback for InitOnceExecuteOnce */
 static BOOL CALLBACK InitOnceCallback(
     PINIT_ONCE  pInitOnce,
     PVOID       pParameter,
@@ -91,7 +91,7 @@ static BOOL CALLBACK InitOnceCallback(
         return TRUE;
     }
 
-    /* Initialise Cryptoki avec verrouillage OS */
+    /* Initialise Cryptoki with OS locking */
     memset(&initArgs, 0, sizeof(initArgs));
     initArgs.flags = CKF_OS_LOCKING_OK;
 
@@ -114,18 +114,18 @@ static BOOL CALLBACK InitOnceCallback(
 
     g_ctx.bInitialized = TRUE;
     g_initStatus       = ERROR_SUCCESS;
-    LOG_INFO("P11_Initialize : succes, slot=%lu", (unsigned long)g_ctx.slotId);
+    LOG_INFO("P11_Initialize: success, slot=%lu", (unsigned long)g_ctx.slotId);
     return TRUE;
 }
 
-/* Initialise le contexte PKCS#11 (thread-safe, idempotent) */
+/* Initialise the PKCS#11 context (thread-safe, idempotent) */
 SECURITY_STATUS P11_Initialize(void)
 {
     InitOnceExecuteOnce(&g_initOnce, InitOnceCallback, NULL, NULL);
     return g_initStatus;
 }
 
-/* Libère le contexte PKCS#11 */
+/* Free the PKCS#11 context */
 void P11_Finalize(void)
 {
     if (g_ctx.bInitialized && g_ctx.pFunctionList) {
@@ -138,7 +138,7 @@ void P11_Finalize(void)
     }
 }
 
-/* Retourne le pointeur vers le contexte global */
+/* Return a pointer to the global context */
 P11_CONTEXT *P11_GetContext(void)
 {
     return &g_ctx;

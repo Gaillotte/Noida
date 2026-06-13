@@ -1,2 +1,2 @@
-/* windows.h — Stub Linux : redirige vers windows_compat.h */
+/* windows.h — Linux stub: redirects to windows_compat.h */
 #include "windows_compat.h"

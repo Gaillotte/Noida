@@ -1,4 +1,4 @@
-/* test_memory.c — Couverture complète des fonctions mémoire KSP
+/* test_memory.c — Full coverage of KSP memory functions
  * KSP_Alloc, KSP_AllocZero, KSP_Free, KSP_WStrDup
  */
 #include "../mock/windows_compat.h"
@@ -6,7 +6,7 @@
 #include <string.h>
 #include <wchar.h>
 
-/* Inclut directement les fonctions testées */
+/* Directly includes the tested functions */
 void *KSP_Alloc(SIZE_T cbSize);
 void *KSP_AllocZero(SIZE_T cbSize);
 void  KSP_Free(void *pv);
@@ -18,21 +18,21 @@ int main(void)
     TEST_SUITE("KSP_Alloc");
 
     void *p1 = KSP_Alloc(128);
-    ASSERT_NOTNULL("Alloc 128 octets → non NULL", p1);
+    ASSERT_NOTNULL("Alloc 128 bytes → non-NULL", p1);
     KSP_Free(p1);
 
     void *p2 = KSP_Alloc(1);
-    ASSERT_NOTNULL("Alloc 1 octet → non NULL", p2);
+    ASSERT_NOTNULL("Alloc 1 byte → non-NULL", p2);
     KSP_Free(p2);
 
     void *p3 = KSP_Alloc(1024 * 1024);
-    ASSERT_NOTNULL("Alloc 1 Mo → non NULL", p3);
+    ASSERT_NOTNULL("Alloc 1 MB → non-NULL", p3);
     KSP_Free(p3);
 
-    /* Vérifie que deux allocations donnent des pointeurs distincts */
+    /* Verify that two allocations return distinct pointers */
     void *pa = KSP_Alloc(64);
     void *pb = KSP_Alloc(64);
-    ASSERT("Deux allocations → pointeurs distincts", pa != pb);
+    ASSERT("Two allocations → distinct pointers", pa != pb);
     KSP_Free(pa);
     KSP_Free(pb);
 
@@ -40,65 +40,65 @@ int main(void)
     TEST_SUITE("KSP_AllocZero");
 
     void *pz = KSP_AllocZero(256);
-    ASSERT_NOTNULL("AllocZero 256 → non NULL", pz);
+    ASSERT_NOTNULL("AllocZero 256 → non-NULL", pz);
 
-    /* Vérifie que les octets sont à zéro */
+    /* Verify that all bytes are zero */
     int allZero = 1;
     BYTE *pb2 = (BYTE *)pz;
     for (int i = 0; i < 256; i++) if (pb2[i] != 0) { allZero = 0; break; }
-    ASSERT("AllocZero → tous octets à 0", allZero);
+    ASSERT("AllocZero → all bytes are 0", allZero);
     KSP_Free(pz);
 
-    /* AllocZero de 1 octet */
+    /* AllocZero of 1 byte */
     BYTE *pz1 = (BYTE *)KSP_AllocZero(1);
-    ASSERT_NOTNULL("AllocZero 1 octet", pz1);
-    ASSERT_EQ("AllocZero 1 octet = 0", *pz1, 0);
+    ASSERT_NOTNULL("AllocZero 1 byte", pz1);
+    ASSERT_EQ("AllocZero 1 byte = 0", *pz1, 0);
     KSP_Free(pz1);
 
     /* ── Suite 3 : KSP_Free ──────────────────────────────────────────────── */
     TEST_SUITE("KSP_Free");
 
-    KSP_Free(NULL);  /* Ne doit pas planter */
-    ASSERT("KSP_Free(NULL) ne plante pas", 1);
+    KSP_Free(NULL);  /* Must not crash */
+    ASSERT("KSP_Free(NULL) does not crash", 1);
 
     void *pf = KSP_Alloc(32);
-    ASSERT_NOTNULL("Alloc avant Free", pf);
+    ASSERT_NOTNULL("Alloc before Free", pf);
     KSP_Free(pf);
-    ASSERT("KSP_Free après alloc valide ne plante pas", 1);
+    ASSERT("KSP_Free after valid alloc does not crash", 1);
 
     /* ── Suite 4 : KSP_WStrDup ───────────────────────────────────────────── */
     TEST_SUITE("KSP_WStrDup");
 
     LPWSTR dup1 = KSP_WStrDup(L"SoftHSM KSP");
-    ASSERT_NOTNULL("WStrDup non NULL", dup1);
-    ASSERT("WStrDup contenu correct", wcscmp(dup1, L"SoftHSM KSP") == 0);
-    ASSERT("WStrDup → copie indépendante",
-           dup1 != (void*)L"SoftHSM KSP"); /* Pas alias */
+    ASSERT_NOTNULL("WStrDup non-NULL", dup1);
+    ASSERT("WStrDup correct content", wcscmp(dup1, L"SoftHSM KSP") == 0);
+    ASSERT("WStrDup → independent copy",
+           dup1 != (void*)L"SoftHSM KSP"); /* not an alias */
     KSP_Free(dup1);
 
     LPWSTR dup2 = KSP_WStrDup(L"");
-    ASSERT_NOTNULL("WStrDup chaîne vide → non NULL", dup2);
-    ASSERT("WStrDup vide → L\"\"", wcscmp(dup2, L"") == 0);
+    ASSERT_NOTNULL("WStrDup empty string → non-NULL", dup2);
+    ASSERT("WStrDup empty → L\"\"", wcscmp(dup2, L"") == 0);
     KSP_Free(dup2);
 
     LPWSTR dup3 = KSP_WStrDup(NULL);
     ASSERT_NULL("WStrDup(NULL) → NULL", dup3);
 
-    /* Chaîne longue */
+    /* Long string */
     WCHAR longStr[512];
     for (int i = 0; i < 511; i++) longStr[i] = L'X';
     longStr[511] = L'\0';
     LPWSTR dupLong = KSP_WStrDup(longStr);
-    ASSERT_NOTNULL("WStrDup longue → non NULL", dupLong);
-    ASSERT_EQ("WStrDup longue → longueur correcte",
+    ASSERT_NOTNULL("WStrDup long string → non-NULL", dupLong);
+    ASSERT_EQ("WStrDup long string → correct length",
         wcslen(dupLong), 511U);
     KSP_Free(dupLong);
 
-    /* Unicité : deux dups de la même chaîne → adresses différentes */
+    /* Uniqueness: two dups of the same string → different addresses */
     LPWSTR d1 = KSP_WStrDup(L"Test");
     LPWSTR d2 = KSP_WStrDup(L"Test");
-    ASSERT("Deux WStrDup → pointeurs distincts", d1 != d2);
-    ASSERT("Deux WStrDup → contenu identique", wcscmp(d1, d2) == 0);
+    ASSERT("Two WStrDup → distinct pointers", d1 != d2);
+    ASSERT("Two WStrDup → identical content", wcscmp(d1, d2) == 0);
     KSP_Free(d1);
     KSP_Free(d2);
 

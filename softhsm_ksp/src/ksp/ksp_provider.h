@@ -1,4 +1,4 @@
-/* ksp_provider.h — Gestion du fournisseur CNG (provider handle) */
+/* ksp_provider.h — CNG provider management (provider handle) */
 #ifndef KSP_PROVIDER_H
 #define KSP_PROVIDER_H
 
@@ -6,23 +6,23 @@
 #include <ncrypt.h>
 #include "../common/config.h"
 
-/* Structure interne du fournisseur */
+/* Internal provider structure */
 typedef struct _KSP_PROVIDER {
     DWORD  dwMagic;           /* KSP_PROVIDER_MAGIC */
-    WCHAR  szName[256];       /* Nom du fournisseur */
+    WCHAR  szName[256];       /* Provider name */
 } KSP_PROVIDER;
 
-/* Ouvre le fournisseur et initialise la couche PKCS#11 */
+/* Open the provider and initialise the PKCS#11 layer */
 SECURITY_STATUS WINAPI KSP_OpenProvider(
     NCRYPT_PROV_HANDLE *phProvider,
     LPCWSTR             pszProviderName,
     DWORD               dwFlags);
 
-/* Libère le fournisseur */
+/* Free the provider */
 SECURITY_STATUS WINAPI KSP_FreeProvider(
     NCRYPT_PROV_HANDLE hProvider);
 
-/* Retourne une propriété du fournisseur */
+/* Return a provider property */
 SECURITY_STATUS WINAPI KSP_GetProviderProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     LPCWSTR             pszProperty,
@@ -31,7 +31,7 @@ SECURITY_STATUS WINAPI KSP_GetProviderProperty(
     DWORD              *pcbResult,
     DWORD               dwFlags);
 
-/* Définit une propriété du fournisseur */
+/* Set a provider property */
 SECURITY_STATUS WINAPI KSP_SetProviderProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     LPCWSTR             pszProperty,
@@ -39,13 +39,13 @@ SECURITY_STATUS WINAPI KSP_SetProviderProperty(
     DWORD               cbInput,
     DWORD               dwFlags);
 
-/* Libère un buffer alloué par le KSP */
+/* Free a buffer allocated by the KSP */
 SECURITY_STATUS WINAPI KSP_FreeBuffer(PVOID pvInput);
 
-/* Libère un objet opaque */
+/* Free an opaque object */
 SECURITY_STATUS WINAPI KSP_FreeObject(PVOID pvInput);
 
-/* Stubs obligatoires */
+/* Required stubs */
 SECURITY_STATUS WINAPI KSP_NotifyChangeKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -66,7 +66,7 @@ SECURITY_STATUS WINAPI KSP_GetOperationProperty(
     DWORD             *pcbResult,
     DWORD              dwFlags);
 
-/* Valide un handle de fournisseur */
+/* Validate a provider handle */
 BOOL KSP_IsValidProvider(NCRYPT_PROV_HANDLE hProvider);
 
 #endif /* KSP_PROVIDER_H */

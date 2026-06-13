@@ -1,4 +1,4 @@
-/* p11_utils.h — Utilitaires PKCS#11 : mécanismes, attributs, conversion d'erreurs */
+/* p11_utils.h — PKCS#11 utilities: mechanisms, attributes, error conversion */
 #ifndef P11_UTILS_H
 #define P11_UTILS_H
 
@@ -7,31 +7,31 @@
 #include <bcrypt.h>
 #include "pkcs11.h"
 
-/* Convertit un code CK_RV en SECURITY_STATUS */
+/* Convert a CK_RV code to SECURITY_STATUS */
 SECURITY_STATUS P11RvToSecStatus(CK_RV rv);
 
-/* Résout le mécanisme PKCS#11 à partir de l'algorithme CNG et des flags */
+/* Resolve the PKCS#11 mechanism from the CNG algorithm and flags */
 SECURITY_STATUS P11_ResolveMechanism(
     LPCWSTR          pszAlgId,
     DWORD            dwFlags,
     CK_MECHANISM    *pMechanism,
     CK_RSA_PKCS_PSS_PARAMS *pPssParams);
 
-/* Recherche un objet par son label (CKA_LABEL) et sa classe (CKO_*)
- * Retourne CK_INVALID_HANDLE si non trouvé */
+/* Search for an object by its label (CKA_LABEL) and class (CKO_*)
+ * Returns CK_INVALID_HANDLE if not found */
 CK_OBJECT_HANDLE P11_FindObjectByLabel(
     CK_SESSION_HANDLE hSession,
     CK_OBJECT_CLASS   ulClass,
     LPCWSTR           pszLabel);
 
-/* Lit la valeur d'un attribut CK_ULONG */
+/* Read the value of a CK_ULONG attribute */
 CK_RV P11_GetUlongAttr(
     CK_SESSION_HANDLE hSession,
     CK_OBJECT_HANDLE  hObject,
     CK_ATTRIBUTE_TYPE attrType,
     CK_ULONG         *pulValue);
 
-/* Lit la valeur d'un attribut binaire (alloue avec KSP_Alloc) */
+/* Read the value of a binary attribute (allocates with KSP_Alloc) */
 CK_RV P11_GetBinaryAttr(
     CK_SESSION_HANDLE  hSession,
     CK_OBJECT_HANDLE   hObject,
@@ -39,23 +39,23 @@ CK_RV P11_GetBinaryAttr(
     BYTE             **ppData,
     DWORD             *pcbData);
 
-/* Convertit une clé publique RSA PKCS#11 en BCRYPT_RSAKEY_BLOB */
+/* Export a PKCS#11 RSA public key as a BCRYPT_RSAKEY_BLOB */
 SECURITY_STATUS P11_ExportRsaPublicKey(
     CK_SESSION_HANDLE  hSession,
     CK_OBJECT_HANDLE   hPubKey,
     BYTE             **ppBlob,
     DWORD             *pcbBlob);
 
-/* Convertit une clé publique EC PKCS#11 en BCRYPT_ECCKEY_BLOB */
+/* Export a PKCS#11 EC public key as a BCRYPT_ECCKEY_BLOB */
 SECURITY_STATUS P11_ExportEcPublicKey(
     CK_SESSION_HANDLE  hSession,
     CK_OBJECT_HANDLE   hPubKey,
     BYTE             **ppBlob,
     DWORD             *pcbBlob);
 
-/* Décode une signature ECDSA DER (SEQUENCE { INTEGER r, INTEGER s })
- * en format Windows (r||s, taille fixe selon la courbe).
- * pszAlgId : L"ECDSA_P256" ou L"ECDSA_P384" */
+/* Decode a DER ECDSA signature (SEQUENCE { INTEGER r, INTEGER s })
+ * into Windows format (r||s, fixed size based on the curve).
+ * pszAlgId: L"ECDSA_P256" or L"ECDSA_P384" */
 SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     LPCWSTR  pszAlgId,
     BYTE    *pbDer,
@@ -63,7 +63,7 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     BYTE    *pbOut,
     DWORD   *pcbOut);
 
-/* Retourne la taille en octets des coordonnées EC selon l'algorithme */
+/* Return the EC coordinate size in bytes for the given algorithm */
 DWORD P11_EcCoordSize(LPCWSTR pszAlgId);
 
 #endif /* P11_UTILS_H */

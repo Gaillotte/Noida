@@ -1,4 +1,4 @@
-/* ksp_properties.c — Implémentation des propriétés de clé CNG */
+/* ksp_properties.c — CNG key property implementation */
 #include "ksp_properties.h"
 #include "ksp_key.h"
 #include "ksp_provider.h"
@@ -7,7 +7,7 @@
 #include <string.h>
 #include <wchar.h>
 
-/* Retourne une propriété de la clé */
+/* Return a key property */
 SECURITY_STATUS WINAPI KSP_GetKeyProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE   hKey,
@@ -72,7 +72,7 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_EXPORT_POLICY_PROPERTY) == 0) {
-        /* Non exportable depuis le HSM */
+        /* Not exportable from the HSM */
         DWORD dwPolicy = 0;
         *pcbResult = sizeof(DWORD);
         if (pbOutput) {
@@ -115,7 +115,7 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
     return ss;
 }
 
-/* Définit une propriété de la clé */
+/* Set a key property */
 SECURITY_STATUS WINAPI KSP_SetKeyProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE   hKey,
@@ -139,7 +139,7 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
 
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
-    /* Seule NCRYPT_LENGTH_PROPERTY est modifiable (avant FinalizeKey) */
+    /* Only NCRYPT_LENGTH_PROPERTY is modifiable (before FinalizeKey) */
     if (_wcsicmp(pszProperty, NCRYPT_LENGTH_PROPERTY) == 0) {
         if (!pbInput || cbInput < sizeof(DWORD)) {
             ss = NTE_INVALID_PARAMETER;
@@ -148,7 +148,7 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
         } else {
             DWORD dwBits;
             memcpy(&dwBits, pbInput, sizeof(DWORD));
-            /* Valide la taille (RSA uniquement) */
+            /* Validate the size (RSA only) */
             if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0 &&
                 (dwBits == 2048 || dwBits == 3072 || dwBits == 4096)) {
                 pKey->dwKeyBitLen = dwBits;

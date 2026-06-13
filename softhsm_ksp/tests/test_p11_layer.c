@@ -1,6 +1,6 @@
-/* test_p11_layer.c — Tests unitaires de la couche PKCS#11
- * Compile et exécute indépendamment de la DLL KSP.
- * Nécessite SoftHSM2 installé et SOFTHSM2_LIB défini.
+/* test_p11_layer.c — Unit tests for the PKCS#11 layer
+ * Compiles and runs independently of the KSP DLL.
+ * Requires SoftHSM2 installed and SOFTHSM2_LIB set.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -15,7 +15,7 @@
 #include "../common/logging.h"
 #include "../common/memory.h"
 
-/* ── Infrastructure de test ─────────────────────────────────────────────── */
+/* ── Test infrastructure ─────────────────────────────────────────────────── */
 static int g_nPass = 0;
 static int g_nFail = 0;
 
@@ -33,94 +33,94 @@ static void test_assert(const char *pszName, int bCond, const char *pszDetail)
 #define ASSERT(name, cond)        test_assert(name, (cond), NULL)
 #define ASSERT_EQ(name, a, b)     test_assert(name, (a) == (b), #a " != " #b)
 #define ASSERT_NEQ(name, a, b)    test_assert(name, (a) != (b), #a " == " #b)
-#define ASSERT_SS(name, ss)       test_assert(name, (ss) == ERROR_SUCCESS, "SECURITY_STATUS echec")
+#define ASSERT_SS(name, ss)       test_assert(name, (ss) == ERROR_SUCCESS, "SECURITY_STATUS failed")
 
-/* ── Test 1 : initialisation avec mauvais chemin ───────────────────────── */
+/* ── Test 1: initialisation with bad path ───────────────────────────────── */
 static void test_bad_path(void)
 {
     SECURITY_STATUS ss;
 
-    printf("\n--- Test 1 : P11_Initialize avec mauvais chemin ---\n");
-    SetEnvironmentVariableA(SOFTHSM2_LIB_ENV, "C:\\inexistant\\softhsm2.dll");
+    printf("\n--- Test 1: P11_Initialize with bad path ---\n");
+    SetEnvironmentVariableA(SOFTHSM2_LIB_ENV, "C:\\nonexistent\\softhsm2.dll");
 
-    /* Réinitialise l'état interne pour permettre le test */
+    /* Reset internal state to allow the test */
     ss = P11_Initialize();
-    ASSERT("Mauvais chemin -> erreur", ss != ERROR_SUCCESS);
+    ASSERT("Bad path -> error", ss != ERROR_SUCCESS);
 
-    /* Remet la variable d'environnement à l'état par défaut */
+    /* Restore the environment variable to its default state */
     SetEnvironmentVariableA(SOFTHSM2_LIB_ENV, NULL);
 }
 
-/* ── Test 2 : initialisation correcte ──────────────────────────────────── */
+/* ── Test 2: successful initialisation ──────────────────────────────────── */
 static void test_initialize_ok(void)
 {
     P11_CONTEXT    *pCtx;
     SECURITY_STATUS ss;
 
-    printf("\n--- Test 2 : P11_Initialize OK ---\n");
+    printf("\n--- Test 2: P11_Initialize OK ---\n");
 
-    /* Utilise le chemin par défaut ou SOFTHSM2_LIB */
+    /* Use the default path or SOFTHSM2_LIB */
     ss = P11_Initialize();
-    ASSERT_SS("P11_Initialize retourne ERROR_SUCCESS", ss);
+    ASSERT_SS("P11_Initialize returns ERROR_SUCCESS", ss);
 
     pCtx = P11_GetContext();
-    ASSERT("Contexte non NULL", pCtx != NULL);
+    ASSERT("Context not NULL", pCtx != NULL);
     ASSERT("bInitialized = TRUE", pCtx && pCtx->bInitialized);
-    ASSERT("hModule non NULL", pCtx && pCtx->hModule != NULL);
-    ASSERT("pFunctionList non NULL", pCtx && pCtx->pFunctionList != NULL);
+    ASSERT("hModule not NULL", pCtx && pCtx->hModule != NULL);
+    ASSERT("pFunctionList not NULL", pCtx && pCtx->pFunctionList != NULL);
 
-    printf("  Slot selectionne : %lu\n", (unsigned long)(pCtx ? pCtx->slotId : 0));
+    printf("  Selected slot: %lu\n", (unsigned long)(pCtx ? pCtx->slotId : 0));
 }
 
-/* ── Test 3 : initialisation du pool de sessions ───────────────────────── */
+/* ── Test 3: session pool initialisation ────────────────────────────────── */
 static void test_session_pool_init(void)
 {
     SECURITY_STATUS ss;
 
-    printf("\n--- Test 3 : P11_SessionPool_Initialize ---\n");
+    printf("\n--- Test 3: P11_SessionPool_Initialize ---\n");
     ss = P11_SessionPool_Initialize();
     ASSERT_SS("SessionPool_Initialize", ss);
 }
 
-/* ── Test 4 : acquisition d'une session ────────────────────────────────── */
+/* ── Test 4: session acquisition ────────────────────────────────────────── */
 static void test_acquire_session(void)
 {
     CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
     SECURITY_STATUS   ss;
 
-    printf("\n--- Test 4 : AcquireSession ---\n");
+    printf("\n--- Test 4: AcquireSession ---\n");
     ss = P11_AcquireSession(&hSession);
-    ASSERT_SS("P11_AcquireSession retourne ERROR_SUCCESS", ss);
-    ASSERT("hSession valide", hSession != CK_INVALID_HANDLE);
+    ASSERT_SS("P11_AcquireSession returns ERROR_SUCCESS", ss);
+    ASSERT("hSession valid", hSession != CK_INVALID_HANDLE);
 
     printf("  hSession = 0x%lX\n", (unsigned long)hSession);
 
     P11_ReleaseSession(hSession);
-    ASSERT("ReleaseSession ne plante pas", 1);
+    ASSERT("ReleaseSession does not crash", 1);
 }
 
-/* ── Test 5 : recherche clé inexistante ────────────────────────────────── */
+/* ── Test 5: search for non-existent key ────────────────────────────────── */
 static void test_find_nonexistent(void)
 {
     CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
     CK_OBJECT_HANDLE  hObj;
 
-    printf("\n--- Test 5 : FindObjectByLabel clé inexistante ---\n");
+    printf("\n--- Test 5: FindObjectByLabel non-existent key ---\n");
 
     if (P11_AcquireSession(&hSession) != ERROR_SUCCESS) {
-        ASSERT("AcquireSession pour find", 0);
+        ASSERT("AcquireSession for find", 0);
         return;
     }
 
     hObj = P11_FindObjectByLabel(hSession, CKO_PRIVATE_KEY,
-                                 L"__cle_inexistante_ksp_test__");
-    ASSERT("CKR_OK + handle nul si absente",
+                                 L"__nonexistent_key_ksp_test__");
+    ASSERT("CKR_OK + null handle if absent",
            hObj == CK_INVALID_HANDLE);
 
     P11_ReleaseSession(hSession);
 }
 
-/* ── Test 6 : génération clé RSA 2048 ─────────────────────────────────── */
+/* ── Test 6: RSA 2048 key generation ────────────────────────────────────── */
 static CK_OBJECT_HANDLE g_hPrivRsa = CK_INVALID_HANDLE;
 static CK_OBJECT_HANDLE g_hPubRsa  = CK_INVALID_HANDLE;
 static const char       g_szRsaLabel[] = "KspTestRSA2048";
@@ -137,11 +137,11 @@ static void test_generate_rsa(void)
     CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
     CK_RV             rv;
 
-    printf("\n--- Test 6 : GenerateKeyPair RSA 2048 ---\n");
+    printf("\n--- Test 6: GenerateKeyPair RSA 2048 ---\n");
 
     if (!pCtx || !pCtx->bInitialized ||
         P11_AcquireSession(&hSession) != ERROR_SUCCESS) {
-        ASSERT("AcquireSession pour generate RSA", 0);
+        ASSERT("AcquireSession for RSA generate", 0);
         return;
     }
 
@@ -170,42 +170,42 @@ static void test_generate_rsa(void)
 
     P11_ReleaseSession(hSession);
 
-    ASSERT("C_GenerateKeyPair RSA retourne CKR_OK", rv == CKR_OK);
-    ASSERT("hPrivRsa valide", g_hPrivRsa != CK_INVALID_HANDLE);
-    ASSERT("hPubRsa valide",  g_hPubRsa  != CK_INVALID_HANDLE);
+    ASSERT("C_GenerateKeyPair RSA returns CKR_OK", rv == CKR_OK);
+    ASSERT("hPrivRsa valid", g_hPrivRsa != CK_INVALID_HANDLE);
+    ASSERT("hPubRsa valid",  g_hPubRsa  != CK_INVALID_HANDLE);
 
     printf("  hPrivRsa=0x%lX hPubRsa=0x%lX\n",
            (unsigned long)g_hPrivRsa, (unsigned long)g_hPubRsa);
 }
 
-/* ── Test 7 : retrouve la clé après génération ──────────────────────────── */
+/* ── Test 7: find key after generation ──────────────────────────────────── */
 static void test_find_after_generate(void)
 {
     CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
     CK_OBJECT_HANDLE  hObj;
     WCHAR             wszLabel[64];
 
-    printf("\n--- Test 7 : FindObjectByLabel apres generation ---\n");
+    printf("\n--- Test 7: FindObjectByLabel after generation ---\n");
 
     if (g_hPrivRsa == CK_INVALID_HANDLE) {
-        ASSERT("Clé générée (prérequis)", 0);
+        ASSERT("Key generated (prerequisite)", 0);
         return;
     }
 
     if (P11_AcquireSession(&hSession) != ERROR_SUCCESS) {
-        ASSERT("AcquireSession pour find", 0);
+        ASSERT("AcquireSession for find", 0);
         return;
     }
 
     MultiByteToWideChar(CP_UTF8, 0, g_szRsaLabel, -1, wszLabel, 64);
     hObj = P11_FindObjectByLabel(hSession, CKO_PRIVATE_KEY, wszLabel);
-    ASSERT("FindObjectByLabel trouve la clé RSA",
+    ASSERT("FindObjectByLabel finds RSA key",
            hObj != CK_INVALID_HANDLE);
 
     P11_ReleaseSession(hSession);
 }
 
-/* ── Test 8 : signature RSA PKCS1 ──────────────────────────────────────── */
+/* ── Test 8: RSA PKCS1 signing ──────────────────────────────────────────── */
 static void test_sign_rsa_pkcs1(void)
 {
     P11_CONTEXT      *pCtx = P11_GetContext();
@@ -217,15 +217,15 @@ static void test_sign_rsa_pkcs1(void)
     CK_RV             rv;
     int               i;
 
-    printf("\n--- Test 8 : SignHash RSA PKCS1 ---\n");
+    printf("\n--- Test 8: SignHash RSA PKCS1 ---\n");
 
     if (g_hPrivRsa == CK_INVALID_HANDLE || !pCtx ||
         P11_AcquireSession(&hSession) != ERROR_SUCCESS) {
-        ASSERT("Prérequis SignHash RSA", 0);
+        ASSERT("Prerequisite SignHash RSA", 0);
         return;
     }
 
-    /* Hash fictif SHA-256 (DigestInfo wrapping pas nécessaire pour CKM_RSA_PKCS) */
+    /* Fake SHA-256 hash (DigestInfo wrapping not needed for CKM_RSA_PKCS) */
     for (i = 0; i < 32; i++) hashBuf[i] = (CK_BYTE)(i + 1);
 
     rv = pCtx->pFunctionList->C_SignInit(hSession, &mech, g_hPrivRsa);
@@ -237,13 +237,13 @@ static void test_sign_rsa_pkcs1(void)
 
     P11_ReleaseSession(hSession);
 
-    ASSERT("C_Sign RSA PKCS1 retourne CKR_OK", rv == CKR_OK);
-    ASSERT("Signature non vide", cbSig > 0);
+    ASSERT("C_Sign RSA PKCS1 returns CKR_OK", rv == CKR_OK);
+    ASSERT("Signature not empty", cbSig > 0);
 
-    printf("  Taille signature RSA : %lu octets\n", (unsigned long)cbSig);
+    printf("  RSA signature size: %lu bytes\n", (unsigned long)cbSig);
 }
 
-/* ── Test 9 : signature RSA PSS ─────────────────────────────────────────── */
+/* ── Test 9: RSA PSS signing ─────────────────────────────────────────────── */
 static void test_sign_rsa_pss(void)
 {
     P11_CONTEXT            *pCtx = P11_GetContext();
@@ -257,11 +257,11 @@ static void test_sign_rsa_pss(void)
     CK_RV                   rv;
     int                     i;
 
-    printf("\n--- Test 9 : SignHash RSA PSS ---\n");
+    printf("\n--- Test 9: SignHash RSA PSS ---\n");
 
     if (g_hPrivRsa == CK_INVALID_HANDLE || !pCtx ||
         P11_AcquireSession(&hSession) != ERROR_SUCCESS) {
-        ASSERT("Prérequis SignHash PSS", 0);
+        ASSERT("Prerequisite SignHash PSS", 0);
         return;
     }
 
@@ -276,13 +276,13 @@ static void test_sign_rsa_pss(void)
 
     P11_ReleaseSession(hSession);
 
-    ASSERT("C_Sign RSA PSS retourne CKR_OK", rv == CKR_OK);
-    ASSERT("Signature PSS non vide", cbSig > 0);
+    ASSERT("C_Sign RSA PSS returns CKR_OK", rv == CKR_OK);
+    ASSERT("PSS signature not empty", cbSig > 0);
 
-    printf("  Taille signature PSS : %lu octets\n", (unsigned long)cbSig);
+    printf("  PSS signature size: %lu bytes\n", (unsigned long)cbSig);
 }
 
-/* ── Test 10 : suppression de clé ──────────────────────────────────────── */
+/* ── Test 10: key deletion ──────────────────────────────────────────────── */
 static void test_destroy_key(void)
 {
     P11_CONTEXT      *pCtx = P11_GetContext();
@@ -291,24 +291,24 @@ static void test_destroy_key(void)
     CK_RV             rv;
     WCHAR             wszLabel[64];
 
-    printf("\n--- Test 10 : DestroyObject ---\n");
+    printf("\n--- Test 10: DestroyObject ---\n");
 
     if (g_hPrivRsa == CK_INVALID_HANDLE || !pCtx ||
         P11_AcquireSession(&hSession) != ERROR_SUCCESS) {
-        ASSERT("Prérequis DestroyObject", 0);
+        ASSERT("Prerequisite DestroyObject", 0);
         return;
     }
 
     rv = pCtx->pFunctionList->C_DestroyObject(hSession, g_hPrivRsa);
-    ASSERT("C_DestroyObject clé privée RSA", rv == CKR_OK);
+    ASSERT("C_DestroyObject RSA private key", rv == CKR_OK);
 
     rv = pCtx->pFunctionList->C_DestroyObject(hSession, g_hPubRsa);
-    ASSERT("C_DestroyObject clé publique RSA", rv == CKR_OK);
+    ASSERT("C_DestroyObject RSA public key", rv == CKR_OK);
 
-    /* Vérifie que la clé a disparu */
+    /* Verify the key is gone */
     MultiByteToWideChar(CP_UTF8, 0, g_szRsaLabel, -1, wszLabel, 64);
     hObj = P11_FindObjectByLabel(hSession, CKO_PRIVATE_KEY, wszLabel);
-    ASSERT("Clé détruite : FindObjectByLabel retourne INVALID_HANDLE",
+    ASSERT("Key destroyed: FindObjectByLabel returns INVALID_HANDLE",
            hObj == CK_INVALID_HANDLE);
 
     P11_ReleaseSession(hSession);
@@ -316,19 +316,19 @@ static void test_destroy_key(void)
     g_hPubRsa  = CK_INVALID_HANDLE;
 }
 
-/* ── Point d'entrée ─────────────────────────────────────────────────────── */
+/* ── Entry point ─────────────────────────────────────────────────────────── */
 int main(void)
 {
-    printf("=== Tests unitaires couche PKCS#11 SoftHSM2 ===\n\n");
+    printf("=== PKCS#11 layer unit tests SoftHSM2 ===\n\n");
 
     SetEnvironmentVariableA("KSP_DEBUG", "1");
     Log_Initialize();
 
-    /* Note : test_bad_path doit être exécuté avant P11_Initialize */
+    /* Note: test_bad_path must run before P11_Initialize */
     test_bad_path();
 
-    /* Reinit après le test de mauvais chemin */
-    /* (InitOnceExecuteOnce est one-shot, ce test suppose un exécutable dédié) */
+    /* Reinit after the bad-path test */
+    /* (InitOnceExecuteOnce is one-shot; this test assumes a dedicated binary) */
 
     test_initialize_ok();
     test_session_pool_init();
@@ -344,7 +344,7 @@ int main(void)
     P11_Finalize();
 
     printf("\n══════════════════════════════════════\n");
-    printf("Résultats : PASS=%d  FAIL=%d\n", g_nPass, g_nFail);
+    printf("Results: PASS=%d  FAIL=%d\n", g_nPass, g_nFail);
     printf("══════════════════════════════════════\n");
 
     return (g_nFail == 0) ? 0 : 1;

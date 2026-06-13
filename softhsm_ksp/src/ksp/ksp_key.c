@@ -1,4 +1,4 @@
-/* ksp_key.c — Implémentation des opérations sur les clés */
+/* ksp_key.c — Key operation implementation */
 #include "ksp_key.h"
 #include "ksp_provider.h"
 #include "../pkcs11/p11_context.h"
@@ -11,20 +11,20 @@
 #include <wchar.h>
 #include <stdlib.h>
 
-/* Valide un handle de clé */
+/* Validate a key handle */
 BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey)
 {
     KSP_KEY *pKey = (KSP_KEY *)(ULONG_PTR)hKey;
     return (pKey && pKey->dwMagic == KSP_KEY_MAGIC);
 }
 
-/* Convertit un label wchar en UTF-8 pour PKCS#11 */
+/* Convert a wchar label to UTF-8 for PKCS#11 */
 static int WideToUtf8Label(LPCWSTR pwsz, char *pszBuf, int cbBuf)
 {
     return WideCharToMultiByte(CP_UTF8, 0, pwsz, -1, pszBuf, cbBuf, NULL, NULL);
 }
 
-/* Génère une paire de clés RSA dans SoftHSM2 */
+/* Generate an RSA key pair in SoftHSM2 */
 SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
 {
     P11_CONTEXT     *pCtx = P11_GetContext();
@@ -35,7 +35,7 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
     char              szLabel[MAX_KEY_LABEL_LEN];
     int               nLabelLen;
     CK_ULONG          ulModBits = pKey->dwKeyBitLen;
-    CK_BYTE           pubExp[]  = { 0x01, 0x00, 0x01 }; /* 65537 */
+    CK_BYTE           pubExp[]  = { 0x01, 0x00, 0x01 }; /* public exponent 65537 */
     CK_BBOOL          bTrue     = CK_TRUE;
     CK_BBOOL          bFalse    = CK_FALSE;
     CK_BBOOL          bSign, bDecrypt;
@@ -45,7 +45,7 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
     nLabelLen = WideToUtf8Label(pKey->szKeyName, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
         return NTE_INVALID_PARAMETER;
-    nLabelLen--; /* Sans le null terminateur */
+    nLabelLen--; /* Exclude the null terminator */
 
     bSign    = (pKey->dwKeySpec == AT_SIGNATURE)    ? CK_TRUE : CK_FALSE;
     bDecrypt = (pKey->dwKeySpec == AT_KEYEXCHANGE)  ? CK_TRUE : CK_FALSE;
@@ -87,14 +87,14 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
         return P11RvToSecStatus(rv);
     }
 
-    LOG_INFO("RSA %lu bits generee : priv=0x%lX pub=0x%lX",
+    LOG_INFO("RSA %lu bits generated: priv=0x%lX pub=0x%lX",
              (unsigned long)ulModBits,
              (unsigned long)pKey->hPrivKey,
              (unsigned long)pKey->hPubKey);
     return ERROR_SUCCESS;
 }
 
-/* Génère une paire de clés EC dans SoftHSM2 */
+/* Generate an EC key pair in SoftHSM2 */
 SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
 {
     P11_CONTEXT     *pCtx = P11_GetContext();
@@ -116,7 +116,7 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
         return NTE_INVALID_PARAMETER;
     nLabelLen--;
 
-    /* Sélectionne l'OID DER selon la courbe */
+    /* Select the DER OID based on the curve */
     if (_wcsicmp(pKey->szAlgId, ALG_ECDSA_P256) == 0) {
         pbOid = EC_OID_P256;
         cbOid = EC_OID_P256_LEN;
@@ -161,14 +161,14 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
         return P11RvToSecStatus(rv);
     }
 
-    LOG_INFO("EC generee : alg=%ls priv=0x%lX pub=0x%lX",
+    LOG_INFO("EC generated: alg=%ls priv=0x%lX pub=0x%lX",
              pKey->szAlgId,
              (unsigned long)pKey->hPrivKey,
              (unsigned long)pKey->hPubKey);
     return ERROR_SUCCESS;
 }
 
-/* Ouvre une clé existante depuis SoftHSM2 */
+/* Open an existing key from SoftHSM2 */
 SECURITY_STATUS WINAPI KSP_OpenKey(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE  *phKey,
@@ -208,7 +208,7 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
 
     hPub = P11_FindObjectByLabel(hSession, CKO_PUBLIC_KEY, pszKeyName);
 
-    /* Détermine le type de clé */
+    /* Determine the key type */
     P11_GetUlongAttr(hSession, hPriv, CKA_KEY_TYPE, &ulKeyType);
 
     pKey = (KSP_KEY *)KSP_AllocZero(sizeof(KSP_KEY));
@@ -232,7 +232,7 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
         P11_GetUlongAttr(hSession, hPriv, CKA_MODULUS_BITS, &ulModBits);
         pKey->dwKeyBitLen = (DWORD)ulModBits;
     } else if (ulKeyType == CKK_EC) {
-        /* Détermine P-256 ou P-384 via CKA_EC_PARAMS */
+        /* Determine P-256 or P-384 via CKA_EC_PARAMS */
         BYTE  *pbParams = NULL;
         DWORD  cbParams = 0;
         if (P11_GetBinaryAttr(hSession, hPriv, CKA_EC_PARAMS,
@@ -253,13 +253,13 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
 
     *phKey = (NCRYPT_KEY_HANDLE)(ULONG_PTR)pKey;
 
-    LOG_INFO("KSP_OpenKey : '%ls' ouvert, alg=%ls bits=%lu",
+    LOG_INFO("KSP_OpenKey: '%ls' opened, alg=%ls bits=%lu",
              pszKeyName, pKey->szAlgId, (unsigned long)pKey->dwKeyBitLen);
     LOG_LEAVE("KSP_OpenKey", ERROR_SUCCESS);
     return ERROR_SUCCESS;
 }
 
-/* Crée une nouvelle clé persistante */
+/* Create a new persistent key */
 SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE  *phKey,
@@ -281,7 +281,7 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
         return ss;
     }
 
-    /* Valide l'algorithme */
+    /* Validate the algorithm */
     if (_wcsicmp(pszAlgId, ALG_RSA)        != 0 &&
         _wcsicmp(pszAlgId, ALG_ECDSA_P256) != 0 &&
         _wcsicmp(pszAlgId, ALG_ECDSA_P384) != 0) {
@@ -308,7 +308,7 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     if (pszKeyName)
         wcscpy_s(pKey->szKeyName, MAX_KEY_LABEL_LEN, pszKeyName);
 
-    /* Taille par défaut */
+    /* Default size */
     if (_wcsicmp(pszAlgId, ALG_RSA) == 0)
         pKey->dwKeyBitLen = RSA_DEFAULT_KEY_BITS;
     else if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0)
@@ -319,7 +319,7 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     bPersistOnly = (dwFlags & NCRYPT_PERSIST_ONLY_FLAG) != 0;
 
     if (!bPersistOnly) {
-        /* Génère immédiatement */
+        /* Generate immediately */
         if (_wcsicmp(pszAlgId, ALG_RSA) == 0)
             ss = KSP_GenerateRsaKeyPair(pKey);
         else
@@ -337,12 +337,12 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
 
     *phKey = (NCRYPT_KEY_HANDLE)(ULONG_PTR)pKey;
 
-    LOG_INFO("KSP_CreatePersistedKey : '%ls' cree", pKey->szKeyName);
+    LOG_INFO("KSP_CreatePersistedKey: '%ls' created", pKey->szKeyName);
     LOG_LEAVE("KSP_CreatePersistedKey", ERROR_SUCCESS);
     return ERROR_SUCCESS;
 }
 
-/* Finalise la clé (génère la paire si différée) */
+/* Finalise the key (generate the pair if deferred) */
 SECURITY_STATUS WINAPI KSP_FinalizeKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -375,7 +375,7 @@ SECURITY_STATUS WINAPI KSP_FinalizeKey(
     return ss;
 }
 
-/* Supprime une clé du token */
+/* Delete a key from the token */
 SECURITY_STATUS WINAPI KSP_DeleteKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -424,7 +424,7 @@ SECURITY_STATUS WINAPI KSP_DeleteKey(
     return ERROR_SUCCESS;
 }
 
-/* Libère la structure de clé */
+/* Free the key structure */
 SECURITY_STATUS WINAPI KSP_FreeKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey)
@@ -447,7 +447,7 @@ SECURITY_STATUS WINAPI KSP_FreeKey(
     return ERROR_SUCCESS;
 }
 
-/* Énumère les clés du token */
+/* Enumerate keys in the token */
 SECURITY_STATUS WINAPI KSP_EnumKeys(
     NCRYPT_PROV_HANDLE  hProvider,
     LPCWSTR             pszScope,
@@ -469,7 +469,7 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
         return NTE_INVALID_PARAMETER;
     }
 
-    /* Première itération : charge tous les handles */
+    /* First iteration: load all handles */
     if (*ppEnumState == NULL) {
         CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
         CK_BBOOL          bToken    = CK_TRUE;
@@ -522,7 +522,7 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
         pState = (KSP_ENUM_STATE *)*ppEnumState;
     }
 
-    /* Fin de l'énumération */
+    /* End of enumeration */
     if (pState->dwIndex >= pState->dwCount) {
         KSP_Free(pState->phObjects);
         KSP_Free(pState);
@@ -531,7 +531,7 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
         return NTE_NO_MORE_ITEMS;
     }
 
-    /* Lit le label de la clé courante */
+    /* Read the current key label */
     {
         CK_OBJECT_HANDLE hObj = pState->phObjects[pState->dwIndex++];
         char             szLabel[MAX_KEY_LABEL_LEN] = {0};

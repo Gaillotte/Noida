@@ -1,4 +1,4 @@
-/* p11_session.c — Implémentation du pool de sessions PKCS#11 */
+/* p11_session.c — PKCS#11 session pool implementation */
 #include "p11_session.h"
 #include "p11_context.h"
 #include "p11_utils.h"
@@ -7,13 +7,13 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* Pool de sessions statique */
+/* Static session pool */
 static P11_SESSION_ENTRY g_aPool[P11_SESSION_POOL_SIZE];
 static HANDLE            g_hSemaphore = NULL;
 static CRITICAL_SECTION  g_csPool;
 static BOOL              g_bPoolInit  = FALSE;
 
-/* Initialise le pool de sessions */
+/* Initialise the session pool */
 SECURITY_STATUS P11_SessionPool_Initialize(void)
 {
     int i;
@@ -38,7 +38,7 @@ SECURITY_STATUS P11_SessionPool_Initialize(void)
     return ERROR_SUCCESS;
 }
 
-/* Détruit le pool de sessions */
+/* Destroy the session pool */
 void P11_SessionPool_Finalize(void)
 {
     int i;
@@ -66,7 +66,7 @@ void P11_SessionPool_Finalize(void)
     g_bPoolInit = FALSE;
 }
 
-/* Ouvre une nouvelle session PKCS#11 et effectue le login */
+/* Open a new PKCS#11 session and perform login */
 static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
 {
     P11_CONTEXT *pCtx = P11_GetContext();
@@ -85,7 +85,7 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
         return P11RvToSecStatus(rv);
     }
 
-    /* Lit le PIN depuis la variable d'environnement */
+    /* Read the PIN from the environment variable */
     dwPinLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szPin, sizeof(szPin));
     if (dwPinLen == 0 || dwPinLen >= sizeof(szPin))
         strcpy_s(szPin, sizeof(szPin), SOFTHSM2_PIN_DEFAULT);
@@ -98,7 +98,7 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
 
     SecureZeroMemory(szPin, sizeof(szPin));
 
-    /* Ignorer si déjà connecté (peut arriver avec sessions partagées) */
+    /* Ignore if already logged in (can happen with shared sessions) */
     if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN) {
         LOG_ERROR("C_Login", P11RvToSecStatus(rv));
         pCtx->pFunctionList->C_CloseSession(pEntry->hSession);
@@ -107,11 +107,11 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
     }
 
     pEntry->bLoggedIn = TRUE;
-    LOG_INFO("Session ouverte : handle=0x%lX", (unsigned long)pEntry->hSession);
+    LOG_INFO("Session opened: handle=0x%lX", (unsigned long)pEntry->hSession);
     return ERROR_SUCCESS;
 }
 
-/* Acquiert une session du pool */
+/* Acquire a session from the pool */
 SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
 {
     DWORD  dwWait;
@@ -121,7 +121,7 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
     if (!phSession)
         return NTE_INVALID_PARAMETER;
 
-    /* Attend qu'une session soit disponible (timeout 5 s) */
+    /* Wait for a session to become available (5 s timeout) */
     dwWait = WaitForSingleObject(g_hSemaphore, 5000);
     if (dwWait != WAIT_OBJECT_0) {
         LOG_ERROR("P11_AcquireSession - timeout", NTE_NO_MEMORY);
@@ -130,13 +130,13 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
 
     EnterCriticalSection(&g_csPool);
 
-    /* Trouve une entrée libre */
+    /* Find a free entry */
     for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
         if (!g_aPool[i].bInUse) {
             g_aPool[i].bInUse = TRUE;
             LeaveCriticalSection(&g_csPool);
 
-            /* Ouvre la session si elle n'existe pas encore */
+            /* Open the session if it does not exist yet */
             EnterCriticalSection(&g_aPool[i].cs);
             if (g_aPool[i].hSession == CK_INVALID_HANDLE) {
                 ss = OpenAndLoginSession(&g_aPool[i]);
@@ -155,12 +155,12 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
     }
 
     LeaveCriticalSection(&g_csPool);
-    /* Ne devrait pas arriver grâce au sémaphore */
+    /* Should not happen thanks to the semaphore */
     ReleaseSemaphore(g_hSemaphore, 1, NULL);
     return NTE_NO_MEMORY;
 }
 
-/* Remet la session dans le pool */
+/* Return the session to the pool */
 void P11_ReleaseSession(CK_SESSION_HANDLE hSession)
 {
     int i;

@@ -1,6 +1,6 @@
-/* p11_session.h — Pool de sessions PKCS#11
- * Gère jusqu'à P11_SESSION_POOL_SIZE sessions concurrentes.
- * Acquisition via sémaphore, login automatique à la première ouverture.
+/* p11_session.h — PKCS#11 session pool
+ * Manages up to P11_SESSION_POOL_SIZE concurrent sessions.
+ * Acquisition via semaphore, automatic login on first open.
  */
 #ifndef P11_SESSION_H
 #define P11_SESSION_H
@@ -8,26 +8,26 @@
 #include <windows.h>
 #include "pkcs11.h"
 
-/* Entrée du pool de sessions */
+/* Session pool entry */
 typedef struct _P11_SESSION_ENTRY {
-    CK_SESSION_HANDLE hSession;    /* Handle PKCS#11 */
-    BOOL              bInUse;      /* En cours d'utilisation ? */
-    BOOL              bLoggedIn;   /* Session authentifiée ? */
-    CRITICAL_SECTION  cs;          /* Protection per-session */
+    CK_SESSION_HANDLE hSession;    /* PKCS#11 handle */
+    BOOL              bInUse;      /* Currently in use? */
+    BOOL              bLoggedIn;   /* Session authenticated? */
+    CRITICAL_SECTION  cs;          /* Per-session protection */
 } P11_SESSION_ENTRY;
 
-/* Acquiert une session du pool (bloque si toutes occupées).
- * Effectue le login si nécessaire.
- * Retourne ERROR_SUCCESS ou un code SECURITY_STATUS. */
+/* Acquire a session from the pool (blocks if all are busy).
+ * Performs login if necessary.
+ * Returns ERROR_SUCCESS or a SECURITY_STATUS code. */
 SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession);
 
-/* Remet la session dans le pool sans la fermer */
+/* Return a session to the pool without closing it */
 void P11_ReleaseSession(CK_SESSION_HANDLE hSession);
 
-/* Initialise le pool de sessions (appelé par P11_Initialize) */
+/* Initialise the session pool (called by P11_Initialize) */
 SECURITY_STATUS P11_SessionPool_Initialize(void);
 
-/* Détruit le pool de sessions (appelé par P11_Finalize) */
+/* Destroy the session pool (called by P11_Finalize) */
 void P11_SessionPool_Finalize(void);
 
 #endif /* P11_SESSION_H */

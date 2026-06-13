@@ -1,4 +1,4 @@
-/* logging.c — Implémentation du logging debug via OutputDebugString */
+/* logging.c — Debug logging implementation via OutputDebugString */
 #include "logging.h"
 #include "config.h"
 #include <stdio.h>
@@ -8,7 +8,7 @@
 static BOOL g_bDebugEnabled = FALSE;
 static BOOL g_bInitialized  = FALSE;
 
-/* Initialise le sous-système de logging en lisant KSP_DEBUG */
+/* Initialise the logging subsystem by reading KSP_DEBUG */
 void Log_Initialize(void)
 {
     if (!g_bInitialized) {
@@ -19,7 +19,7 @@ void Log_Initialize(void)
     }
 }
 
-/* Journalise un message si le mode debug est activé */
+/* Log a message only when debug mode is enabled */
 void Log_Debug(const char *pszFormat, ...)
 {
     char szBuf[1024];
@@ -36,7 +36,7 @@ void Log_Debug(const char *pszFormat, ...)
     OutputDebugStringA(szBuf);
 }
 
-/* Journalise une erreur (toujours actif) */
+/* Log an error (always active) */
 void Log_Error(const char *pszFormat, ...)
 {
     char szBuf[1024];

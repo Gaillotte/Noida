@@ -1,4 +1,4 @@
-# Makefile.linux — Compilation Linux avec gcov pour rapport de couverture
+# Makefile.linux — Linux build with gcov for coverage report
 # Usage : make -f Makefile.linux [all | clean | run | coverage]
 
 CC      = gcc
@@ -11,7 +11,7 @@ CFLAGS  = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
 SRC = ../../src
 MOCK = ../mock
 
-# Sources communes
+# Common sources
 MEM_SRC  = $(SRC)/common/memory.c
 LOG_SRC  = $(SRC)/common/logging.c
 PROV_SRC = $(SRC)/ksp/ksp_provider.c
@@ -63,14 +63,14 @@ test_logging: test_logging.c $(LOG_SRC)
 test_export_blobs: test_export_blobs.c $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
 
-# ── test_ksp_provider : KSP_OpenProvider, KSP_FreeProvider, propriétés ───
-# ksp_properties.c n'est pas nécessaire ici (test de provider seulement)
+# ── test_ksp_provider: KSP_OpenProvider, KSP_FreeProvider, properties ───
+# ksp_properties.c is not needed here (provider-only test)
 test_ksp_provider: test_ksp_provider.c \
     $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # ── test_ksp_key_props : KSP_GetKeyProperty, KSP_SetKeyProperty ───────────
-# ksp_key_stub.c fournit KSP_IsValidKey sans lier ksp_key.c complet
+# ksp_key_stub.c provides KSP_IsValidKey without linking the full ksp_key.c
 test_ksp_key_props: test_ksp_key_props.c ksp_key_stub.c \
     $(PROV_SRC) $(PROP_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
@@ -87,7 +87,7 @@ test_ksp_crypto: test_ksp_crypto.c \
 
 run: all
 	@echo "════════════════════════════════════════════════════════"
-	@echo " Exécution des tests unitaires"
+	@echo " Running unit tests"
 	@echo "════════════════════════════════════════════════════════"
 	@PASS=0; FAIL=0; \
 	for t in $(TESTS); do \
@@ -95,18 +95,18 @@ run: all
 	    if ./$$t; then \
 	        PASS=$$((PASS+1)); \
 	    else \
-	        FAIL=$$((FAIL+1)); echo "[ERREUR] $$t a échoué"; \
+	        FAIL=$$((FAIL+1)); echo "[ERROR] $$t failed"; \
 	    fi; \
 	done; \
 	echo ""; \
 	echo "════════════════════════════════════════════════════════"; \
-	echo "  Résultats : PASS=$$PASS  FAIL=$$FAIL"; \
+	echo "  Results: PASS=$$PASS  FAIL=$$FAIL"; \
 	echo "════════════════════════════════════════════════════════"; \
 	test $$FAIL -eq 0
 
 coverage: run
 	@echo ""
-	@echo "══ Génération du rapport de couverture (lcov + genhtml) ══"
+	@echo "══ Generating coverage report (lcov + genhtml) ══"
 	lcov --capture \
 	     --directory . \
 	     --output-file coverage.info \
@@ -118,14 +118,14 @@ coverage: run
 	     --ignore-errors unused,empty
 	genhtml coverage_filtered.info \
 	     --output-directory coverage_html \
-	     --title "SoftHSM KSP — Rapport de couverture" \
+	     --title "SoftHSM KSP — Coverage report" \
 	     --legend \
 	     --show-details
 	@echo ""
-	@echo "══ Résumé de couverture ══"
+	@echo "══ Coverage summary ══"
 	lcov --summary coverage_filtered.info
 	@echo ""
-	@echo "Rapport HTML disponible dans : tests/unit/coverage_html/index.html"
+	@echo "HTML report available at: tests/unit/coverage_html/index.html"
 
 clean:
 	rm -f $(TESTS)

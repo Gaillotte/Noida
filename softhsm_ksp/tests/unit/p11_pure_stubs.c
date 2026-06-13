@@ -1,6 +1,6 @@
-/* p11_pure_stubs.c — Stubs minimaux pour les tests de fonctions pures
- * Utilisé avec test_p11rv_mapping, test_ecdsa_decode, test_mechanism_resolve
- * qui linkent p11_utils.c mais n'appellent pas les fonctions PKCS#11 directes.
+/* p11_pure_stubs.c — Minimal stubs for pure-function tests
+ * Used by test_p11rv_mapping, test_ecdsa_decode, test_mechanism_resolve
+ * which link p11_utils.c but do not call PKCS#11 functions directly.
  */
 #include "../mock/windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"

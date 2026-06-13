@@ -1,6 +1,6 @@
-/* pkcs11.h — En-tête standard PKCS#11 v2.40 (OASIS)
- * Définitions des types, constantes et prototypes de fonctions.
- * Source : OASIS PKCS#11 Cryptographic Token Interface Base Specification v2.40
+/* pkcs11.h — Standard PKCS#11 v2.40 header (OASIS)
+ * Type definitions, constants, and function prototypes.
+ * Source: OASIS PKCS#11 Cryptographic Token Interface Base Specification v2.40
  */
 #ifndef PKCS11_H
 #define PKCS11_H
@@ -17,7 +17,7 @@
 #  pragma pack(push, cryptoki, 1)
 #endif
 
-/* Types de base */
+/* Basic types */
 typedef unsigned char     CK_BYTE;
 typedef CK_BYTE           CK_CHAR;
 typedef CK_BYTE           CK_UTF8CHAR;
@@ -36,7 +36,7 @@ typedef CK_VOID_PTR CK_PTR CK_VOID_PTR_PTR;
 #define CK_TRUE  1
 #define CK_FALSE 0
 
-/* Valeurs spéciales */
+/* Special values */
 #define CK_UNAVAILABLE_INFORMATION  (~0UL)
 #define CK_EFFECTIVELY_INFINITE     0UL
 
@@ -60,7 +60,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 
 #define CK_INVALID_HANDLE 0UL
 
-/* Classes d'objets */
+/* Object classes */
 #define CKO_DATA              0x00000000UL
 #define CKO_CERTIFICATE       0x00000001UL
 #define CKO_PUBLIC_KEY        0x00000002UL
@@ -70,7 +70,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKO_DOMAIN_PARAMETERS 0x00000006UL
 #define CKO_MECHANISM         0x00000007UL
 
-/* Types de clés */
+/* Key types */
 #define CKK_RSA             0x00000000UL
 #define CKK_DSA             0x00000001UL
 #define CKK_DH              0x00000002UL
@@ -120,7 +120,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKA_ALWAYS_SENSITIVE   0x00000165UL
 #define CKA_KEY_GEN_MECHANISM  0x00000166UL
 
-/* Mécanismes */
+/* Mechanisms */
 #define CKM_RSA_PKCS_KEY_PAIR_GEN 0x00000000UL
 #define CKM_RSA_PKCS              0x00000001UL
 #define CKM_RSA_9796              0x00000002UL
@@ -145,7 +145,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKM_SHA384_RSA_PKCS_PSS   0x00000044UL
 #define CKM_SHA512_RSA_PKCS_PSS   0x00000045UL
 
-/* Codes de retour */
+/* Return codes */
 #define CKR_OK                          0x00000000UL
 #define CKR_CANCEL                      0x00000001UL
 #define CKR_HOST_MEMORY                 0x00000002UL
@@ -240,11 +240,11 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKR_FUNCTION_REJECTED           0x00000200UL
 #define CKR_VENDOR_DEFINED              0x80000000UL
 
-/* Types d'utilisateurs */
+/* User types */
 #define CKU_SO   0UL
 #define CKU_USER 1UL
 
-/* Flags d'initialisation */
+/* Initialisation flags */
 #define CKF_TOKEN_PRESENT    0x00000001UL
 #define CKF_REMOVABLE_DEVICE 0x00000002UL
 #define CKF_HW_SLOT          0x00000004UL
@@ -252,7 +252,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKF_RW_SESSION       0x00000002UL
 #define CKF_SERIAL_SESSION   0x00000004UL
 
-/* Paramètres RSA OAEP */
+/* RSA MGF1 parameters */
 #define CKG_MGF1_SHA1   0x00000001UL
 #define CKG_MGF1_SHA256 0x00000002UL
 #define CKG_MGF1_SHA384 0x00000003UL
@@ -261,7 +261,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 
 #define CKZ_DATA_SPECIFIED 0x00000001UL
 
-/* Algorithmes de hachage pour PSS */
+/* Hash algorithms for PSS */
 #define CKM_SHA_1_HMAC  0x00000221UL
 
 /* Structures */
@@ -334,7 +334,7 @@ typedef struct CK_MECHANISM_INFO {
     CK_FLAGS flags;
 } CK_MECHANISM_INFO;
 
-/* Paramètres RSA PSS */
+/* RSA PSS parameters */
 typedef struct CK_RSA_PKCS_PSS_PARAMS {
     CK_MECHANISM_TYPE hashAlg;
     CK_ULONG          mgf;
@@ -342,7 +342,7 @@ typedef struct CK_RSA_PKCS_PSS_PARAMS {
 } CK_RSA_PKCS_PSS_PARAMS;
 typedef CK_RSA_PKCS_PSS_PARAMS CK_PTR CK_RSA_PKCS_PSS_PARAMS_PTR;
 
-/* Paramètres RSA OAEP */
+/* RSA OAEP parameters */
 typedef struct CK_RSA_PKCS_OAEP_PARAMS {
     CK_MECHANISM_TYPE hashAlg;
     CK_ULONG          mgf;
@@ -352,7 +352,7 @@ typedef struct CK_RSA_PKCS_OAEP_PARAMS {
 } CK_RSA_PKCS_OAEP_PARAMS;
 typedef CK_RSA_PKCS_OAEP_PARAMS CK_PTR CK_RSA_PKCS_OAEP_PARAMS_PTR;
 
-/* Paramètres d'initialisation Cryptoki */
+/* Cryptoki initialisation parameters */
 typedef CK_VOID_PTR CK_CREATEMUTEX;
 typedef CK_VOID_PTR CK_DESTROYMUTEX;
 typedef CK_VOID_PTR CK_LOCKMUTEX;
@@ -367,7 +367,7 @@ typedef struct CK_C_INITIALIZE_ARGS {
     CK_VOID_PTR     pReserved;
 } CK_C_INITIALIZE_ARGS;
 
-/* Table des fonctions Cryptoki */
+/* Cryptoki function table */
 typedef struct CK_FUNCTION_LIST CK_FUNCTION_LIST;
 typedef CK_FUNCTION_LIST CK_PTR CK_FUNCTION_LIST_PTR;
 typedef CK_FUNCTION_LIST_PTR CK_PTR CK_FUNCTION_LIST_PTR_PTR;
@@ -445,7 +445,7 @@ struct CK_FUNCTION_LIST {
     CK_DECLARE_FUNCTION_POINTER(CK_RV, C_WaitForSlotEvent)(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pReserved);
 };
 
-/* Prototype du point d'entrée principal */
+/* Prototype of the main entry point */
 CK_DECLARE_FUNCTION(CK_RV, C_GetFunctionList)(CK_FUNCTION_LIST_PTR CK_PTR ppFunctionList);
 
 typedef CK_RV (CK_PTR CK_C_GetFunctionList)(CK_FUNCTION_LIST_PTR_PTR ppFunctionList);

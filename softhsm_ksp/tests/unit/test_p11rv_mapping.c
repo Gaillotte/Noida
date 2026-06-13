@@ -1,5 +1,5 @@
-/* test_p11rv_mapping.c — Couverture complète de P11RvToSecStatus()
- * Teste tous les codes CK_RV listés dans p11_utils.c + les cas limites.
+/* test_p11rv_mapping.c — Full coverage of P11RvToSecStatus()
+ * Tests all CK_RV codes listed in p11_utils.c plus edge cases.
  */
 #include "../mock/windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"
@@ -9,13 +9,13 @@
 SECURITY_STATUS P11RvToSecStatus(CK_RV rv);
 
 /* ── Stub minimal pour compiler p11_utils.c ───────────────────────────── */
-/* p11_utils.c nécessite p11_context.h mais on ne l'utilise pas ici */
+/* p11_utils.c requires p11_context.h but it is not used here */
 
 int main(void)
 {
-    TEST_SUITE("P11RvToSecStatus — mapping complet CK_RV → SECURITY_STATUS");
+    TEST_SUITE("P11RvToSecStatus — full CK_RV → SECURITY_STATUS mapping");
 
-    /* Cas nominaux documentés */
+    /* Documented standard cases */
     ASSERT_EQ("CKR_OK → ERROR_SUCCESS",
         P11RvToSecStatus(CKR_OK), (SECURITY_STATUS)ERROR_SUCCESS);
 
@@ -76,8 +76,8 @@ int main(void)
     ASSERT_EQ("CKR_CRYPTOKI_NOT_INITIALIZED → NTE_FAIL",
         P11RvToSecStatus(CKR_CRYPTOKI_NOT_INITIALIZED), (SECURITY_STATUS)NTE_FAIL);
 
-    /* Cas default (code non listé) */
-    ASSERT_EQ("Code inconnu 0xDEADBEEF → NTE_FAIL",
+    /* Default case (unlisted code) */
+    ASSERT_EQ("Unknown code 0xDEADBEEF → NTE_FAIL",
         P11RvToSecStatus(0xDEADBEEFUL), (SECURITY_STATUS)NTE_FAIL);
 
     ASSERT_EQ("CKR_GENERAL_ERROR → NTE_FAIL",
@@ -92,8 +92,8 @@ int main(void)
     ASSERT_EQ("CKR_DATA_INVALID → NTE_FAIL",
         P11RvToSecStatus(CKR_DATA_INVALID), (SECURITY_STATUS)NTE_FAIL);
 
-    /* Propriété symétrique : ERROR_SUCCESS si et seulement si CKR_OK */
-    ASSERT("Seul CKR_OK donne ERROR_SUCCESS",
+    /* Symmetric property: ERROR_SUCCESS if and only if CKR_OK */
+    ASSERT("Only CKR_OK gives ERROR_SUCCESS",
         P11RvToSecStatus(CKR_OK) == ERROR_SUCCESS &&
         P11RvToSecStatus(CKR_GENERAL_ERROR) != ERROR_SUCCESS);
 

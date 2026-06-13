@@ -1,4 +1,4 @@
-/* test_framework.h — Micro-framework de test commun à tous les tests unitaires */
+/* test_framework.h — Minimal test framework shared by all unit tests */
 #ifndef TEST_FRAMEWORK_H
 #define TEST_FRAMEWORK_H
 
@@ -6,17 +6,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Compteurs globaux */
+/* Global counters */
 static int _tf_pass = 0;
 static int _tf_fail = 0;
 static const char *_tf_current_suite = "?";
 
-/* Démarre une suite */
+/* Start a test suite */
 #define TEST_SUITE(name) \
     do { _tf_current_suite = (name); \
          printf("\n╔══ %s ══\n", name); } while(0)
 
-/* Assertion de base */
+/* Base assertion */
 #define ASSERT(desc, expr) \
     do { \
         if (expr) { \
@@ -38,7 +38,7 @@ static const char *_tf_current_suite = "?";
 #define ASSERT_WSTR(desc, a, b)    ASSERT(desc, wcscmp(a, b) == 0)
 #define ASSERT_MEM(desc, a, b, n)  ASSERT(desc, memcmp(a, b, n) == 0)
 
-/* Résumé final */
+/* Final summary */
 #define TEST_REPORT() \
     do { \
         printf("\n══════════════════════════════════════════\n"); \

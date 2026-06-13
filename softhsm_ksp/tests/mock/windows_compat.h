@@ -1,12 +1,12 @@
-/* windows_compat.h — Stubs des types et APIs Windows pour compilation Linux
- * Permet de compiler et tester les fonctions pures (sans dépendance matérielle)
- * sous Linux avec gcc + gcov.
+/* windows_compat.h — Stubs for Windows types and APIs for Linux compilation
+ * Allows compiling and testing pure functions (without hardware dependencies)
+ * on Linux with gcc + gcov.
  */
 #ifndef WINDOWS_COMPAT_H
 #define WINDOWS_COMPAT_H
 
 #ifdef _WIN32
-#  error "Ce header est exclusivement pour la compilation Linux/gcov"
+#  error "This header is exclusively for Linux/gcov compilation"
 #endif
 
 #include <stdint.h>
@@ -19,7 +19,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 
-/* ── Macros de plateforme PKCS#11 (remplacent la section _WIN32 de pkcs11.h) */
+/* ── PKCS#11 platform macros (replace the _WIN32 section of pkcs11.h) */
 #ifndef CK_PTR
 #  define CK_PTR *
 #  define CK_DEFINE_FUNCTION(returnType, name)         returnType name
@@ -28,7 +28,7 @@
 #  define CK_CALLBACK_FUNCTION(returnType, name)       returnType (* name)
 #endif
 
-/* ── Types de base Windows ────────────────────────────────────────────────── */
+/* ── Basic Windows types ────────────────────────────────────────────────── */
 typedef unsigned char      BYTE;
 typedef unsigned char      BOOL;
 typedef unsigned short     WORD;
@@ -96,7 +96,7 @@ typedef long SECURITY_STATUS;
 #define NTE_INVALID_HANDLE        0x80090026L
 #define NTE_KEY_DOES_NOT_EXIST    0x80090026L
 
-/* ── Flags NCrypt ────────────────────────────────────────────────────────── */
+/* ── NCrypt flags ────────────────────────────────────────────────────────── */
 #define NCRYPT_PAD_PKCS1_FLAG     0x00000002
 #define NCRYPT_PAD_PSS_FLAG       0x00000008
 #define NCRYPT_PAD_OAEP_FLAG      0x00000004
@@ -113,7 +113,7 @@ typedef long SECURITY_STATUS;
 /* ── MAX_PATH ───────────────────────────────────────────────────────────── */
 #define MAX_PATH 260
 
-/* ── Fonctions chaînes Wide ──────────────────────────────────────────────── */
+/* ── Wide string functions ──────────────────────────────────────────────── */
 #ifndef _wcsicmp
 #  define _wcsicmp wcscasecmp
 #endif
@@ -204,7 +204,7 @@ static inline void LeaveCriticalSection(CRITICAL_SECTION *cs) {
     pthread_mutex_unlock(cs);
 }
 
-/* ── Sémaphore Windows (→ sem_t) ─────────────────────────────────────────── */
+/* ── Windows Semaphore (→ sem_t) ─────────────────────────────────────────── */
 typedef sem_t* HSEMAPHORE;
 
 static inline sem_t *CreateSemaphoreW(void *attr, long init, long max, void *name) {
@@ -234,7 +234,7 @@ typedef pthread_once_t INIT_ONCE;
 #define INIT_ONCE_STATIC_INIT PTHREAD_ONCE_INIT
 typedef int (*PINIT_ONCE_FN)(INIT_ONCE*, void*, void**);
 
-/* Simulé simplement avec pthread_once */
+/* Simulated simply with pthread_once */
 typedef struct { pthread_once_t once; PINIT_ONCE_FN fn; } _INIT_ONCE_CTX;
 static _INIT_ONCE_CTX _g_once_ctx;
 static void _once_runner(void) { _g_once_ctx.fn(NULL, NULL, NULL); }

@@ -1,5 +1,5 @@
-/* test_ksp_key_ops.c — Couverture de ksp_key.c
- * Tests : OpenKey, CreatePersistedKey, FinalizeKey, DeleteKey, FreeKey, EnumKeys
+/* test_ksp_key_ops.c — Coverage of ksp_key.c
+ * Tests: OpenKey, CreatePersistedKey, FinalizeKey, DeleteKey, FreeKey, EnumKeys
  */
 #include "../mock/windows_compat.h"
 #include "../mock/p11_mock.h"
@@ -9,7 +9,7 @@
 #include <wchar.h>
 #include <string.h>
 
-/* ── Stubs du contexte PKCS#11 ──────────────────────────────────────────── */
+/* ── PKCS#11 context stubs ──────────────────────────────────────────────── */
 typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
                  CK_SLOT_ID slotId; BOOL bInitialized; } P11_CONTEXT;
 static P11_CONTEXT g_testCtx;
@@ -26,7 +26,7 @@ void *KSP_AllocZero(SIZE_T n);
 void  KSP_Free(void *p);
 LPWSTR KSP_WStrDup(LPCWSTR p);
 
-/* ── Stubs session et utilitaires PKCS#11 ───────────────────────────────── */
+/* ── Session and PKCS#11 utility stubs ───────────────────────────────────── */
 
 SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
 {
@@ -93,7 +93,7 @@ int main(void)
     /* ── Suite 1 : KSP_OpenKey ────────────────────────────────────────────── */
     TEST_SUITE("KSP_OpenKey");
 
-    /* Clé RSA 2048 */
+    /* RSA 2048 key */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 1;
@@ -103,7 +103,7 @@ int main(void)
     NCRYPT_KEY_HANDLE hKey = 0;
     ss = KSP_OpenKey(hProv, &hKey, L"TestKey", AT_SIGNATURE, 0);
     ASSERT_OK("OpenKey RSA 2048 → OK", ss);
-    ASSERT_NOTNULL("hKey non nul (RSA)", (void *)(ULONG_PTR)hKey);
+    ASSERT_NOTNULL("hKey non-null (RSA)", (void *)(ULONG_PTR)hKey);
     {
         KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hKey;
         ASSERT_EQ("dwKeyBitLen = 2048", k->dwKeyBitLen, 2048U);
@@ -114,7 +114,7 @@ int main(void)
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* Clé RSA AT_KEYEXCHANGE */
+    /* RSA AT_KEYEXCHANGE key */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 1;
@@ -130,12 +130,12 @@ int main(void)
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* Clé EC P256 */
+    /* EC P256 key */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 1;
     P11Mock_GetConfig()->ulKeyType   = CKK_EC;
-    /* pbEcParams = OID P256 par défaut (déjà dans P11Mock_Reset) */
+    /* pbEcParams = default OID P256 (already set by P11Mock_Reset) */
 
     ss = KSP_OpenKey(hProv, &hKey, L"TestEC", AT_KEYEXCHANGE, 0);
     ASSERT_OK("OpenKey EC P256 → OK", ss);
@@ -148,7 +148,7 @@ int main(void)
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* Clé EC P384 */
+    /* EC P384 key */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 1;
@@ -167,16 +167,16 @@ int main(void)
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* Clé absente → NTE_BAD_KEYSET */
+    /* Missing key → NTE_BAD_KEYSET */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 0;
 
-    ss = KSP_OpenKey(hProv, &hKey, L"Inexistante", 0, 0);
-    ASSERT_EQ("Clé absente → NTE_BAD_KEYSET",
+    ss = KSP_OpenKey(hProv, &hKey, L"Missing", 0, 0);
+    ASSERT_EQ("Missing key → NTE_BAD_KEYSET",
         ss, (SECURITY_STATUS)NTE_BAD_KEYSET);
 
-    /* Paramètres invalides */
+    /* Invalid parameters */
     ss = KSP_OpenKey(hProv, NULL, L"TestKey", 0, 0);
     ASSERT_EQ("phKey=NULL → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
@@ -195,25 +195,25 @@ int main(void)
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
-    /* RSA immédiat */
+    /* Immediate RSA */
     hKey = 0;
-    ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_RSA, L"CleRSA",
+    ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_RSA, L"RsaKey",
         AT_SIGNATURE, 0);
     ASSERT_OK("CreatePersistedKey RSA → OK", ss);
-    ASSERT_NOTNULL("hKey RSA non nul", (void *)(ULONG_PTR)hKey);
+    ASSERT_NOTNULL("hKey RSA non-null", (void *)(ULONG_PTR)hKey);
     {
         KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hKey;
         ASSERT("bFinalized = TRUE", k->bFinalized == TRUE);
-        ASSERT_EQ("dwKeyBitLen = 2048 (défaut)", k->dwKeyBitLen, 2048U);
+        ASSERT_EQ("dwKeyBitLen = 2048 (default)", k->dwKeyBitLen, 2048U);
         ASSERT("dwKeySpec = AT_SIGNATURE", k->dwKeySpec == AT_SIGNATURE);
-        ASSERT("szKeyName = CleRSA",
-               _wcsicmp(k->szKeyName, L"CleRSA") == 0);
-        ASSERT_EQ("GenerateKeyPair appelé 1×",
+        ASSERT("szKeyName = RsaKey",
+               _wcsicmp(k->szKeyName, L"RsaKey") == 0);
+        ASSERT_EQ("GenerateKeyPair called 1×",
             P11Mock_GetCalls()->nGenerateKeyPair, 1);
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* RSA PERSIST_ONLY (génération différée) */
+    /* RSA PERSIST_ONLY (deferred generation) */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_RSA, L"Deferred",
@@ -223,7 +223,7 @@ int main(void)
         KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hKey;
         ASSERT("bFinalized = FALSE", k->bFinalized == FALSE);
         ASSERT("bPersistOnly = TRUE", k->bPersistOnly == TRUE);
-        ASSERT_EQ("GenerateKeyPair NON appelé",
+        ASSERT_EQ("GenerateKeyPair NOT called",
             P11Mock_GetCalls()->nGenerateKeyPair, 0);
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
@@ -231,7 +231,7 @@ int main(void)
     /* EC P256 */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
-    ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_ECDSA_P256, L"CleEC",
+    ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_ECDSA_P256, L"EcKey",
         AT_KEYEXCHANGE, 0);
     ASSERT_OK("CreatePersistedKey ECDSA_P256 → OK", ss);
     {
@@ -247,7 +247,7 @@ int main(void)
     /* EC P384 */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
-    ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_ECDSA_P384, L"CleP384",
+    ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_ECDSA_P384, L"P384Key",
         0, 0);
     ASSERT_OK("CreatePersistedKey ECDSA_P384 → OK", ss);
     {
@@ -256,24 +256,24 @@ int main(void)
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* Clé sans nom (NULL pszKeyName) avec PERSIST_ONLY → OK */
+    /* Key without name (NULL pszKeyName) with PERSIST_ONLY → OK */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_RSA, NULL,
         AT_SIGNATURE, NCRYPT_PERSIST_ONLY_FLAG);
-    ASSERT_OK("CreatePersistedKey sans nom PERSIST_ONLY → OK", ss);
+    ASSERT_OK("CreatePersistedKey without name PERSIST_ONLY → OK", ss);
     {
         KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hKey;
-        ASSERT("szKeyName vide", k->szKeyName[0] == L'\0');
+        ASSERT("szKeyName empty", k->szKeyName[0] == L'\0');
     }
     KSP_Free((void *)(ULONG_PTR)hKey); hKey = 0;
 
-    /* Algorithme inconnu */
+    /* Unknown algorithm */
     ss = KSP_CreatePersistedKey(hProv, &hKey, L"DES", L"k", 0, 0);
-    ASSERT_EQ("Alg inconnu → NTE_BAD_ALGID",
+    ASSERT_EQ("Unknown alg → NTE_BAD_ALGID",
         ss, (SECURITY_STATUS)NTE_BAD_ALGID);
 
-    /* Paramètres invalides */
+    /* Invalid parameters */
     ss = KSP_CreatePersistedKey(hProv, NULL, ALG_RSA, L"k", 0, 0);
     ASSERT_EQ("phKey=NULL → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
@@ -286,22 +286,22 @@ int main(void)
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* GenerateKeyPair échoue → erreur retransmise */
+    /* GenerateKeyPair fails → error propagated */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_GenerateKeyPair = CKR_FUNCTION_FAILED;
     ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_RSA, L"BadKey",
         AT_SIGNATURE, 0);
-    ASSERT_ERR("GenerateKeyPair échoue → erreur", ss);
-    ASSERT_EQ("hKey reste 0 après erreur", hKey, (NCRYPT_KEY_HANDLE)0);
+    ASSERT_ERR("GenerateKeyPair fails → error", ss);
+    ASSERT_EQ("hKey remains 0 after error", hKey, (NCRYPT_KEY_HANDLE)0);
 
-    /* GenerateKeyPair échoue sur EC aussi */
+    /* GenerateKeyPair also fails on EC */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_GenerateKeyPair = CKR_FUNCTION_FAILED;
     ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_ECDSA_P256, L"BadEC",
         0, 0);
-    ASSERT_ERR("GenerateKeyPair EC échoue → erreur", ss);
+    ASSERT_ERR("GenerateKeyPair EC fails → error", ss);
 
     /* ── Suite 3 : KSP_FinalizeKey ───────────────────────────────────────── */
     TEST_SUITE("KSP_FinalizeKey");
@@ -309,12 +309,12 @@ int main(void)
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
-    /* Clé RSA différée → finalisée au premier appel */
+    /* Deferred RSA key → finalized on first call */
     NCRYPT_KEY_HANDLE hPre = 0;
     ss = KSP_CreatePersistedKey(hProv, &hPre, ALG_RSA, L"PreKey",
         AT_SIGNATURE, NCRYPT_PERSIST_ONLY_FLAG);
-    ASSERT_OK("Crée clé RSA différée", ss);
-    ASSERT("Pas encore finalisée",
+    ASSERT_OK("Create deferred RSA key", ss);
+    ASSERT("Not yet finalized",
            !((KSP_KEY *)(ULONG_PTR)hPre)->bFinalized);
 
     P11Mock_Reset();
@@ -323,46 +323,46 @@ int main(void)
     ASSERT_OK("FinalizeKey RSA → OK", ss);
     {
         KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hPre;
-        ASSERT("bFinalized = TRUE après Finalize", k->bFinalized == TRUE);
-        ASSERT_EQ("GenerateKeyPair appelé",
+        ASSERT("bFinalized = TRUE after Finalize", k->bFinalized == TRUE);
+        ASSERT_EQ("GenerateKeyPair called",
             P11Mock_GetCalls()->nGenerateKeyPair, 1);
     }
 
-    /* Deuxième FinalizeKey → no-op */
+    /* Second FinalizeKey → no-op */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     ss = KSP_FinalizeKey(hProv, hPre, 0);
-    ASSERT_OK("FinalizeKey déjà finalisée → OK (no-op)", ss);
-    ASSERT_EQ("GenerateKeyPair NON rappelé",
+    ASSERT_OK("FinalizeKey already finalized → OK (no-op)", ss);
+    ASSERT_EQ("GenerateKeyPair NOT called again",
         P11Mock_GetCalls()->nGenerateKeyPair, 0);
 
     KSP_Free((void *)(ULONG_PTR)hPre);
 
-    /* Clé EC P256 différée → finalisée */
+    /* Deferred EC P256 key → finalized */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     NCRYPT_KEY_HANDLE hEcPre = 0;
     ss = KSP_CreatePersistedKey(hProv, &hEcPre, ALG_ECDSA_P256, L"ECPre",
         0, NCRYPT_PERSIST_ONLY_FLAG);
-    ASSERT_OK("Crée clé EC différée", ss);
+    ASSERT_OK("Create deferred EC key", ss);
     ss = KSP_FinalizeKey(hProv, hEcPre, 0);
     ASSERT_OK("FinalizeKey EC → OK", ss);
     ASSERT("EC bFinalized = TRUE",
            ((KSP_KEY *)(ULONG_PTR)hEcPre)->bFinalized == TRUE);
     KSP_Free((void *)(ULONG_PTR)hEcPre);
 
-    /* Clé EC P384 différée → finalisée */
+    /* Deferred EC P384 key → finalized */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     NCRYPT_KEY_HANDLE hP384Pre = 0;
     ss = KSP_CreatePersistedKey(hProv, &hP384Pre, ALG_ECDSA_P384, L"P384Pre",
         0, NCRYPT_PERSIST_ONLY_FLAG);
-    ASSERT_OK("Crée clé P384 différée", ss);
+    ASSERT_OK("Create deferred P384 key", ss);
     ss = KSP_FinalizeKey(hProv, hP384Pre, 0);
     ASSERT_OK("FinalizeKey P384 → OK", ss);
     KSP_Free((void *)(ULONG_PTR)hP384Pre);
 
-    /* FinalizeKey mais GenerateKeyPair échoue */
+    /* FinalizeKey but GenerateKeyPair fails */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     NCRYPT_KEY_HANDLE hFailPre = 0;
@@ -370,12 +370,12 @@ int main(void)
         AT_SIGNATURE, NCRYPT_PERSIST_ONLY_FLAG);
     P11Mock_GetConfig()->rv_GenerateKeyPair = CKR_FUNCTION_FAILED;
     ss = KSP_FinalizeKey(hProv, hFailPre, 0);
-    ASSERT_ERR("FinalizeKey génération échoue → erreur", ss);
-    ASSERT("bFinalized reste FALSE",
+    ASSERT_ERR("FinalizeKey generation fails → error", ss);
+    ASSERT("bFinalized remains FALSE",
            !((KSP_KEY *)(ULONG_PTR)hFailPre)->bFinalized);
     KSP_Free((void *)(ULONG_PTR)hFailPre);
 
-    /* Handle invalide */
+    /* Invalid handle */
     ss = KSP_FinalizeKey(hProv, 0, 0);
     ASSERT_EQ("FinalizeKey hKey=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
@@ -390,20 +390,20 @@ int main(void)
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
 
-    /* Clé avec handles priv + pub (générée immédiatement) */
+    /* Key with priv + pub handles (immediately generated) */
     NCRYPT_KEY_HANDLE hDel = 0;
     ss = KSP_CreatePersistedKey(hProv, &hDel, ALG_RSA, L"DelKey",
         AT_SIGNATURE, 0);
-    ASSERT_OK("Crée clé pour suppression", ss);
+    ASSERT_OK("Create key for deletion", ss);
 
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     ss = KSP_DeleteKey(hProv, hDel, 0);
     ASSERT_OK("DeleteKey → OK", ss);
-    ASSERT_EQ("DestroyObject appelé 2× (priv + pub)",
+    ASSERT_EQ("DestroyObject called 2× (priv + pub)",
         P11Mock_GetCalls()->nDestroyObject, 2);
 
-    /* Clé avec seulement hPrivKey */
+    /* Key with only hPrivKey */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     NCRYPT_KEY_HANDLE hPrivOnly = 0;
@@ -415,10 +415,10 @@ int main(void)
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     ss = KSP_DeleteKey(hProv, hPrivOnly, 0);
     ASSERT_OK("DeleteKey priv-only → OK", ss);
-    ASSERT_EQ("DestroyObject appelé 1× (priv seulement)",
+    ASSERT_EQ("DestroyObject called 1× (priv only)",
         P11Mock_GetCalls()->nDestroyObject, 1);
 
-    /* Clé sans aucun handle */
+    /* Key with no handles */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     NCRYPT_KEY_HANDLE hNoHandle = 0;
@@ -429,10 +429,10 @@ int main(void)
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     ss = KSP_DeleteKey(hProv, hNoHandle, 0);
     ASSERT_OK("DeleteKey sans handles → OK", ss);
-    ASSERT_EQ("DestroyObject NON appelé",
+    ASSERT_EQ("DestroyObject NOT called",
         P11Mock_GetCalls()->nDestroyObject, 0);
 
-    /* Handle invalide */
+    /* Invalid handle */
     ss = KSP_DeleteKey(hProv, 0, 0);
     ASSERT_EQ("DeleteKey hKey=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
@@ -450,29 +450,29 @@ int main(void)
     NCRYPT_KEY_HANDLE hFree = 0;
     ss = KSP_CreatePersistedKey(hProv, &hFree, ALG_RSA, L"FreeKey",
         AT_SIGNATURE, NCRYPT_PERSIST_ONLY_FLAG);
-    ASSERT_OK("Crée clé pour FreeKey", ss);
+    ASSERT_OK("Create key for FreeKey", ss);
 
     ss = KSP_FreeKey(hProv, hFree);
     ASSERT_OK("FreeKey → OK", ss);
-    /* Note: hFree est libéré — on ne déréférence pas la mémoire après free */
+    /* Note: hFree is freed — do not dereference memory after free */
 
-    /* Handle invalide */
+    /* Invalid handle */
     ss = KSP_FreeKey(hProv, 0);
     ASSERT_EQ("FreeKey(0) → NTE_INVALID_HANDLE",
         ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
 
-    /* Magic incorrecte → NTE_INVALID_HANDLE (sans déréférencer un pointeur sauvage) */
+    /* Wrong magic → NTE_INVALID_HANDLE (without dereferencing a wild pointer) */
     KSP_KEY badKey;
     memset(&badKey, 0, sizeof(badKey));
     badKey.dwMagic = 0xDEADBEEFUL;
     ss = KSP_FreeKey(hProv, (NCRYPT_KEY_HANDLE)(ULONG_PTR)&badKey);
-    ASSERT_EQ("FreeKey(magic incorrecte) → NTE_INVALID_HANDLE",
+    ASSERT_EQ("FreeKey(wrong magic) → NTE_INVALID_HANDLE",
         ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
 
     /* ── Suite 6 : KSP_EnumKeys ──────────────────────────────────────────── */
     TEST_SUITE("KSP_EnumKeys");
 
-    /* Token vide → NTE_NO_MORE_ITEMS immédiatement */
+    /* Empty token → NTE_NO_MORE_ITEMS immediately */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 0;
@@ -480,33 +480,33 @@ int main(void)
     NCryptKeyName *pName = NULL;
     PVOID pState = NULL;
     ss = KSP_EnumKeys(hProv, NULL, &pName, &pState, 0);
-    ASSERT_EQ("Token vide → NTE_NO_MORE_ITEMS",
+    ASSERT_EQ("Empty token → NTE_NO_MORE_ITEMS",
         ss, (SECURITY_STATUS)NTE_NO_MORE_ITEMS);
-    ASSERT_NULL("pState=NULL après fin sur token vide", pState);
+    ASSERT_NULL("pState=NULL after end on empty token", pState);
 
-    /* Une clé → succès puis NTE_NO_MORE_ITEMS */
+    /* One key → success then NTE_NO_MORE_ITEMS */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 1;
-    strcpy(P11Mock_GetConfig()->szKeyLabel, "MaCle");
+    strcpy(P11Mock_GetConfig()->szKeyLabel, "MyKey");
 
     pName = NULL; pState = NULL;
     ss = KSP_EnumKeys(hProv, NULL, &pName, &pState, 0);
-    ASSERT_OK("EnumKeys 1 clé → OK", ss);
-    ASSERT_NOTNULL("pName non nul", pName);
-    ASSERT_NOTNULL("pName->pszName non nul", pName->pszName);
+    ASSERT_OK("EnumKeys 1 key → OK", ss);
+    ASSERT_NOTNULL("pName non-null", pName);
+    ASSERT_NOTNULL("pName->pszName non-null", pName->pszName);
     KSP_Free(pName); pName = NULL;
 
     ss = KSP_EnumKeys(hProv, NULL, &pName, &pState, 0);
-    ASSERT_EQ("Deuxième appel → NTE_NO_MORE_ITEMS",
+    ASSERT_EQ("Second call → NTE_NO_MORE_ITEMS",
         ss, (SECURITY_STATUS)NTE_NO_MORE_ITEMS);
-    ASSERT_NULL("pState=NULL après énumération complète", pState);
+    ASSERT_NULL("pState=NULL after complete enumeration", pState);
 
-    /* Trois clés */
+    /* Three keys */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 3;
-    strcpy(P11Mock_GetConfig()->szKeyLabel, "Cle");
+    strcpy(P11Mock_GetConfig()->szKeyLabel, "Key");
 
     pName = NULL; pState = NULL;
     int nKeys = 0;
@@ -514,11 +514,11 @@ int main(void)
         nKeys++;
         KSP_Free(pName); pName = NULL;
     }
-    ASSERT_EQ("3 clés énumérées", nKeys, 3);
-    ASSERT_EQ("Fin de 3 clés → NTE_NO_MORE_ITEMS",
+    ASSERT_EQ("3 keys enumerated", nKeys, 3);
+    ASSERT_EQ("End of 3 keys → NTE_NO_MORE_ITEMS",
         ss, (SECURITY_STATUS)NTE_NO_MORE_ITEMS);
 
-    /* FindObjectsInit échoue → NTE_NO_MORE_ITEMS */
+    /* FindObjectsInit fails → NTE_NO_MORE_ITEMS */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects   = 1;
@@ -526,10 +526,10 @@ int main(void)
 
     pName = NULL; pState = NULL;
     ss = KSP_EnumKeys(hProv, NULL, &pName, &pState, 0);
-    ASSERT_EQ("FindObjectsInit échoue → NTE_NO_MORE_ITEMS",
+    ASSERT_EQ("FindObjectsInit fails → NTE_NO_MORE_ITEMS",
         ss, (SECURITY_STATUS)NTE_NO_MORE_ITEMS);
 
-    /* FindObjects échoue → NTE_NO_MORE_ITEMS */
+    /* FindObjects fails → NTE_NO_MORE_ITEMS */
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->nKeyObjects = 1;
@@ -537,10 +537,10 @@ int main(void)
 
     pName = NULL; pState = NULL;
     ss = KSP_EnumKeys(hProv, NULL, &pName, &pState, 0);
-    ASSERT_EQ("FindObjects échoue → NTE_NO_MORE_ITEMS",
+    ASSERT_EQ("FindObjects fails → NTE_NO_MORE_ITEMS",
         ss, (SECURITY_STATUS)NTE_NO_MORE_ITEMS);
 
-    /* Paramètres invalides */
+    /* Invalid parameters */
     ss = KSP_EnumKeys(hProv, NULL, NULL, &pState, 0);
     ASSERT_EQ("ppKeyName=NULL → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);

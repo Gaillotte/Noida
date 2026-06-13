@@ -1,6 +1,6 @@
-/* p11_context.h — Singleton de contexte PKCS#11
- * Charge softhsm2.dll dynamiquement, initialise la bibliothèque
- * et sélectionne le premier slot disponible.
+/* p11_context.h — PKCS#11 context singleton
+ * Dynamically loads softhsm2.dll, initialises the library,
+ * and selects the first available slot.
  */
 #ifndef P11_CONTEXT_H
 #define P11_CONTEXT_H
@@ -8,23 +8,23 @@
 #include <windows.h>
 #include "pkcs11.h"
 
-/* Contexte global PKCS#11 (singleton) */
+/* Global PKCS#11 context (singleton) */
 typedef struct _P11_CONTEXT {
-    HMODULE              hModule;        /* Handle softhsm2.dll */
-    CK_FUNCTION_LIST_PTR pFunctionList;  /* Table des fonctions Cryptoki */
-    CK_SLOT_ID           slotId;         /* Premier slot avec token présent */
-    BOOL                 bInitialized;   /* Bibliothèque initialisée ? */
+    HMODULE              hModule;        /* softhsm2.dll handle */
+    CK_FUNCTION_LIST_PTR pFunctionList;  /* Cryptoki function table */
+    CK_SLOT_ID           slotId;         /* First slot with a token present */
+    BOOL                 bInitialized;   /* Library initialised? */
 } P11_CONTEXT;
 
-/* Initialise le contexte PKCS#11 (thread-safe, idempotent).
- * Charge softhsm2.dll depuis SOFTHSM2_LIB ou chemin par défaut.
- * Retourne ERROR_SUCCESS ou un code SECURITY_STATUS. */
+/* Initialise the PKCS#11 context (thread-safe, idempotent).
+ * Loads softhsm2.dll from SOFTHSM2_LIB or the default path.
+ * Returns ERROR_SUCCESS or a SECURITY_STATUS code. */
 SECURITY_STATUS P11_Initialize(void);
 
-/* Libère le contexte PKCS#11 (appelé depuis DllMain PROCESS_DETACH) */
+/* Free the PKCS#11 context (called from DllMain PROCESS_DETACH) */
 void P11_Finalize(void);
 
-/* Retourne le pointeur vers le contexte global (valide après P11_Initialize) */
+/* Return a pointer to the global context (valid after P11_Initialize) */
 P11_CONTEXT *P11_GetContext(void);
 
 #endif /* P11_CONTEXT_H */

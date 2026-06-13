@@ -1,5 +1,5 @@
-/* ksp_key_stub.c — Stub minimal pour KSP_IsValidKey
- * Utilisé par test_ksp_key_props quand ksp_key.c n'est pas lié.
+/* ksp_key_stub.c — Minimal stub for KSP_IsValidKey
+ * Used by test_ksp_key_props when ksp_key.c is not linked.
  */
 #include "../mock/windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"

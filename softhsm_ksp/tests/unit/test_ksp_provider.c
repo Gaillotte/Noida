@@ -1,5 +1,5 @@
-/* test_ksp_provider.c — Couverture de ksp_provider.c et ksp_properties.c
- * Utilise des stubs pour P11_Initialize et P11_SessionPool_Initialize.
+/* test_ksp_provider.c — Coverage of ksp_provider.c and ksp_properties.c
+ * Uses stubs for P11_Initialize and P11_SessionPool_Initialize.
  */
 #include "../mock/windows_compat.h"
 #include "../mock/p11_mock.h"
@@ -9,7 +9,7 @@
 #include <wchar.h>
 #include <string.h>
 
-/* ── Stubs du contexte PKCS#11 ──────────────────────────────────────────── */
+/* ── PKCS#11 context stubs ──────────────────────────────────────────────── */
 typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
                  CK_SLOT_ID slotId; BOOL bInitialized; } P11_CONTEXT;
 static P11_CONTEXT g_testCtx;
@@ -50,14 +50,14 @@ int main(void)
 
     ss = KSP_OpenProvider(&hProv, KSP_PROVIDER_NAME, 0);
     ASSERT_OK("OpenProvider OK", ss);
-    ASSERT("hProv non nul", hProv != 0);
+    ASSERT("hProv non-null", hProv != 0);
     ASSERT("IsValidProvider", KSP_IsValidProvider(hProv));
 
-    /* Double appel → deux handles indépendants */
+    /* Double call → two independent handles */
     NCRYPT_PROV_HANDLE hProv2 = 0;
     ss = KSP_OpenProvider(&hProv2, KSP_PROVIDER_NAME, 0);
-    ASSERT_OK("Deuxième OpenProvider OK", ss);
-    ASSERT("Handles distincts", hProv != hProv2);
+    ASSERT_OK("Second OpenProvider OK", ss);
+    ASSERT("Distinct handles", hProv != hProv2);
     KSP_FreeProvider(hProv2);
 
     /* ppProvider = NULL */
@@ -65,11 +65,11 @@ int main(void)
     ASSERT_EQ("ppProvider=NULL → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* P11_Initialize échoue */
+    /* P11_Initialize fails */
     g_p11InitStatus = NTE_PROVIDER_DLL_FAIL;
     NCRYPT_PROV_HANDLE hBad = 0;
     ss = KSP_OpenProvider(&hBad, KSP_PROVIDER_NAME, 0);
-    ASSERT_EQ("P11 init échoue → NTE_PROVIDER_DLL_FAIL",
+    ASSERT_EQ("P11 init fails → NTE_PROVIDER_DLL_FAIL",
         ss, (SECURITY_STATUS)NTE_PROVIDER_DLL_FAIL);
     ASSERT_EQ("hBad reste 0", hBad, (NCRYPT_PROV_HANDLE)0);
     g_p11InitStatus = ERROR_SUCCESS;
@@ -79,22 +79,22 @@ int main(void)
 
     ss = KSP_FreeProvider(hProv);
     ASSERT_OK("FreeProvider OK", ss);
-    /* Note : hProv est libéré — pas de déréférencement après free */
+    /* Note: hProv is freed — no dereference after free */
 
-    /* Handle invalide */
+    /* Invalid handle */
     ss = KSP_FreeProvider(0);
     ASSERT_EQ("FreeProvider(0) → NTE_INVALID_HANDLE",
         ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
 
-    /* Magic incorrecte → NTE_INVALID_HANDLE (sans déréférencer un pointeur sauvage) */
+    /* Wrong magic → NTE_INVALID_HANDLE (without dereferencing a wild pointer) */
     KSP_PROVIDER badProv;
     memset(&badProv, 0, sizeof(badProv));
     badProv.dwMagic = 0xDEADBEEFUL;
     ss = KSP_FreeProvider((NCRYPT_PROV_HANDLE)(ULONG_PTR)&badProv);
-    ASSERT_EQ("FreeProvider(magic incorrecte) → NTE_INVALID_HANDLE",
+    ASSERT_EQ("FreeProvider(wrong magic) → NTE_INVALID_HANDLE",
         ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
 
-    /* Réouvre pour les suites suivantes */
+    /* Reopen for subsequent test suites */
     KSP_OpenProvider(&hProv, KSP_PROVIDER_NAME, 0);
 
     /* ── Suite 3 : GetProviderProperty ──────────────────────────────────── */
@@ -104,13 +104,13 @@ int main(void)
     cbResult = 0;
     ss = KSP_GetProviderProperty(hProv, NCRYPT_NAME_PROPERTY,
         NULL, 0, &cbResult, 0);
-    ASSERT_OK("NAME → taille OK", ss);
+    ASSERT_OK("NAME → size OK", ss);
     ASSERT("cbResult > 0", cbResult > 0);
 
     memset(wszBuf, 0, sizeof wszBuf);
     ss = KSP_GetProviderProperty(hProv, NCRYPT_NAME_PROPERTY,
         (PBYTE)wszBuf, cbResult, &cbResult, 0);
-    ASSERT_OK("NAME → contenu OK", ss);
+    ASSERT_OK("NAME → content OK", ss);
     ASSERT("Name = KSP_PROVIDER_NAME",
            _wcsicmp(wszBuf, KSP_PROVIDER_NAME) == 0);
 
@@ -126,25 +126,25 @@ int main(void)
     ss = KSP_GetProviderProperty(hProv, NCRYPT_IMPL_TYPE_PROPERTY,
         (PBYTE)&dwVal, sizeof dwVal, &cbResult, 0);
     ASSERT_OK("IMPL_TYPE → OK", ss);
-    ASSERT("IMPL_HARDWARE_FLAG défini",
+    ASSERT("IMPL_HARDWARE_FLAG set",
            (dwVal & NCRYPT_IMPL_HARDWARE_FLAG) != 0);
 
-    /* Buffer trop petit pour NAME */
+    /* Buffer too small for NAME */
     ss = KSP_GetProviderProperty(hProv, NCRYPT_NAME_PROPERTY,
         (PBYTE)wszBuf, 2, &cbResult, 0);
-    ASSERT_EQ("Buffer trop petit → NTE_BUFFER_TOO_SMALL",
+    ASSERT_EQ("Buffer too small → NTE_BUFFER_TOO_SMALL",
         ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
 
-    /* Propriété inconnue */
+    /* Unknown property */
     ss = KSP_GetProviderProperty(hProv, L"UnknownProp",
         (PBYTE)wszBuf, sizeof wszBuf, &cbResult, 0);
-    ASSERT_EQ("Prop inconnue → NTE_NOT_SUPPORTED",
+    ASSERT_EQ("Unknown prop → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
-    /* Handle invalide */
+    /* Invalid handle */
     ss = KSP_GetProviderProperty(0, NCRYPT_NAME_PROPERTY,
         NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Handle invalide → NTE_INVALID_PARAMETER",
+    ASSERT_EQ("Invalid handle → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
     /* pcbResult NULL */
@@ -165,7 +165,7 @@ int main(void)
     TEST_SUITE("KSP_FreeBuffer / KSP_FreeObject");
 
     void *pBuf = KSP_Alloc(64);
-    ASSERT_NOTNULL("Alloc avant FreeBuffer", pBuf);
+    ASSERT_NOTNULL("Alloc before FreeBuffer", pBuf);
     ss = KSP_FreeBuffer(pBuf);
     ASSERT_OK("FreeBuffer → OK", ss);
 

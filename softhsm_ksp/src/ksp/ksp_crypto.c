@@ -1,4 +1,4 @@
-/* ksp_crypto.c — Implémentation des opérations cryptographiques */
+/* ksp_crypto.c — Cryptographic operation implementation */
 #include "ksp_crypto.h"
 #include "ksp_key.h"
 #include "ksp_provider.h"
@@ -11,7 +11,7 @@
 #include <string.h>
 #include <wchar.h>
 
-/* Renseigne les paramètres PSS depuis BCRYPT_PSS_PADDING_INFO */
+/* Fill PSS parameters from BCRYPT_PSS_PADDING_INFO */
 static void FillPssParams(
     BCRYPT_PSS_PADDING_INFO *pPssInfo,
     CK_RSA_PKCS_PSS_PARAMS  *pPssParams)
@@ -35,7 +35,7 @@ static void FillPssParams(
         pPssParams->hashAlg = CKM_SHA512;
         pPssParams->mgf     = CKG_MGF1_SHA512;
     } else {
-        /* SHA-256 par défaut */
+        /* SHA-256 by default */
         pPssParams->hashAlg = CKM_SHA256;
         pPssParams->mgf     = CKG_MGF1_SHA256;
         if (pPssParams->sLen == 0)
@@ -43,7 +43,7 @@ static void FillPssParams(
     }
 }
 
-/* Signe un hash — implémente le pattern double-appel CNG */
+/* Sign a hash — implements the CNG double-call pattern */
 SECURITY_STATUS WINAPI KSP_SignHash(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -89,7 +89,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         return ss;
     }
 
-    /* Pour PSS, actualise les paramètres depuis BCRYPT_PSS_PADDING_INFO */
+    /* For PSS, update parameters from BCRYPT_PSS_PADDING_INFO */
     if (mech.mechanism == CKM_RSA_PKCS_PSS && pPaddingInfo) {
         FillPssParams((BCRYPT_PSS_PADDING_INFO *)pPaddingInfo, &pssParams);
         mech.pParameter     = &pssParams;
@@ -112,7 +112,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         return ss;
     }
 
-    /* Premier appel : obtient la taille */
+    /* First call: obtain the size */
     rv = pCtx->pFunctionList->C_Sign(
         hSession,
         pbHashValue, (CK_ULONG)cbHashValue,
@@ -126,10 +126,10 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     }
 
     if (pbSignature == NULL) {
-        /* Mode taille seule */
+        /* Size-only mode */
         P11_ReleaseSession(hSession);
         if (bEcdsa) {
-            /* Pour ECDSA la taille finale est r||s (format Windows) */
+            /* For ECDSA the final size is r||s (Windows format) */
             *pcbResult = P11_EcCoordSize(pKey->szAlgId) * 2;
         } else {
             *pcbResult = (DWORD)cbRawSig;
@@ -145,7 +145,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         return NTE_NO_MEMORY;
     }
 
-    /* Deuxième appel : signature réelle */
+    /* Second call: actual signature */
     rv = pCtx->pFunctionList->C_Sign(
         hSession,
         pbHashValue, (CK_ULONG)cbHashValue,
@@ -161,7 +161,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     }
 
     if (bEcdsa) {
-        /* Convertit DER → r||s format Windows */
+        /* Convert DER → r||s Windows format */
         DWORD cbDecoded = cbSignature;
         ss = P11_DecodeDerEcdsaSignature(
             pKey->szAlgId, pbRawSig, (DWORD)cbRawSig,
@@ -185,7 +185,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     return ss;
 }
 
-/* Déchiffre des données RSA */
+/* Decrypt RSA data */
 SECURITY_STATUS WINAPI KSP_Decrypt(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -261,7 +261,7 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
         return ss;
     }
 
-    /* Premier appel : taille */
+    /* First call: size */
     cbDecrypted = cbOutput;
     rv = pCtx->pFunctionList->C_Decrypt(
         hSession, pbInput, (CK_ULONG)cbInput,
@@ -286,7 +286,7 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
     return ERROR_SUCCESS;
 }
 
-/* Exporte une clé au format BCRYPT */
+/* Export a key in BCRYPT format */
 SECURITY_STATUS WINAPI KSP_ExportKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -318,7 +318,7 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
 
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
-    /* Les clés privées ne sont pas exportables depuis le HSM */
+    /* Private keys are not exportable from the HSM */
     if (_wcsicmp(pszBlobType, BCRYPT_RSAFULLPRIVATE_BLOB) == 0 ||
         _wcsicmp(pszBlobType, BCRYPT_RSAPRIVATE_BLOB)     == 0 ||
         _wcsicmp(pszBlobType, BCRYPT_ECCPRIVATE_BLOB)     == 0) {
@@ -370,7 +370,7 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
     return ERROR_SUCCESS;
 }
 
-/* Importe une clé publique depuis un blob BCRYPT */
+/* Import a public key from a BCRYPT blob */
 SECURITY_STATUS WINAPI KSP_ImportKey(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE   hImportKey,
@@ -401,7 +401,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
         return NTE_INVALID_PARAMETER;
     }
 
-    /* Seules les clés publiques sont importables */
+    /* Only public keys are importable */
     if (_wcsicmp(pszBlobType, BCRYPT_RSAPUBLIC_BLOB) == 0) {
         BCRYPT_RSAKEY_BLOB *pRsa = (BCRYPT_RSAKEY_BLOB *)pbData;
         BYTE  *pbExp = pbData + sizeof(BCRYPT_RSAKEY_BLOB);
@@ -452,7 +452,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
         wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, ALG_RSA);
 
     } else if (_wcsicmp(pszBlobType, BCRYPT_ECCPUBLIC_BLOB) == 0) {
-        /* Import clé publique EC — stocké en session uniquement */
+        /* Import EC public key — stored in session only */
         pKey = (KSP_KEY *)KSP_AllocZero(sizeof(KSP_KEY));
         if (!pKey) {
             LOG_LEAVE("KSP_ImportKey", NTE_NO_MEMORY);
@@ -474,7 +474,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
             }
         }
     } else {
-        /* Clé privée → non supporté */
+        /* Private key → not supported */
         LOG_LEAVE("KSP_ImportKey", NTE_NOT_SUPPORTED);
         return NTE_NOT_SUPPORTED;
     }

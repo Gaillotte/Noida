@@ -1,22 +1,22 @@
-/* memory.h — Allocateur compatible avec FreeBuffer CNG
- * Tous les buffers retournés au runtime CNG doivent être alloués
- * sur GetProcessHeap() et libérés via HeapFree.
+/* memory.h — CNG FreeBuffer-compatible allocator
+ * All buffers returned to the CNG runtime must be allocated
+ * on GetProcessHeap() and freed via HeapFree.
  */
 #ifndef MEMORY_H
 #define MEMORY_H
 
 #include <windows.h>
 
-/* Alloue un buffer sur le heap du processus (compatible CNG FreeBuffer) */
+/* Allocate a buffer on the process heap (compatible with CNG FreeBuffer) */
 void *KSP_Alloc(SIZE_T cbSize);
 
-/* Alloue et initialise à zéro */
+/* Allocate and zero-initialise */
 void *KSP_AllocZero(SIZE_T cbSize);
 
-/* Libère un buffer alloué par KSP_Alloc */
+/* Free a buffer allocated by KSP_Alloc */
 void KSP_Free(void *pv);
 
-/* Duplique une chaîne wide sur le heap du processus */
+/* Duplicate a wide string on the process heap */
 LPWSTR KSP_WStrDup(LPCWSTR pwsz);
 
 #endif /* MEMORY_H */

@@ -1,5 +1,5 @@
-/* p11_mock.h — Mock PKCS#11 controllable pour les tests
- * Simule SoftHSM2 avec injection d'erreurs et vérification des appels.
+/* p11_mock.h — Controllable PKCS#11 mock for unit tests
+ * Simulates SoftHSM2 with error injection and call verification.
  */
 #ifndef P11_MOCK_H
 #define P11_MOCK_H
@@ -7,11 +7,11 @@
 #include "windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"
 
-/* ── Configuration du mock ──────────────────────────────────────────────── */
+/* ── Mock configuration ─────────────────────────────────────────────────── */
 
-/* Erreurs injectables */
+/* Injectable error codes (CKR_OK = normal behaviour) */
 typedef struct _P11_MOCK_CONFIG {
-    CK_RV rv_Initialize;        /* CKR_OK = normal */
+    CK_RV rv_Initialize;
     CK_RV rv_GetSlotList;
     CK_RV rv_OpenSession;
     CK_RV rv_Login;
@@ -26,34 +26,34 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_DestroyObject;
     CK_RV rv_CreateObject;
 
-    /* Nombre de slots simulés */
+    /* Number of simulated slots */
     int nSlots;
-    /* Nombre de clés simulées pour FindObjects */
+    /* Number of simulated keys returned by FindObjects */
     int nKeyObjects;
-    /* Label des clés simulées */
+    /* Label of the simulated keys */
     char szKeyLabel[256];
-    /* Type de clé retourné (CKK_RSA ou CKK_EC) */
+    /* Key type returned (CKK_RSA or CKK_EC) */
     CK_ULONG ulKeyType;
-    /* Nombre de bits (RSA) */
+    /* Modulus size in bits (RSA) */
     CK_ULONG ulModBits;
-    /* Taille de signature retournée */
+    /* Signature length returned */
     CK_ULONG cbSignature;
-    /* Données de signature (fill avec 0xAB si NULL) */
+    /* Signature data (filled with 0xAB if NULL) */
     CK_BYTE *pbSignature;
-    /* CKA_EC_PARAMS à retourner */
+    /* CKA_EC_PARAMS to return */
     const char *pbEcParams;
     CK_ULONG   cbEcParams;
-    /* CKA_EC_POINT à retourner */
+    /* CKA_EC_POINT to return */
     const char *pbEcPoint;
     CK_ULONG   cbEcPoint;
-    /* Modules RSA à retourner */
+    /* RSA modulus to return */
     const BYTE *pbModulus;
     CK_ULONG   cbModulus;
     const BYTE *pbExponent;
     CK_ULONG   cbExponent;
 } P11_MOCK_CONFIG;
 
-/* ── Compteurs d'appels ──────────────────────────────────────────────────── */
+/* ── Call counters ───────────────────────────────────────────────────────── */
 typedef struct _P11_MOCK_CALLS {
     int nInitialize;
     int nFinalize;
@@ -74,16 +74,16 @@ typedef struct _P11_MOCK_CALLS {
     int nCreateObject;
 } P11_MOCK_CALLS;
 
-/* Réinitialise la configuration du mock (tout à CKR_OK, comportement par défaut) */
+/* Reset mock configuration (all CKR_OK, default behaviour) */
 void P11Mock_Reset(void);
 
-/* Retourne la config modifiable */
+/* Return the mutable config */
 P11_MOCK_CONFIG *P11Mock_GetConfig(void);
 
-/* Retourne les compteurs d'appels */
+/* Return the call counters */
 P11_MOCK_CALLS *P11Mock_GetCalls(void);
 
-/* Retourne la liste des fonctions mock PKCS#11 */
+/* Return the PKCS#11 mock function list */
 CK_FUNCTION_LIST *P11Mock_GetFunctionList(void);
 
 #endif /* P11_MOCK_H */
