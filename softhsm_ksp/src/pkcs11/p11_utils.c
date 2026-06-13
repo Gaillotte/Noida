@@ -261,8 +261,8 @@ SECURITY_STATUS P11_ExportEcPublicKey(
         BYTE *pbPoint = pbEcPoint;
         DWORD cbRemain = cbEcPoint;
 
-        /* Skip DER OCTET STRING wrapper si présent */
-        if (pbPoint[0] == 0x04 && cbRemain > 2 && pbPoint[2] == 0x04) {
+        /* Skip DER OCTET STRING wrapper (PKCS#11 CKA_EC_POINT est toujours DER-encodé) */
+        if (pbPoint[0] == 0x04 && cbRemain > 2) {
             pbPoint  += 2;
             cbRemain -= 2;
         }

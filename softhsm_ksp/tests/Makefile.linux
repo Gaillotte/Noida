@@ -1,0 +1,138 @@
+# Makefile.linux — Compilation Linux avec gcov pour rapport de couverture
+# Usage : make -f Makefile.linux [all | clean | run | coverage]
+
+CC      = gcc
+CFLAGS  = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+          -g --coverage \
+          -I../mock \
+          -I../../src \
+          -I.
+
+SRC = ../../src
+MOCK = ../mock
+
+# Sources communes
+MEM_SRC  = $(SRC)/common/memory.c
+LOG_SRC  = $(SRC)/common/logging.c
+PROV_SRC = $(SRC)/ksp/ksp_provider.c
+PROP_SRC = $(SRC)/ksp/ksp_properties.c
+KEY_SRC  = $(SRC)/ksp/ksp_key.c
+CRYPT_SRC= $(SRC)/ksp/ksp_crypto.c
+P11U_SRC = $(SRC)/pkcs11/p11_utils.c
+MOCK_SRC = $(MOCK)/p11_mock.c
+
+PURE_STUBS = p11_pure_stubs.c
+
+TESTS = \
+    test_p11rv_mapping \
+    test_ecdsa_decode \
+    test_mechanism_resolve \
+    test_memory \
+    test_logging \
+    test_export_blobs \
+    test_ksp_provider \
+    test_ksp_key_props \
+    test_ksp_key_ops \
+    test_ksp_crypto
+
+.PHONY: all clean run coverage
+
+all: $(TESTS)
+
+# ── test_p11rv_mapping : P11RvToSecStatus ──────────────────────────────────
+test_p11rv_mapping: test_p11rv_mapping.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_ecdsa_decode : P11_DecodeDerEcdsaSignature, P11_EcCoordSize ───────
+test_ecdsa_decode: test_ecdsa_decode.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_mechanism_resolve : P11_ResolveMechanism ──────────────────────────
+test_mechanism_resolve: test_mechanism_resolve.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_memory : KSP_Alloc, KSP_AllocZero, KSP_Free, KSP_WStrDup ──────
+test_memory: test_memory.c $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_logging : Log_Initialize, Log_Debug, Log_Error ─────────────────
+test_logging: test_logging.c $(LOG_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_export_blobs : P11_ExportRsaPublicKey, P11_ExportEcPublicKey ────
+test_export_blobs: test_export_blobs.c $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_ksp_provider : KSP_OpenProvider, KSP_FreeProvider, propriétés ───
+# ksp_properties.c n'est pas nécessaire ici (test de provider seulement)
+test_ksp_provider: test_ksp_provider.c \
+    $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_ksp_key_props : KSP_GetKeyProperty, KSP_SetKeyProperty ───────────
+# ksp_key_stub.c fournit KSP_IsValidKey sans lier ksp_key.c complet
+test_ksp_key_props: test_ksp_key_props.c ksp_key_stub.c \
+    $(PROV_SRC) $(PROP_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_ksp_key_ops : OpenKey, CreatePersistedKey, FinalizeKey, … ────────
+test_ksp_key_ops: test_ksp_key_ops.c \
+    $(KEY_SRC) $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_ksp_crypto : SignHash, Decrypt, ExportKey, ImportKey ─────────────
+test_ksp_crypto: test_ksp_crypto.c \
+    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+run: all
+	@echo "════════════════════════════════════════════════════════"
+	@echo " Exécution des tests unitaires"
+	@echo "════════════════════════════════════════════════════════"
+	@PASS=0; FAIL=0; \
+	for t in $(TESTS); do \
+	    echo ""; echo "▶ $$t"; \
+	    if ./$$t; then \
+	        PASS=$$((PASS+1)); \
+	    else \
+	        FAIL=$$((FAIL+1)); echo "[ERREUR] $$t a échoué"; \
+	    fi; \
+	done; \
+	echo ""; \
+	echo "════════════════════════════════════════════════════════"; \
+	echo "  Résultats : PASS=$$PASS  FAIL=$$FAIL"; \
+	echo "════════════════════════════════════════════════════════"; \
+	test $$FAIL -eq 0
+
+coverage: run
+	@echo ""
+	@echo "══ Génération du rapport de couverture (lcov + genhtml) ══"
+	lcov --capture \
+	     --directory . \
+	     --output-file coverage.info \
+	     --ignore-errors gcov,empty
+	lcov --remove coverage.info \
+	     '*/tests/*' \
+	     '*/mock/*' \
+	     --output-file coverage_filtered.info \
+	     --ignore-errors unused,empty
+	genhtml coverage_filtered.info \
+	     --output-directory coverage_html \
+	     --title "SoftHSM KSP — Rapport de couverture" \
+	     --legend \
+	     --show-details
+	@echo ""
+	@echo "══ Résumé de couverture ══"
+	lcov --summary coverage_filtered.info
+	@echo ""
+	@echo "Rapport HTML disponible dans : tests/unit/coverage_html/index.html"
+
+clean:
+	rm -f $(TESTS)
+	rm -f *.gcno *.gcda
+	rm -f ../../src/ksp/*.gcno    ../../src/ksp/*.gcda
+	rm -f ../../src/pkcs11/*.gcno ../../src/pkcs11/*.gcda
+	rm -f ../../src/common/*.gcno ../../src/common/*.gcda
+	rm -f ../mock/*.gcno          ../mock/*.gcda
+	rm -f coverage.info coverage_filtered.info
+	rm -rf coverage_html

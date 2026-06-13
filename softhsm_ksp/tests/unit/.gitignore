@@ -1,0 +1,20 @@
+# Test binaries
+test_p11rv_mapping
+test_ecdsa_decode
+test_mechanism_resolve
+test_memory
+test_logging
+test_export_blobs
+test_ksp_provider
+test_ksp_key_props
+test_ksp_key_ops
+test_ksp_crypto
+
+# gcov coverage data
+*.gcda
+*.gcno
+
+# lcov reports
+coverage.info
+coverage_filtered.info
+coverage_html/
