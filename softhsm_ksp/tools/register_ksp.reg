@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; Enregistrement du KSP SoftHSM dans le registre Windows
+; Remplacez <CHEMIN_ABSOLU> par le chemin réel de softhsm_ksp.dll
+; Exemple : C:\KSP\softhsm_ksp.dll
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\SoftHSM KSP]
+"Image"="<CHEMIN_ABSOLU>\\softhsm_ksp.dll"
+"Type"=dword:00000001
