@@ -1,33 +1,33 @@
 # Architecture — SoftHSM2 KSP
 
-## Vue d'ensemble
+## Overview
 
-Le KSP SoftHSM2 s'insère dans la pile cryptographique Windows comme une couche
-d'adaptation entre l'API **CNG (Cryptography Next Generation)** et la bibliothèque
-**SoftHSM2** exposée via l'interface standard **PKCS#11 v2.40**.
+The SoftHSM2 KSP inserts itself into the Windows cryptographic stack as an adaptation
+layer between the **CNG (Cryptography Next Generation)** API and the **SoftHSM2**
+library exposed via the standard **PKCS#11 v2.40** interface.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        APPLICATION WINDOWS                          │
+│                        WINDOWS APPLICATION                          │
 │          (certutil, PowerShell, .NET, IE/Edge, WinHTTP…)           │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │ NCryptSignHash() / NCryptOpenKey()…
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     NCRYPT.DLL  (CNG runtime)                       │
-│   Résout le KSP via le registre, charge la DLL, dispatche les       │
-│   appels via la NCRYPT_KEY_STORAGE_FUNCTION_TABLE                   │
+│   Resolves the KSP via the registry, loads the DLL, dispatches      │
+│   calls via the NCRYPT_KEY_STORAGE_FUNCTION_TABLE                   │
 └──────────────────────────────┬──────────────────────────────────────┘
-                               │ Table de fonctions → KSP_*()
+                               │ Function table → KSP_*()
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    SOFTHSM_KSP.DLL  (ce projet)                     │
+│                    SOFTHSM_KSP.DLL  (this project)                  │
 │                                                                     │
 │  ┌─────────────────────┐   ┌──────────────────────────────────────┐ │
-│  │    Couche KSP        │   │         Couche PKCS#11               │ │
+│  │    KSP layer         │   │         PKCS#11 layer                │ │
 │  │  ksp_main.c          │   │  p11_context.c  (singleton)          │ │
-│  │  ksp_provider.c      │──▶│  p11_session.c  (pool sessions)      │ │
-│  │  ksp_key.c           │   │  p11_utils.c    (mécanismes, attrs)  │ │
+│  │  ksp_provider.c      │──▶│  p11_session.c  (session pool)       │ │
+│  │  ksp_key.c           │   │  p11_utils.c    (mechanisms, attrs)  │ │
 │  │  ksp_crypto.c        │   └──────────────────┬───────────────────┘ │
 │  │  ksp_properties.c    │                      │ C_XXX()             │
 │  └─────────────────────┘                      │                     │
@@ -43,45 +43,45 @@ d'adaptation entre l'API **CNG (Cryptography Next Generation)** et la bibliothè
                                                ▼                      │
 ┌─────────────────────────────────────────────────────────────────────┐
 │                 SOFTHSM2-X64.DLL  (SoftHSM2)                       │
-│    Implémente PKCS#11 v2.40 ; stocke les clés dans une base        │
-│    SQLite chiffrée sur le disque                                    │
+│    Implements PKCS#11 v2.40; stores keys in an encrypted            │
+│    SQLite database on disk                                          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Composants internes
+## Internal components
 
-### Couche KSP
+### KSP layer
 
-| Fichier | Responsabilité |
-|---------|---------------|
-| `ksp_main.c` | `DllMain`, `GetKeyStorageInterface`, table `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` |
-| `ksp_provider.c` | `OpenProvider`, `FreeProvider`, propriétés fournisseur, stubs |
+| File | Responsibility |
+|------|---------------|
+| `ksp_main.c` | `DllMain`, `GetKeyStorageInterface`, `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` table |
+| `ksp_provider.c` | `OpenProvider`, `FreeProvider`, provider properties, stubs |
 | `ksp_key.c` | `CreatePersistedKey`, `OpenKey`, `FinalizeKey`, `DeleteKey`, `EnumKeys` |
 | `ksp_crypto.c` | `SignHash`, `Decrypt`, `ExportKey`, `ImportKey` |
 | `ksp_properties.c` | `GetKeyProperty`, `SetKeyProperty` |
 
-### Couche PKCS#11
+### PKCS#11 layer
 
-| Fichier | Responsabilité |
-|---------|---------------|
-| `pkcs11.h` | Header standard OASIS v2.40 (types, constantes, `CK_FUNCTION_LIST`) |
-| `p11_context.c` | Singleton — chargement de la DLL, `C_Initialize`, sélection du slot |
-| `p11_session.c` | Pool de sessions avec sémaphore Windows |
-| `p11_utils.c` | Résolution des mécanismes, conversion d'erreurs, export des clés |
+| File | Responsibility |
+|------|---------------|
+| `pkcs11.h` | Standard OASIS v2.40 header (types, constants, `CK_FUNCTION_LIST`) |
+| `p11_context.c` | Singleton — DLL loading, `C_Initialize`, slot selection |
+| `p11_session.c` | Session pool with Windows semaphore |
+| `p11_utils.c` | Mechanism resolution, error conversion, key export |
 
-### Commun
+### Common
 
-| Fichier | Responsabilité |
-|---------|---------------|
-| `config.h` | Constantes : chemins, PIN, OIDs DER, noms d'algorithmes |
-| `logging.c` | `OutputDebugString` conditionnel (`KSP_DEBUG=1`) |
-| `memory.c` | `KSP_Alloc`/`KSP_Free` sur `GetProcessHeap()` |
+| File | Responsibility |
+|------|---------------|
+| `config.h` | Constants: paths, PIN, DER OIDs, algorithm names |
+| `logging.c` | Conditional `OutputDebugString` (`KSP_DEBUG=1`) |
+| `memory.c` | `KSP_Alloc`/`KSP_Free` on `GetProcessHeap()` |
 
 ---
 
-## Structures de données internes
+## Internal data structures
 
 ### KSP_PROVIDER
 
@@ -92,23 +92,23 @@ typedef struct _KSP_PROVIDER {
 } KSP_PROVIDER;
 ```
 
-Le handle `NCRYPT_PROV_HANDLE` est un cast direct de `KSP_PROVIDER *`.
-Le champ `dwMagic` permet de valider les handles entrants (defense in depth).
+The `NCRYPT_PROV_HANDLE` handle is a direct cast of `KSP_PROVIDER *`.
+The `dwMagic` field enables validation of incoming handles (defense in depth).
 
 ### KSP_KEY
 
 ```c
 typedef struct _KSP_KEY {
     DWORD            dwMagic;         // KSP_KEY_MAGIC = 0x4B53504B ('KSPK')
-    WCHAR            szKeyName[256];  // = CKA_LABEL dans SoftHSM2
+    WCHAR            szKeyName[256];  // = CKA_LABEL in SoftHSM2
     WCHAR            szAlgId[64];     // "RSA", "ECDSA_P256", "ECDSA_P384"
     DWORD            dwKeyBitLen;     // 2048, 3072, 4096 (RSA) / 256, 384 (EC)
     DWORD            dwKeySpec;       // AT_SIGNATURE | AT_KEYEXCHANGE
-    CK_OBJECT_HANDLE hPrivKey;        // Handle PKCS#11 clé privée
-    CK_OBJECT_HANDLE hPubKey;         // Handle PKCS#11 clé publique
-    CK_SLOT_ID       slotId;          // Slot SoftHSM2 sélectionné
-    BOOL             bFinalized;      // FinalizeKey() appelé ?
-    BOOL             bPersistOnly;    // Génération différée ?
+    CK_OBJECT_HANDLE hPrivKey;        // PKCS#11 private key handle
+    CK_OBJECT_HANDLE hPubKey;         // PKCS#11 public key handle
+    CK_SLOT_ID       slotId;          // Selected SoftHSM2 slot
+    BOOL             bFinalized;      // FinalizeKey() called?
+    BOOL             bPersistOnly;    // Deferred generation?
 } KSP_KEY;
 ```
 
@@ -116,10 +116,10 @@ typedef struct _KSP_KEY {
 
 ```c
 typedef struct _P11_CONTEXT {
-    HMODULE              hModule;       // Handle softhsm2-x64.dll
-    CK_FUNCTION_LIST_PTR pFunctionList; // Table des fonctions PKCS#11
-    CK_SLOT_ID           slotId;        // Premier slot avec token présent
-    BOOL                 bInitialized;  // TRUE après C_Initialize réussi
+    HMODULE              hModule;       // softhsm2-x64.dll handle
+    CK_FUNCTION_LIST_PTR pFunctionList; // PKCS#11 function table
+    CK_SLOT_ID           slotId;        // First slot with token present
+    BOOL                 bInitialized;  // TRUE after successful C_Initialize
 } P11_CONTEXT;
 ```
 
@@ -127,18 +127,18 @@ typedef struct _P11_CONTEXT {
 
 ```c
 typedef struct _P11_SESSION_ENTRY {
-    CK_SESSION_HANDLE hSession;   // Handle PKCS#11 (ou CK_INVALID_HANDLE)
-    BOOL              bInUse;     // Slot occupé ?
-    BOOL              bLoggedIn;  // C_Login() effectué ?
-    CRITICAL_SECTION  cs;         // Verrou per-session
+    CK_SESSION_HANDLE hSession;   // PKCS#11 handle (or CK_INVALID_HANDLE)
+    BOOL              bInUse;     // Slot in use?
+    BOOL              bLoggedIn;  // C_Login() performed?
+    CRITICAL_SECTION  cs;         // Per-session lock
 } P11_SESSION_ENTRY;
 ```
 
 ---
 
-## Cycle de vie des objets Windows
+## Windows object lifecycle
 
-### Enregistrement dans le registre
+### Registry registration
 
 ```
 HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\
@@ -147,44 +147,44 @@ HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\
         Type  = 0x00000001
 ```
 
-### Chargement par ncrypt.dll
+### Loading by ncrypt.dll
 
 ```
 ncrypt.dll
   ├── RegOpenKey("SoftHSM KSP")
-  ├── RegQueryValueEx("Image") → chemin DLL
-  ├── LoadLibrary(chemin)
+  ├── RegQueryValueEx("Image") → DLL path
+  ├── LoadLibrary(path)
   └── GetProcAddress("GetKeyStorageInterface")
          └── → NCRYPT_KEY_STORAGE_FUNCTION_TABLE *
 ```
 
 ---
 
-## Modèle de threading
+## Threading model
 
 ```
 Thread 1                   Thread 2                  Thread 3
 ────────                   ────────                  ────────
 P11_Initialize()           P11_Initialize()
-  InitOnceExecuteOnce ─────▶ (attend)                P11_Initialize()
-  LoadLibrary()                                        (attend)
+  InitOnceExecuteOnce ─────▶ (waits)                P11_Initialize()
+  LoadLibrary()                                        (waits)
   C_Initialize()
   C_GetSlotList()
-  ◀── retour OK ─────────── retour OK ────────────── retour OK
+  ◀── return OK ─────────── return OK ────────────── return OK
 
 P11_AcquireSession()       P11_AcquireSession()
   WaitForSingleObject(      WaitForSingleObject(
-    Semaphore, 5000) ───────▶ sémaphore)
-  [slot 0 libre]            [attend si pool plein]
+    Semaphore, 5000) ───────▶ semaphore)
+  [slot 0 free]             [waits if pool full]
   ◀── hSession[0] ──────
 
-                           [slot 1 libre]
+                           [slot 1 free]
                            ◀── hSession[1] ──────
 
 KSP_SignHash()             KSP_SignHash()
   C_Sign()                   C_Sign()
-  (concurrent OK grâce       (session distincte)
-   à CKF_OS_LOCKING_OK)
+  (concurrent OK thanks      (distinct session)
+   to CKF_OS_LOCKING_OK)
 
 P11_ReleaseSession(s0)     P11_ReleaseSession(s1)
   ReleaseSemaphore           ReleaseSemaphore
@@ -192,9 +192,9 @@ P11_ReleaseSession(s0)     P11_ReleaseSession(s1)
 
 ---
 
-## Gestion mémoire
+## Memory management
 
-Tous les buffers retournés à l'appelant CNG sont alloués sur `GetProcessHeap()` :
+All buffers returned to the CNG caller are allocated on `GetProcessHeap()`:
 
 ```
 KSP_Alloc(n)    → HeapAlloc(GetProcessHeap(), 0, n)
@@ -202,5 +202,5 @@ KSP_AllocZero(n)→ HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, n)
 KSP_Free(p)     → HeapFree(GetProcessHeap(), 0, p)
 ```
 
-`KSP_FreeBuffer(pvInput)` est la fonction exposée au runtime CNG pour libérer
-tous les buffers qu'il reçoit du KSP (noms de clés, blobs de clés, etc.).
+`KSP_FreeBuffer(pvInput)` is the function exposed to the CNG runtime to free
+all buffers it receives from the KSP (key names, key blobs, etc.).

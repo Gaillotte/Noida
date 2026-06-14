@@ -1,19 +1,19 @@
-# Flux de bout en bout — Scénarios complets
+# End-to-end flows — Complete scenarios
 
-## Scénario 1 : Génération et utilisation d'une clé RSA pour signature TLS
+## Scenario 1: Generating and using an RSA key for TLS signing
 
-Ce scénario illustre le flux complet depuis une application (ex: serveur IIS/Schannel)
-jusqu'à SoftHSM2.
+This scenario illustrates the complete flow from an application (e.g. IIS/Schannel server)
+to SoftHSM2.
 
 ```mermaid
 sequenceDiagram
-    participant IIS as Serveur IIS / Schannel
+    participant IIS as IIS Server / Schannel
     participant NCrypt as ncrypt.dll
     participant KSP as softhsm_ksp.dll
     participant HSM as softhsm2-x64.dll
 
     rect rgb(230, 245, 255)
-        note over IIS,HSM: Phase 1 — Génération du certificat (une seule fois)
+        note over IIS,HSM: Phase 1 — Certificate generation (once)
 
         IIS->>NCrypt: NCryptOpenStorageProvider("SoftHSM KSP")
         NCrypt->>KSP: KSP_OpenProvider() → P11_Initialize()
@@ -21,150 +21,150 @@ sequenceDiagram
 
         IIS->>NCrypt: NCryptCreatePersistedKey(..., "RSA", "WebServerKey", AT_KEYEXCHANGE)
         NCrypt->>KSP: KSP_CreatePersistedKey()
-        KSP->>HSM: C_GenerateKeyPair(CKM_RSA_PKCS_KEY_PAIR_GEN,\nbits=2048, DECRYPT=TRUE)
+        KSP->>HSM: C_GenerateKeyPair(CKM_RSA_PKCS_KEY_PAIR_GEN,<br/>bits=2048, DECRYPT=TRUE)
 
         IIS->>NCrypt: NCryptExportKey(..., BCRYPT_RSAPUBLIC_BLOB)
         NCrypt->>KSP: KSP_ExportKey()
         KSP->>HSM: C_GetAttributeValue(CKA_MODULUS + CKA_PUBLIC_EXPONENT)
-        KSP-->>IIS: BCRYPT_RSAKEY_BLOB (clé publique)
+        KSP-->>IIS: BCRYPT_RSAKEY_BLOB (public key)
 
-        note over IIS: Crée CSR avec la clé publique,<br/>soumet à la CA, reçoit certificat X.509
+        note over IIS: Creates CSR with the public key,<br/>submits to CA, receives X.509 certificate
     end
 
     rect rgb(255, 245, 230)
-        note over IIS,HSM: Phase 2 — Handshake TLS (à chaque connexion client)
+        note over IIS,HSM: Phase 2 — TLS handshake (on every client connection)
 
         IIS->>NCrypt: NCryptOpenKey(..., "WebServerKey")
         NCrypt->>KSP: KSP_OpenKey()
         KSP->>HSM: C_FindObjectsInit/C_FindObjects (label="WebServerKey")
 
-        note over IIS: Reçoit ClientKeyExchange chiffré RSA
+        note over IIS: Receives RSA-encrypted ClientKeyExchange
 
-        IIS->>NCrypt: NCryptDecrypt(hKey, pbEncryptedPMS, 256,\n&oaepInfo, pbPMS, &cbPMS, OAEP)
+        IIS->>NCrypt: NCryptDecrypt(hKey, pbEncryptedPMS, 256,<br/>&oaepInfo, pbPMS, &cbPMS, OAEP)
         NCrypt->>KSP: KSP_Decrypt()
-        KSP->>HSM: C_DecryptInit(CKM_RSA_PKCS_OAEP)\nC_Decrypt(pbEncryptedPMS, pbPMS)
-        KSP-->>IIS: Pre-Master Secret déchiffré
+        KSP->>HSM: C_DecryptInit(CKM_RSA_PKCS_OAEP)<br/>C_Decrypt(pbEncryptedPMS, pbPMS)
+        KSP-->>IIS: Decrypted Pre-Master Secret
 
-        note over IIS: Dérive les clés de session TLS
+        note over IIS: Derives TLS session keys
     end
 ```
 
 ---
 
-## Scénario 2 : Signature de code avec ECDSA P-256
+## Scenario 2: Code signing with ECDSA P-256
 
 ```mermaid
 sequenceDiagram
-    participant Tool as Outil de signature
+    participant Tool as Signing tool
     participant NCrypt as ncrypt.dll
     participant KSP as softhsm_ksp.dll
     participant BCrypt as bcrypt.dll
     participant HSM as softhsm2-x64.dll
 
     Tool->>NCrypt: NCryptOpenStorageProvider("SoftHSM KSP")
-    Tool->>NCrypt: NCryptCreatePersistedKey(..., "ECDSA_P256",\n"CodeSignKey", AT_SIGNATURE)
+    Tool->>NCrypt: NCryptCreatePersistedKey(..., "ECDSA_P256",<br/>"CodeSignKey", AT_SIGNATURE)
     NCrypt->>KSP: KSP_CreatePersistedKey()
-    KSP->>HSM: C_GenerateKeyPair(CKM_EC_KEY_PAIR_GEN,\nEC_PARAMS=P-256 OID)
+    KSP->>HSM: C_GenerateKeyPair(CKM_EC_KEY_PAIR_GEN,<br/>EC_PARAMS=P-256 OID)
 
-    note over Tool: Calcule SHA-256 du binaire à signer
+    note over Tool: Computes SHA-256 of the binary to sign
 
     Tool->>BCrypt: BCryptCreateHash(SHA256) + BCryptFinishHash
     BCrypt-->>Tool: pbHash[32]
 
-    Tool->>NCrypt: NCryptSignHash(hKey, NULL,\npbHash, 32, NULL, 0, &cbSig, 0)
+    Tool->>NCrypt: NCryptSignHash(hKey, NULL,<br/>pbHash, 32, NULL, 0, &cbSig, 0)
     NCrypt->>KSP: KSP_SignHash(..., NULL) → cbSig=64
     KSP->>HSM: C_SignInit(CKM_ECDSA) + C_Sign(..., NULL, &cbDer)
     KSP-->>Tool: cbSig=64
 
-    Tool->>NCrypt: NCryptSignHash(hKey, NULL,\npbHash, 32, pbSig, 64, &cbSig, 0)
+    Tool->>NCrypt: NCryptSignHash(hKey, NULL,<br/>pbHash, 32, pbSig, 64, &cbSig, 0)
     NCrypt->>KSP: KSP_SignHash(..., pbSig)
     KSP->>HSM: C_SignInit(CKM_ECDSA) + C_Sign(pbHash, 32, pbRawDer, &cbDer)
-    HSM-->>KSP: [30 44 02 20 <r> 02 20 <s>] (DER, ~70 octets)
+    HSM-->>KSP: [30 44 02 20 <r> 02 20 <s>] (DER, ~70 bytes)
     KSP->>KSP: P11_DecodeDerEcdsaSignature()<br/>→ pbSig[0..31]=r, pbSig[32..63]=s
-    KSP-->>Tool: Signature Windows (64 octets r‖s)
+    KSP-->>Tool: Windows signature (64 bytes r‖s)
 
-    note over Tool: Vérification côté validateur (BCrypt)
+    note over Tool: Verification on the validator side (BCrypt)
 
-    Tool->>BCrypt: BCryptVerifySignature(hBCryptPubKey,\npbHash, pbSig, 64, 0)
-    BCrypt-->>Tool: STATUS_SUCCESS (signature valide)
+    Tool->>BCrypt: BCryptVerifySignature(hBCryptPubKey,<br/>pbHash, pbSig, 64, 0)
+    BCrypt-->>Tool: STATUS_SUCCESS (valid signature)
 ```
 
 ---
 
-## Scénario 3 : Énumération et audit des clés
+## Scenario 3: Key enumeration and audit
 
 ```mermaid
 sequenceDiagram
-    participant Audit as Script PowerShell
+    participant Audit as PowerShell script
     participant NCrypt as ncrypt.dll
     participant KSP as softhsm_ksp.dll
     participant HSM as softhsm2-x64.dll
 
     Audit->>NCrypt: NCryptOpenStorageProvider("SoftHSM KSP")
 
-    note over Audit,HSM: Première itération (initialise l'état)
+    note over Audit,HSM: First iteration (initialises state)
 
-    Audit->>NCrypt: NCryptEnumKeys(hProv, NULL,\n&pKeyName, &pState, 0)
+    Audit->>NCrypt: NCryptEnumKeys(hProv, NULL,<br/>&pKeyName, &pState, 0)
     NCrypt->>KSP: KSP_EnumKeys(..., ppEnumState=NULL)
     KSP->>HSM: C_FindObjectsInit({CKA_CLASS=CKO_PRIVATE_KEY, CKA_TOKEN=TRUE})
     KSP->>HSM: C_FindObjects(256 max) → N handles
     KSP->>HSM: C_FindObjectsFinal()
-    KSP->>KSP: Alloue KSP_ENUM_STATE{handles[0..N-1], idx=0}
+    KSP->>KSP: Allocate KSP_ENUM_STATE{handles[0..N-1], idx=0}
     KSP->>HSM: C_GetAttributeValue(handles[0], CKA_LABEL) → "WebServerKey"
     KSP-->>Audit: pKeyName.pszName="WebServerKey"
 
-    loop Pour chaque clé suivante (idx=1..N-1)
+    loop For each subsequent key (idx=1..N-1)
         Audit->>NCrypt: NCryptEnumKeys(..., &pState)
         NCrypt->>KSP: KSP_EnumKeys(ppEnumState=pState)
         KSP->>HSM: C_GetAttributeValue(handles[idx], CKA_LABEL)
         KSP-->>Audit: pKeyName.pszName=<label>
-        Audit->>Audit: NCryptGetProperty(hKeyTmp, NCRYPT_ALGORITHM_PROPERTY)\n→ "RSA" ou "ECDSA_P256"
-        Audit->>Audit: NCryptGetProperty(hKeyTmp, NCRYPT_LENGTH_PROPERTY)\n→ 2048, 256, etc.
-        Audit->>Audit: Journalise : label + algo + bits
+        Audit->>Audit: NCryptGetProperty(hKeyTmp, NCRYPT_ALGORITHM_PROPERTY)<br/>→ "RSA" or "ECDSA_P256"
+        Audit->>Audit: NCryptGetProperty(hKeyTmp, NCRYPT_LENGTH_PROPERTY)<br/>→ 2048, 256, etc.
+        Audit->>Audit: Log: label + algo + bits
     end
 
     Audit->>NCrypt: NCryptEnumKeys(..., &pState)
     NCrypt->>KSP: KSP_EnumKeys() → idx >= count
-    KSP->>KSP: Libère KSP_ENUM_STATE, *ppState=NULL
+    KSP->>KSP: Free KSP_ENUM_STATE, *ppState=NULL
     KSP-->>Audit: NTE_NO_MORE_ITEMS
 ```
 
 ---
 
-## Scénario 4 : Rotation de clé
+## Scenario 4: Key rotation
 
 ```mermaid
 sequenceDiagram
-    participant Ops as Opérateur
+    participant Ops as Operator
     participant NCrypt as ncrypt.dll
     participant KSP as softhsm_ksp.dll
     participant HSM as softhsm2-x64.dll
 
-    note over Ops,HSM: Étape 1 : Générer la nouvelle clé sous un nom temporaire
+    note over Ops,HSM: Step 1: Generate the new key under a temporary name
 
     Ops->>NCrypt: NCryptCreatePersistedKey(..., "RSA", "WebKey_v2", AT_KEYEXCHANGE)
     NCrypt->>KSP: KSP_CreatePersistedKey()
     KSP->>HSM: C_GenerateKeyPair("WebKey_v2", 4096 bits)
 
-    note over Ops: Exporte la clé publique v2, fait signer<br/>un nouveau certificat par la CA
+    note over Ops: Exports the v2 public key, has a new<br/>certificate signed by the CA
 
-    note over Ops,HSM: Étape 2 : Bascule (ancienne clé gardée pendant la période de transition)
+    note over Ops,HSM: Step 2: Switch (old key kept during the transition period)
 
     Ops->>NCrypt: NCryptOpenKey(..., "WebKey_v1")
-    note over Ops: Utilise WebKey_v2 pour les nouvelles connexions,<br/>WebKey_v1 pour les sessions en cours
+    note over Ops: Use WebKey_v2 for new connections,<br/>WebKey_v1 for in-flight sessions
 
-    note over Ops,HSM: Étape 3 : Suppression de l'ancienne clé
+    note over Ops,HSM: Step 3: Delete the old key
 
     Ops->>NCrypt: NCryptDeleteKey(hKeyV1)
     NCrypt->>KSP: KSP_DeleteKey()
     KSP->>HSM: C_DestroyObject(hPrivV1)
     KSP->>HSM: C_DestroyObject(hPubV1)
-    note over HSM: Clé v1 définitivement supprimée du token
+    note over HSM: Key v1 permanently deleted from the token
 ```
 
 ---
 
-## Scénario 5 : Récupération d'erreur — Token absent
+## Scenario 5: Error recovery — Missing token
 
 ```mermaid
 sequenceDiagram
@@ -173,7 +173,7 @@ sequenceDiagram
     participant KSP as softhsm_ksp.dll
     participant P11 as p11_context.c
 
-    note over P11: SOFTHSM2_LIB pointe vers une DLL absente
+    note over P11: SOFTHSM2_LIB points to a missing DLL
 
     App->>NCrypt: NCryptOpenStorageProvider("SoftHSM KSP")
     NCrypt->>KSP: KSP_OpenProvider()
@@ -187,20 +187,20 @@ sequenceDiagram
     KSP-->>NCrypt: NTE_PROVIDER_DLL_FAIL
     NCrypt-->>App: NTE_PROVIDER_DLL_FAIL (0x80090011)
 
-    note over App: SOFTHSM2_LIB corrigé (redémarrage nécessaire,<br/>InitOnceExecuteOnce est one-shot)
+    note over App: SOFTHSM2_LIB corrected (restart needed,<br/>InitOnceExecuteOnce is one-shot)
 ```
 
-> **Limitation** : `InitOnceExecuteOnce` exécute le callback exactement une fois
-> par processus, même en cas d'échec. Si la DLL SoftHSM2 est absente au premier
-> appel, le processus devra être redémarré après correction du chemin.
+> **Limitation**: `InitOnceExecuteOnce` executes the callback exactly once
+> per process, even on failure. If the SoftHSM2 DLL is absent on the first
+> call, the process must be restarted after correcting the path.
 
 ---
 
-## Vue d'ensemble des dépendances entre modules
+## Module dependency overview
 
 ```mermaid
 graph TB
-    subgraph KSP["Couche KSP"]
+    subgraph KSP["KSP layer"]
         ksp_main["ksp_main.c\nGetKeyStorageInterface\nDllMain"]
         ksp_prov["ksp_provider.c\nOpenProvider\nFreeProvider"]
         ksp_key["ksp_key.c\nCreateKey / OpenKey\nDeleteKey / EnumKeys"]
@@ -208,14 +208,14 @@ graph TB
         ksp_props["ksp_properties.c\nGetKeyProperty\nSetKeyProperty"]
     end
 
-    subgraph P11["Couche PKCS#11"]
+    subgraph P11["PKCS#11 layer"]
         p11_ctx["p11_context.c\nSingleton\nLoadLibrary"]
-        p11_sess["p11_session.c\nPool de sessions\nAcquire / Release"]
-        p11_utils["p11_utils.c\nMécanismes\nConversions"]
+        p11_sess["p11_session.c\nSession pool\nAcquire / Release"]
+        p11_utils["p11_utils.c\nMechanisms\nConversions"]
     end
 
-    subgraph Common["Commun"]
-        config["config.h\nConstantes"]
+    subgraph Common["Common"]
+        config["config.h\nConstants"]
         logging["logging.c\nOutputDebugString"]
         memory["memory.c\nHeapAlloc / HeapFree"]
     end
@@ -225,7 +225,7 @@ graph TB
         bcrypt["bcrypt.lib"]
     end
 
-    HSM["softhsm2-x64.dll\n(dynamique)"]
+    HSM["softhsm2-x64.dll\n(dynamic)"]
 
     ksp_main --> ksp_prov
     ksp_main --> ksp_key

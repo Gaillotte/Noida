@@ -1,10 +1,10 @@
 # SoftHSM2 KSP — CNG Key Storage Provider via PKCS#11
 
-Prototype d'un **KSP (Key Storage Provider) Microsoft CNG** complet qui délègue toutes les opérations cryptographiques à **SoftHSM2** via l'interface PKCS#11.
+Prototype of a complete **CNG (Cryptography Next Generation) Key Storage Provider (KSP)** that delegates all cryptographic operations to **SoftHSM2** via the PKCS#11 interface.
 
-## Prérequis
+## Prerequisites
 
-| Composant | Version minimale |
+| Component | Minimum version |
 |-----------|-----------------|
 | Windows   | 10 / 11 x64     |
 | Visual Studio | 2022 (MSVC) |
@@ -12,11 +12,11 @@ Prototype d'un **KSP (Key Storage Provider) Microsoft CNG** complet qui délègu
 | SoftHSM2  | 2.6+            |
 | Windows SDK | 10.0.19041+  |
 
-### Installation de SoftHSM2
+### Installing SoftHSM2
 
-1. Télécharger l'installeur depuis https://github.com/opendnssec/SoftHSMv2
-2. Installer dans `C:\Program Files\SoftHSM2\` (chemin par défaut)
-3. Initialiser un token :
+1. Download the installer from https://github.com/opendnssec/SoftHSMv2
+2. Install in `C:\Program Files\SoftHSM2\` (default path)
+3. Initialise a token:
    ```
    softhsm2-util --init-token --slot 0 --label "MyToken" \
                  --so-pin 0000 --pin 1234
@@ -25,43 +25,43 @@ Prototype d'un **KSP (Key Storage Provider) Microsoft CNG** complet qui délègu
 ## Build
 
 ```powershell
-# Dans un terminal Visual Studio (x64 Native Tools)
+# In a Visual Studio terminal (x64 Native Tools)
 mkdir build && cd build
 cmake .. -G "Visual Studio 17 2022" -A x64
 cmake --build . --config Release
 ```
 
-La DLL `Release\softhsm_ksp.dll` est créée dans `build\Release\`.
+The DLL `Release\softhsm_ksp.dll` is built in `build\Release\`.
 
 ## Configuration
 
-| Variable d'environnement | Valeur par défaut | Description |
-|--------------------------|-------------------|-------------|
-| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Chemin vers la DLL SoftHSM2 |
-| `SOFTHSM2_PIN` | `1234` | PIN utilisateur du token |
-| `KSP_DEBUG` | `0` | Active le logging (`1` = actif) |
+| Environment variable | Default value | Description |
+|----------------------|---------------|-------------|
+| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Path to the SoftHSM2 DLL |
+| `SOFTHSM2_PIN` | `1234` | Token user PIN |
+| `KSP_DEBUG` | `0` | Enable logging (`1` = enabled) |
 
-Le logging est visible avec **DebugView** (Sysinternals) en temps réel.
+Logging is visible in real time with **DebugView** (Sysinternals).
 
-## Enregistrement du KSP
+## Registering the KSP
 
-### Via PowerShell (Administrateur)
+### Via PowerShell (Administrator)
 
 ```powershell
-.\tools\register_ksp.ps1 -DllPath "C:\chemin\vers\softhsm_ksp.dll"
+.\tools\register_ksp.ps1 -DllPath "C:\path\to\softhsm_ksp.dll"
 ```
 
-### Via le fichier .reg
+### Via the .reg file
 
-Éditer `tools\register_ksp.reg` pour remplacer `<CHEMIN_ABSOLU>`, puis double-cliquer.
+Edit `tools\register_ksp.reg` to replace `<ABSOLUTE_PATH>`, then double-click.
 
-### Vérification
+### Verification
 
 ```powershell
 certutil -csplist | Select-String "SoftHSM"
 ```
 
-### Désinstallation
+### Uninstallation
 
 ```powershell
 Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\SoftHSM KSP" -Recurse -Force
@@ -69,73 +69,73 @@ Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Providers
 
 ## Tests
 
-### Tests unitaires couche PKCS#11
+### PKCS#11 layer unit tests
 
 ```powershell
 .\build\Release\test_p11_layer.exe
 ```
 
-Couvre : initialisation, sessions, recherche, génération RSA, signature PKCS1/PSS, destruction.
+Covers: initialisation, sessions, lookup, RSA generation, PKCS1/PSS signing, destruction.
 
-### Tests d'intégration KSP
+### KSP integration tests
 
 ```powershell
 .\build\Release\test_ksp_integration.exe
 ```
 
-Couvre : OpenProvider, CreatePersistedKey, FinalizeKey, GetKeyProperty, SignHash RSA/ECDSA, ExportKey, EnumKeys, DeleteKey.
+Covers: OpenProvider, CreatePersistedKey, FinalizeKey, GetKeyProperty, SignHash RSA/ECDSA, ExportKey, EnumKeys, DeleteKey.
 
-### Tests fonctionnels complets (PowerShell)
+### Full functional tests (PowerShell)
 
 ```powershell
 .\tools\test_ksp.ps1
 ```
 
-Requiert le KSP enregistré dans le registre. Exécute 9 scénarios complets via l'API NCrypt.
+Requires the KSP registered in the registry. Runs 9 complete scenarios via the NCrypt API.
 
 ## Architecture
 
 ```
 softhsm_ksp/
-├── src/pkcs11/      Couche PKCS#11 (contexte, sessions, utilitaires)
-├── src/ksp/         Implémentation CNG KSP (provider, clés, crypto)
-├── src/common/      Logging, mémoire, configuration
-├── tools/           Scripts d'enregistrement et de test
-└── tests/           Tests unitaires et d'intégration
+├── src/pkcs11/      PKCS#11 layer (context, sessions, utilities)
+├── src/ksp/         CNG KSP implementation (provider, keys, crypto)
+├── src/common/      Logging, memory, configuration
+├── tools/           Registration and test scripts
+└── tests/           Unit and integration tests
 ```
 
-### Flux d'appel typique (signature)
+### Typical call flow (signing)
 
 ```
-Application Windows
+Windows Application
     ↓ NCryptSignHash()
 KSP_SignHash()          [ksp_crypto.c]
     ↓ P11_AcquireSession()
     ↓ C_SignInit() → C_Sign()
 SoftHSM2 (softhsm2-x64.dll)
-    ↓ résultat DER (ECDSA) → conversion r||s
-    ↓ résultat RSA → transmis tel quel
-Application Windows
+    ↓ DER result (ECDSA) → conversion r||s
+    ↓ RSA result → passed through as-is
+Windows Application
 ```
 
-## Algorithmes supportés
+## Supported algorithms
 
-| Algorithme | Génération | Signature | Déchiffrement | Export pub |
-|------------|-----------|-----------|---------------|------------|
+| Algorithm | Generation | Signing | Decryption | Public export |
+|-----------|-----------|---------|------------|---------------|
 | RSA 2048/3072/4096 | ✓ | PKCS1, PSS | PKCS1, OAEP | ✓ |
 | ECDSA P-256 | ✓ | ✓ | — | ✓ |
 | ECDSA P-384 | ✓ | ✓ | — | ✓ |
 
-Les clés privées ne sont **jamais exportables** (simuler le comportement d'un HSM matériel).
+Private keys are **never exportable** (to simulate the behaviour of a hardware HSM).
 
-## Sécurité
+## Security
 
-- Les clés privées sont marquées `CKA_SENSITIVE=TRUE`, `CKA_EXTRACTABLE=FALSE`
-- Le PIN est lu depuis la variable d'environnement `SOFTHSM2_PIN` (ne jamais coder en dur en production)
-- Zéro mémoire sensible effacée avec `SecureZeroMemory()` après usage
+- Private keys are marked `CKA_SENSITIVE=TRUE`, `CKA_EXTRACTABLE=FALSE`
+- The PIN is read from the `SOFTHSM2_PIN` environment variable (never hardcode in production)
+- Sensitive memory is zeroed with `SecureZeroMemory()` after use
 
-## Limitations connues
+## Known limitations
 
-- SoftHSM2 ne supporte pas `CKM_RSA_X_509` (raw RSA) — non implémenté
-- Import de clés privées non supporté (HSM par design)
-- Un seul token/slot utilisé (le premier avec token présent)
+- SoftHSM2 does not support `CKM_RSA_X_509` (raw RSA) — not implemented
+- Private key import not supported (HSM by design)
+- Only one token/slot used (the first one with a token present)

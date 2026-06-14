@@ -1,15 +1,15 @@
-# Initialisation — Chargement et connexion à SoftHSM2
+# Initialisation — Loading and connecting to SoftHSM2
 
-## Vue d'ensemble
+## Overview
 
-L'initialisation est **paresseuse et idempotente** : elle ne se produit qu'une
-seule fois par processus, au premier appel de `KSP_OpenProvider()`.
-Le mécanisme `InitOnceExecuteOnce` de Windows garantit que même avec N threads
-appelant simultanément, le code d'initialisation s'exécute exactement une fois.
+Initialisation is **lazy and idempotent**: it occurs only once per process,
+on the first call to `KSP_OpenProvider()`.
+Windows `InitOnceExecuteOnce` guarantees that even with N threads calling
+simultaneously, the initialisation code runs exactly once.
 
 ---
 
-## Diagramme de séquence — Premier OpenProvider
+## Sequence diagram — First OpenProvider
 
 ```mermaid
 sequenceDiagram
@@ -42,7 +42,7 @@ sequenceDiagram
     HSM-->>P11Ctx: CK_FUNCTION_LIST *
 
     P11Ctx->>HSM: C_Initialize({flags=CKF_OS_LOCKING_OK})
-    note over HSM: Mode thread-safe activé<br/>SoftHSM2 gère ses propres mutex
+    note over HSM: Thread-safe mode enabled<br/>SoftHSM2 manages its own mutexes
     HSM-->>P11Ctx: CKR_OK
 
     P11Ctx->>HSM: C_GetSlotList(tokenPresent=TRUE, NULL, &n)
@@ -51,7 +51,7 @@ sequenceDiagram
     P11Ctx->>HSM: C_GetSlotList(tokenPresent=TRUE, slots[], &n)
     HSM-->>P11Ctx: [slotId0, slotId1, …]
 
-    P11Ctx->>P11Ctx: slotId = slots[0]  ← premier slot disponible
+    P11Ctx->>P11Ctx: slotId = slots[0]  ← first available slot
     P11Ctx-->>KSP: ERROR_SUCCESS
 
     KSP->>Pool: P11_SessionPool_Initialize()
@@ -67,35 +67,35 @@ sequenceDiagram
 
 ---
 
-## Diagramme de séquence — Acquisition d'une session (première fois)
+## Sequence diagram — Session acquisition (first time)
 
 ```mermaid
 sequenceDiagram
-    participant KSP as KSP (appelant)
+    participant KSP as KSP (caller)
     participant Pool as p11_session.c
     participant HSM as softhsm2-x64.dll
 
     KSP->>Pool: P11_AcquireSession(&hSession)
 
     Pool->>Pool: WaitForSingleObject(hSemaphore, 5000ms)
-    note over Pool: Bloque si toutes les 16 sessions sont occupées
+    note over Pool: Blocks if all 16 sessions are in use
 
     Pool->>Pool: EnterCriticalSection(csPool)
-    Pool->>Pool: Cherche slot[i].bInUse == FALSE
+    Pool->>Pool: Search for slot[i].bInUse == FALSE
     Pool->>Pool: slot[i].bInUse = TRUE
     Pool->>Pool: LeaveCriticalSection(csPool)
 
     Pool->>Pool: EnterCriticalSection(slot[i].cs)
-    note over Pool: slot[i].hSession == CK_INVALID_HANDLE<br/>(première utilisation de ce slot)
+    note over Pool: slot[i].hSession == CK_INVALID_HANDLE<br/>(first use of this slot)
 
     Pool->>Pool: GetEnvironmentVariable("SOFTHSM2_PIN")
-    note over Pool: Fallback : "1234"
+    note over Pool: Fallback: "1234"
 
     Pool->>HSM: C_OpenSession(slotId, CKF_SERIAL|CKF_RW, NULL, NULL, &hSess)
     HSM-->>Pool: CKR_OK, hSession
 
     Pool->>HSM: C_Login(hSession, CKU_USER, pin, pinLen)
-    HSM-->>Pool: CKR_OK  (ou CKR_USER_ALREADY_LOGGED_IN → ignoré)
+    HSM-->>Pool: CKR_OK  (or CKR_USER_ALREADY_LOGGED_IN → ignored)
 
     Pool->>Pool: SecureZeroMemory(szPin, sizeof szPin)
     Pool->>Pool: slot[i].hSession = hSession<br/>slot[i].bLoggedIn = TRUE
@@ -106,25 +106,25 @@ sequenceDiagram
 
 ---
 
-## Diagramme de séquence — Acquisition (session déjà ouverte)
+## Sequence diagram — Acquisition (session already open)
 
 ```mermaid
 sequenceDiagram
-    participant KSP as KSP (appelant)
+    participant KSP as KSP (caller)
     participant Pool as p11_session.c
 
     KSP->>Pool: P11_AcquireSession(&hSession)
     Pool->>Pool: WaitForSingleObject(hSemaphore, 5000ms)
     Pool->>Pool: slot[i].bInUse = TRUE
     Pool->>Pool: EnterCriticalSection(slot[i].cs)
-    note over Pool: slot[i].hSession != INVALID_HANDLE<br/>→ session déjà ouverte et loguée
+    note over Pool: slot[i].hSession != INVALID_HANDLE<br/>→ session already open and logged in
     Pool->>Pool: LeaveCriticalSection(slot[i].cs)
     Pool-->>KSP: slot[i].hSession, ERROR_SUCCESS
 ```
 
 ---
 
-## Diagramme de séquence — Release et FreeProvider
+## Sequence diagram — Release and FreeProvider
 
 ```mermaid
 sequenceDiagram
@@ -141,10 +141,10 @@ sequenceDiagram
     KSP->>KSP: HeapFree(pProv)
     KSP-->>NCrypt: ERROR_SUCCESS
 
-    note over KSP: À PROCESS_DETACH (DllMain)
+    note over KSP: On PROCESS_DETACH (DllMain)
 
     KSP->>Pool: P11_SessionPool_Finalize()
-    loop pour chaque slot[i] ouvert
+    loop for each open slot[i]
         Pool->>HSM: C_CloseSession(slot[i].hSession)
         Pool->>Pool: DeleteCriticalSection(slot[i].cs)
     end
@@ -158,26 +158,26 @@ sequenceDiagram
 
 ---
 
-## Tableau des codes de retour d'initialisation
+## Initialisation return codes
 
-| Condition | Code SECURITY_STATUS |
+| Condition | SECURITY_STATUS code |
 |-----------|---------------------|
-| `LoadLibrary` échoue (DLL absente) | `NTE_PROVIDER_DLL_FAIL` |
-| `C_GetFunctionList` absent | `NTE_PROVIDER_DLL_FAIL` |
-| `C_Initialize` échoue | `P11RvToSecStatus(rv)` |
-| Aucun slot avec token présent | `NTE_NO_KEY` |
-| `CreateSemaphore` échoue | `NTE_NO_MEMORY` |
-| Succès | `ERROR_SUCCESS` |
+| `LoadLibrary` fails (DLL not found) | `NTE_PROVIDER_DLL_FAIL` |
+| `C_GetFunctionList` not found | `NTE_PROVIDER_DLL_FAIL` |
+| `C_Initialize` fails | `P11RvToSecStatus(rv)` |
+| No slot with token present | `NTE_NO_KEY` |
+| `CreateSemaphore` fails | `NTE_NO_MEMORY` |
+| Success | `ERROR_SUCCESS` |
 
 ---
 
-## Variables d'environnement
+## Environment variables
 
-| Variable | Défaut | Usage |
-|----------|--------|-------|
-| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Chemin complet vers la DLL |
-| `SOFTHSM2_PIN` | `1234` | PIN utilisateur du token |
-| `KSP_DEBUG` | `0` | `1` = active `OutputDebugString` |
+| Variable | Default | Usage |
+|----------|---------|-------|
+| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Full path to the DLL |
+| `SOFTHSM2_PIN` | `1234` | Token user PIN |
+| `KSP_DEBUG` | `0` | `1` = enables `OutputDebugString` |
 
-> **Sécurité** : le PIN est effacé de la mémoire immédiatement après `C_Login()`
-> via `SecureZeroMemory()` pour éviter qu'il reste dans la heap.
+> **Security**: the PIN is erased from memory immediately after `C_Login()`
+> via `SecureZeroMemory()` to prevent it from lingering on the heap.

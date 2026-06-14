@@ -1,55 +1,55 @@
-# Propriétés CNG — Mapping complet
+# CNG Properties — Complete mapping
 
-## Propriétés du fournisseur (Provider)
+## Provider properties
 
-| Propriété CNG | Valeur retournée | Type | Implémenté |
-|---------------|-----------------|------|-----------|
+| CNG property | Returned value | Type | Implemented |
+|--------------|----------------|------|-------------|
 | `NCRYPT_NAME_PROPERTY` | `L"SoftHSM KSP"` | `WCHAR[]` | ✓ |
 | `NCRYPT_VERSION_PROPERTY` | `1` | `DWORD` | ✓ |
 | `NCRYPT_IMPL_TYPE_PROPERTY` | `NCRYPT_IMPL_HARDWARE_FLAG` | `DWORD` | ✓ |
-| Toute autre propriété | — | — | `NTE_NOT_SUPPORTED` |
+| Any other property | — | — | `NTE_NOT_SUPPORTED` |
 
-Le flag `NCRYPT_IMPL_HARDWARE_FLAG` indique à Windows que ce fournisseur se comporte
-comme un HSM matériel (clés non exportables, sécurité renforcée).
+The `NCRYPT_IMPL_HARDWARE_FLAG` flag tells Windows that this provider behaves
+like a hardware HSM (non-exportable keys, enhanced security).
 
 ---
 
-## Propriétés des clés (Key)
+## Key properties
 
-### Tableau de correspondance
+### Mapping table
 
-| Propriété CNG | Source PKCS#11 / KSP_KEY | Type | Lecture | Écriture |
-|---------------|--------------------------|------|---------|---------|
+| CNG property | PKCS#11 / KSP_KEY source | Type | Read | Write |
+|--------------|--------------------------|------|------|-------|
 | `NCRYPT_ALGORITHM_PROPERTY` | `pKey->szAlgId` | `WCHAR[]` | ✓ | ✗ |
-| `NCRYPT_LENGTH_PROPERTY` | `pKey->dwKeyBitLen` | `DWORD` | ✓ | ✓ (avant FinalizeKey) |
+| `NCRYPT_LENGTH_PROPERTY` | `pKey->dwKeyBitLen` | `DWORD` | ✓ | ✓ (before FinalizeKey) |
 | `NCRYPT_KEY_TYPE_PROPERTY` | `pKey->dwKeySpec` | `DWORD` | ✓ | ✗ |
 | `NCRYPT_NAME_PROPERTY` | `pKey->szKeyName` | `WCHAR[]` | ✓ | ✗ |
 | `NCRYPT_UNIQUE_NAME_PROPERTY` | `pKey->szKeyName` | `WCHAR[]` | ✓ | ✗ |
-| `NCRYPT_EXPORT_POLICY_PROPERTY` | `0` (non exportable) | `DWORD` | ✓ | ✗ |
-| `NCRYPT_KEY_USAGE_PROPERTY` | calculé depuis `dwKeySpec` | `DWORD` | ✓ | ✗ |
-| `NCRYPT_ALGORITHM_GROUP_PROPERTY` | `"RSA"` ou `"ECDSA"` | `WCHAR[]` | ✓ | ✗ |
-| Toute autre propriété | — | — | `NTE_NOT_SUPPORTED` | `NTE_NOT_SUPPORTED` |
+| `NCRYPT_EXPORT_POLICY_PROPERTY` | `0` (non-exportable) | `DWORD` | ✓ | ✗ |
+| `NCRYPT_KEY_USAGE_PROPERTY` | calculated from `dwKeySpec` | `DWORD` | ✓ | ✗ |
+| `NCRYPT_ALGORITHM_GROUP_PROPERTY` | `"RSA"` or `"ECDSA"` | `WCHAR[]` | ✓ | ✗ |
+| Any other property | — | — | `NTE_NOT_SUPPORTED` | `NTE_NOT_SUPPORTED` |
 
-### Calcul de NCRYPT_KEY_USAGE_PROPERTY
+### Computing NCRYPT_KEY_USAGE_PROPERTY
 
 ```
 dwKeySpec == AT_SIGNATURE    → NCRYPT_ALLOW_SIGNING_FLAG  (0x00000002)
 dwKeySpec == AT_KEYEXCHANGE  → NCRYPT_ALLOW_DECRYPT_FLAG  (0x00000001)
 ```
 
-### Validation de NCRYPT_LENGTH_PROPERTY (écriture)
+### Validating NCRYPT_LENGTH_PROPERTY (write)
 
-Seules les tailles RSA standard sont acceptées avant `FinalizeKey` :
+Only standard RSA sizes are accepted before `FinalizeKey`:
 
 ```
-2048, 3072, 4096  → accepté
-Autre valeur      → NTE_BAD_LEN
-Après FinalizeKey → NTE_INVALID_HANDLE
+2048, 3072, 4096  → accepted
+Other value       → NTE_BAD_LEN
+After FinalizeKey → NTE_INVALID_HANDLE
 ```
 
 ---
 
-## Diagramme de séquence — GetKeyProperty
+## Sequence diagram — GetKeyProperty
 
 ```mermaid
 sequenceDiagram
@@ -60,10 +60,10 @@ sequenceDiagram
     App->>NCrypt: NCryptGetProperty(hKey,<br/>NCRYPT_ALGORITHM_PROPERTY,<br/>NULL, 0, &cbResult, 0)
     NCrypt->>KSP: KSP_GetKeyProperty(hProv, hKey,<br/>L"Algorithm", NULL, 0, &cbResult, 0)
 
-    KSP->>KSP: Valide dwMagic (KSP_KEY_MAGIC)
+    KSP->>KSP: Validate dwMagic (KSP_KEY_MAGIC)
     KSP->>KSP: wcsicmp(pszProperty, L"Algorithm") → match
     KSP->>KSP: cbNeeded = (wcslen("RSA") + 1) * 2 = 8
-    KSP->>KSP: *pcbResult = 8<br/>pbOutput == NULL → pas de copie
+    KSP->>KSP: *pcbResult = 8<br/>pbOutput == NULL → no copy
 
     KSP-->>NCrypt: ERROR_SUCCESS, cbResult=8
     NCrypt-->>App: ERROR_SUCCESS, cbResult=8
@@ -79,7 +79,7 @@ sequenceDiagram
 
 ---
 
-## Diagramme de séquence — SetKeyProperty (longueur RSA)
+## Sequence diagram — SetKeyProperty (RSA key length)
 
 ```mermaid
 sequenceDiagram
@@ -90,32 +90,32 @@ sequenceDiagram
     App->>NCrypt: NCryptSetProperty(hKey,<br/>NCRYPT_LENGTH_PROPERTY,<br/>&dwBits=4096, 4, 0)
     NCrypt->>KSP: KSP_SetKeyProperty(hProv, hKey,<br/>L"Length", &4096, 4, 0)
 
-    KSP->>KSP: Valide KSP_KEY_MAGIC
+    KSP->>KSP: Validate KSP_KEY_MAGIC
     KSP->>KSP: wcsicmp → NCRYPT_LENGTH_PROPERTY
 
-    alt Clé non encore finalisée
+    alt Key not yet finalised
         KSP->>KSP: pKey->bFinalized == FALSE → OK
-        KSP->>KSP: dwBits ∈ {2048, 3072, 4096} → valide
+        KSP->>KSP: dwBits ∈ {2048, 3072, 4096} → valid
         KSP->>KSP: pKey->dwKeyBitLen = 4096
         KSP-->>NCrypt: ERROR_SUCCESS
-    else Clé déjà finalisée
+    else Key already finalised
         KSP->>KSP: pKey->bFinalized == TRUE
         KSP-->>NCrypt: NTE_INVALID_HANDLE
-    else Taille invalide
+    else Invalid size
         KSP->>KSP: dwBits ∉ {2048, 3072, 4096}
         KSP-->>NCrypt: NTE_BAD_LEN
     end
 
-    NCrypt-->>App: (code retour)
+    NCrypt-->>App: (return code)
 ```
 
 ---
 
-## Propriétés non supportées
+## Unsupported properties
 
-Les propriétés suivantes retournent systématiquement `NTE_NOT_SUPPORTED` :
+The following properties always return `NTE_NOT_SUPPORTED`:
 
-- `SetProviderProperty` (toutes)
-- `SetKeyProperty` pour toute propriété autre que `NCRYPT_LENGTH_PROPERTY`
+- `SetProviderProperty` (all)
+- `SetKeyProperty` for any property other than `NCRYPT_LENGTH_PROPERTY`
 - `GetOperationProperty`
 - `PromptUser`
