@@ -17,6 +17,7 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [06 — Error mapping](./06-mapping-erreurs.md) | CK_RV → SECURITY_STATUS, codes by function, error flow diagram |
 | [07 — Security and threading](./07-securite-threading.md) | Concurrency, handle validation, PIN management, logging |
 | [08 — Complete flows](./08-flux-complets.md) | TLS scenarios, code signing, enumeration, key rotation, missing token error |
+| [09 — Test suite](./09-tests.md) | Three-layer test pyramid: unit tests (281 assertions, 91 % coverage), integration tests (21 tests incl. HLK scenarios 15–21), PowerShell HLK suite (61 tests) |
 
 ---
 

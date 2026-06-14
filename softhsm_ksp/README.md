@@ -69,29 +69,44 @@ Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Providers
 
 ## Tests
 
-### PKCS#11 layer unit tests
+Three complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full test reference.
 
-```powershell
-.\build\Release\test_p11_layer.exe
+### Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)
+
+```bash
+cd tests/unit && make
+./test_p11rv_mapping && ./test_logging && ./test_mechanism_resolve \
+  && ./test_export_blobs && ./test_ksp_provider && ./test_ksp_key_ops \
+  && ./test_ksp_crypto && ./test_ksp_key_props && ./test_memory && ./test_ecdsa_decode
 ```
 
-Covers: initialisation, sessions, lookup, RSA generation, PKCS1/PSS signing, destruction.
+10 test suites · 281 assertions · **91 % line coverage, 100 % function coverage** (gcov).
+Full HTML report: `tests/unit/coverage_html/index.html`.
 
-### KSP integration tests
+### Layer 2 — KSP integration tests (Windows, 21 tests)
 
 ```powershell
 .\build\Release\test_ksp_integration.exe
 ```
 
-Covers: OpenProvider, CreatePersistedKey, FinalizeKey, GetKeyProperty, SignHash RSA/ECDSA, ExportKey, EnumKeys, DeleteKey.
+Tests 1–14: original integration suite (OpenProvider → DeleteKey).  
+Tests 15–21: **HLK-conformant scenarios** — RSA PSS + BCrypt verify, RSA PKCS1 BCrypt verify,
+ECDSA P-256/P-384 BCrypt verify, RSA 3072 deferred generation, RSA OAEP decrypt, error conditions.
 
-### Full functional tests (PowerShell)
+### Layer 3 — PowerShell functional tests (registered KSP)
 
 ```powershell
+# Basic functional tests (9 scenarios)
 .\tools\test_ksp.ps1
+
+# Microsoft CNG HLK-conformant test suite (61 tests, 9 sections)
+.\tools\test_cng_hlk.ps1
 ```
 
-Requires the KSP registered in the registry. Runs 9 complete scenarios via the NCrypt API.
+`test_cng_hlk.ps1` mirrors Microsoft's **TPM 2.0 Platform Crypto Provider KSP Test**
+(HLK ID: `7c938be0-ff4a-44f9-916c-b578f027f0ca`). Covers RSA 2048/3072 PKCS1+PSS with
+BCrypt end-to-end verification, OAEP encrypt/decrypt, ECDSA P-256/P-384 with BCrypt verify,
+all NCrypt property queries, error conditions, and full key lifecycle.
 
 ## Architecture
 
