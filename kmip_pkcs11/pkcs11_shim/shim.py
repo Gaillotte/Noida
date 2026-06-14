@@ -187,8 +187,7 @@ class PKCS11Shim:
                 )
             elif key_type == KT.EC:
                 from pkcs11.util.ec import encode_named_curve_parameters
-                # Use P-256 for EC
-                ec_params = encode_named_curve_parameters('P-256')
+                ec_params = encode_named_curve_parameters('secp256r1')
                 pub, priv = self._sess().generate_keypair(
                     KT.EC,
                     label=label,
@@ -238,7 +237,6 @@ class PKCS11Shim:
                 Attr.CLASS:      ObjClass.SECRET_KEY,
                 Attr.KEY_TYPE:   key_type,
                 Attr.VALUE:      key_bytes,
-                Attr.VALUE_LEN:  length_bits // 8,
                 Attr.ID:         cka_id,
                 Attr.LABEL:      label,
                 Attr.TOKEN:      True,
@@ -395,7 +393,7 @@ class PKCS11Shim:
 
     def generate_random(self, length: int) -> bytes:
         try:
-            return bytes(self._sess().generate_random(length))
+            return bytes(self._sess().generate_random(length * 8))
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"RNG failed: {e}") from e
 

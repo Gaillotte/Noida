@@ -65,7 +65,7 @@ def _register_symmetric(payload, identity, store, shim) -> str:
 
     uid = store.create_object(
         object_type=ObjectType.SymmetricKey,
-        pkcs11_handle=int.from_bytes(cka_id, 'big'),
+        pkcs11_handle=int.from_bytes(cka_id[:8], 'big') & 0x7FFFFFFFFFFFFFFF,
         state=State.Active,
         cryptographic_algorithm=algorithm,
         cryptographic_length=length,
