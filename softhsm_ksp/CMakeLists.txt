@@ -3,16 +3,16 @@ project(softhsm_ksp C)
 
 set(CMAKE_C_STANDARD 11)
 
-# Avertissements MSVC niveau /W3 sans erreurs parasites
+# MSVC: /W3 warning level, treat warnings as errors
 if(MSVC)
     add_compile_options(/W3 /WX)
-    # Désactive les avertissements de sécurité CRT (on utilise les variantes _s)
+    # Suppress secure CRT warnings (we use _s variants throughout)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS=1)
     add_compile_definitions(WIN32_LEAN_AND_MEAN=1)
     add_compile_definitions(UNICODE=1 _UNICODE=1)
 endif()
 
-# Sources du KSP
+# KSP source files
 set(KSP_SOURCES
     src/pkcs11/p11_context.c
     src/pkcs11/p11_session.c
@@ -26,7 +26,7 @@ set(KSP_SOURCES
     src/common/memory.c
 )
 
-# DLL principale
+# Main KSP DLL
 add_library(softhsm_ksp SHARED
     ${KSP_SOURCES}
     softhsm_ksp.def
@@ -38,14 +38,13 @@ target_include_directories(softhsm_ksp PRIVATE
     src/common
 )
 
-# Liens vers les bibliothèques CNG Windows
-# softhsm2.dll est chargé dynamiquement (LoadLibrary), pas de lien statique
+# CNG Windows libraries; softhsm2.dll is loaded dynamically (LoadLibrary only)
 target_link_libraries(softhsm_ksp PRIVATE
     ncrypt
     bcrypt
 )
 
-# ── Tests unitaires couche PKCS#11 ──────────────────────────────────────────
+# ── PKCS#11 layer unit tests ─────────────────────────────────────────────────
 add_executable(test_p11_layer
     tests/test_p11_layer.c
     src/pkcs11/p11_context.c
@@ -69,7 +68,7 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS=1 WIN32_LEAN_AND_MEAN=1 UNICODE=1 _UNICODE=1)
 endif()
 
-# ── Tests d'intégration KSP ─────────────────────────────────────────────────
+# ── KSP integration tests (tests 1-14 + HLK scenarios 15-21) ─────────────────
 add_executable(test_ksp_integration
     tests/test_ksp_integration.c
     ${KSP_SOURCES}
@@ -89,7 +88,7 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS=1 WIN32_LEAN_AND_MEAN=1 UNICODE=1 _UNICODE=1)
 endif()
 
-# Installation (optionnelle)
+# Installation (optional)
 install(TARGETS softhsm_ksp
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib

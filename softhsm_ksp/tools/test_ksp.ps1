@@ -1,19 +1,19 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Tests fonctionnels du KSP SoftHSM via l'API NCrypt et certutil.
+    Functional tests for the SoftHSM KSP via the NCrypt API and certutil.
 
 .DESCRIPTION
-    Teste dans l'ordre :
-    1. Énumération du KSP (certutil -csplist)
-    2. Génération clé RSA 2048
-    3. Signature d'un hash RSA PKCS1
-    4. Vérification de la signature RSA
-    5. Génération clé ECDSA P-256
-    6. Signature ECDSA
-    7. Vérification ECDSA
+    Tests in order:
+    1. KSP enumeration (certutil -csplist)
+    2. RSA 2048 key generation
+    3. RSA PKCS1 hash signing
+    4. RSA signature verification
+    5. ECDSA P-256 key generation
+    6. ECDSA signing
+    7. ECDSA verification
     8. EnumKeys
-    9. Suppression des clés de test
+    9. Deletion of test keys
 #>
 
 $ErrorActionPreference = "Stop"
@@ -81,26 +81,26 @@ public class NativeCrypto {
 }
 "@ -PassThru | Out-Null
 
-# ── Test 1 : Énumération du KSP ─────────────────────────────────────────────
+# ── Test 1: KSP enumeration ──────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 1 : Énumération du KSP ===" -ForegroundColor Cyan
+Write-Host "=== Test 1: KSP enumeration ===" -ForegroundColor Cyan
 try {
     $output = certutil -csplist 2>&1 | Out-String
     $found  = $output -match "SoftHSM"
-    Test-Result "certutil -csplist trouve SoftHSM KSP" $found
+    Test-Result "certutil -csplist finds SoftHSM KSP" $found
 } catch {
     Test-Result "certutil -csplist" $false $_.Exception.Message
 }
 
-# Ouvre le provider
+# Open the provider
 $hProv = [IntPtr]::Zero
 $hr = [NativeCrypto]::NCryptOpenStorageProvider([ref]$hProv, $ProviderName, 0)
 Test-Result "NCryptOpenStorageProvider" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
 if ($hr -ne 0) { exit 1 }
 
-# ── Test 2 : Génération clé RSA 2048 ────────────────────────────────────────
+# ── Test 2: RSA 2048 key generation ──────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 2 : Génération RSA 2048 ===" -ForegroundColor Cyan
+Write-Host "=== Test 2: RSA 2048 key generation ===" -ForegroundColor Cyan
 $hKeyRsa = [IntPtr]::Zero
 $hr = [NativeCrypto]::NCryptCreatePersistedKey($hProv, [ref]$hKeyRsa, "RSA", $TestKeyRsa, 0, 0)
 Test-Result "NCryptCreatePersistedKey RSA" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
@@ -110,9 +110,9 @@ if ($hr -eq 0) {
     Test-Result "NCryptFinalizeKey RSA" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
 }
 
-# ── Test 3 : Signature RSA PKCS1 ────────────────────────────────────────────
+# ── Test 3: RSA PKCS1 signing ─────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 3 : Signature RSA PKCS1 ===" -ForegroundColor Cyan
+Write-Host "=== Test 3: RSA PKCS1 signing ===" -ForegroundColor Cyan
 $hashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
     [System.Text.Encoding]::UTF8.GetBytes("SoftHSM KSP Test"))
 
@@ -128,23 +128,23 @@ $sigOk = ($hr -eq 0 -and $cbResult -gt 0)
 Test-Result "NCryptSignHash RSA PKCS1" $sigOk "hr=0x$($hr.ToString('X8')) cbResult=$cbResult"
 if ($sigOk) {
     $signature = $sigBuf[0..($cbResult-1)]
-    Write-Host "  Signature (premiers 16 octets) : $([BitConverter]::ToString($signature[0..15]))"
+    Write-Host "  Signature (first 16 bytes): $([BitConverter]::ToString($signature[0..15]))"
 }
 
-# ── Test 4 : Vérification signature RSA ──────────────────────────────────────
+# ── Test 4: RSA signature verification ───────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 4 : Vérification RSA (via BCrypt) ===" -ForegroundColor Cyan
+Write-Host "=== Test 4: RSA signature verification (via BCrypt) ===" -ForegroundColor Cyan
 if ($sigOk) {
-    # Export clé publique depuis NCrypt et vérification via BCrypt
-    Write-Host "  (Vérification réalisée implicitement : signature non nulle = succès PKCS#11)"
-    Test-Result "Signature RSA non vide" ($cbResult -gt 0)
+    # Implicit verification: a non-null RSA signature from PKCS#11 confirms the sign operation succeeded
+    Write-Host "  (Verification performed implicitly: non-null signature = PKCS#11 success)"
+    Test-Result "RSA signature is non-empty" ($cbResult -gt 0)
 } else {
-    Test-Result "Vérification RSA" $false "Signature échouée"
+    Test-Result "RSA verification" $false "Signing failed"
 }
 
-# ── Test 5 : Génération clé ECDSA P-256 ─────────────────────────────────────
+# ── Test 5: ECDSA P-256 key generation ───────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 5 : Génération ECDSA P-256 ===" -ForegroundColor Cyan
+Write-Host "=== Test 5: ECDSA P-256 key generation ===" -ForegroundColor Cyan
 $hKeyEc = [IntPtr]::Zero
 $hr = [NativeCrypto]::NCryptCreatePersistedKey($hProv, [ref]$hKeyEc, "ECDSA_P256", $TestKeyEc, 0, 0)
 Test-Result "NCryptCreatePersistedKey ECDSA_P256" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
@@ -154,9 +154,9 @@ if ($hr -eq 0) {
     Test-Result "NCryptFinalizeKey ECDSA_P256" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
 }
 
-# ── Test 6 : Signature ECDSA ─────────────────────────────────────────────────
+# ── Test 6: ECDSA signing ─────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 6 : Signature ECDSA ===" -ForegroundColor Cyan
+Write-Host "=== Test 6: ECDSA signing ===" -ForegroundColor Cyan
 if ($hKeyEc -ne [IntPtr]::Zero) {
     $sigEcBuf   = New-Object byte[] 128
     $cbEcResult = [uint32]0
@@ -169,18 +169,18 @@ if ($hKeyEc -ne [IntPtr]::Zero) {
     $sigEcOk = ($hr -eq 0 -and $cbEcResult -gt 0)
     Test-Result "NCryptSignHash ECDSA" $sigEcOk "hr=0x$($hr.ToString('X8')) cbResult=$cbEcResult"
     if ($sigEcOk) {
-        Write-Host "  Signature EC (premiers 16 octets) : $([BitConverter]::ToString($sigEcBuf[0..15]))"
+        Write-Host "  EC signature (first 16 bytes): $([BitConverter]::ToString($sigEcBuf[0..15]))"
     }
 }
 
-# ── Test 7 : Vérification ECDSA ──────────────────────────────────────────────
+# ── Test 7: ECDSA verification ────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 7 : Vérification ECDSA ===" -ForegroundColor Cyan
-Test-Result "Signature ECDSA non vide" ($cbEcResult -gt 0)
+Write-Host "=== Test 7: ECDSA verification ===" -ForegroundColor Cyan
+Test-Result "ECDSA signature is non-empty" ($cbEcResult -gt 0)
 
-# ── Test 8 : EnumKeys ────────────────────────────────────────────────────────
+# ── Test 8: EnumKeys ─────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 8 : EnumKeys ===" -ForegroundColor Cyan
+Write-Host "=== Test 8: EnumKeys ===" -ForegroundColor Cyan
 try {
     $pEnumState = [IntPtr]::Zero
     $pKeyName   = [IntPtr]::Zero
@@ -191,10 +191,10 @@ try {
     do {
         $hr = [NativeCrypto]::NCryptEnumKeys($hProv, $null, [ref]$pKeyName, [ref]$pEnumState, 0)
         if ($hr -eq 0 -and $pKeyName -ne [IntPtr]::Zero) {
-            # NCryptKeyName : premier champ = pointeur vers nom (LPWSTR)
+            # NCryptKeyName: first field is a pointer to the name (LPWSTR)
             $namePtr = [System.Runtime.InteropServices.Marshal]::ReadIntPtr($pKeyName)
             $name    = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($namePtr)
-            Write-Host "  Clé énumérée : $name"
+            Write-Host "  Enumerated key: $name"
             if ($name -eq $TestKeyRsa) { $found_rsa = $true }
             if ($name -eq $TestKeyEc)  { $found_ec  = $true }
             [NativeCrypto]::NCryptFreeBuffer($pKeyName) | Out-Null
@@ -202,16 +202,16 @@ try {
         }
     } while ($hr -eq 0)
 
-    Test-Result "EnumKeys trouve clé RSA"  $found_rsa
-    Test-Result "EnumKeys trouve clé ECDSA" $found_ec
-    Write-Host "  Total clés énumérées : $count"
+    Test-Result "EnumKeys finds RSA key"   $found_rsa
+    Test-Result "EnumKeys finds ECDSA key" $found_ec
+    Write-Host "  Total enumerated keys: $count"
 } catch {
     Test-Result "EnumKeys" $false $_.Exception.Message
 }
 
-# ── Test 9 : Suppression des clés de test ────────────────────────────────────
+# ── Test 9: Test key deletion ─────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== Test 9 : Suppression des clés ===" -ForegroundColor Cyan
+Write-Host "=== Test 9: Test key deletion ===" -ForegroundColor Cyan
 if ($hKeyRsa -ne [IntPtr]::Zero) {
     $hr = [NativeCrypto]::NCryptDeleteKey($hKeyRsa, 0)
     Test-Result "NCryptDeleteKey RSA" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
@@ -223,13 +223,13 @@ if ($hKeyEc -ne [IntPtr]::Zero) {
     $hKeyEc = [IntPtr]::Zero
 }
 
-# Libère le provider
+# Free the provider
 [NativeCrypto]::NCryptFreeObject($hProv) | Out-Null
 
-# ── Résumé ────────────────────────────────────────────────────────────────────
+# ── Summary ───────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "══════════════════════════════════════" -ForegroundColor White
-Write-Host "Résultats : PASS=$Pass  FAIL=$Fail" -ForegroundColor $(if ($Fail -eq 0) {"Green"} else {"Yellow"})
+Write-Host "Results: PASS=$Pass  FAIL=$Fail" -ForegroundColor $(if ($Fail -eq 0) {"Green"} else {"Yellow"})
 Write-Host "══════════════════════════════════════" -ForegroundColor White
 
 if ($Fail -gt 0) { exit 1 }
