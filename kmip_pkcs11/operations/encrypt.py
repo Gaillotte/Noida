@@ -1,0 +1,62 @@
+"""Handle KMIP Encrypt operation."""
+
+import logging
+import os
+from ..core.enums import Tag, BlockCipherMode
+from ..core.ttlv import encode_byte_string, encode_structure, encode_text_string
+from ..core.exceptions import ItemNotFound, MissingData
+from ..lifecycle.state_machine import check_usage_allowed
+
+log = logging.getLogger(__name__)
+
+
+def handle(payload, identity: str, store, shim) -> bytes:
+    if payload is None:
+        raise MissingData("Encrypt requires a request payload")
+
+    uid_item = payload.get(Tag.UniqueIdentifier)
+    if uid_item is None:
+        raise MissingData("UniqueIdentifier is required")
+    uid = uid_item.value
+
+    data_item = payload.get(Tag.Data)
+    if data_item is None:
+        raise MissingData("Data is required for Encrypt")
+    plaintext = data_item.value
+
+    obj = store.get_object(uid)
+    if obj is None:
+        raise ItemNotFound(f"Object '{uid}' not found")
+
+    check_usage_allowed(obj["state"], "encrypt")
+
+    # IV / mechanism
+    iv_item  = payload.get(Tag.IVCounterNonce)
+    iv       = iv_item.value if iv_item else os.urandom(16)
+
+    aad_item = payload.get(Tag.AuthenticatedEncryptionAdditionalData)
+    aad      = aad_item.value if aad_item else None
+
+    # Mechanism: default to CBC
+    crypto_params = payload.get(Tag.CryptographicParameters)
+    mode = BlockCipherMode.CBC
+    if crypto_params:
+        mode_item = crypto_params.get(Tag.CryptographicParameters_BlockCipherMode)
+        if mode_item:
+            mode = mode_item.value
+
+    cka_ids = store.get_attribute(uid, "_pkcs11_cka_id")
+    if not cka_ids:
+        raise ItemNotFound("PKCS#11 handle not found")
+    cka_id = bytes.fromhex(cka_ids[0])
+
+    ciphertext, tag = shim.encrypt(cka_id, plaintext, mechanism_id=mode, iv=iv, aad=aad)
+
+    response = encode_text_string(Tag.UniqueIdentifier, uid)
+    response += encode_byte_string(Tag.Data, ciphertext)
+    response += encode_byte_string(Tag.IVCounterNonce, iv)
+    if tag:
+        response += encode_byte_string(Tag.AuthenticatedEncryptionTag, tag)
+
+    log.debug("Encrypted %d bytes for uid=%s", len(plaintext), uid)
+    return response
