@@ -4,12 +4,11 @@ Prefix: /api/v1/auth
 """
 from __future__ import annotations
 
-import io
+import base64
 import logging
+import urllib.parse
 
 import pyotp
-import qrcode  # type: ignore[import]
-import qrcode.image.svg  # type: ignore[import]
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,19 +179,12 @@ async def mfa_enable(
     current_user.mfa_secret = secret
     session.add(current_user)
 
-    # Generate a QR code as an SVG data URI so no external image service is needed
-    try:
-        factory = qrcode.image.svg.SvgPathImage
-        qr_img = qrcode.make(provisioning_uri, image_factory=factory)
-        buf = io.BytesIO()
-        qr_img.save(buf)
-        svg_bytes = buf.getvalue()
-        import base64
-        qr_data_uri = "data:image/svg+xml;base64," + base64.b64encode(svg_bytes).decode()
-    except Exception:
-        # Fall back to plain text if qrcode SVG generation is unavailable
-        import base64
-        qr_data_uri = "data:text/plain;base64," + base64.b64encode(provisioning_uri.encode()).decode()
+    # Return the provisioning URI as a data URI so clients can render a QR code
+    # using any standard TOTP authenticator app or QR library of their choice.
+    qr_data_uri = (
+        "data:text/plain;base64,"
+        + base64.b64encode(provisioning_uri.encode()).decode()
+    )
 
     await audit_record(
         session,
