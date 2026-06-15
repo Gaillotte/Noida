@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KMS — Key Management System</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Toast notifications -->
+    <div class="toast-container">
+      <div
+        v-for="toast in toasts"
+        :key="toast.id"
+        class="toast"
+        :class="'toast--' + toast.type"
+      >
+        <span class="toast__icon">
+          <svg v-if="toast.type === 'success'" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+          <svg v-else-if="toast.type === 'error'" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2.343 13.657A8 8 0 1113.657 2.343 8 8 0 012.343 13.657zM6.03 4.97a.75.75 0 00-1.06 1.06L6.94 8 4.97 9.97a.75.75 0 101.06 1.06L8 9.06l1.97 1.97a.75.75 0 101.06-1.06L9.06 8l1.97-1.97a.75.75 0 00-1.06-1.06L8 6.94 6.03 4.97z"/></svg>
+          <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 110-2 1 1 0 010 2z"/></svg>
+        </span>
+        <span class="toast__message">{{ toast.message }}</span>
+        <button class="toast__close" @click="removeToast(toast.id)">×</button>
+      </div>
+    </div>
+
+    <!-- Confirmation dialog -->
+    <div v-if="confirm.visible" class="modal-backdrop" @click.self="confirm.resolve(false)">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <h3 class="modal__title">{{ confirm.title }}</h3>
+        </div>
+        <div class="modal__body">
+          <p>{{ confirm.message }}</p>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--secondary" @click="confirm.resolve(false)">Annuler</button>
+          <button class="btn btn--danger" @click="confirm.resolve(true)">Confirmer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Login screen -->
+    <div v-if="!state.token" class="login-page">
+      <div class="login-card">
+        <div class="login-logo">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <rect width="40" height="40" rx="8" fill="#3fb950" fill-opacity="0.15"/>
+            <path d="M20 8a7 7 0 00-3 13.32V22h-2v3h2v2h3v-2h2v-3h-2v-.68A7 7 0 0020 8zm0 12a5 5 0 110-10 5 5 0 010 10z" fill="#3fb950"/>
+            <circle cx="20" cy="15" r="2" fill="#3fb950"/>
+          </svg>
+          <span class="login-logo__text">KMS</span>
+        </div>
+        <h1 class="login-title">Key Management System</h1>
+        <p class="login-subtitle">Connectez-vous pour accéder à votre espace sécurisé</p>
+        <form class="login-form" @submit.prevent="handleLogin">
+          <div class="form-group">
+            <label class="form-label" for="login-username">Nom d'utilisateur</label>
+            <input
+              id="login-username"
+              v-model="loginForm.username"
+              type="text"
+              class="form-input"
+              placeholder="Entrez votre identifiant"
+              autocomplete="username"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="login-password">Mot de passe</label>
+            <div class="input-with-toggle">
+              <input
+                id="login-password"
+                v-model="loginForm.password"
+                :type="loginForm.showPassword ? 'text' : 'password'"
+                class="form-input"
+                placeholder="Entrez votre mot de passe"
+                autocomplete="current-password"
+                required
+              />
+              <button type="button" class="input-toggle" @click="loginForm.showPassword = !loginForm.showPassword">
+                <svg v-if="!loginForm.showPassword" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 8a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"/><path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/></svg>
+                <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.359 11.238C15.06 9.72 16 8 16 8s-3-5.5-8-5.5a7.028 7.028 0 00-2.79.588l.77.771A5.944 5.944 0 018 3.5c2.12 0 3.879 1.168 5.168 2.457A13.134 13.134 0 0114.828 8c-.058.087-.122.183-.195.288-.335.48-.83 1.12-1.465 1.755-.165.165-.337.328-.517.486l.708.709z"/><path d="M11.297 9.176a3.5 3.5 0 00-4.474-4.474l.823.823a2.5 2.5 0 012.829 2.829l.822.822zm-2.943 1.299l.822.822a3.5 3.5 0 01-4.474-4.474l.823.823a2.5 2.5 0 002.829 2.829z"/><path d="M3.35 5.47c-.18.16-.353.322-.518.487A13.134 13.134 0 001.172 8l.195.288c.335.48.83 1.12 1.465 1.755C4.121 11.332 5.881 12.5 8 12.5c.716 0 1.39-.133 2.02-.36l.77.772A7.029 7.029 0 018 13.5C3 13.5 0 8 0 8s.939-1.721 2.641-3.238l.708.709zm10.296 8.884l-12-12 .708-.708 12 12-.708.708z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="form-group" v-if="loginForm.requireTotp || loginForm.totpVisible">
+            <label class="form-label" for="login-totp">Code TOTP (optionnel)</label>
+            <input
+              id="login-totp"
+              v-model="loginForm.totp"
+              type="text"
+              class="form-input"
+              placeholder="000000"
+              maxlength="6"
+              inputmode="numeric"
+            />
+          </div>
+          <button
+            v-if="!loginForm.totpVisible"
+            type="button"
+            class="btn-link"
+            @click="loginForm.totpVisible = true"
+          >
+            Utiliser un code TOTP
+          </button>
+          <button type="submit" class="btn btn--primary btn--block" :disabled="loginForm.loading">
+            <span v-if="loginForm.loading" class="spinner spinner--sm"></span>
+            <span v-else>Se connecter</span>
+          </button>
+          <p v-if="loginForm.error" class="login-error">{{ loginForm.error }}</p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Authenticated layout -->
+    <div v-else class="app-layout">
+      <!-- Sidebar -->
+      <aside class="sidebar" :class="{ 'sidebar--open': sidebarOpen }">
+        <div class="sidebar__brand">
+          <svg width="28" height="28" viewBox="0 0 40 40" fill="none">
+            <rect width="40" height="40" rx="8" fill="#3fb950" fill-opacity="0.15"/>
+            <path d="M20 8a7 7 0 00-3 13.32V22h-2v3h2v2h3v-2h2v-3h-2v-.68A7 7 0 0020 8zm0 12a5 5 0 110-10 5 5 0 010 10z" fill="#3fb950"/>
+            <circle cx="20" cy="15" r="2" fill="#3fb950"/>
+          </svg>
+          <span class="sidebar__brand-name">KMS</span>
+        </div>
+        <nav class="sidebar__nav">
+          <button
+            class="nav-item"
+            :class="{ 'nav-item--active': currentView === 'DashboardView' }"
+            @click="navigate('DashboardView')"
+          >
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h3A1.5 1.5 0 017 2.5v3A1.5 1.5 0 015.5 7h-3A1.5 1.5 0 011 5.5v-3zM2.5 2a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3zm6.5.5A1.5 1.5 0 0110.5 1h3A1.5 1.5 0 0115 2.5v3A1.5 1.5 0 0113.5 7h-3A1.5 1.5 0 019 5.5v-3zm1.5-.5a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3zM1 10.5A1.5 1.5 0 012.5 9h3A1.5 1.5 0 017 10.5v3A1.5 1.5 0 015.5 15h-3A1.5 1.5 0 011 13.5v-3zm1.5-.5a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3zm6.5.5A1.5 1.5 0 0110.5 9h3a1.5 1.5 0 011.5 1.5v3a1.5 1.5 0 01-1.5 1.5h-3A1.5 1.5 0 019 13.5v-3zm1.5-.5a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3z"/></svg>
+            <span>Tableau de bord</span>
+          </button>
+          <button
+            class="nav-item"
+            :class="{ 'nav-item--active': currentView === 'ObjectsView' }"
+            @click="navigate('ObjectsView')"
+          >
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h3A1.5 1.5 0 017 2.5v2A1.5 1.5 0 015.5 6H4v2h1.5A1.5 1.5 0 017 9.5v2A1.5 1.5 0 015.5 13h-3A1.5 1.5 0 011 11.5v-1h1v1a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5H4a1 1 0 01-1-1V6a1 1 0 011-1h1.5a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5h-3a.5.5 0 00-.5.5v1H1v-1zm9 0A1.5 1.5 0 0111.5 1h3A1.5 1.5 0 0116 2.5v2A1.5 1.5 0 0114.5 6H13v2h1.5a1.5 1.5 0 011.5 1.5v2a1.5 1.5 0 01-1.5 1.5h-3A1.5 1.5 0 0110 11.5v-1h1v1a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5H13a1 1 0 01-1-1V6a1 1 0 011-1h1.5a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5h-3a.5.5 0 00-.5.5v1h-1v-1z"/></svg>
+            <span>Objets cryptographiques</span>
+          </button>
+          <button
+            class="nav-item"
+            :class="{ 'nav-item--active': currentView === 'ClientsView' }"
+            @click="navigate('ClientsView')"
+          >
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M0 4a2 2 0 012-2h12a2 2 0 012 2v1H0V4zm0 3h16v5a2 2 0 01-2 2H2a2 2 0 01-2-2V7zm3 2a.5.5 0 00-.5.5v1a.5.5 0 00.5.5h1a.5.5 0 00.5-.5v-1a.5.5 0 00-.5-.5H3zm3 0a.5.5 0 00-.5.5v1a.5.5 0 00.5.5h1a.5.5 0 00.5-.5v-1a.5.5 0 00-.5-.5H6z"/></svg>
+            <span>Clients KMIP</span>
+          </button>
+          <button
+            class="nav-item"
+            :class="{ 'nav-item--active': currentView === 'AuditView' }"
+            @click="navigate('AuditView')"
+          >
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M5 11.5a.5.5 0 01.5-.5h9a.5.5 0 010 1h-9a.5.5 0 01-.5-.5zm0-4a.5.5 0 01.5-.5h9a.5.5 0 010 1h-9a.5.5 0 01-.5-.5zm0-4a.5.5 0 01.5-.5h9a.5.5 0 010 1h-9a.5.5 0 01-.5-.5zm-3 1a1 1 0 100-2 1 1 0 000 2zm0 4a1 1 0 100-2 1 1 0 000 2zm0 4a1 1 0 100-2 1 1 0 000 2z"/></svg>
+            <span>Journal d'audit</span>
+          </button>
+          <button
+            v-if="isAdmin"
+            class="nav-item"
+            :class="{ 'nav-item--active': currentView === 'AdminView' }"
+            @click="navigate('AdminView')"
+          >
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 01-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 01.872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 012.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 012.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 01.872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 01-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 01-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 110-5.86 2.929 2.929 0 010 5.858z"/></svg>
+            <span>Administration</span>
+          </button>
+        </nav>
+        <div class="sidebar__footer">
+          <span class="sidebar__version">v1.0.0</span>
+        </div>
+      </aside>
+
+      <!-- Overlay for mobile sidebar -->
+      <div class="sidebar-overlay" v-if="sidebarOpen" @click="sidebarOpen = false"></div>
+
+      <!-- Main content -->
+      <div class="main-wrapper">
+        <!-- Header -->
+        <header class="header">
+          <button class="hamburger" @click="sidebarOpen = !sidebarOpen">
+            <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M2.5 12a.5.5 0 01.5-.5h10a.5.5 0 010 1H3a.5.5 0 01-.5-.5zm0-4a.5.5 0 01.5-.5h10a.5.5 0 010 1H3a.5.5 0 01-.5-.5zm0-4a.5.5 0 01.5-.5h10a.5.5 0 010 1H3a.5.5 0 01-.5-.5z"/></svg>
+          </button>
+          <div class="header__title">{{ viewTitle }}</div>
+          <div class="header__actions">
+            <div class="user-info" v-if="state.user">
+              <span class="user-info__name">{{ state.user.username }}</span>
+              <span class="badge" :class="roleBadgeClass">{{ roleLabel }}</span>
+            </div>
+            <button class="btn btn--secondary btn--sm" @click="handleLogout">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M10 12.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-9a.5.5 0 01.5-.5h8a.5.5 0 01.5.5v2a.5.5 0 001 0v-2A1.5 1.5 0 009.5 2h-8A1.5 1.5 0 000 3.5v9A1.5 1.5 0 001.5 14h8a1.5 1.5 0 001.5-1.5v-2a.5.5 0 00-1 0v2z"/><path fill-rule="evenodd" d="M15.854 8.354a.5.5 0 000-.708l-3-3a.5.5 0 00-.708.708L14.293 7.5H5.5a.5.5 0 000 1h8.793l-2.147 2.146a.5.5 0 00.708.708l3-3z"/></svg>
+              Déconnexion
+            </button>
+          </div>
+        </header>
+
+        <!-- Page content -->
+        <main class="main-content">
+          <component :is="currentView" :key="currentView"></component>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

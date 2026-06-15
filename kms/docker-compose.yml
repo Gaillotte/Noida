@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kms
+      POSTGRES_USER: kms
+      POSTGRES_PASSWORD: kms_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kms"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  softhsm:
+    image: python:3.11-slim
+    command: >
+      bash -c "
+        apt-get update -qq &&
+        apt-get install -y -qq softhsm2 &&
+        softhsm2-util --init-token --slot 0 --label kms-master --pin ${HSM_PIN:-1234} --so-pin ${HSM_SO_PIN:-1234} || true &&
+        tail -f /dev/null
+      "
+    volumes:
+      - softhsm_tokens:/var/lib/softhsm/tokens
+    environment:
+      SOFTHSM2_CONF: /etc/softhsm2.conf
+
+volumes:
+  pgdata:
+  softhsm_tokens:
