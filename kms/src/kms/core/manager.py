@@ -223,7 +223,8 @@ class KeyManager:
             "Created SymmetricKey id=%s alg=%s len=%d state=%s",
             obj.id, algorithm_upper, length, state,
         )
-        return obj
+        # Reload with relationships to avoid lazy-load issues in async context
+        return await self._load_obj(session, obj.id, with_relationships=True)
 
     # ------------------------------------------------------------------
     # Create key pair
@@ -345,7 +346,9 @@ class KeyManager:
             "Created key pair alg=%s private_id=%s public_id=%s",
             algorithm_upper, priv_id, pub_id,
         )
-        return private_obj, public_obj
+        priv = await self._load_obj(session, priv_id, with_relationships=True)
+        pub = await self._load_obj(session, pub_id, with_relationships=True)
+        return priv, pub
 
     # ------------------------------------------------------------------
     # Register (import)
@@ -410,7 +413,7 @@ class KeyManager:
         await session.flush()
 
         logger.info("Registered %s id=%s", object_type, obj.id)
-        return obj
+        return await self._load_obj(session, obj.id, with_relationships=True)
 
     # ------------------------------------------------------------------
     # Retrieve

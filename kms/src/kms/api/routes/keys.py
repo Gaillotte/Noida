@@ -322,7 +322,7 @@ async def locate_objects(
         max_items=max_items,
         offset_items=offset_items,
     )
-    objects: list[ManagedObject] = await key_manager.locate(session=session, filter=locate_filter)
+    objects: list[ManagedObject] = await key_manager.locate_objects(session=session, filter=locate_filter)
     return [_summarize(obj) for obj in objects]
 
 

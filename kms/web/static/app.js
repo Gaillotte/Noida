@@ -327,8 +327,8 @@ const ObjectsView = {
       this.loading = true
       try {
         const params = new URLSearchParams()
-        params.set('skip', this.offset)
-        params.set('limit', this.perPage)
+        params.set('offset_items', this.offset)
+        params.set('max_items', this.perPage)
         if (this.filters.algorithm) params.set('algorithm', this.filters.algorithm)
         if (this.filters.state) params.set('state', this.filters.state)
         if (this.filters.search) params.set('name', this.filters.search)
@@ -384,7 +384,7 @@ const ObjectsView = {
       )
       if (!ok) return
       try {
-        await api('DELETE', `/keys/${item.unique_identifier}`)
+        await api('POST', `/keys/${item.unique_identifier}/destroy`)
         this.showToast('Clé détruite', 'success')
         await this.loadItems()
       } catch (e) { this.showToast(e.message, 'error') }
@@ -393,8 +393,7 @@ const ObjectsView = {
     async createSymKey() {
       this.formLoading = true
       try {
-        await api('POST', '/keys/', {
-          object_type: 'SymmetricKey',
+        await api('POST', '/keys/symmetric', {
           ...this.newSymKey,
         })
         this.showToast('Clé symétrique créée', 'success')
@@ -408,7 +407,7 @@ const ObjectsView = {
     async createKeyPair() {
       this.formLoading = true
       try {
-        await api('POST', '/keys/pair', { ...this.newKeyPair })
+        await api('POST', '/keys/keypair', { ...this.newKeyPair })
         this.showToast('Paire de clés créée', 'success')
         this.showNewKeyPair = false
         this.newKeyPair = { name: '', algorithm: 'RSA', length: 2048 }
@@ -705,7 +704,7 @@ const ClientsView = {
     async loadItems() {
       this.loading = true
       try {
-        const params = new URLSearchParams({ skip: this.offset, limit: this.perPage })
+        const params = new URLSearchParams({ offset: this.offset, limit: this.perPage })
         const res = await api('GET', '/clients/?' + params)
         if (res) {
           this.items = res.items || res || []
@@ -887,7 +886,7 @@ const AuditView = {
     async loadItems() {
       this.loading = true
       try {
-        const params = new URLSearchParams({ skip: this.offset, limit: this.perPage })
+        const params = new URLSearchParams({ offset: this.offset, limit: this.perPage })
         if (this.filters.actor) params.set('actor', this.filters.actor)
         if (this.filters.operation) params.set('operation', this.filters.operation)
         if (this.filters.result) params.set('result', this.filters.result)

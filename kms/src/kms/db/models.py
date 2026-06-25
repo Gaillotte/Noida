@@ -73,17 +73,17 @@ class ManagedObject(Base):
 
     # Relationships
     names: Mapped[list["ObjectName"]] = relationship(
-        "ObjectName", back_populates="obj", cascade="all, delete-orphan"
+        "ObjectName", back_populates="obj", cascade="all, delete-orphan", lazy="selectin"
     )
     links: Mapped[list["ObjectLink"]] = relationship(
         "ObjectLink", foreign_keys="ObjectLink.source_id",
-        back_populates="source", cascade="all, delete-orphan"
+        back_populates="source", cascade="all, delete-orphan", lazy="selectin"
     )
     app_info: Mapped[list["AppSpecificInfo"]] = relationship(
-        "AppSpecificInfo", back_populates="obj", cascade="all, delete-orphan"
+        "AppSpecificInfo", back_populates="obj", cascade="all, delete-orphan", lazy="selectin"
     )
     audit_events: Mapped[list["AuditEvent"]] = relationship(
-        "AuditEvent", back_populates="obj"
+        "AuditEvent", back_populates="obj", lazy="selectin"
     )
 
     def __repr__(self) -> str:

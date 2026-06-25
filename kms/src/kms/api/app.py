@@ -13,7 +13,7 @@ from kms.api.routes import audit as audit_routes
 from kms.api.routes import admin as admin_routes
 
 _log = logging.getLogger("kms.api")
-_WEB_DIR = Path(__file__).parent.parent.parent.parent.parent / "web"
+_WEB_DIR = Path(__file__).parent.parent.parent.parent / "web"
 
 
 def create_app() -> FastAPI:

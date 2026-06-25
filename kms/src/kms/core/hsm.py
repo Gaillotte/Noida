@@ -18,7 +18,7 @@ import os
 from typing import Any
 
 import pkcs11
-from pkcs11 import Attribute, KeyType, Mechanism, ObjectClass
+from pkcs11 import Attribute, GCMParams, KeyType, Mechanism, ObjectClass
 from pkcs11.exceptions import (
     MultipleObjectsReturned,
     NoSuchKey,
@@ -195,13 +195,13 @@ class HsmConnector:
                         raw = kek.encrypt(
                             key_material,
                             mechanism=Mechanism.AES_GCM,
-                            mechanism_param=(iv, b"", _GCM_TAG_BITS),
+                            mechanism_param=GCMParams(iv, None, _GCM_TAG_BITS),
                         )
                         # python-pkcs11 appends the tag to the ciphertext
                         ciphertext = raw[:-_GCM_TAG_BYTES]
                         tag = raw[-_GCM_TAG_BYTES:]
                         return ciphertext, iv, tag
-                    except (PKCS11Error, AttributeError, NotImplementedError) as exc:
+                    except (PKCS11Error, AttributeError, NotImplementedError, TypeError, Exception) as exc:
                         logger.debug(
                             "Native AES-GCM not available (%s); using software fallback.", exc
                         )
@@ -237,10 +237,10 @@ class HsmConnector:
                         plaintext = kek.decrypt(
                             combined,
                             mechanism=Mechanism.AES_GCM,
-                            mechanism_param=(iv, b"", _GCM_TAG_BITS),
+                            mechanism_param=GCMParams(iv, None, _GCM_TAG_BITS),
                         )
                         return plaintext
-                    except (PKCS11Error, AttributeError, NotImplementedError) as exc:
+                    except (PKCS11Error, AttributeError, NotImplementedError, TypeError, Exception) as exc:
                         logger.debug(
                             "Native AES-GCM decrypt not available (%s); using software fallback.",
                             exc,
@@ -384,12 +384,12 @@ class HsmConnector:
                         raw = key.encrypt(
                             plaintext,
                             mechanism=Mechanism.AES_GCM,
-                            mechanism_param=(iv, b"", _GCM_TAG_BITS),
+                            mechanism_param=GCMParams(iv, None, _GCM_TAG_BITS),
                         )
                         ciphertext = raw[:-_GCM_TAG_BYTES]
                         tag = raw[-_GCM_TAG_BYTES:]
                         return ciphertext, iv, tag
-                    except (PKCS11Error, AttributeError, NotImplementedError):
+                    except (PKCS11Error, AttributeError, NotImplementedError, TypeError, Exception):
                         # Software fallback using extracted key value
                         key_bytes = key[Attribute.VALUE]
                         aesgcm = AESGCM(key_bytes)
@@ -426,9 +426,9 @@ class HsmConnector:
                         return key.decrypt(
                             combined,
                             mechanism=Mechanism.AES_GCM,
-                            mechanism_param=(iv, b"", _GCM_TAG_BITS),
+                            mechanism_param=GCMParams(iv, None, _GCM_TAG_BITS),
                         )
-                    except (PKCS11Error, AttributeError, NotImplementedError):
+                    except (PKCS11Error, AttributeError, NotImplementedError, TypeError, Exception):
                         key_bytes = key[Attribute.VALUE]
                         aesgcm = AESGCM(key_bytes)
                         return aesgcm.decrypt(iv, ciphertext + tag, b"")
