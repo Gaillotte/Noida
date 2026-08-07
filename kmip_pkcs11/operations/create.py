@@ -101,5 +101,9 @@ def _parse_attributes(tmpl_item) -> dict:
                 result["names"].append(nv.value if nv else str(value_item.value))
             else:
                 result["names"].append(str(value_item.value))
+        elif name == "Cryptographic Domain Parameters":
+            curve_item = value_item.get(Tag.RecommendedCurve) if hasattr(value_item, 'get') else None
+            if curve_item is not None:
+                result["recommended_curve"] = curve_item.value
 
     return result

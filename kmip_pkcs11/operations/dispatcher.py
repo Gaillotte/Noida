@@ -25,6 +25,7 @@ from . import (
     sign as sign_op, signature_verify as sigver_op,
     rng_retrieve, modify_attribute, set_attribute, adjust_attribute,
     mac as mac_op, mac_verify as macver_op, hash_op,
+    import_op, export_op,
 )
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,8 @@ class OperationDispatcher:
             Operation.MAC:              mac_op.handle,
             Operation.MACVerify:        macver_op.handle,
             Operation.Hash:             hash_op.handle,
+            Operation.Import:           import_op.handle,
+            Operation.Export:           export_op.handle,
         }
 
     def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:

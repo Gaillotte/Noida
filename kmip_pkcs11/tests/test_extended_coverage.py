@@ -537,7 +537,7 @@ class TestRegisterOp:
     def test_register_unsupported_type_raises(self, store, shim):
         from kmip_pkcs11.operations import register as op
         payload = _make_payload(
-            otype=encode_enumeration(Tag.ObjectType, ObjectType.Certificate)
+            otype=encode_enumeration(Tag.ObjectType, ObjectType.SplitKey)
         )
         with pytest.raises(OperationNotSupported):
             op.handle(payload, "user", store, shim)
@@ -707,7 +707,7 @@ class TestGetOpExtended:
     def test_get_unsupported_type_raises(self, store, shim):
         from kmip_pkcs11.operations import get as op
         uid = store.create_object(
-            object_type=ObjectType.Certificate,
+            object_type=ObjectType.SplitKey,
             state=State.Active,
             extractable=True,
         )
@@ -3439,3 +3439,480 @@ class TestPhase3Dispatcher:
         item = decode_one(resp)
         status_item = item.get(Tag.ResultStatus)
         assert status_item.value == ResultStatus.Success
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 4 — Register(PublicKey/PrivateKey/Certificate), Import/Export,
+# EC curve selection, DSA
+# ══════════════════════════════════════════════════════════════════════════════
+
+from kmip_pkcs11.core.enums import RecommendedCurve, CertificateType, ValidityIndicator
+
+
+def _create_dsa_keypair(store, shim, length=1024):
+    from kmip_pkcs11.operations import create_keypair as ckp
+    attrs = encode_structure(
+        Tag.TemplateAttribute,
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.DSA))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, length)),
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+    ))
+    resp_bytes = ckp.handle(p, "user", store, shim)
+    uids = [i.value for i in decode_all(resp_bytes) if i.tag == Tag.UniqueIdentifier]
+    return uids[0], uids[1]
+
+
+def _create_ec_keypair_with_curve(store, shim, curve):
+    from kmip_pkcs11.operations import create_keypair as ckp
+    domain_params = encode_structure(
+        Tag.AttributeValue,
+        encode_enumeration(Tag.RecommendedCurve, curve),
+    )
+    attrs = encode_structure(
+        Tag.TemplateAttribute,
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.ECDSA))
+        + _attr("Cryptographic Domain Parameters", domain_params),
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+    ))
+    resp_bytes = ckp.handle(p, "user", store, shim)
+    uids = [i.value for i in decode_all(resp_bytes) if i.tag == Tag.UniqueIdentifier]
+    return uids[0], uids[1]
+
+
+def _sign_and_verify(store, shim, pub_uid, priv_uid, message):
+    from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
+    sign_payload = _make_payload(
+        uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+        data=encode_byte_string(Tag.Data, message),
+    )
+    sign_resp = sign_op.handle(sign_payload, "user", store, shim)
+    signature = next(i.value for i in decode_all(sign_resp) if i.tag == Tag.SignatureData)
+
+    ver_payload = _make_payload(
+        uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+        data=encode_byte_string(Tag.Data, message),
+        sig=encode_byte_string(Tag.SignatureData, signature),
+    )
+    ver_resp = sigver_op.handle(ver_payload, "user", store, shim)
+    return next(i.value for i in decode_all(ver_resp) if i.tag == Tag.ValidityIndicator)
+
+
+class TestPhase4DSALive:
+    def test_dsa_sign_verify_roundtrip(self, store, shim):
+        pub_uid, priv_uid = _create_dsa_keypair(store, shim)
+        validity = _sign_and_verify(store, shim, pub_uid, priv_uid, b"DSA sign test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_dsa_keypair_has_correct_algorithm(self, store, shim):
+        pub_uid, priv_uid = _create_dsa_keypair(store, shim)
+        obj = store.get_object(priv_uid)
+        assert obj["cryptographic_algorithm"] == CryptographicAlgorithm.DSA
+
+
+def _ec_params_for(store, shim, pub_uid):
+    """Ground-truth curve check — read CKA_EC_PARAMS directly off the token."""
+    from pkcs11 import Attribute as _Attr, ObjectClass as _ObjClass
+    cka_id = bytes.fromhex(store.get_attribute(pub_uid, "_pkcs11_cka_id")[0])
+    key = shim._find_key(cka_id, _ObjClass.PUBLIC_KEY)
+    return bytes(key[_Attr.EC_PARAMS])
+
+
+class TestPhase4ECCurveSelection:
+    def test_p384_curve_roundtrip(self, store, shim):
+        from pkcs11.util.ec import encode_named_curve_parameters
+        pub_uid, priv_uid = _create_ec_keypair_with_curve(store, shim, RecommendedCurve.P_384)
+        assert _ec_params_for(store, shim, pub_uid) == encode_named_curve_parameters('secp384r1')
+        validity = _sign_and_verify(store, shim, pub_uid, priv_uid, b"P-384 curve test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_p521_curve_roundtrip(self, store, shim):
+        from pkcs11.util.ec import encode_named_curve_parameters
+        pub_uid, priv_uid = _create_ec_keypair_with_curve(store, shim, RecommendedCurve.P_521)
+        assert _ec_params_for(store, shim, pub_uid) == encode_named_curve_parameters('secp521r1')
+        validity = _sign_and_verify(store, shim, pub_uid, priv_uid, b"P-521 curve test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_p192_curve_roundtrip(self, store, shim):
+        from pkcs11.util.ec import encode_named_curve_parameters
+        pub_uid, priv_uid = _create_ec_keypair_with_curve(store, shim, RecommendedCurve.P_192)
+        assert _ec_params_for(store, shim, pub_uid) == encode_named_curve_parameters('secp192r1')
+        validity = _sign_and_verify(store, shim, pub_uid, priv_uid, b"P-192 curve test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_secp256k1_curve_roundtrip(self, store, shim):
+        from pkcs11.util.ec import encode_named_curve_parameters
+        pub_uid, priv_uid = _create_ec_keypair_with_curve(store, shim, RecommendedCurve.SECP256K1)
+        assert _ec_params_for(store, shim, pub_uid) == encode_named_curve_parameters('secp256k1')
+        validity = _sign_and_verify(store, shim, pub_uid, priv_uid, b"secp256k1 curve test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_curves_produce_different_ec_params(self, store, shim):
+        """Distinct RecommendedCurve requests must not silently collapse to one curve."""
+        pub_192, _ = _create_ec_keypair_with_curve(store, shim, RecommendedCurve.P_192)
+        pub_384, _ = _create_ec_keypair_with_curve(store, shim, RecommendedCurve.P_384)
+        assert _ec_params_for(store, shim, pub_192) != _ec_params_for(store, shim, pub_384)
+
+    def test_default_curve_is_p256(self, store, shim):
+        from kmip_pkcs11.operations import create_keypair as ckp
+        from pkcs11.util.ec import encode_named_curve_parameters
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.ECDSA)),
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+        ))
+        resp_bytes = ckp.handle(p, "user", store, shim)
+        uids = [i.value for i in decode_all(resp_bytes) if i.tag == Tag.UniqueIdentifier]
+        assert _ec_params_for(store, shim, uids[0]) == encode_named_curve_parameters('secp256r1')
+        validity = _sign_and_verify(store, shim, uids[0], uids[1], b"default curve test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_unsupported_curve_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_keypair as ckp
+        domain_params = encode_structure(
+            Tag.AttributeValue,
+            encode_enumeration(Tag.RecommendedCurve, 999),
+        )
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.ECDSA))
+            + _attr("Cryptographic Domain Parameters", domain_params),
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+        ))
+        with pytest.raises(InvalidField):
+            ckp.handle(p, "user", store, shim)
+
+
+class TestPhase4RegisterPublicPrivateKey:
+    """Register PublicKey/PrivateKey — RSA DER import round-tripped through Get()."""
+
+    def _generate_extractable_rsa_der(self, shim):
+        pub_id, priv_id = shim.generate_key_pair(
+            algorithm=CryptographicAlgorithm.RSA, key_length=2048,
+            label="phase4-reg-source", extractable=True, sensitive=False,
+        )
+        return shim.get_public_key_der(pub_id), shim.get_private_key_der(priv_id)
+
+    def test_register_public_key_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op, get as get_op
+        pub_der, _ = self._generate_extractable_rsa_der(shim)
+
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.RSA)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS1)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, pub_der))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + key_block + attrs
+        ))
+        resp = reg_op.handle(p, "user", store, shim)
+        uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+
+        obj = store.get_object(uid)
+        assert obj["object_type"] == ObjectType.PublicKey
+        assert obj["state"] == State.Active
+
+        get_resp = get_op.handle(_uid_payload(uid), "user", store, shim)
+        managed_obj = next(i for i in decode_all(get_resp) if i.tag == Tag.ManagedObject)
+        fetched_der = managed_obj.get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
+        assert fetched_der == pub_der
+
+    def test_register_private_key_pkcs1_then_sign(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        pub_der, priv_der = self._generate_extractable_rsa_der(shim)
+
+        pub_attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.RSA)),
+        )
+        pub_key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS1)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, pub_der))
+        )
+        pub_p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + pub_key_block + pub_attrs
+        ))
+        pub_resp = reg_op.handle(pub_p, "user", store, shim)
+        pub_uid = decode_one(encode_structure(Tag.ResponsePayload, pub_resp)).get(Tag.UniqueIdentifier).value
+
+        priv_key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS1)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, priv_der))
+        )
+        priv_p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PrivateKey) + priv_key_block + pub_attrs
+        ))
+        priv_resp = reg_op.handle(priv_p, "user", store, shim)
+        priv_uid = decode_one(encode_structure(Tag.ResponsePayload, priv_resp)).get(Tag.UniqueIdentifier).value
+
+        validity = _sign_and_verify(store, shim, pub_uid, priv_uid, b"registered key sign test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_register_private_key_pkcs8(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        from asn1crypto.keys import RSAPrivateKey as ASN1RSAKey, PrivateKeyInfo
+        _, priv_der = self._generate_extractable_rsa_der(shim)
+        pkcs8_der = PrivateKeyInfo.wrap(ASN1RSAKey.load(priv_der), 'rsa').dump()
+
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.RSA)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS8)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, pkcs8_der))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PrivateKey) + key_block + attrs
+        ))
+        resp = reg_op.handle(p, "user", store, shim)
+        uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+        obj = store.get_object(uid)
+        assert obj["object_type"] == ObjectType.PrivateKey
+
+    def test_register_public_key_missing_algorithm_raises(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        pub_der, _ = self._generate_extractable_rsa_der(shim)
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS1)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, pub_der))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + key_block
+        ))
+        with pytest.raises(MissingData):
+            reg_op.handle(p, "user", store, shim)
+
+    def test_register_public_key_wrong_algorithm_raises(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        pub_der, _ = self._generate_extractable_rsa_der(shim)
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.EC)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS1)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, pub_der))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + key_block + attrs
+        ))
+        with pytest.raises(CryptographicFailure):
+            reg_op.handle(p, "user", store, shim)
+
+
+class TestPhase4RegisterCertificate:
+    def test_register_and_get_certificate(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op, get as get_op
+        fake_der = b"\x30\x82\x01\x00" + os.urandom(252)  # not a real cert, just opaque bytes
+
+        cert = encode_structure(
+            Tag.Certificate,
+            encode_enumeration(Tag.CertificateType, CertificateType.X509)
+            + encode_byte_string(Tag.CertificateValue, fake_der)
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.Certificate) + cert
+        ))
+        resp = reg_op.handle(p, "user", store, shim)
+        uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+
+        obj = store.get_object(uid)
+        assert obj["object_type"] == ObjectType.Certificate
+        assert obj["state"] == State.Active
+
+        get_resp = get_op.handle(_uid_payload(uid), "user", store, shim)
+        items = decode_all(get_resp)
+        cert_struct = next(i for i in items if i.tag == Tag.Certificate)
+        fetched_der = cert_struct.get(Tag.CertificateValue).value
+        fetched_type = cert_struct.get(Tag.CertificateType).value
+        assert fetched_der == fake_der
+        assert fetched_type == CertificateType.X509
+
+    def test_register_certificate_missing_value_raises(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        cert = encode_structure(
+            Tag.Certificate,
+            encode_enumeration(Tag.CertificateType, CertificateType.X509)
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.Certificate) + cert
+        ))
+        with pytest.raises(MissingData):
+            reg_op.handle(p, "user", store, shim)
+
+    def test_register_certificate_missing_structure_raises(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.Certificate)
+        ))
+        with pytest.raises(MissingData):
+            reg_op.handle(p, "user", store, shim)
+
+
+class TestPhase4Import:
+    def test_import_new_object(self, store, shim):
+        from kmip_pkcs11.operations import import_op
+        key_bytes = os.urandom(16)
+        client_uid = "client-chosen-uid-" + os.urandom(4).hex()
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.Raw)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, key_bytes))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, client_uid)
+            + encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+            + key_block + attrs
+        ))
+        resp = import_op.handle(p, "user", store, shim)
+        result_uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+        assert result_uid == client_uid
+        assert store.object_exists(client_uid)
+
+    def test_import_existing_without_replace_raises(self, store, shim):
+        from kmip_pkcs11.operations import import_op
+        client_uid = "dup-uid-" + os.urandom(4).hex()
+        key_bytes = os.urandom(16)
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.Raw)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, key_bytes))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, client_uid)
+            + encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+            + key_block + attrs
+        ))
+        import_op.handle(p, "user", store, shim)  # first import succeeds
+        with pytest.raises(InvalidField):
+            import_op.handle(p, "user", store, shim)  # second: no ReplaceExisting
+
+    def test_import_existing_with_replace_succeeds(self, store, shim):
+        from kmip_pkcs11.operations import import_op
+        client_uid = "replace-uid-" + os.urandom(4).hex()
+
+        def make_payload(key_bytes, replace):
+            attrs = encode_structure(
+                Tag.TemplateAttribute,
+                _attr("Cryptographic Algorithm",
+                      encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES)),
+            )
+            key_block = encode_structure(
+                Tag.KeyBlock,
+                encode_enumeration(Tag.KeyFormatType, KeyFormatType.Raw)
+                + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, key_bytes))
+            )
+            fields = (
+                encode_text_string(Tag.UniqueIdentifier, client_uid)
+                + encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+                + key_block + attrs
+            )
+            if replace:
+                from kmip_pkcs11.core.ttlv import encode_boolean
+                fields += encode_boolean(Tag.ReplaceExisting, True)
+            return decode_one(encode_structure(Tag.RequestPayload, fields))
+
+        import_op.handle(make_payload(os.urandom(16), False), "user", store, shim)
+        import_op.handle(make_payload(os.urandom(16), True), "user", store, shim)  # replace: OK
+        assert store.object_exists(client_uid)
+
+    def test_import_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import import_op
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+        ))
+        with pytest.raises(MissingData):
+            import_op.handle(p, "user", store, shim)
+
+    def test_import_missing_object_type_raises(self, store, shim):
+        from kmip_pkcs11.operations import import_op
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, "some-uid")
+        ))
+        with pytest.raises(MissingData):
+            import_op.handle(p, "user", store, shim)
+
+    def test_import_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import import_op
+        with pytest.raises(MissingData):
+            import_op.handle(None, "user", MagicMock(), shim)
+
+
+class TestPhase4Export:
+    def test_export_delegates_to_get(self, store, shim):
+        from kmip_pkcs11.operations import export_op, get as get_op
+        assert export_op.handle is get_op.handle
+
+    def test_export_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        uid = _create_aes_uid(store, shim)
+        store.activate(uid)
+        d = OperationDispatcher(store=store, shim=shim)
+        req_payload = encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, uid))
+        batch_item = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.Export) + req_payload
+        ))
+        resp = d.dispatch(batch_item, "user")
+        item = decode_one(resp)
+        assert item.get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+class TestPhase4QueryAndDispatcher:
+    def test_import_export_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        resp = op.handle(None, "user", store, shim)
+        ops = [i.value for i in decode_all(resp) if i.tag == Tag.Operations]
+        assert Operation.Import in ops
+        assert Operation.Export in ops
+
+    def test_certificate_object_type_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        resp = op.handle(None, "user", store, shim)
+        obj_types = [i.value for i in decode_all(resp) if i.tag == Tag.ObjectTypes]
+        assert ObjectType.Certificate in obj_types
+
+    def test_import_export_registered_in_dispatcher(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.Import in d._handlers
+        assert Operation.Export in d._handlers

@@ -101,6 +101,14 @@ class Tag(IntEnum):
     ValidityIndicator       = 0x420092  # SignatureVerify response
     MACData                 = 0x42004E  # MAC response / MACVerify request
 
+    # EC / DSA domain parameters
+    CryptographicDomainParameters = 0x42002D
+    RecommendedCurve        = 0x420072
+    QLength                 = 0x42006C
+
+    # Import / Export (v2.0+)
+    ReplaceExisting         = 0x420068
+
     # Operation payloads
     TemplateAttribute       = 0x420091
     CommonAttributes        = 0x421F22
@@ -397,6 +405,15 @@ class AdjustmentType(IntEnum):
     Increment = 0x00000001
     Decrement = 0x00000002
     Set       = 0x00000003
+
+
+class RecommendedCurve(IntEnum):
+    P_192     = 0x00000001
+    P_224     = 0x00000004
+    P_256     = 0x00000007
+    P_384     = 0x0000000A
+    P_521     = 0x0000000D
+    SECP256K1 = 0x00000019
 
 
 class NameType(IntEnum):

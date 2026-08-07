@@ -1,12 +1,22 @@
 """Handle KMIP CreateKeyPair operation."""
 
 import logging
-from ..core.enums import Tag, ObjectType, State, CryptographicUsageMask
+from ..core.enums import Tag, ObjectType, State, CryptographicUsageMask, RecommendedCurve
 from ..core.ttlv import encode_text_string, encode_structure
 from ..core.exceptions import MissingData, InvalidField
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
+
+# KMIP RecommendedCurve → OpenSSL curve name (python-pkcs11 util.ec.encode_named_curve_parameters)
+CURVE_TO_NAME = {
+    RecommendedCurve.P_192:     'secp192r1',
+    RecommendedCurve.P_224:     'secp224r1',
+    RecommendedCurve.P_256:     'secp256r1',
+    RecommendedCurve.P_384:     'secp384r1',
+    RecommendedCurve.P_521:     'secp521r1',
+    RecommendedCurve.SECP256K1: 'secp256k1',
+}
 
 
 def handle(payload, identity: str, store, shim) -> bytes:
@@ -28,15 +38,23 @@ def handle(payload, identity: str, store, shim) -> bytes:
     pub_mask   = pub_attrs.get("usage_mask",  CryptographicUsageMask.Verify)
     priv_mask  = priv_attrs.get("usage_mask", CryptographicUsageMask.Sign)
     names      = pub_attrs.get("names") or common_attrs.get("names", [])
+    curve_enum = (pub_attrs.get("recommended_curve")
+                  or common_attrs.get("recommended_curve")
+                  or RecommendedCurve.P_256)
 
     if algorithm is None:
         raise MissingData("CryptographicAlgorithm is required")
+
+    curve_name = CURVE_TO_NAME.get(curve_enum)
+    if curve_name is None:
+        raise InvalidField(f"Unsupported RecommendedCurve {curve_enum!r}")
 
     label = names[0] if names else f"kmip-kp-{algorithm}"
 
     pub_cka_id, priv_cka_id = shim.generate_key_pair(
         algorithm=algorithm,
         key_length=length,
+        curve=curve_name,
         label=label,
         sign=bool(priv_mask & CryptographicUsageMask.Sign),
         verify=bool(pub_mask & CryptographicUsageMask.Verify),

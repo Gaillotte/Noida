@@ -98,8 +98,9 @@ class MetadataStore:
         raw_key_value: Optional[bytes] = None,
         names: Optional[List[str]] = None,
         activation_date: Optional[datetime.datetime] = None,
+        uid: Optional[str] = None,
     ) -> str:
-        uid = str(uuid.uuid4())
+        uid = uid or str(uuid.uuid4())
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
         act_ts = activation_date.timestamp() if activation_date else None
 
@@ -157,6 +158,12 @@ class MetadataStore:
     def set_state(self, uid: str, state: int):
         conn = self._conn()
         conn.execute("UPDATE kmip_objects SET state=? WHERE uuid=?", (state, uid))
+        conn.commit()
+
+    def delete_object(self, uid: str):
+        """Permanently remove an object and its attributes (used by Import/ReplaceExisting)."""
+        conn = self._conn()
+        conn.execute("DELETE FROM kmip_objects WHERE uuid=?", (uid,))
         conn.commit()
 
     def set_destroy(self, uid: str):

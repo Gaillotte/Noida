@@ -20,7 +20,7 @@ KT       = KeyType
 MF       = MechanismFlag
 from pkcs11 import exceptions as pkcs11_exc
 
-from ..core.enums import CryptographicAlgorithm, BlockCipherMode
+from ..core.enums import CryptographicAlgorithm, BlockCipherMode, KeyFormatType
 from ..core.exceptions import (
     CryptographicFailure, NotExtractable, GeneralFailure, ItemNotFound
 )
@@ -35,6 +35,7 @@ ALGO_TO_PKCS11_KEYTYPE = {
     CryptographicAlgorithm.RSA:    KT.RSA,
     CryptographicAlgorithm.EC:     KT.EC,
     CryptographicAlgorithm.ECDSA:  KT.EC,
+    CryptographicAlgorithm.DSA:    KT.DSA,
     CryptographicAlgorithm.HMACMD5:    KT._MD5_HMAC,
     CryptographicAlgorithm.HMACSHA1:   KT.SHA_1_HMAC,
     CryptographicAlgorithm.HMACSHA224: KT.SHA224_HMAC,
@@ -201,6 +202,7 @@ class PKCS11Shim:
         self,
         algorithm: int,
         key_length: int = 2048,
+        curve: str = 'secp256r1',
         label: str = "",
         extractable: bool = False,
         sensitive: bool = True,
@@ -208,7 +210,7 @@ class PKCS11Shim:
         verify: bool = True,
     ) -> Tuple[bytes, bytes]:
         """
-        Generate RSA or EC key pair.
+        Generate RSA, EC, or DSA key pair.
         Returns (pub_cka_id, priv_cka_id).
         """
         key_type = ALGO_TO_PKCS11_KEYTYPE.get(algorithm)
@@ -241,7 +243,7 @@ class PKCS11Shim:
                 )
             elif key_type == KT.EC:
                 from pkcs11.util.ec import encode_named_curve_parameters
-                ec_params = encode_named_curve_parameters('secp256r1')
+                ec_params = encode_named_curve_parameters(curve)
                 pub, priv = self._sess().generate_keypair(
                     KT.EC,
                     label=label,
@@ -250,6 +252,25 @@ class PKCS11Shim:
                     public_template={
                         Attr.ID: pub_id,
                         Attr.EC_PARAMS: ec_params,
+                        Attr.VERIFY: verify,
+                    },
+                    private_template={
+                        Attr.ID: priv_id,
+                        Attr.SENSITIVE: sensitive,
+                        Attr.EXTRACTABLE: extractable,
+                        Attr.SIGN: sign,
+                    },
+                )
+            elif key_type == KT.DSA:
+                # DSA needs domain parameters (P, Q, G) generated before the key pair.
+                domain_params = self._sess().generate_domain_parameters(
+                    KT.DSA, key_length, store=False
+                )
+                pub, priv = domain_params.generate_keypair(
+                    store=True,
+                    label=label,
+                    public_template={
+                        Attr.ID: pub_id,
                         Attr.VERIFY: verify,
                     },
                     private_template={
@@ -302,6 +323,75 @@ class PKCS11Shim:
             return cka_id
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Key import failed: {e}") from e
+
+    def import_public_key(
+        self,
+        algorithm: int,
+        der_bytes: bytes,
+        key_format_type: int,
+        label: str = "",
+        verify: bool = True,
+    ) -> bytes:
+        """Import an externally supplied RSA public key (PKCS#1 DER). Returns cka_id."""
+        if algorithm != CryptographicAlgorithm.RSA:
+            raise CryptographicFailure(f"Register PublicKey only supports RSA, got algorithm {algorithm}")
+
+        from pkcs11.util.rsa import decode_rsa_public_key
+        try:
+            template = decode_rsa_public_key(der_bytes, capabilities=MF.VERIFY if verify else MF(0))
+        except Exception as exc:
+            raise CryptographicFailure(f"Could not parse RSA public key DER: {exc}") from exc
+
+        cka_id = os.urandom(16)
+        template.update({
+            Attr.ID:    cka_id,
+            Attr.LABEL: label,
+            Attr.TOKEN: True,
+            Attr.VERIFY: verify,
+        })
+        try:
+            self._sess().create_object(template)
+            return cka_id
+        except pkcs11_exc.PKCS11Error as exc:
+            raise CryptographicFailure(f"Public key import failed: {exc}") from exc
+
+    def import_private_key(
+        self,
+        algorithm: int,
+        der_bytes: bytes,
+        key_format_type: int,
+        label: str = "",
+        extractable: bool = True,
+        sensitive: bool = False,
+        sign: bool = True,
+    ) -> bytes:
+        """Import an externally supplied RSA private key (PKCS#1 or PKCS#8 DER). Returns cka_id."""
+        if algorithm != CryptographicAlgorithm.RSA:
+            raise CryptographicFailure(f"Register PrivateKey only supports RSA, got algorithm {algorithm}")
+
+        from pkcs11.util.rsa import decode_rsa_private_key
+        try:
+            if key_format_type == KeyFormatType.PKCS8:
+                from asn1crypto.keys import PrivateKeyInfo as _PKInfo
+                der_bytes = _PKInfo.load(der_bytes)['private_key'].parsed.dump()
+            template = decode_rsa_private_key(der_bytes, capabilities=MF.SIGN if sign else MF(0))
+        except Exception as exc:
+            raise CryptographicFailure(f"Could not parse RSA private key DER: {exc}") from exc
+
+        cka_id = os.urandom(16)
+        template.update({
+            Attr.ID:         cka_id,
+            Attr.LABEL:      label,
+            Attr.TOKEN:      True,
+            Attr.SENSITIVE:  sensitive,
+            Attr.EXTRACTABLE: extractable,
+            Attr.SIGN:       sign,
+        })
+        try:
+            self._sess().create_object(template)
+            return cka_id
+        except pkcs11_exc.PKCS11Error as exc:
+            raise CryptographicFailure(f"Private key import failed: {exc}") from exc
 
     # ── key retrieval ────────────────────────────────────────────────────────
 
@@ -505,10 +595,12 @@ class PKCS11Shim:
 
     def verify(self, cka_id: bytes, data: bytes, signature: bytes, mechanism=None) -> bool:
         try:
-            key  = self._find_key(cka_id, ObjClass.PUBLIC_KEY)
-            mech = mechanism or Mechanism.RSA_PKCS
-            key.verify(data, signature, mechanism=mech)
-            return True
+            key    = self._find_key(cka_id, ObjClass.PUBLIC_KEY)
+            mech   = mechanism or Mechanism.RSA_PKCS
+            result = key.verify(data, signature, mechanism=mech)
+            # python-pkcs11 raises SignatureInvalid for some mechanisms but
+            # returns a bool directly for others (e.g. DSA) — honor whichever.
+            return True if result is None else bool(result)
         except pkcs11_exc.SignatureInvalid:
             return False
         except pkcs11_exc.PKCS11Error as e:

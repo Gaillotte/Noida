@@ -25,6 +25,15 @@ _EC_HASH_TO_MECH = {
     HashingAlgorithm.SHA_512: Mechanism.ECDSA_SHA512,
 }
 
+# DSA: map KMIP HashingAlgorithm → DSA_SHA*
+_DSA_HASH_TO_MECH = {
+    HashingAlgorithm.SHA_1:   Mechanism.DSA_SHA1,
+    HashingAlgorithm.SHA_224: Mechanism.DSA_SHA224,
+    HashingAlgorithm.SHA_256: Mechanism.DSA_SHA256,
+    HashingAlgorithm.SHA_384: Mechanism.DSA_SHA384,
+    HashingAlgorithm.SHA_512: Mechanism.DSA_SHA512,
+}
+
 _EC_ALGORITHMS = {CryptographicAlgorithm.EC, CryptographicAlgorithm.ECDSA}
 
 
@@ -32,6 +41,8 @@ def _select_mechanism(algorithm, hash_alg):
     """Return the PKCS#11 signing mechanism for the given key algorithm and hash."""
     if algorithm in _EC_ALGORITHMS:
         return _EC_HASH_TO_MECH.get(hash_alg, Mechanism.ECDSA_SHA256)
+    if algorithm == CryptographicAlgorithm.DSA:
+        return _DSA_HASH_TO_MECH.get(hash_alg, Mechanism.DSA_SHA256)
     return _RSA_HASH_TO_MECH.get(hash_alg, Mechanism.SHA256_RSA_PKCS)
 
 

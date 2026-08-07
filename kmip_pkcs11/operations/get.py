@@ -38,6 +38,8 @@ def handle(payload, identity: str, store, shim) -> bytes:
         return _get_asymmetric(uid, obj, store, shim, obj_type)
     elif obj_type == ObjectType.SecretData:
         return _get_secret_data(uid, obj, store)
+    elif obj_type == ObjectType.Certificate:
+        return _get_certificate(uid, obj, store)
     else:
         raise NotExtractable(f"Get not supported for object type {obj_type}")
 
@@ -86,7 +88,9 @@ def _get_asymmetric(uid, obj, store, shim, obj_type) -> bytes:
         fmt       = KeyFormatType.PKCS1
     else:
         key_bytes = shim.get_private_key_der(cka_id)
-        fmt       = KeyFormatType.PKCS8
+        # RSA returns PKCS#1 DER (component encoding); EC returns a raw scalar.
+        algorithm = obj.get("cryptographic_algorithm")
+        fmt = KeyFormatType.PKCS1 if algorithm == CryptographicAlgorithm.RSA else KeyFormatType.ECPrivateKey
 
     key_material = encode_byte_string(Tag.KeyMaterial, key_bytes)
     key_value    = encode_structure(Tag.KeyValue, key_material)
@@ -101,6 +105,23 @@ def _get_asymmetric(uid, obj, store, shim, obj_type) -> bytes:
         encode_text_string(Tag.UniqueIdentifier, uid)
         + encode_enumeration(Tag.ObjectType, obj_type)
         + key_struct
+    )
+
+
+def _get_certificate(uid, obj, store) -> bytes:
+    from ..core.enums import CertificateType
+    raw = obj.get("raw_key_value") or b""
+    cert_type_rows = store.get_attribute(uid, "_certificate_type")
+    cert_type = cert_type_rows[0] if cert_type_rows else CertificateType.X509
+    cert = encode_structure(
+        Tag.Certificate,
+        encode_enumeration(Tag.CertificateType, cert_type)
+        + encode_byte_string(Tag.CertificateValue, raw)
+    )
+    return (
+        encode_text_string(Tag.UniqueIdentifier, uid)
+        + encode_enumeration(Tag.ObjectType, ObjectType.Certificate)
+        + cert
     )
 
 

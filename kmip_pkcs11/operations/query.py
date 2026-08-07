@@ -18,12 +18,13 @@ SUPPORTED_OPERATIONS = [
     Operation.Sign, Operation.SignatureVerify,
     Operation.RNGRetrieve,
     Operation.MAC, Operation.MACVerify, Operation.Hash,
+    Operation.Import, Operation.Export,
     Operation.Query, Operation.DiscoverVersions,
 ]
 
 SUPPORTED_OBJECT_TYPES = [
     ObjectType.SymmetricKey, ObjectType.PublicKey, ObjectType.PrivateKey,
-    ObjectType.SecretData, ObjectType.OpaqueObject,
+    ObjectType.SecretData, ObjectType.OpaqueObject, ObjectType.Certificate,
 ]
 
 
