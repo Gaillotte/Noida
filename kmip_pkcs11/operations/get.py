@@ -66,7 +66,7 @@ def _get_symmetric(uid, obj, store, shim) -> bytes:
         + encode_integer(Tag.CryptographicLength, obj["cryptographic_length"] or len(key_bytes) * 8)
         + encode_enumeration(Tag.CryptographicAlgorithm, obj["cryptographic_algorithm"] or 0)
     )
-    sym_key  = encode_structure(Tag.ManagedObject, key_block)
+    sym_key  = encode_structure(Tag.SymmetricKey, key_block)
 
     return (
         encode_text_string(Tag.UniqueIdentifier, uid)
@@ -102,7 +102,8 @@ def _get_asymmetric(uid, obj, store, shim, obj_type) -> bytes:
         encode_enumeration(Tag.KeyFormatType, fmt)
         + key_value
     )
-    key_struct = encode_structure(Tag.ManagedObject, key_block)
+    wrapper_tag = Tag.PublicKey if obj_type == ObjectType.PublicKey else Tag.PrivateKey
+    key_struct = encode_structure(wrapper_tag, key_block)
 
     return (
         encode_text_string(Tag.UniqueIdentifier, uid)
@@ -143,7 +144,7 @@ def _get_split_key(uid, obj, store) -> bytes:
         + encode_integer(Tag.CryptographicLength, obj["cryptographic_length"] or len(raw) * 8)
         + encode_enumeration(Tag.CryptographicAlgorithm, obj["cryptographic_algorithm"] or 0)
     )
-    split_key = encode_structure(Tag.ManagedObject, key_block)
+    split_key = encode_structure(Tag.SplitKey, key_block)
     return (
         encode_text_string(Tag.UniqueIdentifier, uid)
         + encode_enumeration(Tag.ObjectType, ObjectType.SplitKey)
@@ -162,7 +163,7 @@ def _get_secret_data(uid, obj, store) -> bytes:
         encode_enumeration(Tag.KeyFormatType, KeyFormatType.Opaque)
         + key_value
     )
-    secret = encode_structure(Tag.ManagedObject, key_block)
+    secret = encode_structure(Tag.SecretData, key_block)
     return (
         encode_text_string(Tag.UniqueIdentifier, uid)
         + encode_enumeration(Tag.ObjectType, ObjectType.SecretData)

@@ -3,6 +3,9 @@ from enum import IntEnum
 
 
 class Tag(IntEnum):
+    """Codepoints verified against the OASIS KMIP 2.1 tag registry (cross-checked
+    via PyKMIP's kmip/core/enums.py, itself derived from the spec)."""
+
     # Structure tags
     RequestMessage          = 0x420078
     ResponseMessage         = 0x42007B
@@ -16,7 +19,6 @@ class Tag(IntEnum):
     Credential              = 0x420023
     CredentialType          = 0x420024
     CredentialValue         = 0x420025
-    UsernamePasswordCredential = 0x420AC0  # vendor extension slot (simplified)
     Username                = 0x420099
     Password                = 0x4200A1
 
@@ -32,8 +34,14 @@ class Tag(IntEnum):
 
     # Object / attribute tags
     ObjectType              = 0x420057
-    ManagedObject           = 0x420069  # reused contextually
-    Attributes              = 0x420001  # v2.0+
+    # Real KMIP has no generic "ManagedObject" wrapper — Get responses are
+    # wrapped in the specific object type's own tag.
+    SymmetricKey            = 0x42008F
+    PrivateKey              = 0x420064
+    PublicKey               = 0x42006D
+    SplitKey                = 0x420089
+    SecretData              = 0x420085
+    Attributes              = 0x420125  # v2.0+
     Attribute               = 0x420008
     AttributeName           = 0x42000A
     AttributeValue          = 0x42000B
@@ -45,24 +53,24 @@ class Tag(IntEnum):
     CryptographicLength     = 0x42002A
     CryptographicUsageMask  = 0x42002C
     CryptographicParameters = 0x42002B
-    State                   = 0x420083
-    InitialDate             = 0x420042
-    ActivationDate          = 0x420001  # reused — kept separate by context
-    DeactivationDate        = 0x420033
-    DestroyDate             = 0x420035
+    State                   = 0x42008D
+    InitialDate             = 0x420039
+    ActivationDate          = 0x420001
+    DeactivationDate        = 0x42002F
+    DestroyDate             = 0x420033
     CompromiseOccurrenceDate= 0x420021
-    RevocationReason        = 0x420080
-    RevocationMessage       = 0x420081
-    Link                    = 0x42004B
-    LinkType                = 0x42004C
-    LinkedObjectIdentifier  = 0x42004D
+    RevocationReason        = 0x420081
+    RevocationMessage       = 0x420080
+    Link                    = 0x42004A
+    LinkType                = 0x42004B
+    LinkedObjectIdentifier  = 0x42004C
     ApplicationSpecificInformation = 0x420004
     ApplicationNamespace    = 0x420003
     ApplicationData         = 0x420002
-    Sensitive               = 0x420115
-    AlwaysSensitive         = 0x420114
-    Extractable             = 0x420108
-    NeverExtractable        = 0x420116
+    Sensitive               = 0x420120
+    AlwaysSensitive         = 0x420121
+    Extractable             = 0x420122
+    NeverExtractable        = 0x420123
 
     # Key structures
     KeyBlock                = 0x420040
@@ -73,88 +81,86 @@ class Tag(IntEnum):
     WrappingMethod          = 0x42009E
     KeyWrappingData         = 0x420046
     KeyWrappingSpecification= 0x420047
-    EncryptionKeyInformation= 0x42003D
-    MACDataKeyInformation   = 0x42004F
+    EncryptionKeyInformation= 0x420036
+    MACDataKeyInformation   = 0x42004E  # real name: MAC/Signature Key Information
 
     # Certificate
     Certificate             = 0x420013
-    CertificateType         = 0x420017
-    CertificateValue        = 0x420018
-    CertificateIdentifier   = 0x420015
-    CertificateIssuer       = 0x420016
-    CertificateSubject      = 0x420021
-    SubjectDistinguishedName= 0x420084
+    CertificateType         = 0x42001D
+    CertificateValue        = 0x42001E
+    CertificateIdentifier   = 0x420014
+    CertificateIssuer       = 0x420015
+    CertificateSubject      = 0x42001A
+    SubjectDistinguishedName= 0x4200B4
 
     # Crypto request/response
-    Data                    = 0x420028  # reused contextually
-    DataLength              = 0x420029
+    Data                    = 0x4200C2
+    DataLength              = 0x4200C4
     IVCounterNonce          = 0x42003D
-    InitIndicator           = 0x42004C
-    FinalIndicator          = 0x420041
-    AuthenticatedEncryptionAdditionalData = 0x420102
-    AuthenticatedEncryptionTag = 0x420103
-    CryptographicParameters_BlockCipherMode = 0x420011
-    PaddingMethod           = 0x420063
+    InitIndicator           = 0x4200D7
+    FinalIndicator          = 0x4200D8
+    AuthenticatedEncryptionAdditionalData = 0x4200FE
+    AuthenticatedEncryptionTag = 0x4200FF
+    CryptographicParameters_BlockCipherMode = 0x420011  # real name: Block Cipher Mode
+    PaddingMethod           = 0x42005F
     HashingAlgorithm        = 0x420038
     KeyRoleType             = 0x420083
-    SignatureData           = 0x420073  # Sign response / SignatureVerify request
-    ValidityIndicator       = 0x420092  # SignatureVerify response
-    MACData                 = 0x42004E  # MAC response / MACVerify request
+    SignatureData           = 0x4200C3  # real name: Signature Data
+    ValidityIndicator       = 0x42009B
+    MACData                 = 0x42004D  # real name: MAC/Signature
 
     # EC / DSA domain parameters
-    CryptographicDomainParameters = 0x42002D
-    RecommendedCurve        = 0x420072
-    QLength                 = 0x42006C
+    CryptographicDomainParameters = 0x420029
+    RecommendedCurve        = 0x420075
+    QLength                 = 0x420073
 
     # Import / Export (v2.0+)
-    ReplaceExisting         = 0x420068
+    ReplaceExisting         = 0x420124
 
     # Operation payloads
     TemplateAttribute       = 0x420091
-    CommonAttributes        = 0x421F22
-    PrivateKeyAttributes    = 0x421F24
-    PublicKeyAttributes     = 0x421F25
+    CommonAttributes        = 0x420126
+    PrivateKeyAttributes    = 0x420127
+    PublicKeyAttributes     = 0x420128
 
     # Query
     QueryFunction           = 0x420074
-    ApplicationNamespaces   = 0x420003
-    ObjectTypes             = 0x420057
-    Operations              = 0x42005C
+    Operations              = 0x42014F  # distinct from Operation (request field)
     ServerInformation       = 0x420088
-    VendorIdentification    = 0x420097
+    VendorIdentification    = 0x42009D
 
     # Locate
-    MaximumItems            = 0x420050
-    StorageStatusMask       = 0x420085
+    MaximumItems            = 0x42004F
+    StorageStatusMask       = 0x42008E
 
     # Revoke
-    RevocationReasonCode    = 0x42008B
+    RevocationReasonCode    = 0x420082
 
     # Re-key
-    Offset                  = 0x420059
+    Offset                  = 0x420058
 
     # Batch
     UniqueBatchItemID       = 0x420093
-    AsynchronousIndicator   = 0x42000E
-    AsynchronousCorrelationValue = 0x42000F
+    AsynchronousIndicator   = 0x420007
+    AsynchronousCorrelationValue = 0x420006
 
     # AdjustAttribute
-    AdjustmentType          = 0x420AC1  # vendor extension slot (simplified)
+    AdjustmentType          = 0x420158
 
     # DeriveKey
-    DerivationMethod        = 0x420AC2  # vendor extension slot (simplified)
-    DerivationParameters    = 0x420AC3  # vendor extension slot (simplified)
-    DerivationData          = 0x420AC4  # vendor extension slot (simplified)
+    DerivationMethod        = 0x420031
+    DerivationParameters    = 0x420032
+    DerivationData          = 0x420030
 
     # ObtainLease / GetUsageAllocation
-    LeaseTime               = 0x420AC5  # vendor extension slot (simplified)
-    LastChangeDate          = 0x420AC6  # vendor extension slot (simplified)
-    UsageLimitsCount        = 0x420AC7  # vendor extension slot (simplified)
+    LeaseTime               = 0x420049
+    LastChangeDate          = 0x420048
+    UsageLimitsCount        = 0x420096
 
     # CreateSplitKey / JoinSplitKey
-    SplitKeyParts            = 0x420AC8  # vendor extension slot (simplified)
-    SplitKeyThreshold        = 0x420AC9  # vendor extension slot (simplified)
-    SplitKeyMethod           = 0x420ACA  # vendor extension slot (simplified)
+    SplitKeyParts            = 0x42008B
+    SplitKeyThreshold        = 0x42008C
+    SplitKeyMethod           = 0x42008A
 
 
 class Type(IntEnum):

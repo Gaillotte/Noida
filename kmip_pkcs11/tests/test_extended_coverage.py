@@ -3629,7 +3629,7 @@ class TestPhase4RegisterPublicPrivateKey:
         assert obj["state"] == State.Active
 
         get_resp = get_op.handle(_uid_payload(uid), "user", store, shim)
-        managed_obj = next(i for i in decode_all(get_resp) if i.tag == Tag.ManagedObject)
+        managed_obj = next(i for i in decode_all(get_resp) if i.tag == Tag.PublicKey)
         fetched_der = managed_obj.get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
         assert fetched_der == pub_der
 
@@ -3907,7 +3907,7 @@ class TestPhase4QueryAndDispatcher:
     def test_certificate_object_type_advertised(self, store, shim):
         from kmip_pkcs11.operations import query as op
         resp = op.handle(None, "user", store, shim)
-        obj_types = [i.value for i in decode_all(resp) if i.tag == Tag.ObjectTypes]
+        obj_types = [i.value for i in decode_all(resp) if i.tag == Tag.ObjectType]
         assert ObjectType.Certificate in obj_types
 
     def test_import_export_registered_in_dispatcher(self):
@@ -3943,7 +3943,7 @@ def _create_key_agreement_keypair(store, shim, owner, algorithm, length=None):
 def _get_public_value(store, shim, pub_uid, owner):
     from kmip_pkcs11.operations import get as get_op
     resp = get_op.handle(_uid_payload(pub_uid), owner, store, shim)
-    managed_obj = next(i for i in decode_all(resp) if i.tag == Tag.ManagedObject)
+    managed_obj = next(i for i in decode_all(resp) if i.tag == Tag.PublicKey)
     return managed_obj.get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
 
 
@@ -4985,7 +4985,7 @@ class TestPhase8SplitKeyLive:
         part_uids = [i.value for i in decode_all(resp)]
 
         get_resp = get_op.handle(_uid_payload(part_uids[0]), "user", store, shim)
-        managed_obj = next(i for i in decode_all(get_resp) if i.tag == Tag.ManagedObject)
+        managed_obj = next(i for i in decode_all(get_resp) if i.tag == Tag.SplitKey)
         fetched = managed_obj.get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
         assert fetched == store.get_object(part_uids[0])["raw_key_value"]
 
@@ -5109,7 +5109,7 @@ class TestPhase8QueryAndDispatcher:
         for expected in (Operation.ReKey, Operation.ReKeyKeyPair, Operation.ReCertify,
                           Operation.RNGSeed, Operation.CreateSplitKey, Operation.JoinSplitKey):
             assert expected in ops
-        obj_types = [i.value for i in decode_all(resp) if i.tag == Tag.ObjectTypes]
+        obj_types = [i.value for i in decode_all(resp) if i.tag == Tag.ObjectType]
         assert ObjectType.SplitKey in obj_types
 
     def test_all_registered_in_dispatcher(self):

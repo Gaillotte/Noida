@@ -57,7 +57,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
 
         elif qf == QueryFunction.QueryObjects:
             for ot in SUPPORTED_OBJECT_TYPES:
-                response += encode_enumeration(Tag.ObjectTypes, ot)
+                response += encode_enumeration(Tag.ObjectType, ot)
 
         elif qf == QueryFunction.QueryServerInformation:
             response += encode_text_string(Tag.VendorIdentification, "kmip_pkcs11 v1.0")

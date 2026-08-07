@@ -162,31 +162,6 @@ def run_demo():
             log.info("[13] Register a new AES-128 key...")
             import os
             key_bytes = os.urandom(16)
-            from ..core.enums import KeyFormatType
-            from ..core.ttlv import encode_structure, encode_byte_string, encode_enumeration
-            from ..core.enums import Tag
-            key_material = encode_byte_string(Tag.KeyMaterial, key_bytes)
-            key_value    = encode_structure(Tag.KeyValue, key_material)
-            key_block    = encode_structure(
-                Tag.KeyBlock,
-                encode_enumeration(Tag.KeyFormatType, KeyFormatType.Raw) + key_value
-            )
-            attr_bytes   = (
-                _attr_bytes("Cryptographic Algorithm",
-                            encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
-                + _attr_bytes("Cryptographic Usage Mask",
-                              encode_integer_bytes(Tag.AttributeValue,
-                                                   CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt))
-            )
-            from ..core.ttlv import encode_text_string
-            from ..core.enums import ObjectType
-            payload = (
-                encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
-                + encode_structure(Tag.TemplateAttribute, attr_bytes)
-                + encode_structure(Tag.ManagedObject, key_block)
-            )
-            from ..test_app.client import _attr
-            # Use raw register via internal API
             reg_uid = _register_key(c, key_bytes, CryptographicAlgorithm.AES)
             log.info("    Registered key uid=%s", reg_uid)
 

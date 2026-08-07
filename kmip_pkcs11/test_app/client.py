@@ -98,7 +98,7 @@ class KMIPClient:
 
         resp = self._request(Operation.Query, payload)
         ops  = [i.value for i in resp.get_all(Tag.Operations)]
-        objs = [i.value for i in resp.get_all(Tag.ObjectTypes)]
+        objs = [i.value for i in resp.get_all(Tag.ObjectType)]
         vi_item = resp.get(Tag.VendorIdentification)
         return {
             "operations":   ops,
