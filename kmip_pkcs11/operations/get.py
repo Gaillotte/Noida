@@ -38,7 +38,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if obj_type == ObjectType.SymmetricKey:
         return _get_symmetric(uid, obj, store, shim, wrap_spec)
     elif obj_type in (ObjectType.PublicKey, ObjectType.PrivateKey):
-        return _get_asymmetric(uid, obj, store, shim, obj_type)
+        return _get_asymmetric(uid, obj, store, shim, obj_type, wrap_spec)
     elif obj_type == ObjectType.SecretData:
         return _get_secret_data(uid, obj, store)
     elif obj_type == ObjectType.Certificate:
@@ -127,7 +127,11 @@ def _wrapping_key_cka_id(wrapping_uid, store, usage_op: str, required_mask: int)
     return bytes.fromhex(wrapping_cka_ids[0])
 
 
-def _get_asymmetric(uid, obj, store, shim, obj_type) -> bytes:
+def _get_asymmetric(uid, obj, store, shim, obj_type, wrap_spec=None) -> bytes:
+    if wrap_spec is not None:
+        raise OperationNotSupported(
+            "Key wrapping via Get is only supported for SymmetricKey material"
+        )
     if obj_type == ObjectType.PrivateKey and not obj["extractable"]:
         raise NotExtractable("Private key is not extractable")
 

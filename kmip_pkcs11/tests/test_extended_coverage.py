@@ -5723,3 +5723,39 @@ class TestPhase11ResultReasonFidelity:
         assert ResultReason.InvalidCSR == 0x0000002F
         values = [r.value for r in ResultReason]
         assert len(values) == len(set(values))
+
+
+class TestPhase11WrapSpecOnAsymmetricKeyRejected:
+    """Regression test: a post-Phase-10-audit fix. Get computed wrap_spec but
+    only threaded it through to _get_symmetric — a Get with
+    KeyWrappingSpecification against a PrivateKey/PublicKey silently ignored
+    the spec and returned plaintext instead of erroring."""
+
+    def test_get_private_key_with_wrap_spec_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        _, priv_uid = _create_rsa_keypair(store, shim)
+        kek_uid = _create_kek_uid(store, shim)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        with pytest.raises(OperationNotSupported):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_public_key_with_wrap_spec_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        pub_uid, _ = _create_rsa_keypair(store, shim)
+        kek_uid = _create_kek_uid(store, shim)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        with pytest.raises(OperationNotSupported):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_public_key_without_wrap_spec_still_works(self, store, shim):
+        """Sanity: the fix must not break the normal (unwrapped) Get path."""
+        from kmip_pkcs11.operations import get as get_op
+        pub_uid, _ = _create_rsa_keypair(store, shim)
+        resp = get_op.handle(_uid_payload(pub_uid), "user", store, shim)
+        assert next(i for i in decode_all(resp) if i.tag == Tag.PublicKey) is not None
