@@ -20,6 +20,7 @@ SUPPORTED_OPERATIONS = [
     Operation.MAC, Operation.MACVerify, Operation.Hash,
     Operation.Import, Operation.Export,
     Operation.DeriveKey,
+    Operation.Certify, Operation.Validate,
     Operation.Query, Operation.DiscoverVersions,
 ]
 

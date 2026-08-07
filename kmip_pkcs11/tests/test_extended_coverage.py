@@ -4174,3 +4174,281 @@ class TestPhase5QueryAndDispatcher:
         resp = d.dispatch(batch_item, "alice")
         item = decode_one(resp)
         assert item.get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 6 — Certify, Validate
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _certify_rsa_keypair(store, shim, owner="user", name_attrs=b""):
+    from kmip_pkcs11.operations import certify as cert_op
+    pub_uid, priv_uid = _create_rsa_keypair(store, shim)
+    tmpl = encode_structure(Tag.TemplateAttribute, name_attrs) if name_attrs else b""
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_text_string(Tag.UniqueIdentifier, pub_uid) + tmpl
+    ))
+    resp = cert_op.handle(p, owner, store, shim)
+    cert_uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+    return cert_uid, pub_uid, priv_uid
+
+
+def _build_cert_with_dates(shim, pub_cka_id, priv_cka_id, not_before, not_after, subject_cn="dated-test"):
+    from asn1crypto import x509
+    from asn1crypto.keys import RSAPublicKey, PublicKeyInfo
+    from asn1crypto.algos import SignedDigestAlgorithm
+    from pkcs11 import Mechanism as _Mech
+    import os as _os
+
+    pub_der = shim.get_public_key_der(pub_cka_id)
+    spki = PublicKeyInfo.wrap(RSAPublicKey.load(pub_der), 'rsa')
+    name = x509.Name.build({'common_name': subject_cn})
+    sig_algo = SignedDigestAlgorithm({'algorithm': 'sha256_rsa'})
+
+    tbs = x509.TbsCertificate({
+        'version': 'v1',
+        'serial_number': int.from_bytes(_os.urandom(16), 'big') >> 1,
+        'signature': sig_algo,
+        'issuer': name,
+        'validity': x509.Validity({
+            'not_before': x509.Time({'general_time': not_before}),
+            'not_after':  x509.Time({'general_time': not_after}),
+        }),
+        'subject': name,
+        'subject_public_key_info': spki,
+    })
+    signature = shim.sign(priv_cka_id, tbs.dump(), mechanism=_Mech.SHA256_RSA_PKCS)
+    cert = x509.Certificate({
+        'tbs_certificate': tbs,
+        'signature_algorithm': sig_algo,
+        'signature_value': signature,
+    })
+    return cert.dump()
+
+
+class TestPhase6Certify:
+    def test_certify_creates_certificate_object(self, store, shim):
+        cert_uid, pub_uid, priv_uid = _certify_rsa_keypair(store, shim)
+        obj = store.get_object(cert_uid)
+        assert obj["object_type"] == ObjectType.Certificate
+        assert obj["state"] == State.Active
+        assert obj["raw_key_value"] is not None and len(obj["raw_key_value"]) > 0
+
+    def test_certify_cert_is_valid_x509_der(self, store, shim):
+        from asn1crypto import x509
+        cert_uid, pub_uid, priv_uid = _certify_rsa_keypair(store, shim)
+        obj = store.get_object(cert_uid)
+        cert = x509.Certificate.load(obj["raw_key_value"])
+        assert cert.hash_algo == "sha256"
+        assert cert.signature_algo == "rsassa_pkcs1v15"
+
+    def test_certify_links_back_to_public_key(self, store, shim):
+        cert_uid, pub_uid, priv_uid = _certify_rsa_keypair(store, shim)
+        assert store.get_attribute(pub_uid, "Link_Certificate") == [cert_uid]
+        assert store.get_attribute(cert_uid, "Link_PublicKey") == [pub_uid]
+
+    def test_certify_custom_subject_name(self, store, shim):
+        from asn1crypto import x509
+        name_attr = _attr("Name", encode_structure(
+            Tag.AttributeValue,
+            encode_text_string(Tag.NameValue, "my-custom-cn")
+            + encode_enumeration(Tag.NameType, 1),
+        ))
+        cert_uid, pub_uid, priv_uid = _certify_rsa_keypair(store, shim, name_attrs=name_attr)
+        obj = store.get_object(cert_uid)
+        cert = x509.Certificate.load(obj["raw_key_value"])
+        assert cert.subject.native["common_name"] == "my-custom-cn"
+
+    def test_certify_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import certify as cert_op
+        with pytest.raises(MissingData):
+            cert_op.handle(None, "user", MagicMock(), shim)
+
+    def test_certify_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import certify as cert_op
+        with pytest.raises(MissingData):
+            cert_op.handle(_make_payload(), "user", store, shim)
+
+    def test_certify_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import certify as cert_op
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, "nope"))
+        with pytest.raises(ItemNotFound):
+            cert_op.handle(p, "user", store, shim)
+
+    def test_certify_wrong_object_type_raises(self, store, shim):
+        from kmip_pkcs11.operations import certify as cert_op
+        uid = _create_aes_uid(store, shim)
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, uid))
+        with pytest.raises(InvalidField):
+            cert_op.handle(p, "user", store, shim)
+
+    def test_certify_non_rsa_raises(self, store, shim):
+        from kmip_pkcs11.operations import certify as cert_op
+        pub_uid, _ = _create_ec_keypair(store, shim)
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, pub_uid))
+        with pytest.raises(OperationNotSupported):
+            cert_op.handle(p, "user", store, shim)
+
+    def test_certify_no_paired_private_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import certify as cert_op
+        pub_uid, priv_id = shim.generate_key_pair(
+            algorithm=CryptographicAlgorithm.RSA, key_length=2048, label="unlinked-pub")
+        uid = store.create_object(
+            object_type=ObjectType.PublicKey,
+            state=State.Active,
+            cryptographic_algorithm=CryptographicAlgorithm.RSA,
+            usage_mask=CryptographicUsageMask.Verify,
+            extractable=True,
+            sensitive=False,
+            owner_identity="user",
+        )
+        store.add_attribute(uid, "_pkcs11_cka_id", pub_uid.hex())
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, uid))
+        with pytest.raises(ItemNotFound):
+            cert_op.handle(p, "user", store, shim)
+
+
+class TestPhase6ValidateLive:
+    def test_validate_valid_certificate(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        cert_uid, _, _ = _certify_rsa_keypair(store, shim)
+        p = _uid_payload(cert_uid)
+        resp = val_op.handle(p, "user", store, shim)
+        indicator = decode_one(resp).value
+        assert indicator == ValidityIndicator.Valid
+
+    def test_validate_tampered_signature_is_invalid(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        cert_uid, _, _ = _certify_rsa_keypair(store, shim)
+        obj = store.get_object(cert_uid)
+        tampered = bytearray(obj["raw_key_value"])
+        tampered[-5] ^= 0xFF
+        store._conn().execute(
+            "UPDATE kmip_objects SET raw_key_value=? WHERE uuid=?", (bytes(tampered), cert_uid)
+        )
+        store._conn().commit()
+        resp = val_op.handle(_uid_payload(cert_uid), "user", store, shim)
+        indicator = decode_one(resp).value
+        assert indicator == ValidityIndicator.Invalid
+
+    def test_validate_expired_certificate_is_invalid(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        pub_uid, priv_uid = _create_rsa_keypair(store, shim)
+        pub_cka = bytes.fromhex(store.get_attribute(pub_uid, "_pkcs11_cka_id")[0])
+        priv_cka = bytes.fromhex(store.get_attribute(priv_uid, "_pkcs11_cka_id")[0])
+        past = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
+        past_end = datetime.datetime(2001, 1, 1, tzinfo=datetime.timezone.utc)
+        der = _build_cert_with_dates(shim, pub_cka, priv_cka, past, past_end)
+
+        cert_uid = store.create_object(
+            object_type=ObjectType.Certificate, state=State.Active,
+            owner_identity="user", raw_key_value=der, extractable=True, sensitive=False,
+        )
+        resp = val_op.handle(_uid_payload(cert_uid), "user", store, shim)
+        indicator = decode_one(resp).value
+        assert indicator == ValidityIndicator.Invalid
+
+    def test_validate_not_yet_valid_certificate_is_invalid(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        pub_uid, priv_uid = _create_rsa_keypair(store, shim)
+        pub_cka = bytes.fromhex(store.get_attribute(pub_uid, "_pkcs11_cka_id")[0])
+        priv_cka = bytes.fromhex(store.get_attribute(priv_uid, "_pkcs11_cka_id")[0])
+        future = datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc)
+        future_end = datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc)
+        der = _build_cert_with_dates(shim, pub_cka, priv_cka, future, future_end)
+
+        cert_uid = store.create_object(
+            object_type=ObjectType.Certificate, state=State.Active,
+            owner_identity="user", raw_key_value=der, extractable=True, sensitive=False,
+        )
+        resp = val_op.handle(_uid_payload(cert_uid), "user", store, shim)
+        indicator = decode_one(resp).value
+        assert indicator == ValidityIndicator.Invalid
+
+    def test_validate_via_raw_certificate_structure(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        cert_uid, _, _ = _certify_rsa_keypair(store, shim)
+        der = store.get_object(cert_uid)["raw_key_value"]
+        cert_struct = encode_structure(
+            Tag.Certificate,
+            encode_enumeration(Tag.CertificateType, 1)
+            + encode_byte_string(Tag.CertificateValue, der)
+        )
+        p = _make_payload(cert=cert_struct)
+        resp = val_op.handle(p, "user", store, shim)
+        indicator = decode_one(resp).value
+        assert indicator == ValidityIndicator.Valid
+
+    def test_validate_malformed_der_is_invalid(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        cert_uid = store.create_object(
+            object_type=ObjectType.Certificate, state=State.Active,
+            owner_identity="user", raw_key_value=b"not a real certificate",
+            extractable=True, sensitive=False,
+        )
+        resp = val_op.handle(_uid_payload(cert_uid), "user", store, shim)
+        indicator = decode_one(resp).value
+        assert indicator == ValidityIndicator.Invalid
+
+
+class TestPhase6ValidateErrors:
+    def test_validate_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        with pytest.raises(MissingData):
+            val_op.handle(None, "user", MagicMock(), shim)
+
+    def test_validate_missing_identifiers_raises(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        with pytest.raises(MissingData):
+            val_op.handle(_make_payload(), "user", store, shim)
+
+    def test_validate_unknown_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        p = _uid_payload("nope")
+        with pytest.raises(ItemNotFound):
+            val_op.handle(p, "user", store, shim)
+
+    def test_validate_non_certificate_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        uid = _create_aes_uid(store, shim)
+        p = _uid_payload(uid)
+        with pytest.raises(InvalidField):
+            val_op.handle(p, "user", store, shim)
+
+    def test_validate_certificate_structure_missing_value_raises(self, store, shim):
+        from kmip_pkcs11.operations import validate as val_op
+        cert_struct = encode_structure(Tag.Certificate, encode_enumeration(Tag.CertificateType, 1))
+        p = _make_payload(cert=cert_struct)
+        with pytest.raises(MissingData):
+            val_op.handle(p, "user", store, shim)
+
+
+class TestPhase6QueryAndDispatcher:
+    def test_certify_and_validate_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        resp = op.handle(None, "user", store, shim)
+        ops = [i.value for i in decode_all(resp) if i.tag == Tag.Operations]
+        assert Operation.Certify in ops
+        assert Operation.Validate in ops
+
+    def test_certify_and_validate_registered_in_dispatcher(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.Certify in d._handlers
+        assert Operation.Validate in d._handlers
+
+    def test_validate_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        cert_uid, _, _ = _certify_rsa_keypair(store, shim)
+        d = OperationDispatcher(store=store, shim=shim)
+        req_payload = encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, cert_uid))
+        batch_item = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.Validate) + req_payload
+        ))
+        resp = d.dispatch(batch_item, "user")
+        item = decode_one(resp)
+        assert item.get(Tag.ResultStatus).value == ResultStatus.Success
