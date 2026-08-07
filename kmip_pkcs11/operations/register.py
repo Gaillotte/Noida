@@ -5,6 +5,7 @@ from ..core.enums import Tag, ObjectType, State, CryptographicUsageMask, KeyForm
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import MissingData, InvalidField, OperationNotSupported
 from .create import _parse_attributes
+from .get import _resolve_wrapping_key, _wrapping_key_cka_id
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +52,7 @@ def _register_symmetric(payload, identity, store, shim, uid=None) -> str:
     key_material   = key_value_item.get(Tag.KeyMaterial) if key_value_item else None
     if key_material is None:
         raise MissingData("KeyMaterial is required")
-
     key_bytes = key_material.value
-    length    = len(key_bytes) * 8
 
     tmpl      = payload.get(Tag.TemplateAttribute) or payload.get(Tag.Attributes)
     attrs     = _parse_attributes(tmpl)
@@ -64,14 +63,30 @@ def _register_symmetric(payload, identity, store, shim, uid=None) -> str:
     if algorithm is None:
         raise MissingData("CryptographicAlgorithm is required")
 
-    label  = names[0] if names else f"kmip-reg-{algorithm}"
-    cka_id = shim.import_symmetric_key(
-        algorithm=algorithm,
-        length_bits=length,
-        key_bytes=key_bytes,
-        label=label,
-        extractable=True,
-    )
+    label = names[0] if names else f"kmip-reg-{algorithm}"
+
+    wrapping_data = key_block.get(Tag.KeyWrappingData)
+    if wrapping_data is not None:
+        # Wrapped length can't be inferred from the ciphertext (AES-KW-PAD pads
+        # to an 8-byte boundary), so it must come from the request attributes.
+        length = attrs.get("length")
+        if length is None:
+            raise MissingData("CryptographicLength is required when registering wrapped key material")
+        wrapping_uid = _resolve_wrapping_key(wrapping_data, store)
+        wrapping_cka_id = _wrapping_key_cka_id(wrapping_uid, store, "decrypt", CryptographicUsageMask.UnwrapKey)
+        cka_id = shim.unwrap_key(
+            wrapping_cka_id, key_bytes, target_algorithm=algorithm,
+            label=label, extractable=True,
+        )
+    else:
+        length = len(key_bytes) * 8
+        cka_id = shim.import_symmetric_key(
+            algorithm=algorithm,
+            length_bits=length,
+            key_bytes=key_bytes,
+            label=label,
+            extractable=True,
+        )
 
     uid = store.create_object(
         object_type=ObjectType.SymmetricKey,

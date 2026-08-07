@@ -454,6 +454,14 @@ class SplitKeyMethod(IntEnum):
     PolynomialShareGF216      = 0x00000003
 
 
+class WrappingMethod(IntEnum):
+    Encrypt               = 0x00000001
+    MACSign               = 0x00000002
+    Encrypt_then_MACSign   = 0x00000003
+    MACSign_then_Encrypt   = 0x00000004
+    TR31                   = 0x00000005
+
+
 class NameType(IntEnum):
     UninterpretedTextString = 0x00000001
     URI                     = 0x00000002

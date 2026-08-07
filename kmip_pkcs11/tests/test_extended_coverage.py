@@ -5134,3 +5134,354 @@ class TestPhase8QueryAndDispatcher:
         resp = d.dispatch(batch_item, "user")
         item = decode_one(resp)
         assert item.get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 10 — real key wrapping (Get/Export wrap, Register/Import unwrap)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from kmip_pkcs11.core.enums import WrappingMethod
+
+
+def _create_kek_uid(store, shim, wrap=True, unwrap=True, length=256, state=State.Active):
+    mask = 0
+    if wrap:
+        mask |= CryptographicUsageMask.WrapKey
+    if unwrap:
+        mask |= CryptographicUsageMask.UnwrapKey
+    attrs = encode_structure(
+        Tag.TemplateAttribute,
+        _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, length))
+        + _attr("Cryptographic Usage Mask", encode_integer(Tag.AttributeValue, mask)),
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey) + attrs
+    ))
+    from kmip_pkcs11.operations import create as create_mod
+    resp = create_mod.handle(p, "user", store, shim)
+    uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+    if state != State.Active:
+        store.set_state(uid, state)
+    return uid
+
+
+def _wrap_spec(wrapping_uid, method=WrappingMethod.Encrypt):
+    return encode_structure(
+        Tag.KeyWrappingSpecification,
+        encode_enumeration(Tag.WrappingMethod, method)
+        + encode_structure(Tag.EncryptionKeyInformation, encode_text_string(Tag.UniqueIdentifier, wrapping_uid))
+    )
+
+
+def _wrapping_data(wrapping_uid, method=WrappingMethod.Encrypt):
+    return encode_structure(
+        Tag.KeyWrappingData,
+        encode_enumeration(Tag.WrappingMethod, method)
+        + encode_structure(Tag.EncryptionKeyInformation, encode_text_string(Tag.UniqueIdentifier, wrapping_uid))
+    )
+
+
+class TestPhase10WrapUnwrapLive:
+    def test_wrapped_get_returns_ciphertext_and_wrapping_data(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        kek_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        tgt_cka = bytes.fromhex(store.get_attribute(tgt_uid, "_pkcs11_cka_id")[0])
+        plaintext = shim.get_key_value(tgt_cka)
+
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        resp = get_op.handle(p, "user", store, shim)
+        managed = next(i for i in decode_all(resp) if i.tag == Tag.SymmetricKey)
+        key_block = managed.get(Tag.KeyBlock)
+        wrapped = key_block.get(Tag.KeyValue).get(Tag.KeyMaterial).value
+        kwd = key_block.get(Tag.KeyWrappingData)
+
+        assert kwd is not None
+        assert wrapped != plaintext
+        eki = kwd.get(Tag.EncryptionKeyInformation)
+        assert eki.get(Tag.UniqueIdentifier).value == kek_uid
+
+    def test_wrap_then_register_roundtrips_to_original_plaintext(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op, register as reg_op
+        kek_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        tgt_cka = bytes.fromhex(store.get_attribute(tgt_uid, "_pkcs11_cka_id")[0])
+        plaintext = shim.get_key_value(tgt_cka)
+
+        get_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        get_resp = get_op.handle(get_payload, "user", store, shim)
+        key_block = next(i for i in decode_all(get_resp) if i.tag == Tag.SymmetricKey).get(Tag.KeyBlock)
+        wrapped = key_block.get(Tag.KeyValue).get(Tag.KeyMaterial).value
+
+        reg_attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        reg_key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, wrapped))
+            + _wrapping_data(kek_uid)
+        )
+        reg_p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey) + reg_key_block + reg_attrs
+        ))
+        reg_resp = reg_op.handle(reg_p, "user", store, shim)
+        new_uid = decode_one(encode_structure(Tag.ResponsePayload, reg_resp)).get(Tag.UniqueIdentifier).value
+
+        new_cka = bytes.fromhex(store.get_attribute(new_uid, "_pkcs11_cka_id")[0])
+        assert shim.get_key_value(new_cka) == plaintext
+
+    def test_get_without_wrap_spec_still_returns_plaintext(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        tgt_cka = bytes.fromhex(store.get_attribute(tgt_uid, "_pkcs11_cka_id")[0])
+        plaintext = shim.get_key_value(tgt_cka)
+
+        resp = get_op.handle(_uid_payload(tgt_uid), "user", store, shim)
+        key_block = next(i for i in decode_all(resp) if i.tag == Tag.SymmetricKey).get(Tag.KeyBlock)
+        fetched = key_block.get(Tag.KeyValue).get(Tag.KeyMaterial).value
+        assert fetched == plaintext
+        assert key_block.get(Tag.KeyWrappingData) is None
+
+    def test_wrap_via_export_operation(self, store, shim):
+        from kmip_pkcs11.operations import export_op
+        kek_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        resp = export_op.handle(p, "user", store, shim)
+        key_block = next(i for i in decode_all(resp) if i.tag == Tag.SymmetricKey).get(Tag.KeyBlock)
+        assert key_block.get(Tag.KeyWrappingData) is not None
+
+    def test_different_keks_produce_different_ciphertext(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        kek1_uid = _create_kek_uid(store, shim)
+        kek2_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+
+        def wrapped_with(kek_uid):
+            p = _make_payload(
+                uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+                wrap=_wrap_spec(kek_uid),
+            )
+            resp = get_op.handle(p, "user", store, shim)
+            key_block = next(i for i in decode_all(resp) if i.tag == Tag.SymmetricKey).get(Tag.KeyBlock)
+            return key_block.get(Tag.KeyValue).get(Tag.KeyMaterial).value
+
+        assert wrapped_with(kek1_uid) != wrapped_with(kek2_uid)
+
+
+class TestPhase10WrapErrors:
+    def test_get_wrap_missing_encryption_key_information_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        bad_spec = encode_structure(Tag.KeyWrappingSpecification,
+            encode_enumeration(Tag.WrappingMethod, WrappingMethod.Encrypt))
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=bad_spec,
+        )
+        with pytest.raises(MissingData):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_wrap_unsupported_method_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        kek_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid, method=WrappingMethod.MACSign),
+        )
+        with pytest.raises(OperationNotSupported):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_wrap_unknown_wrapping_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec("nope"),
+        )
+        with pytest.raises(ItemNotFound):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_wrap_non_symmetric_wrapping_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        pub_uid, _ = _create_rsa_keypair(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(pub_uid),
+        )
+        with pytest.raises(OperationNotSupported):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_wrap_wrapping_key_missing_wrap_usage_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        kek_uid = _create_kek_uid(store, shim, wrap=False, unwrap=True)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        with pytest.raises(IllegalOperation):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_wrap_wrapping_key_wrong_state_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        kek_uid = _create_kek_uid(store, shim, state=State.PreActive)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        with pytest.raises(IllegalOperation):
+            get_op.handle(p, "user", store, shim)
+
+    def test_get_wrap_non_extractable_target_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        kek_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=False)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        with pytest.raises(NotExtractable):
+            get_op.handle(p, "user", store, shim)
+
+    def test_register_wrapped_missing_length_raises(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        kek_uid = _create_kek_uid(store, shim)
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, b"\x00" * 24))
+            + _wrapping_data(kek_uid)
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey) + key_block + attrs
+        ))
+        with pytest.raises(MissingData):
+            reg_op.handle(p, "user", store, shim)
+
+    def test_register_wrapped_unknown_wrapping_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import register as reg_op
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, b"\x00" * 24))
+            + _wrapping_data("nope")
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey) + key_block + attrs
+        ))
+        with pytest.raises(ItemNotFound):
+            reg_op.handle(p, "user", store, shim)
+
+    def test_register_wrapped_wrapping_key_missing_unwrap_usage_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op, register as reg_op
+        kek_uid = _create_kek_uid(store, shim, wrap=True, unwrap=False)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+
+        get_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        get_resp = get_op.handle(get_payload, "user", store, shim)
+        key_block = next(i for i in decode_all(get_resp) if i.tag == Tag.SymmetricKey).get(Tag.KeyBlock)
+        wrapped = key_block.get(Tag.KeyValue).get(Tag.KeyMaterial).value
+
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        reg_key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, wrapped))
+            + _wrapping_data(kek_uid)
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey) + reg_key_block + attrs
+        ))
+        with pytest.raises(IllegalOperation):
+            reg_op.handle(p, "user", store, shim)
+
+    def test_register_public_key_with_wrapping_data_still_rejected(self, store, shim):
+        """RSA public/private key registration doesn't support wrapping — this
+        server can't unwrap into an asymmetric private key object (SoftHSM2/
+        PKCS#11 backend limitation confirmed during development)."""
+        from kmip_pkcs11.operations import register as reg_op
+        kek_uid = _create_kek_uid(store, shim)
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.RSA)),
+        )
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.PKCS1)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, b"\x00" * 270))
+            + encode_structure(Tag.KeyWrappingData, encode_enumeration(Tag.WrappingMethod, WrappingMethod.Encrypt))
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + key_block + attrs
+        ))
+        with pytest.raises(OperationNotSupported):
+            reg_op.handle(p, "user", store, shim)
+
+
+class TestPhase10ImportUnwrap:
+    def test_import_wrapped_symmetric_key(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op, import_op
+        kek_uid = _create_kek_uid(store, shim)
+        tgt_uid = _create_aes_uid(store, shim, extractable=True)
+        tgt_cka = bytes.fromhex(store.get_attribute(tgt_uid, "_pkcs11_cka_id")[0])
+        plaintext = shim.get_key_value(tgt_cka)
+
+        get_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, tgt_uid),
+            wrap=_wrap_spec(kek_uid),
+        )
+        get_resp = get_op.handle(get_payload, "user", store, shim)
+        key_block = next(i for i in decode_all(get_resp) if i.tag == Tag.SymmetricKey).get(Tag.KeyBlock)
+        wrapped = key_block.get(Tag.KeyValue).get(Tag.KeyMaterial).value
+
+        client_uid = "imported-wrapped-" + os.urandom(4).hex()
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        reg_key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, wrapped))
+            + _wrapping_data(kek_uid)
+        )
+        p = decode_one(encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, client_uid)
+            + encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+            + reg_key_block + attrs
+        ))
+        resp = import_op.handle(p, "user", store, shim)
+        result_uid = decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+        assert result_uid == client_uid
+
+        new_cka = bytes.fromhex(store.get_attribute(client_uid, "_pkcs11_cka_id")[0])
+        assert shim.get_key_value(new_cka) == plaintext

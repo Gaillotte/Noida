@@ -379,6 +379,61 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Key import failed: {e}") from e
 
+    # ── key wrapping (SymmetricKey only — see wrap_key/unwrap_key docstrings) ──
+
+    def wrap_key(self, wrapping_cka_id: bytes, target_cka_id: bytes) -> bytes:
+        """Wrap a SecretKey using another SecretKey (the KEK) via CKM_AES_KEY_WRAP_PAD.
+        Both keys must already exist as PKCS#11 objects on the token; the target
+        must have CKA_EXTRACTABLE=True (PKCS#11 requires this for C_WrapKey,
+        independent of KMIP's own Extractable attribute)."""
+        try:
+            kek    = self._find_key(wrapping_cka_id, ObjClass.SECRET_KEY)
+            target = self._find_key(target_cka_id, ObjClass.SECRET_KEY)
+            return bytes(kek.wrap_key(target, mechanism=Mechanism.AES_KEY_WRAP_PAD))
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"Key wrap failed: {e}") from e
+
+    def unwrap_key(
+        self,
+        wrapping_cka_id: bytes,
+        wrapped_bytes: bytes,
+        target_algorithm: int,
+        label: str = "",
+        extractable: bool = True,
+        sensitive: bool = False,
+        encrypt: bool = True,
+        decrypt: bool = True,
+    ) -> bytes:
+        """Unwrap key material directly into a new SecretKey object via
+        CKM_AES_KEY_WRAP_PAD — the plaintext never leaves the HSM/server
+        boundary into Python memory. Returns the new object's cka_id."""
+        target_key_type = ALGO_TO_PKCS11_KEYTYPE.get(target_algorithm)
+        if target_key_type is None:
+            raise CryptographicFailure(f"Unsupported target algorithm {target_algorithm}")
+
+        try:
+            kek = self._find_key(wrapping_cka_id, ObjClass.SECRET_KEY)
+            new_id = os.urandom(16)
+            # SoftHSM2: SENSITIVE+EXTRACTABLE blocks CKA_VALUE; disable SENSITIVE when extractable
+            effective_sensitive = sensitive and not extractable
+            kek.unwrap_key(
+                ObjClass.SECRET_KEY,
+                target_key_type,
+                wrapped_bytes,
+                id=new_id,
+                label=label,
+                store=True,
+                mechanism=Mechanism.AES_KEY_WRAP_PAD,
+                capabilities=self._caps(encrypt, decrypt, False, False),
+                template={
+                    Attr.SENSITIVE:   effective_sensitive,
+                    Attr.EXTRACTABLE: extractable,
+                },
+            )
+            return new_id
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"Key unwrap failed: {e}") from e
+
     def import_public_key(
         self,
         algorithm: int,
