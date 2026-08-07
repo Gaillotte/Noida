@@ -11,7 +11,7 @@ import pytest
 
 SOFTHSM_LIB = os.environ.get(
     "SOFTHSM2_LIB",
-    "/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+    "/usr/local/lib/softhsm/libsofthsm2.so"   # OpenSSL build — supports ECDSA_SHA*
 )
 TOKEN_LABEL = "KMIPTestSuite"
 USER_PIN    = "9999"

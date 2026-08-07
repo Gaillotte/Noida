@@ -465,7 +465,7 @@ class PKCS11Shim:
 
     def get_mechanism_list(self):
         try:
-            return list(self._token.slot.get_mechanism_list())
+            return list(self._token.slot.get_mechanisms())
         except Exception:
             return []
 

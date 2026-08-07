@@ -2587,17 +2587,14 @@ class TestPhase4ECLive:
     """EC (secp256r1) sign/verify round-trip through SoftHSM2."""
 
     def test_ec_sign_verify_roundtrip(self, store, shim):
-        import hashlib
         from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
 
         pub_uid, priv_uid = _create_ec_keypair(store, shim)
         message = b"KMIP EC sign test"
-        # ECDSA (raw) needs pre-hashed data
-        digest = hashlib.sha256(message).digest()
 
         sign_payload = _make_payload(
             uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
-            data=encode_byte_string(Tag.Data, digest),
+            data=encode_byte_string(Tag.Data, message),
         )
         sign_resp  = sign_op.handle(sign_payload, "user", store, shim)
         sign_items = decode_all(sign_resp)
@@ -2606,8 +2603,70 @@ class TestPhase4ECLive:
 
         ver_payload = _make_payload(
             uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
-            data=encode_byte_string(Tag.Data, digest),
+            data=encode_byte_string(Tag.Data, message),
             sig=encode_byte_string(Tag.SignatureData, signature),
+        )
+        ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+    def test_ec_ecdsa_sha384_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
+        from kmip_pkcs11.core.enums import HashingAlgorithm as HA
+
+        pub_uid, priv_uid = _create_ec_keypair(store, shim)
+        message = b"ECDSA-SHA384 test message"
+        hash_param = encode_structure(
+            Tag.CryptographicParameters,
+            encode_enumeration(Tag.HashingAlgorithm, HA.SHA_384),
+        )
+
+        sign_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            data=encode_byte_string(Tag.Data, message),
+            params=hash_param,
+        )
+        sign_resp  = sign_op.handle(sign_payload, "user", store, shim)
+        sign_items = decode_all(sign_resp)
+        signature  = next(i.value for i in sign_items if i.tag == Tag.SignatureData)
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            data=encode_byte_string(Tag.Data, message),
+            sig=encode_byte_string(Tag.SignatureData, signature),
+            params=hash_param,
+        )
+        ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+    def test_ec_ecdsa_sha512_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
+        from kmip_pkcs11.core.enums import HashingAlgorithm as HA
+
+        pub_uid, priv_uid = _create_ec_keypair(store, shim)
+        message = b"ECDSA-SHA512 test message"
+        hash_param = encode_structure(
+            Tag.CryptographicParameters,
+            encode_enumeration(Tag.HashingAlgorithm, HA.SHA_512),
+        )
+
+        sign_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            data=encode_byte_string(Tag.Data, message),
+            params=hash_param,
+        )
+        sign_resp  = sign_op.handle(sign_payload, "user", store, shim)
+        sign_items = decode_all(sign_resp)
+        signature  = next(i.value for i in sign_items if i.tag == Tag.SignatureData)
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            data=encode_byte_string(Tag.Data, message),
+            sig=encode_byte_string(Tag.SignatureData, signature),
+            params=hash_param,
         )
         ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
         ver_items = decode_all(ver_resp)
@@ -2636,17 +2695,35 @@ class TestPhase4MechSelection:
         mech = _select_mechanism(CryptographicAlgorithm.RSA, HashingAlgorithm.SHA_512)
         assert mech == Mechanism.SHA512_RSA_PKCS
 
-    def test_ec_uses_ecdsa(self):
+    def test_ec_default_is_ecdsa_sha256(self):
         from kmip_pkcs11.operations.sign import _select_mechanism
         from pkcs11 import Mechanism
         mech = _select_mechanism(CryptographicAlgorithm.EC, None)
-        assert mech == Mechanism.ECDSA
+        assert mech == Mechanism.ECDSA_SHA256
 
-    def test_ecdsa_algorithm_uses_ecdsa(self):
+    def test_ecdsa_sha256_explicit(self):
         from kmip_pkcs11.operations.sign import _select_mechanism
         from pkcs11 import Mechanism
         mech = _select_mechanism(CryptographicAlgorithm.ECDSA, HashingAlgorithm.SHA_256)
-        assert mech == Mechanism.ECDSA
+        assert mech == Mechanism.ECDSA_SHA256
+
+    def test_ecdsa_sha384_explicit(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.EC, HashingAlgorithm.SHA_384)
+        assert mech == Mechanism.ECDSA_SHA384
+
+    def test_ecdsa_sha512_explicit(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.EC, HashingAlgorithm.SHA_512)
+        assert mech == Mechanism.ECDSA_SHA512
+
+    def test_ecdsa_sha1_explicit(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.EC, HashingAlgorithm.SHA_1)
+        assert mech == Mechanism.ECDSA_SHA1
 
 
 class TestPhase4Dispatcher:

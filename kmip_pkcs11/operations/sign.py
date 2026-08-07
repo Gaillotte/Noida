@@ -17,13 +17,21 @@ _RSA_HASH_TO_MECH = {
     HashingAlgorithm.SHA_512: Mechanism.SHA512_RSA_PKCS,
 }
 
+# EC: map KMIP HashingAlgorithm → ECDSA_SHA* (OpenSSL-built SoftHSM2 / real HSM)
+_EC_HASH_TO_MECH = {
+    HashingAlgorithm.SHA_1:   Mechanism.ECDSA_SHA1,
+    HashingAlgorithm.SHA_256: Mechanism.ECDSA_SHA256,
+    HashingAlgorithm.SHA_384: Mechanism.ECDSA_SHA384,
+    HashingAlgorithm.SHA_512: Mechanism.ECDSA_SHA512,
+}
+
 _EC_ALGORITHMS = {CryptographicAlgorithm.EC, CryptographicAlgorithm.ECDSA}
 
 
 def _select_mechanism(algorithm, hash_alg):
     """Return the PKCS#11 signing mechanism for the given key algorithm and hash."""
     if algorithm in _EC_ALGORITHMS:
-        return Mechanism.ECDSA   # SoftHSM2 supports only raw ECDSA (caller pre-hashes)
+        return _EC_HASH_TO_MECH.get(hash_alg, Mechanism.ECDSA_SHA256)
     return _RSA_HASH_TO_MECH.get(hash_alg, Mechanism.SHA256_RSA_PKCS)
 
 
