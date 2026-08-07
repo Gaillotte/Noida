@@ -3916,3 +3916,261 @@ class TestPhase4QueryAndDispatcher:
         d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
         assert Operation.Import in d._handlers
         assert Operation.Export in d._handlers
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 5 — DH/ECDH key pair, DeriveKey
+# ══════════════════════════════════════════════════════════════════════════════
+
+from kmip_pkcs11.core.enums import DerivationMethod
+
+
+def _create_key_agreement_keypair(store, shim, owner, algorithm, length=None):
+    from kmip_pkcs11.operations import create_keypair as ckp
+    fields = _attr("Cryptographic Algorithm",
+                    encode_enumeration(Tag.AttributeValue, algorithm))
+    if length is not None:
+        fields += _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, length))
+    attrs = encode_structure(Tag.TemplateAttribute, fields)
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+    ))
+    resp_bytes = ckp.handle(p, owner, store, shim)
+    uids = [i.value for i in decode_all(resp_bytes) if i.tag == Tag.UniqueIdentifier]
+    return uids[0], uids[1]  # pub_uid, priv_uid
+
+
+def _get_public_value(store, shim, pub_uid, owner):
+    from kmip_pkcs11.operations import get as get_op
+    resp = get_op.handle(_uid_payload(pub_uid), owner, store, shim)
+    managed_obj = next(i for i in decode_all(resp) if i.tag == Tag.ManagedObject)
+    return managed_obj.get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
+
+
+def _derive(store, shim, priv_uid, peer_value, owner, length=128,
+            extractable=True, sensitive=False, method=None):
+    from kmip_pkcs11.operations import derive_key as dk
+    fields = (
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, length))
+        + _attr("Extractable", encode_integer(Tag.AttributeValue, int(extractable)))
+        + _attr("Sensitive", encode_integer(Tag.AttributeValue, int(sensitive)))
+    )
+    deriv_attrs = encode_structure(Tag.TemplateAttribute, fields)
+    deriv_params = encode_structure(Tag.DerivationParameters,
+                                     encode_byte_string(Tag.DerivationData, peer_value))
+    payload_fields = (
+        encode_text_string(Tag.UniqueIdentifier, priv_uid)
+        + deriv_params + deriv_attrs
+    )
+    if method is not None:
+        payload_fields += encode_enumeration(Tag.DerivationMethod, method)
+    p = decode_one(encode_structure(Tag.RequestPayload, payload_fields))
+    resp = dk.handle(p, owner, store, shim)
+    return decode_one(encode_structure(Tag.ResponsePayload, resp)).get(Tag.UniqueIdentifier).value
+
+
+def _derived_key_bytes(store, shim, uid):
+    cka_id = bytes.fromhex(store.get_attribute(uid, "_pkcs11_cka_id")[0])
+    return shim.get_key_value(cka_id)
+
+
+class TestPhase5DHKeyPair:
+    def test_dh_keypair_created_with_key_agreement_mask(self, store, shim):
+        pub_uid, priv_uid = _create_key_agreement_keypair(
+            store, shim, "user", CryptographicAlgorithm.DH, length=2048)
+        priv_obj = store.get_object(priv_uid)
+        assert priv_obj["cryptographic_algorithm"] == CryptographicAlgorithm.DH
+        assert priv_obj["usage_mask"] & CryptographicUsageMask.KeyAgreement
+
+    def test_two_dh_keypairs_share_domain_group(self, store, shim):
+        """Two independently-created DH key pairs must land in the same (P, G) —
+        otherwise no two parties could ever agree on a shared secret."""
+        from pkcs11 import Attribute as _Attr, ObjectClass as _ObjClass
+        pub1, _ = _create_key_agreement_keypair(store, shim, "alice", CryptographicAlgorithm.DH)
+        pub2, _ = _create_key_agreement_keypair(store, shim, "bob", CryptographicAlgorithm.DH)
+        cka1 = bytes.fromhex(store.get_attribute(pub1, "_pkcs11_cka_id")[0])
+        cka2 = bytes.fromhex(store.get_attribute(pub2, "_pkcs11_cka_id")[0])
+        prime1 = bytes(shim._find_key(cka1, _ObjClass.PUBLIC_KEY)[_Attr.PRIME])
+        prime2 = bytes(shim._find_key(cka2, _ObjClass.PUBLIC_KEY)[_Attr.PRIME])
+        assert prime1 == prime2
+
+
+class TestPhase5ECDHKeyPair:
+    def test_ecdh_keypair_created_with_key_agreement_mask(self, store, shim):
+        pub_uid, priv_uid = _create_key_agreement_keypair(
+            store, shim, "user", CryptographicAlgorithm.ECDH)
+        priv_obj = store.get_object(priv_uid)
+        assert priv_obj["cryptographic_algorithm"] == CryptographicAlgorithm.ECDH
+        assert priv_obj["usage_mask"] & CryptographicUsageMask.KeyAgreement
+
+
+class TestPhase5DeriveKeyLive:
+    def test_dh_two_party_shared_secret_matches(self, store, shim):
+        alice_pub, alice_priv = _create_key_agreement_keypair(
+            store, shim, "alice", CryptographicAlgorithm.DH, length=2048)
+        bob_pub, bob_priv = _create_key_agreement_keypair(
+            store, shim, "bob", CryptographicAlgorithm.DH, length=2048)
+
+        bob_value   = _get_public_value(store, shim, bob_pub, "bob")
+        alice_value = _get_public_value(store, shim, alice_pub, "alice")
+
+        alice_derived = _derive(store, shim, alice_priv, bob_value, "alice")
+        bob_derived   = _derive(store, shim, bob_priv, alice_value, "bob")
+
+        assert _derived_key_bytes(store, shim, alice_derived) == _derived_key_bytes(store, shim, bob_derived)
+
+    def test_ecdh_two_party_shared_secret_matches(self, store, shim):
+        alice_pub, alice_priv = _create_key_agreement_keypair(
+            store, shim, "alice", CryptographicAlgorithm.ECDH)
+        bob_pub, bob_priv = _create_key_agreement_keypair(
+            store, shim, "bob", CryptographicAlgorithm.ECDH)
+
+        bob_value   = _get_public_value(store, shim, bob_pub, "bob")
+        alice_value = _get_public_value(store, shim, alice_pub, "alice")
+
+        alice_derived = _derive(store, shim, alice_priv, bob_value, "alice", length=256)
+        bob_derived   = _derive(store, shim, bob_priv, alice_value, "bob", length=256)
+
+        assert _derived_key_bytes(store, shim, alice_derived) == _derived_key_bytes(store, shim, bob_derived)
+
+    def test_derived_key_is_new_symmetric_key_object(self, store, shim):
+        alice_pub, alice_priv = _create_key_agreement_keypair(
+            store, shim, "alice", CryptographicAlgorithm.ECDH)
+        bob_pub, _ = _create_key_agreement_keypair(store, shim, "bob", CryptographicAlgorithm.ECDH)
+        bob_value = _get_public_value(store, shim, bob_pub, "bob")
+
+        derived_uid = _derive(store, shim, alice_priv, bob_value, "alice")
+        obj = store.get_object(derived_uid)
+        assert obj["object_type"] == ObjectType.SymmetricKey
+        assert obj["state"] == State.Active
+        assert obj["cryptographic_algorithm"] == CryptographicAlgorithm.AES
+
+    def test_explicit_asymmetric_key_method_accepted(self, store, shim):
+        alice_pub, alice_priv = _create_key_agreement_keypair(
+            store, shim, "alice", CryptographicAlgorithm.ECDH)
+        bob_pub, _ = _create_key_agreement_keypair(store, shim, "bob", CryptographicAlgorithm.ECDH)
+        bob_value = _get_public_value(store, shim, bob_pub, "bob")
+        derived_uid = _derive(store, shim, alice_priv, bob_value, "alice",
+                               method=DerivationMethod.ASYMMETRIC_KEY)
+        assert store.object_exists(derived_uid)
+
+
+class TestPhase5DeriveKeyErrors:
+    def test_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        with pytest.raises(MissingData):
+            dk.handle(None, "user", MagicMock(), shim)
+
+    def test_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        p = _make_payload()
+        with pytest.raises(MissingData):
+            dk.handle(p, "user", store, shim)
+
+    def test_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, "nope"))
+        with pytest.raises(ItemNotFound):
+            dk.handle(p, "user", store, shim)
+
+    def test_wrong_base_algorithm_raises(self, store, shim):
+        """DeriveKey via key agreement requires a DH/ECDH base key — not e.g. RSA."""
+        from kmip_pkcs11.operations import derive_key as dk
+        pub_uid, priv_uid = _create_rsa_keypair(store, shim)
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, priv_uid))
+        with pytest.raises(OperationNotSupported):
+            dk.handle(p, "user", store, shim)
+
+    def test_wrong_derivation_method_raises(self, store, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        _, priv_uid = _create_key_agreement_keypair(store, shim, "user", CryptographicAlgorithm.ECDH)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            method=encode_enumeration(Tag.DerivationMethod, DerivationMethod.HASH),
+        )
+        with pytest.raises(OperationNotSupported):
+            dk.handle(p, "user", store, shim)
+
+    def test_missing_derivation_parameters_raises(self, store, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        _, priv_uid = _create_key_agreement_keypair(store, shim, "user", CryptographicAlgorithm.ECDH)
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, priv_uid))
+        with pytest.raises(MissingData):
+            dk.handle(p, "user", store, shim)
+
+    def test_missing_cka_id_raises(self, store, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        uid = store.create_object(
+            object_type=ObjectType.PrivateKey,
+            state=State.Active,
+            cryptographic_algorithm=CryptographicAlgorithm.ECDH,
+            usage_mask=CryptographicUsageMask.KeyAgreement,
+            owner_identity="user",
+        )
+        deriv_params = encode_structure(Tag.DerivationParameters,
+                                         encode_byte_string(Tag.DerivationData, b"\x04" + b"\x00" * 64))
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            params=deriv_params,
+        )
+        with pytest.raises(ItemNotFound):
+            dk.handle(p, "user", store, shim)
+
+    def test_derive_on_preactive_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import derive_key as dk
+        uid = store.create_object(
+            object_type=ObjectType.PrivateKey,
+            state=State.PreActive,
+            cryptographic_algorithm=CryptographicAlgorithm.ECDH,
+            usage_mask=CryptographicUsageMask.KeyAgreement,
+            owner_identity="user",
+        )
+        store.add_attribute(uid, "_pkcs11_cka_id", os.urandom(16).hex())
+        deriv_params = encode_structure(Tag.DerivationParameters,
+                                         encode_byte_string(Tag.DerivationData, b"\x04" + b"\x00" * 64))
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            params=deriv_params,
+        )
+        with pytest.raises(IllegalOperation):
+            dk.handle(p, "user", store, shim)
+
+
+class TestPhase5QueryAndDispatcher:
+    def test_derive_key_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        resp = op.handle(None, "user", store, shim)
+        ops = [i.value for i in decode_all(resp) if i.tag == Tag.Operations]
+        assert Operation.DeriveKey in ops
+
+    def test_derive_key_registered_in_dispatcher(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.DeriveKey in d._handlers
+
+    def test_derive_key_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        alice_pub, alice_priv = _create_key_agreement_keypair(store, shim, "alice", CryptographicAlgorithm.ECDH)
+        bob_pub, _ = _create_key_agreement_keypair(store, shim, "bob", CryptographicAlgorithm.ECDH)
+        bob_value = _get_public_value(store, shim, bob_pub, "bob")
+
+        d = OperationDispatcher(store=store, shim=shim)
+        deriv_attrs = encode_structure(Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)))
+        req_payload = encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, alice_priv)
+            + encode_structure(Tag.DerivationParameters, encode_byte_string(Tag.DerivationData, bob_value))
+            + deriv_attrs)
+        batch_item = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.DeriveKey) + req_payload
+        ))
+        resp = d.dispatch(batch_item, "alice")
+        item = decode_one(resp)
+        assert item.get(Tag.ResultStatus).value == ResultStatus.Success

@@ -141,6 +141,11 @@ class Tag(IntEnum):
     # AdjustAttribute
     AdjustmentType          = 0x420AC1  # vendor extension slot (simplified)
 
+    # DeriveKey
+    DerivationMethod        = 0x420AC2  # vendor extension slot (simplified)
+    DerivationParameters    = 0x420AC3  # vendor extension slot (simplified)
+    DerivationData          = 0x420AC4  # vendor extension slot (simplified)
+
 
 class Type(IntEnum):
     Structure    = 0x01
@@ -414,6 +419,17 @@ class RecommendedCurve(IntEnum):
     P_384     = 0x0000000A
     P_521     = 0x0000000D
     SECP256K1 = 0x00000019
+
+
+class DerivationMethod(IntEnum):
+    PBKDF2          = 0x00000001
+    HASH            = 0x00000002
+    HMAC            = 0x00000003
+    ENCRYPT         = 0x00000004
+    NIST800_108_C   = 0x00000005
+    NIST800_108_F   = 0x00000006
+    NIST800_108_DPI = 0x00000007
+    ASYMMETRIC_KEY  = 0x00000008
 
 
 class NameType(IntEnum):

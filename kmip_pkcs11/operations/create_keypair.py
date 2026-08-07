@@ -1,12 +1,14 @@
 """Handle KMIP CreateKeyPair operation."""
 
 import logging
-from ..core.enums import Tag, ObjectType, State, CryptographicUsageMask, RecommendedCurve
+from ..core.enums import Tag, ObjectType, State, CryptographicUsageMask, RecommendedCurve, CryptographicAlgorithm
 from ..core.ttlv import encode_text_string, encode_structure
 from ..core.exceptions import MissingData, InvalidField
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
+
+_KEY_AGREEMENT_ALGORITHMS = {CryptographicAlgorithm.DH, CryptographicAlgorithm.ECDH}
 
 # KMIP RecommendedCurve → OpenSSL curve name (python-pkcs11 util.ec.encode_named_curve_parameters)
 CURVE_TO_NAME = {
@@ -35,8 +37,14 @@ def handle(payload, identity: str, store, shim) -> bytes:
     # Merge: common → specific
     algorithm  = pub_attrs.get("algorithm") or common_attrs.get("algorithm")
     length     = pub_attrs.get("length")    or common_attrs.get("length", 2048)
-    pub_mask   = pub_attrs.get("usage_mask",  CryptographicUsageMask.Verify)
-    priv_mask  = priv_attrs.get("usage_mask", CryptographicUsageMask.Sign)
+    default_mask = (CryptographicUsageMask.KeyAgreement if algorithm in _KEY_AGREEMENT_ALGORITHMS
+                     else CryptographicUsageMask.Verify)
+    pub_mask   = pub_attrs.get("usage_mask",  default_mask)
+    priv_mask  = priv_attrs.get(
+        "usage_mask",
+        CryptographicUsageMask.KeyAgreement if algorithm in _KEY_AGREEMENT_ALGORITHMS
+        else CryptographicUsageMask.Sign,
+    )
     names      = pub_attrs.get("names") or common_attrs.get("names", [])
     curve_enum = (pub_attrs.get("recommended_curve")
                   or common_attrs.get("recommended_curve")
@@ -58,6 +66,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         label=label,
         sign=bool(priv_mask & CryptographicUsageMask.Sign),
         verify=bool(pub_mask & CryptographicUsageMask.Verify),
+        derive=bool(priv_mask & CryptographicUsageMask.KeyAgreement) or algorithm in _KEY_AGREEMENT_ALGORITHMS,
     )
 
     pub_uid = store.create_object(

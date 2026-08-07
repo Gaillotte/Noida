@@ -19,6 +19,7 @@ SUPPORTED_OPERATIONS = [
     Operation.RNGRetrieve,
     Operation.MAC, Operation.MACVerify, Operation.Hash,
     Operation.Import, Operation.Export,
+    Operation.DeriveKey,
     Operation.Query, Operation.DiscoverVersions,
 ]
 

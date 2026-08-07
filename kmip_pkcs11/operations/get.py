@@ -83,14 +83,15 @@ def _get_asymmetric(uid, obj, store, shim, obj_type) -> bytes:
 
     cka_id = bytes.fromhex(cka_ids[0])
 
+    algorithm = obj.get("cryptographic_algorithm")
+
     if obj_type == ObjectType.PublicKey:
         key_bytes = shim.get_public_key_der(cka_id)
-        fmt       = KeyFormatType.PKCS1
+        fmt       = KeyFormatType.PKCS1 if algorithm == CryptographicAlgorithm.RSA else KeyFormatType.Raw
     else:
         key_bytes = shim.get_private_key_der(cka_id)
-        # RSA returns PKCS#1 DER (component encoding); EC returns a raw scalar.
-        algorithm = obj.get("cryptographic_algorithm")
-        fmt = KeyFormatType.PKCS1 if algorithm == CryptographicAlgorithm.RSA else KeyFormatType.ECPrivateKey
+        # RSA returns PKCS#1 DER (component encoding); EC/DH return a raw scalar.
+        fmt = KeyFormatType.PKCS1 if algorithm == CryptographicAlgorithm.RSA else KeyFormatType.Raw
 
     key_material = encode_byte_string(Tag.KeyMaterial, key_bytes)
     key_value    = encode_structure(Tag.KeyValue, key_material)

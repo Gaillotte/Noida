@@ -62,7 +62,7 @@ def check_usage_allowed(state: int, operation_name: str):
         raise IllegalOperation(f"Object is destroyed; operation '{operation_name}' not permitted")
 
     read_ops = {"get", "get_attributes", "get_attribute_list", "export"}
-    write_sensitive_ops = {"encrypt", "sign", "mac"}
+    write_sensitive_ops = {"encrypt", "sign", "mac", "derive"}
     read_sensitive_ops  = {"decrypt", "verify", "mac_verify"}
 
     if state == State.PreActive:

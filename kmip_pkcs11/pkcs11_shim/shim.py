@@ -27,6 +27,33 @@ from ..core.exceptions import (
 
 log = logging.getLogger(__name__)
 
+# RFC 3526 Group 14 (2048-bit MODP) — a fixed, well-known DH group.
+# DH key AGREEMENT requires both parties to share identical (P, G); generating
+# fresh random domain parameters per CreateKeyPair call (as DSA does, where no
+# secret needs to be shared) would silently put every party in a different
+# group and make derived "shared" secrets never match.
+_DH_GROUP14_PRIME = int(
+    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74"
+    "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374"
+    "FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE"
+    "386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598D"
+    "A48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F36208552BB9ED52"
+    "9077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E77"
+    "2C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF69558171839954"
+    "97CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF",
+    16,
+)
+_DH_GROUP14_GENERATOR = 2
+
+
+def _dh_group14_bytes():
+    p_len = (_DH_GROUP14_PRIME.bit_length() + 7) // 8
+    return (
+        _DH_GROUP14_PRIME.to_bytes(p_len, 'big'),
+        _DH_GROUP14_GENERATOR.to_bytes(1, 'big'),
+    )
+
+
 # Map KMIP algorithm → PKCS#11 KeyType
 ALGO_TO_PKCS11_KEYTYPE = {
     CryptographicAlgorithm.AES:    KT.AES,
@@ -35,7 +62,9 @@ ALGO_TO_PKCS11_KEYTYPE = {
     CryptographicAlgorithm.RSA:    KT.RSA,
     CryptographicAlgorithm.EC:     KT.EC,
     CryptographicAlgorithm.ECDSA:  KT.EC,
+    CryptographicAlgorithm.ECDH:   KT.EC,
     CryptographicAlgorithm.DSA:    KT.DSA,
+    CryptographicAlgorithm.DH:     KT.DH,
     CryptographicAlgorithm.HMACMD5:    KT._MD5_HMAC,
     CryptographicAlgorithm.HMACSHA1:   KT.SHA_1_HMAC,
     CryptographicAlgorithm.HMACSHA224: KT.SHA224_HMAC,
@@ -208,9 +237,10 @@ class PKCS11Shim:
         sensitive: bool = True,
         sign: bool = True,
         verify: bool = True,
+        derive: bool = False,
     ) -> Tuple[bytes, bytes]:
         """
-        Generate RSA, EC, or DSA key pair.
+        Generate RSA, EC, DSA, DH, or ECDH key pair.
         Returns (pub_cka_id, priv_cka_id).
         """
         key_type = ALGO_TO_PKCS11_KEYTYPE.get(algorithm)
@@ -219,6 +249,7 @@ class PKCS11Shim:
 
         pub_id  = os.urandom(16)
         priv_id = os.urandom(16)
+        is_derive_algo = algorithm in (CryptographicAlgorithm.ECDH, CryptographicAlgorithm.DH)
 
         try:
             if key_type == KT.RSA:
@@ -259,6 +290,7 @@ class PKCS11Shim:
                         Attr.SENSITIVE: sensitive,
                         Attr.EXTRACTABLE: extractable,
                         Attr.SIGN: sign,
+                        Attr.DERIVE: derive or is_derive_algo,
                     },
                 )
             elif key_type == KT.DSA:
@@ -278,6 +310,29 @@ class PKCS11Shim:
                         Attr.SENSITIVE: sensitive,
                         Attr.EXTRACTABLE: extractable,
                         Attr.SIGN: sign,
+                    },
+                )
+            elif key_type == KT.DH:
+                # Use a fixed, well-known group (RFC 3526 Group 14) rather than
+                # generating fresh random domain parameters per call — DH key
+                # AGREEMENT only works if every party derives from the same
+                # (P, G); a freshly-generated group per CreateKeyPair call
+                # would put each party in an incompatible group.
+                prime_bytes, base_bytes = _dh_group14_bytes()
+                domain_params = self._sess().create_domain_parameters(
+                    KT.DH, {Attr.PRIME: prime_bytes, Attr.BASE: base_bytes}, local=True
+                )
+                pub, priv = domain_params.generate_keypair(
+                    store=True,
+                    label=label,
+                    public_template={
+                        Attr.ID: pub_id,
+                    },
+                    private_template={
+                        Attr.ID: priv_id,
+                        Attr.SENSITIVE: sensitive,
+                        Attr.EXTRACTABLE: extractable,
+                        Attr.DERIVE: True,
                     },
                 )
             else:
@@ -428,15 +483,23 @@ class PKCS11Shim:
             raise CryptographicFailure(str(e)) from e
 
     def get_public_key_der(self, cka_id: bytes) -> bytes:
-        """Export public key in DER (SubjectPublicKeyInfo) format."""
+        """Export public key material.
+        RSA: PKCS#1 DER (via python-pkcs11 component encoding).
+        EC (ECDSA/ECDH): raw CKA_EC_POINT.
+        DH: raw CKA_VALUE (the public value y = g^x mod p).
+        """
         try:
             key = self._find_key(cka_id, ObjClass.PUBLIC_KEY)
             from pkcs11.util.rsa import encode_rsa_public_key
             try:
                 return encode_rsa_public_key(key)
             except Exception:
-                # EC or other key type — try raw value
-                return bytes(key[Attr.VALUE])
+                pass
+            try:
+                return bytes(key[Attr.EC_POINT])
+            except (pkcs11_exc.AttributeTypeInvalid, AttributeError, TypeError):
+                pass
+            return bytes(key[Attr.VALUE])
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(str(e)) from e
 
@@ -637,6 +700,60 @@ class PKCS11Shim:
             return bytes(self._sess().digest(data, mechanism=mech))
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Hash failed: {e}") from e
+
+    # ── key agreement / derive ──────────────────────────────────────────────
+
+    def derive_key(
+        self,
+        cka_id: bytes,
+        base_algorithm: int,
+        peer_value: bytes,
+        target_algorithm: int,
+        target_length_bits: int,
+        label: str = "",
+        extractable: bool = False,
+        sensitive: bool = True,
+        encrypt: bool = True,
+        decrypt: bool = True,
+    ) -> bytes:
+        """Derive a symmetric key from a DH/ECDH private key and a peer's public
+        value. Returns the cka_id of the newly derived (and stored) key."""
+        target_key_type = ALGO_TO_PKCS11_KEYTYPE.get(target_algorithm)
+        if target_key_type is None:
+            raise CryptographicFailure(f"Unsupported target algorithm {target_algorithm}")
+
+        if base_algorithm == CryptographicAlgorithm.DH:
+            mechanism, mechanism_param = Mechanism.DH_PKCS_DERIVE, peer_value
+        elif base_algorithm == CryptographicAlgorithm.ECDH:
+            from pkcs11.mechanisms import KDF
+            mechanism, mechanism_param = Mechanism.ECDH1_DERIVE, (KDF.NULL, None, peer_value)
+        else:
+            raise CryptographicFailure(
+                f"DeriveKey via key agreement not supported for base algorithm {base_algorithm}"
+            )
+
+        try:
+            key = self._find_key(cka_id, ObjClass.PRIVATE_KEY)
+            new_id = os.urandom(16)
+            # SoftHSM2: SENSITIVE+EXTRACTABLE blocks CKA_VALUE; disable SENSITIVE when extractable
+            effective_sensitive = sensitive and not extractable
+            key.derive_key(
+                target_key_type,
+                target_length_bits,
+                id=new_id,
+                label=label,
+                store=True,
+                mechanism=mechanism,
+                mechanism_param=mechanism_param,
+                capabilities=self._caps(encrypt, decrypt, False, False),
+                template={
+                    Attr.SENSITIVE:   effective_sensitive,
+                    Attr.EXTRACTABLE: extractable,
+                },
+            )
+            return new_id
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"DeriveKey failed: {e}") from e
 
     # ── random ───────────────────────────────────────────────────────────────
 
