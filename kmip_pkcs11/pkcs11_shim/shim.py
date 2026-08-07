@@ -35,9 +35,29 @@ ALGO_TO_PKCS11_KEYTYPE = {
     CryptographicAlgorithm.RSA:    KT.RSA,
     CryptographicAlgorithm.EC:     KT.EC,
     CryptographicAlgorithm.ECDSA:  KT.EC,
-    CryptographicAlgorithm.HMACSHA256: KT.SHA256_HMAC,
-    CryptographicAlgorithm.HMACSHA512: KT.SHA512_HMAC,
+    CryptographicAlgorithm.HMACMD5:    KT._MD5_HMAC,
     CryptographicAlgorithm.HMACSHA1:   KT.SHA_1_HMAC,
+    CryptographicAlgorithm.HMACSHA224: KT.SHA224_HMAC,
+    CryptographicAlgorithm.HMACSHA256: KT.SHA256_HMAC,
+    CryptographicAlgorithm.HMACSHA384: KT.SHA384_HMAC,
+    CryptographicAlgorithm.HMACSHA512: KT.SHA512_HMAC,
+}
+
+# HMAC key types require CKM_GENERIC_SECRET_KEY_GEN + SIGN/VERIFY capabilities
+# (not the encrypt/decrypt/wrap/unwrap capabilities used for AES/DES keys).
+_MAC_KEY_TYPES = {
+    KT._MD5_HMAC, KT.SHA_1_HMAC, KT.SHA224_HMAC,
+    KT.SHA256_HMAC, KT.SHA384_HMAC, KT.SHA512_HMAC,
+}
+
+# KMIP HashingAlgorithm → PKCS#11 digest Mechanism (session.digest)
+HASH_ALG_TO_MECH = {
+    3: Mechanism._MD5,     # HashingAlgorithm.MD5
+    4: Mechanism.SHA_1,    # HashingAlgorithm.SHA_1
+    5: Mechanism.SHA224,   # HashingAlgorithm.SHA_224
+    6: Mechanism.SHA256,   # HashingAlgorithm.SHA_256
+    7: Mechanism.SHA384,   # HashingAlgorithm.SHA_384
+    8: Mechanism.SHA512,   # HashingAlgorithm.SHA_512
 }
 
 # Map KMIP block cipher mode → PKCS#11 Mechanism, per key family.
@@ -144,18 +164,34 @@ class PKCS11Shim:
         try:
             # SoftHSM2: SENSITIVE+EXTRACTABLE blocks CKA_VALUE; disable SENSITIVE when extractable
             effective_sensitive = sensitive and not extractable
-            key = self._sess().generate_key(
-                key_type,
-                length_bits,
-                label=label,
-                id=cka_id,
-                store=True,
-                capabilities=self._caps(encrypt, decrypt, wrap, unwrap),
-                template={
-                    Attr.SENSITIVE:   effective_sensitive,
-                    Attr.EXTRACTABLE: extractable,
-                },
-            )
+            if key_type in _MAC_KEY_TYPES:
+                # HMAC key types are generic secrets: fixed keygen mechanism + SIGN/VERIFY caps
+                key = self._sess().generate_key(
+                    key_type,
+                    length_bits,
+                    label=label,
+                    id=cka_id,
+                    store=True,
+                    mechanism=Mechanism.GENERIC_SECRET_KEY_GEN,
+                    capabilities=MF.SIGN | MF.VERIFY,
+                    template={
+                        Attr.SENSITIVE:   effective_sensitive,
+                        Attr.EXTRACTABLE: extractable,
+                    },
+                )
+            else:
+                key = self._sess().generate_key(
+                    key_type,
+                    length_bits,
+                    label=label,
+                    id=cka_id,
+                    store=True,
+                    capabilities=self._caps(encrypt, decrypt, wrap, unwrap),
+                    template={
+                        Attr.SENSITIVE:   effective_sensitive,
+                        Attr.EXTRACTABLE: extractable,
+                    },
+                )
             log.debug("Generated %d-bit %s key label='%s'", length_bits, key_type.name, label)
             return id(key), cka_id
         except pkcs11_exc.PKCS11Error as e:
@@ -477,6 +513,38 @@ class PKCS11Shim:
             return False
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Verify failed: {e}") from e
+
+    # ── MAC / hash ───────────────────────────────────────────────────────────
+
+    def mac(self, cka_id: bytes, data: bytes, mechanism=None) -> bytes:
+        try:
+            key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
+            mech = mechanism or Mechanism.SHA256_HMAC
+            return bytes(key.sign(data, mechanism=mech))
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"MAC failed: {e}") from e
+
+    def mac_verify(self, cka_id: bytes, data: bytes, mac_value: bytes, mechanism=None) -> bool:
+        try:
+            key    = self._find_key(cka_id, ObjClass.SECRET_KEY)
+            mech   = mechanism or Mechanism.SHA256_HMAC
+            result = key.verify(data, mac_value, mechanism=mech)
+            # python-pkcs11 raises SignatureInvalid for asymmetric mechanisms but
+            # returns a bool directly for HMAC/MAC mechanisms — honor whichever.
+            return True if result is None else bool(result)
+        except pkcs11_exc.SignatureInvalid:
+            return False
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"MACVerify failed: {e}") from e
+
+    def hash_data(self, data: bytes, hash_alg: int) -> bytes:
+        mech = HASH_ALG_TO_MECH.get(hash_alg)
+        if mech is None:
+            raise CryptographicFailure(f"Unsupported HashingAlgorithm {hash_alg}")
+        try:
+            return bytes(self._sess().digest(data, mechanism=mech))
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"Hash failed: {e}") from e
 
     # ── random ───────────────────────────────────────────────────────────────
 

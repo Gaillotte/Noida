@@ -3159,3 +3159,283 @@ class TestPhase2StoreHelpers:
         store.add_attribute(uid, "Comment", "first")
         store.set_or_add_attribute(uid, "Comment", "overwritten")
         assert store.get_attribute(uid, "Comment") == ["overwritten"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 3 — MAC, MACVerify, Hash
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _create_hmac_uid(store, shim, algorithm=None, length=256, extractable=False) -> str:
+    from kmip_pkcs11.operations import create as create_mod
+    if algorithm is None:
+        algorithm = CryptographicAlgorithm.HMACSHA256
+    attrs = (
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, algorithm))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, length))
+        + _attr("Cryptographic Usage Mask",
+                encode_integer(Tag.AttributeValue,
+                               CryptographicUsageMask.MACGenerate | CryptographicUsageMask.MACVerify))
+        + _attr("Extractable", encode_integer(Tag.AttributeValue, int(extractable)))
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+        + encode_structure(Tag.TemplateAttribute, attrs)
+    ))
+    resp_bytes = create_mod.handle(p, "user", store, shim)
+    uid = decode_one(encode_structure(Tag.ResponsePayload, resp_bytes)).get(
+        Tag.UniqueIdentifier).value
+    store.activate(uid)
+    return uid
+
+
+class TestPhase3MACLive:
+    """HMAC-SHA256 MAC/MACVerify round-trip through SoftHSM2."""
+
+    def test_mac_verify_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import mac as mac_op, mac_verify as macver_op
+        uid = _create_hmac_uid(store, shim)
+        message = b"KMIP MAC test message"
+
+        mac_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, message),
+        )
+        mac_resp  = mac_op.handle(mac_payload, "user", store, shim)
+        mac_items = decode_all(mac_resp)
+        mac_value = next(i.value for i in mac_items if i.tag == Tag.MACData)
+        assert len(mac_value) == 32
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, message),
+            mac=encode_byte_string(Tag.MACData, mac_value),
+        )
+        ver_resp  = macver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+    def test_mac_verify_wrong_data_is_invalid(self, store, shim):
+        from kmip_pkcs11.operations import mac as mac_op, mac_verify as macver_op
+        uid = _create_hmac_uid(store, shim)
+
+        mac_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"original message"),
+        )
+        mac_resp  = mac_op.handle(mac_payload, "user", store, shim)
+        mac_value = next(i.value for i in decode_all(mac_resp) if i.tag == Tag.MACData)
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"tampered message"),
+            mac=encode_byte_string(Tag.MACData, mac_value),
+        )
+        ver_resp = macver_op.handle(ver_payload, "user", store, shim)
+        validity = next(i.value for i in decode_all(ver_resp) if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Invalid
+
+    def test_mac_verify_wrong_mac_is_invalid(self, store, shim):
+        from kmip_pkcs11.operations import mac_verify as macver_op
+        uid = _create_hmac_uid(store, shim)
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"some data"),
+            mac=encode_byte_string(Tag.MACData, b"\x00" * 32),
+        )
+        ver_resp = macver_op.handle(ver_payload, "user", store, shim)
+        validity = next(i.value for i in decode_all(ver_resp) if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Invalid
+
+    def test_mac_sha1_key(self, store, shim):
+        from kmip_pkcs11.operations import mac as mac_op, mac_verify as macver_op
+        uid = _create_hmac_uid(store, shim, algorithm=CryptographicAlgorithm.HMACSHA1, length=160)
+        message = b"sha1 hmac test"
+
+        mac_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, message),
+        )
+        mac_resp  = mac_op.handle(mac_payload, "user", store, shim)
+        mac_value = next(i.value for i in decode_all(mac_resp) if i.tag == Tag.MACData)
+        assert len(mac_value) == 20
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, message),
+            mac=encode_byte_string(Tag.MACData, mac_value),
+        )
+        ver_resp = macver_op.handle(ver_payload, "user", store, shim)
+        validity = next(i.value for i in decode_all(ver_resp) if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+
+class TestPhase3MACErrors:
+    def test_mac_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import mac as mac_op
+        with pytest.raises(MissingData):
+            mac_op.handle(None, "user", MagicMock(), shim)
+
+    def test_mac_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import mac as mac_op
+        payload = _make_payload(data=encode_byte_string(Tag.Data, b"x"))
+        with pytest.raises(MissingData):
+            mac_op.handle(payload, "user", store, shim)
+
+    def test_mac_missing_data_raises(self, store, shim):
+        from kmip_pkcs11.operations import mac as mac_op
+        uid = _create_hmac_uid(store, shim)
+        payload = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, uid))
+        with pytest.raises(MissingData):
+            mac_op.handle(payload, "user", store, shim)
+
+    def test_mac_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import mac as mac_op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "nope"),
+            data=encode_byte_string(Tag.Data, b"x"),
+        )
+        with pytest.raises(ItemNotFound):
+            mac_op.handle(payload, "user", store, shim)
+
+    def test_mac_verify_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import mac_verify as macver_op
+        with pytest.raises(MissingData):
+            macver_op.handle(None, "user", MagicMock(), shim)
+
+    def test_mac_verify_missing_mac_data_raises(self, store, shim):
+        from kmip_pkcs11.operations import mac_verify as macver_op
+        uid = _create_hmac_uid(store, shim)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"x"),
+        )
+        with pytest.raises(MissingData):
+            macver_op.handle(payload, "user", store, shim)
+
+
+class TestPhase3HashLive:
+    """Hash operation — no key involved, computes a digest directly."""
+
+    def test_hash_sha256(self, shim):
+        import hashlib
+        from kmip_pkcs11.operations import hash_op
+
+        payload = _make_payload(
+            data=encode_byte_string(Tag.Data, b"hash me please"),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.SHA_256),
+            ),
+        )
+        resp  = hash_op.handle(payload, "user", MagicMock(), shim)
+        items = decode_all(resp)
+        digest = next(i.value for i in items if i.tag == Tag.Data)
+        assert digest == hashlib.sha256(b"hash me please").digest()
+
+    def test_hash_sha1(self, shim):
+        import hashlib
+        from kmip_pkcs11.operations import hash_op
+
+        payload = _make_payload(
+            data=encode_byte_string(Tag.Data, b"another message"),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.SHA_1),
+            ),
+        )
+        resp  = hash_op.handle(payload, "user", MagicMock(), shim)
+        digest = next(i.value for i in decode_all(resp) if i.tag == Tag.Data)
+        assert digest == hashlib.sha1(b"another message").digest()
+
+    def test_hash_md5(self, shim):
+        import hashlib
+        from kmip_pkcs11.operations import hash_op
+
+        payload = _make_payload(
+            data=encode_byte_string(Tag.Data, b"md5 test"),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.MD5),
+            ),
+        )
+        resp  = hash_op.handle(payload, "user", MagicMock(), shim)
+        digest = next(i.value for i in decode_all(resp) if i.tag == Tag.Data)
+        assert digest == hashlib.md5(b"md5 test").digest()
+
+    def test_hash_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import hash_op
+        with pytest.raises(MissingData):
+            hash_op.handle(None, "user", MagicMock(), shim)
+
+    def test_hash_missing_data_raises(self, shim):
+        from kmip_pkcs11.operations import hash_op
+        payload = _make_payload(
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.SHA_256),
+            ),
+        )
+        with pytest.raises(MissingData):
+            hash_op.handle(payload, "user", MagicMock(), shim)
+
+    def test_hash_missing_algorithm_raises(self, shim):
+        from kmip_pkcs11.operations import hash_op
+        payload = _make_payload(data=encode_byte_string(Tag.Data, b"x"))
+        with pytest.raises(MissingData):
+            hash_op.handle(payload, "user", MagicMock(), shim)
+
+    def test_hash_unsupported_algorithm_raises(self, shim):
+        from kmip_pkcs11.operations import hash_op
+        payload = _make_payload(
+            data=encode_byte_string(Tag.Data, b"x"),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.SHA3_256),
+            ),
+        )
+        with pytest.raises(CryptographicFailure):
+            hash_op.handle(payload, "user", MagicMock(), shim)
+
+
+class TestPhase3QueryAdvertised:
+    def test_mac_ops_and_hash_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        resp = op.handle(None, "user", store, shim)
+        ops  = [i.value for i in decode_all(resp) if i.tag == Tag.Operations]
+        assert Operation.MAC in ops
+        assert Operation.MACVerify in ops
+        assert Operation.Hash in ops
+
+
+class TestPhase3Dispatcher:
+    def test_all_registered(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.MAC in d._handlers
+        assert Operation.MACVerify in d._handlers
+        assert Operation.Hash in d._handlers
+
+    def test_hash_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        d = OperationDispatcher(store=store, shim=shim)
+        req_payload = encode_structure(
+            Tag.RequestPayload,
+            encode_byte_string(Tag.Data, b"dispatch me")
+            + encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.SHA_256),
+            ),
+        )
+        batch_item = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.Hash) + req_payload
+        ))
+        resp = d.dispatch(batch_item, "user")
+        item = decode_one(resp)
+        status_item = item.get(Tag.ResultStatus)
+        assert status_item.value == ResultStatus.Success

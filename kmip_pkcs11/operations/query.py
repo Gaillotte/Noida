@@ -17,6 +17,7 @@ SUPPORTED_OPERATIONS = [
     Operation.Activate, Operation.Revoke, Operation.Encrypt, Operation.Decrypt,
     Operation.Sign, Operation.SignatureVerify,
     Operation.RNGRetrieve,
+    Operation.MAC, Operation.MACVerify, Operation.Hash,
     Operation.Query, Operation.DiscoverVersions,
 ]
 

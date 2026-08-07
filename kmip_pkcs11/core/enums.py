@@ -99,6 +99,7 @@ class Tag(IntEnum):
     KeyRoleType             = 0x420083
     SignatureData           = 0x420073  # Sign response / SignatureVerify request
     ValidityIndicator       = 0x420092  # SignatureVerify response
+    MACData                 = 0x42004E  # MAC response / MACVerify request
 
     # Operation payloads
     TemplateAttribute       = 0x420091
