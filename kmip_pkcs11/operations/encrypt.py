@@ -2,7 +2,7 @@
 
 import logging
 import os
-from ..core.enums import Tag, BlockCipherMode
+from ..core.enums import Tag, BlockCipherMode, CryptographicAlgorithm
 from ..core.ttlv import encode_byte_string, encode_structure, encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData
 from ..lifecycle.state_machine import check_usage_allowed
@@ -42,13 +42,16 @@ def handle(payload, identity: str, store, shim) -> bytes:
             mode = mode_item.value
 
     # IV — pick caller-supplied value, else generate mode-appropriate nonce
+    algorithm = obj.get("cryptographic_algorithm")
     iv_item = payload.get(Tag.IVCounterNonce)
     if iv_item:
         iv = iv_item.value
     elif mode in (BlockCipherMode.GCM, BlockCipherMode.CTR, BlockCipherMode.CCM):
         iv = os.urandom(12)   # AEAD/stream modes: 12-byte nonce
+    elif algorithm in (CryptographicAlgorithm.DES, CryptographicAlgorithm.TDES):
+        iv = os.urandom(8)    # DES/3DES: 64-bit block → 8-byte IV
     else:
-        iv = os.urandom(16)   # CBC, ECB, CFB, OFB: standard 16-byte IV
+        iv = os.urandom(16)   # AES CBC, ECB, CFB, OFB: standard 16-byte IV
 
     cka_ids = store.get_attribute(uid, "_pkcs11_cka_id")
     if not cka_ids:

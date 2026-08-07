@@ -40,10 +40,12 @@ ALGO_TO_PKCS11_KEYTYPE = {
     CryptographicAlgorithm.HMACSHA1:   KT.SHA_1_HMAC,
 }
 
-# Map KMIP block cipher mode → PKCS#11 Mechanism
-# CFB128/OFB use a raw 16-byte IV (like CBC) and work on real HSMs; SoftHSM2 does not support them.
-# CCM is an AEAD mode similar to GCM; treated the same here. SoftHSM2 does not support CCM.
-BLOCKMODE_TO_MECH = {
+# Map KMIP block cipher mode → PKCS#11 Mechanism, per key family.
+# CFB128/OFB require real-hardware HSMs; SoftHSM2 does not support them.
+# CCM is treated like GCM (AEAD); SoftHSM2 does not support CCM.
+# Single-DES ECB/CBC use raw CKM values (0x121/0x122) because python-pkcs11
+# omits the DES_ECB / DES_CBC named constants (they are cryptographically broken).
+BLOCKMODE_TO_MECH = {          # AES (default)
     BlockCipherMode.CBC: Mechanism.AES_CBC_PAD,
     BlockCipherMode.ECB: Mechanism.AES_ECB,
     BlockCipherMode.GCM: Mechanism.AES_GCM,
@@ -52,6 +54,17 @@ BLOCKMODE_TO_MECH = {
     BlockCipherMode.OFB: Mechanism.AES_OFB,
     BlockCipherMode.CCM: Mechanism.AES_CCM,
 }
+DES3_BLOCKMODE_TO_MECH = {     # Triple-DES; SoftHSM2 supports ECB + CBC_PAD
+    BlockCipherMode.CBC: Mechanism.DES3_CBC_PAD,
+    BlockCipherMode.ECB: Mechanism.DES3_ECB,
+}
+DES_BLOCKMODE_TO_MECH = {      # Single-DES (legacy only; CBC has no padding variant)
+    BlockCipherMode.CBC: Mechanism(0x0122),   # CKM_DES_CBC
+    BlockCipherMode.ECB: Mechanism(0x0121),   # CKM_DES_ECB
+}
+
+# IV block size by key family: DES/3DES use 64-bit blocks → 8-byte IV
+_DES_KEY_TYPES = {KT._DES, KT.DES3}
 
 
 class PKCS11Shim:
@@ -328,8 +341,9 @@ class PKCS11Shim:
         Returns (ciphertext, tag_or_None).
         """
         try:
-            key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
-            mech = BLOCKMODE_TO_MECH.get(mechanism_id, Mechanism.AES_CBC_PAD)
+            key      = self._find_key(cka_id, ObjClass.SECRET_KEY)
+            key_type = self._key_type(key)
+            mech     = self._resolve_mech(mechanism_id, key_type)
 
             if mech in (Mechanism.AES_GCM, Mechanism.AES_CCM):
                 # Both GCM and CCM are AEAD modes returning (ciphertext, tag).
@@ -350,7 +364,7 @@ class PKCS11Shim:
                 ct = key.encrypt(plaintext, mechanism=mech, mechanism_param=param)
                 return bytes(ct), None
             else:
-                # CBC, ECB, CFB128, OFB: IV passed as raw bytes (ECB ignores it)
+                # CBC, ECB, CFB128, OFB, DES/3DES CBC/ECB: IV as raw bytes
                 ct = key.encrypt(plaintext, mechanism=mech, mechanism_param=iv or None)
                 return bytes(ct), None
         except pkcs11_exc.PKCS11Error as e:
@@ -366,8 +380,9 @@ class PKCS11Shim:
         tag: Optional[bytes] = None,
     ) -> bytes:
         try:
-            key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
-            mech = BLOCKMODE_TO_MECH.get(mechanism_id, Mechanism.AES_CBC_PAD)
+            key      = self._find_key(cka_id, ObjClass.SECRET_KEY)
+            key_type = self._key_type(key)
+            mech     = self._resolve_mech(mechanism_id, key_type)
 
             if mech in (Mechanism.AES_GCM, Mechanism.AES_CCM):
                 data = ciphertext + (tag or b'')
@@ -384,7 +399,7 @@ class PKCS11Shim:
                 param = pkcs11.CTRParams(nonce=iv or b'\x00' * 12)
                 pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=param)
             else:
-                # CBC, ECB, CFB128, OFB: IV passed as raw bytes
+                # CBC, ECB, CFB128, OFB, DES/3DES CBC/ECB: IV as raw bytes
                 pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=iv or None)
             return bytes(pt)
         except pkcs11_exc.PKCS11Error as e:
@@ -421,6 +436,23 @@ class PKCS11Shim:
             raise CryptographicFailure(f"RNG failed: {e}") from e
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _key_type(key) -> KT:
+        """Read CKA_KEY_TYPE from a PKCS#11 key object; default to AES."""
+        try:
+            return key[Attr.KEY_TYPE]
+        except Exception:
+            return KT.AES
+
+    @staticmethod
+    def _resolve_mech(mode_id: int, key_type: KT) -> Mechanism:
+        """Return the PKCS#11 Mechanism for a KMIP BlockCipherMode + key type."""
+        if key_type == KT.DES3:
+            return DES3_BLOCKMODE_TO_MECH.get(mode_id, Mechanism.DES3_CBC_PAD)
+        if key_type == KT._DES:
+            return DES_BLOCKMODE_TO_MECH.get(mode_id, Mechanism(0x0122))  # CKM_DES_CBC
+        return BLOCKMODE_TO_MECH.get(mode_id, Mechanism.AES_CBC_PAD)
 
     @staticmethod
     def _caps(encrypt, decrypt, wrap, unwrap) -> MechanismFlag:

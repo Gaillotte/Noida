@@ -2151,3 +2151,203 @@ class TestPhase2CCM:
         param = call_kwargs['mechanism_param']
         import pkcs11 as _pkcs11
         assert isinstance(param, _pkcs11.GCMParams)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — DES / 3DES mode mapping
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _create_des3_uid(store, shim, extractable=True) -> str:
+    """Create a Triple-DES key via the KMIP Create handler and return its UID."""
+    from kmip_pkcs11.operations import create as create_mod
+    attrs = (
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.TDES))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 192))
+        + _attr("Cryptographic Usage Mask",
+                encode_integer(Tag.AttributeValue,
+                               CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt))
+        + _attr("Extractable", encode_integer(Tag.AttributeValue, int(extractable)))
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+        + encode_structure(Tag.TemplateAttribute, attrs)
+    ))
+    resp_bytes = create_mod.handle(p, "user", store, shim)
+    return decode_one(encode_structure(Tag.ResponsePayload, resp_bytes)).get(
+        Tag.UniqueIdentifier).value
+
+
+class TestPhase3MechMapping:
+    """_resolve_mech picks the right PKCS#11 mechanism per key family."""
+
+    def test_des3_cbc_resolves_to_des3_cbc_pad(self):
+        import pkcs11
+        from kmip_pkcs11.pkcs11_shim.shim import PKCS11Shim
+        mech = PKCS11Shim._resolve_mech(BlockCipherMode.CBC, pkcs11.KeyType.DES3)
+        assert mech == pkcs11.Mechanism.DES3_CBC_PAD
+
+    def test_des3_ecb_resolves_to_des3_ecb(self):
+        import pkcs11
+        from kmip_pkcs11.pkcs11_shim.shim import PKCS11Shim
+        mech = PKCS11Shim._resolve_mech(BlockCipherMode.ECB, pkcs11.KeyType.DES3)
+        assert mech == pkcs11.Mechanism.DES3_ECB
+
+    def test_des_cbc_resolves_to_raw_ckm(self):
+        import pkcs11
+        from kmip_pkcs11.pkcs11_shim.shim import PKCS11Shim
+        mech = PKCS11Shim._resolve_mech(BlockCipherMode.CBC, pkcs11.KeyType._DES)
+        assert int(mech) == 0x0122   # CKM_DES_CBC
+
+    def test_des_ecb_resolves_to_raw_ckm(self):
+        import pkcs11
+        from kmip_pkcs11.pkcs11_shim.shim import PKCS11Shim
+        mech = PKCS11Shim._resolve_mech(BlockCipherMode.ECB, pkcs11.KeyType._DES)
+        assert int(mech) == 0x0121   # CKM_DES_ECB
+
+    def test_aes_cbc_unaffected(self):
+        import pkcs11
+        from kmip_pkcs11.pkcs11_shim.shim import PKCS11Shim
+        mech = PKCS11Shim._resolve_mech(BlockCipherMode.CBC, pkcs11.KeyType.AES)
+        assert mech == pkcs11.Mechanism.AES_CBC_PAD
+
+
+class TestPhase3DES3Live:
+    """3DES CBC + ECB round-trip through SoftHSM2 (SoftHSM2 supports DES3_CBC_PAD)."""
+
+    def test_des3_cbc_roundtrip_shim_level(self, shim):
+        _, cka_id = shim.generate_symmetric_key(
+            algorithm=CryptographicAlgorithm.TDES,
+            length_bits=192,
+            label="des3-cbc-test",
+            extractable=True,
+        )
+        plaintext = b"Hello 3DES CBC!!"   # 16 bytes — padded by CBC_PAD
+        iv = os.urandom(8)                # 3DES block = 64 bits
+
+        ciphertext, tag = shim.encrypt(cka_id, plaintext,
+                                       mechanism_id=BlockCipherMode.CBC, iv=iv)
+        assert tag is None
+        assert ciphertext != plaintext
+
+        recovered = shim.decrypt(cka_id, ciphertext,
+                                 mechanism_id=BlockCipherMode.CBC, iv=iv)
+        assert recovered == plaintext
+
+    def test_des3_ecb_roundtrip_shim_level(self, shim):
+        _, cka_id = shim.generate_symmetric_key(
+            algorithm=CryptographicAlgorithm.TDES,
+            length_bits=192,
+            label="des3-ecb-test",
+            extractable=True,
+        )
+        plaintext = b"Hello3DES ECB!!!"   # 16 bytes — ECB works without IV
+
+        ciphertext, tag = shim.encrypt(cka_id, plaintext,
+                                       mechanism_id=BlockCipherMode.ECB)
+        assert tag is None
+        assert ciphertext != plaintext
+
+        recovered = shim.decrypt(cka_id, ciphertext,
+                                 mechanism_id=BlockCipherMode.ECB)
+        assert recovered == plaintext
+
+    def test_des3_cbc_roundtrip_operation_level(self, store, shim):
+        """Full KMIP Encrypt/Decrypt handler round-trip with a 3DES key."""
+        from kmip_pkcs11.operations import encrypt as enc_op, decrypt as dec_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        uid = _create_des3_uid(store, shim)
+        store.activate(uid)
+
+        crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.CBC),
+        )
+        plaintext = b"3DES operation test!!"
+        enc_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, plaintext),
+            params=crypto_params,
+        )
+        enc_resp  = enc_op.handle(enc_payload, "user", store, shim)
+        enc_items = decode_all(enc_resp)
+
+        ciphertext = next(i.value for i in enc_items if i.tag == Tag.Data)
+        iv_val     = next(i.value for i in enc_items if i.tag == Tag.IVCounterNonce)
+        assert len(iv_val) == 8   # handler must generate 8-byte IV for 3DES
+
+        dec_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, ciphertext),
+            iv=encode_byte_string(Tag.IVCounterNonce, iv_val),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.CBC),
+            ),
+        )
+        dec_resp  = dec_op.handle(dec_payload, "user", store, shim)
+        dec_items = decode_all(dec_resp)
+        recovered = next(i.value for i in dec_items if i.tag == Tag.Data)
+        assert recovered == plaintext
+
+
+class TestPhase3DESMock:
+    """Single-DES — mock-based (deprecated but must route correctly)."""
+
+    def test_des_cbc_encrypt_uses_raw_ckm_value(self, shim):
+        fake_key = MagicMock()
+        fake_key.__getitem__ = MagicMock(return_value=__import__('pkcs11').KeyType._DES)
+        fake_key.encrypt.return_value = b'\xAA' * 8
+        iv = os.urandom(8)
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            ct, tag = shim.encrypt(b'\x00' * 16, b'DES data', 
+                                   mechanism_id=BlockCipherMode.CBC, iv=iv)
+
+        call_kwargs = fake_key.encrypt.call_args.kwargs
+        assert int(call_kwargs['mechanism']) == 0x0122   # CKM_DES_CBC
+        assert tag is None
+
+    def test_des_ecb_encrypt_uses_raw_ckm_value(self, shim):
+        fake_key = MagicMock()
+        fake_key.__getitem__ = MagicMock(return_value=__import__('pkcs11').KeyType._DES)
+        fake_key.encrypt.return_value = b'\xBB' * 8
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            ct, tag = shim.encrypt(b'\x00' * 16, b'DES data',
+                                   mechanism_id=BlockCipherMode.ECB)
+
+        call_kwargs = fake_key.encrypt.call_args.kwargs
+        assert int(call_kwargs['mechanism']) == 0x0121   # CKM_DES_ECB
+
+
+class TestPhase3EncryptHandlerIV:
+    """encrypt.py must generate 8-byte IV for DES/3DES, not 16."""
+
+    def test_handler_generates_8byte_iv_for_tdes(self, store, shim):
+        from kmip_pkcs11.operations import encrypt as enc_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        uid = _create_des3_uid(store, shim)
+        store.activate(uid)
+
+        fake_key = MagicMock()
+        fake_key.__getitem__ = MagicMock(return_value=__import__('pkcs11').KeyType.DES3)
+        fake_key.encrypt.return_value = b'\xCC' * 16   # DES3_CBC_PAD adds padding
+
+        crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.CBC),
+        )
+        enc_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b'test data 3DES!!'),
+            params=crypto_params,
+        )
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            enc_resp  = enc_op.handle(enc_payload, "user", store, shim)
+
+        enc_items = decode_all(enc_resp)
+        iv_val = next(i.value for i in enc_items if i.tag == Tag.IVCounterNonce)
+        assert len(iv_val) == 8, f"Expected 8-byte IV for 3DES, got {len(iv_val)}"
