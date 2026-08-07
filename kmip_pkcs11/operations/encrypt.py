@@ -30,20 +30,25 @@ def handle(payload, identity: str, store, shim) -> bytes:
 
     check_usage_allowed(obj["state"], "encrypt")
 
-    # IV / mechanism
-    iv_item  = payload.get(Tag.IVCounterNonce)
-    iv       = iv_item.value if iv_item else os.urandom(16)
-
     aad_item = payload.get(Tag.AuthenticatedEncryptionAdditionalData)
     aad      = aad_item.value if aad_item else None
 
-    # Mechanism: default to CBC
+    # Mechanism: default to CBC — must be parsed before IV so we can pick the right nonce length
     crypto_params = payload.get(Tag.CryptographicParameters)
     mode = BlockCipherMode.CBC
     if crypto_params:
         mode_item = crypto_params.get(Tag.CryptographicParameters_BlockCipherMode)
         if mode_item:
             mode = mode_item.value
+
+    # IV — pick caller-supplied value, else generate mode-appropriate nonce
+    iv_item = payload.get(Tag.IVCounterNonce)
+    if iv_item:
+        iv = iv_item.value
+    elif mode in (BlockCipherMode.GCM, BlockCipherMode.CTR):
+        iv = os.urandom(12)   # GCM/CTR: 12-byte nonce fits both constraints
+    else:
+        iv = os.urandom(16)   # CBC / ECB: standard 16-byte IV
 
     cka_ids = store.get_attribute(uid, "_pkcs11_cka_id")
     if not cka_ids:

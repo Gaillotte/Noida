@@ -327,16 +327,23 @@ class PKCS11Shim:
             mech = BLOCKMODE_TO_MECH.get(mechanism_id, Mechanism.AES_CBC_PAD)
 
             if mech == Mechanism.AES_GCM:
-                from pkcs11 import MGF
                 result = key.encrypt(
                     plaintext,
                     mechanism=mech,
-                    mechanism_param=pkcs11.AES_GCM_Mechanism(iv or b'\x00' * 12, aad or b'', 128),
+                    mechanism_param=pkcs11.GCMParams(
+                        nonce=iv or b'\x00' * 12,
+                        aad=aad,
+                        tag_bits=128,
+                    ),
                 )
                 return bytes(result[:-16]), bytes(result[-16:])
-            else:
-                param = iv if iv else None
+            elif mech == Mechanism.AES_CTR:
+                param = pkcs11.CTRParams(nonce=iv or b'\x00' * 12)
                 ct = key.encrypt(plaintext, mechanism=mech, mechanism_param=param)
+                return bytes(ct), None
+            else:
+                # CBC / ECB: IV as raw bytes (ECB ignores it)
+                ct = key.encrypt(plaintext, mechanism=mech, mechanism_param=iv or None)
                 return bytes(ct), None
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Encrypt failed: {e}") from e
@@ -359,10 +366,17 @@ class PKCS11Shim:
                 pt   = key.decrypt(
                     data,
                     mechanism=mech,
-                    mechanism_param=pkcs11.AES_GCM_Mechanism(iv or b'\x00' * 12, aad or b'', 128),
+                    mechanism_param=pkcs11.GCMParams(
+                        nonce=iv or b'\x00' * 12,
+                        aad=aad,
+                        tag_bits=128,
+                    ),
                 )
+            elif mech == Mechanism.AES_CTR:
+                param = pkcs11.CTRParams(nonce=iv or b'\x00' * 12)
+                pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=param)
             else:
-                pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=iv)
+                pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=iv or None)
             return bytes(pt)
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Decrypt failed: {e}") from e

@@ -1755,3 +1755,172 @@ class TestGetNonExtractablePrivateKey:
         payload = _uid_payload(uid)
         with pytest.raises(NotExtractable):
             get_op.handle(payload, "user", store, shim)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 1 fixes — GCM and CTR round-trip tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase1GCM:
+    """AES-GCM encrypt/decrypt round-trip — verifies the GCMParams fix."""
+
+    def test_gcm_roundtrip_shim_level(self, shim):
+        """Direct shim call: encrypt then decrypt with GCM, verify plaintext."""
+        _, cka_id = shim.generate_symmetric_key(
+            algorithm=CryptographicAlgorithm.AES,
+            length_bits=256,
+            label="gcm-test",
+            extractable=True,
+        )
+        plaintext = b"Hello GCM World!"
+        nonce     = os.urandom(12)
+
+        ciphertext, tag = shim.encrypt(
+            cka_id, plaintext,
+            mechanism_id=BlockCipherMode.GCM,
+            iv=nonce,
+        )
+        assert ciphertext != plaintext
+        assert tag is not None
+        assert len(tag) == 16  # 128-bit auth tag
+
+        recovered = shim.decrypt(
+            cka_id, ciphertext,
+            mechanism_id=BlockCipherMode.GCM,
+            iv=nonce,
+            tag=tag,
+        )
+        assert recovered == plaintext
+
+    def test_gcm_with_aad(self, shim):
+        """GCM with Additional Authenticated Data (AAD)."""
+        _, cka_id = shim.generate_symmetric_key(
+            algorithm=CryptographicAlgorithm.AES,
+            length_bits=128,
+            label="gcm-aad-test",
+            extractable=True,
+        )
+        plaintext = b"Authenticated payload"
+        nonce     = os.urandom(12)
+        aad       = b"header-metadata"
+
+        ciphertext, tag = shim.encrypt(
+            cka_id, plaintext,
+            mechanism_id=BlockCipherMode.GCM,
+            iv=nonce, aad=aad,
+        )
+        recovered = shim.decrypt(
+            cka_id, ciphertext,
+            mechanism_id=BlockCipherMode.GCM,
+            iv=nonce, aad=aad, tag=tag,
+        )
+        assert recovered == plaintext
+
+    def test_gcm_roundtrip_operation_level(self, store, shim):
+        """GCM through the full KMIP Encrypt/Decrypt operation handlers."""
+        from kmip_pkcs11.operations import encrypt as enc_op, decrypt as dec_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        uid = _create_aes_uid(store, shim, length=256)
+        store.activate(uid)
+
+        crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.GCM),
+        )
+        plaintext = b"GCM operation test"
+        enc_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, plaintext),
+            params=crypto_params,
+        )
+        enc_resp = enc_op.handle(enc_payload, "user", store, shim)
+        enc_items = decode_all(enc_resp)
+
+        ciphertext = next(i.value for i in enc_items if i.tag == Tag.Data)
+        nonce      = next(i.value for i in enc_items if i.tag == Tag.IVCounterNonce)
+        auth_tag   = next(i.value for i in enc_items if i.tag == Tag.AuthenticatedEncryptionTag)
+
+        dec_crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.GCM),
+        )
+        dec_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, ciphertext),
+            iv=encode_byte_string(Tag.IVCounterNonce, nonce),
+            tag=encode_byte_string(Tag.AuthenticatedEncryptionTag, auth_tag),
+            params=dec_crypto_params,
+        )
+        dec_resp  = dec_op.handle(dec_payload, "user", store, shim)
+        dec_items = decode_all(dec_resp)
+        recovered = next(i.value for i in dec_items if i.tag == Tag.Data)
+        assert recovered == plaintext
+
+
+class TestPhase1CTR:
+    """AES-CTR encrypt/decrypt round-trip — verifies the CTRParams fix."""
+
+    def test_ctr_roundtrip_shim_level(self, shim):
+        """Direct shim call: encrypt then decrypt with CTR mode."""
+        _, cka_id = shim.generate_symmetric_key(
+            algorithm=CryptographicAlgorithm.AES,
+            length_bits=128,
+            label="ctr-test",
+            extractable=True,
+        )
+        plaintext = b"Hello CTR World!!"   # 16 bytes — no padding in CTR
+        nonce     = os.urandom(12)
+
+        ciphertext, tag = shim.encrypt(
+            cka_id, plaintext,
+            mechanism_id=BlockCipherMode.CTR,
+            iv=nonce,
+        )
+        assert tag is None                 # CTR produces no auth tag
+        assert ciphertext != plaintext
+
+        recovered = shim.decrypt(
+            cka_id, ciphertext,
+            mechanism_id=BlockCipherMode.CTR,
+            iv=nonce,
+        )
+        assert recovered == plaintext
+
+    def test_ctr_roundtrip_operation_level(self, store, shim):
+        """CTR through the full KMIP Encrypt/Decrypt operation handlers."""
+        from kmip_pkcs11.operations import encrypt as enc_op, decrypt as dec_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        uid = _create_aes_uid(store, shim, length=256)
+        store.activate(uid)
+
+        crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.CTR),
+        )
+        plaintext = b"CTR operation test!!"
+        enc_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, plaintext),
+            params=crypto_params,
+        )
+        enc_resp  = enc_op.handle(enc_payload, "user", store, shim)
+        enc_items = decode_all(enc_resp)
+
+        ciphertext = next(i.value for i in enc_items if i.tag == Tag.Data)
+        nonce      = next(i.value for i in enc_items if i.tag == Tag.IVCounterNonce)
+
+        dec_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, ciphertext),
+            iv=encode_byte_string(Tag.IVCounterNonce, nonce),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.CTR),
+            ),
+        )
+        dec_resp  = dec_op.handle(dec_payload, "user", store, shim)
+        dec_items = decode_all(dec_resp)
+        recovered = next(i.value for i in dec_items if i.tag == Tag.Data)
+        assert recovered == plaintext
