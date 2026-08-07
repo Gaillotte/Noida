@@ -41,11 +41,16 @@ ALGO_TO_PKCS11_KEYTYPE = {
 }
 
 # Map KMIP block cipher mode → PKCS#11 Mechanism
+# CFB128/OFB use a raw 16-byte IV (like CBC) and work on real HSMs; SoftHSM2 does not support them.
+# CCM is an AEAD mode similar to GCM; treated the same here. SoftHSM2 does not support CCM.
 BLOCKMODE_TO_MECH = {
     BlockCipherMode.CBC: Mechanism.AES_CBC_PAD,
     BlockCipherMode.ECB: Mechanism.AES_ECB,
     BlockCipherMode.GCM: Mechanism.AES_GCM,
     BlockCipherMode.CTR: Mechanism.AES_CTR,
+    BlockCipherMode.CFB: Mechanism.AES_CFB128,
+    BlockCipherMode.OFB: Mechanism.AES_OFB,
+    BlockCipherMode.CCM: Mechanism.AES_CCM,
 }
 
 
@@ -326,7 +331,10 @@ class PKCS11Shim:
             key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
             mech = BLOCKMODE_TO_MECH.get(mechanism_id, Mechanism.AES_CBC_PAD)
 
-            if mech == Mechanism.AES_GCM:
+            if mech in (Mechanism.AES_GCM, Mechanism.AES_CCM):
+                # Both GCM and CCM are AEAD modes returning (ciphertext, tag).
+                # CCM uses the same GCMParams layout here; real hardware may need
+                # a dedicated CK_CCM_PARAMS struct if the HSM enforces strict typing.
                 result = key.encrypt(
                     plaintext,
                     mechanism=mech,
@@ -342,7 +350,7 @@ class PKCS11Shim:
                 ct = key.encrypt(plaintext, mechanism=mech, mechanism_param=param)
                 return bytes(ct), None
             else:
-                # CBC / ECB: IV as raw bytes (ECB ignores it)
+                # CBC, ECB, CFB128, OFB: IV passed as raw bytes (ECB ignores it)
                 ct = key.encrypt(plaintext, mechanism=mech, mechanism_param=iv or None)
                 return bytes(ct), None
         except pkcs11_exc.PKCS11Error as e:
@@ -361,7 +369,7 @@ class PKCS11Shim:
             key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
             mech = BLOCKMODE_TO_MECH.get(mechanism_id, Mechanism.AES_CBC_PAD)
 
-            if mech == Mechanism.AES_GCM:
+            if mech in (Mechanism.AES_GCM, Mechanism.AES_CCM):
                 data = ciphertext + (tag or b'')
                 pt   = key.decrypt(
                     data,
@@ -376,6 +384,7 @@ class PKCS11Shim:
                 param = pkcs11.CTRParams(nonce=iv or b'\x00' * 12)
                 pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=param)
             else:
+                # CBC, ECB, CFB128, OFB: IV passed as raw bytes
                 pt = key.decrypt(ciphertext, mechanism=mech, mechanism_param=iv or None)
             return bytes(pt)
         except pkcs11_exc.PKCS11Error as e:

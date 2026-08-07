@@ -45,10 +45,10 @@ def handle(payload, identity: str, store, shim) -> bytes:
     iv_item = payload.get(Tag.IVCounterNonce)
     if iv_item:
         iv = iv_item.value
-    elif mode in (BlockCipherMode.GCM, BlockCipherMode.CTR):
-        iv = os.urandom(12)   # GCM/CTR: 12-byte nonce fits both constraints
+    elif mode in (BlockCipherMode.GCM, BlockCipherMode.CTR, BlockCipherMode.CCM):
+        iv = os.urandom(12)   # AEAD/stream modes: 12-byte nonce
     else:
-        iv = os.urandom(16)   # CBC / ECB: standard 16-byte IV
+        iv = os.urandom(16)   # CBC, ECB, CFB, OFB: standard 16-byte IV
 
     cka_ids = store.get_attribute(uid, "_pkcs11_cka_id")
     if not cka_ids:

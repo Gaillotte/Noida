@@ -1924,3 +1924,230 @@ class TestPhase1CTR:
         dec_items = decode_all(dec_resp)
         recovered = next(i.value for i in dec_items if i.tag == Tag.Data)
         assert recovered == plaintext
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 — CFB, OFB, CCM mode mapping
+# All three modes are absent from SoftHSM2; tests use mocks to verify that
+# the correct PKCS#11 mechanism and parameters are selected.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase2Mapping:
+    """Verify BLOCKMODE_TO_MECH entries for Phase 2 modes."""
+
+    def test_cfb_in_map(self):
+        from kmip_pkcs11.pkcs11_shim.shim import BLOCKMODE_TO_MECH
+        import pkcs11
+        assert BlockCipherMode.CFB in BLOCKMODE_TO_MECH
+        assert BLOCKMODE_TO_MECH[BlockCipherMode.CFB] == pkcs11.Mechanism.AES_CFB128
+
+    def test_ofb_in_map(self):
+        from kmip_pkcs11.pkcs11_shim.shim import BLOCKMODE_TO_MECH
+        import pkcs11
+        assert BlockCipherMode.OFB in BLOCKMODE_TO_MECH
+        assert BLOCKMODE_TO_MECH[BlockCipherMode.OFB] == pkcs11.Mechanism.AES_OFB
+
+    def test_ccm_in_map(self):
+        from kmip_pkcs11.pkcs11_shim.shim import BLOCKMODE_TO_MECH
+        import pkcs11
+        assert BlockCipherMode.CCM in BLOCKMODE_TO_MECH
+        assert BLOCKMODE_TO_MECH[BlockCipherMode.CCM] == pkcs11.Mechanism.AES_CCM
+
+
+class TestPhase2CFB:
+    """AES-CFB128 — mock-based (SoftHSM2 does not support CFB)."""
+
+    def _make_shim_with_mock_key(self, shim):
+        import pkcs11 as _pkcs11
+        from kmip_pkcs11.pkcs11_shim.shim import BLOCKMODE_TO_MECH
+        fake_key = MagicMock()
+        fake_ct = b'\xAB' * 16
+        fake_key.encrypt.return_value = fake_ct
+        fake_key.decrypt.return_value = b'Hello CFB World!'
+        return fake_key
+
+    def test_cfb_encrypt_uses_cfb128_mechanism(self, shim):
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        fake_key.encrypt.return_value = b'\xCC' * 16
+        iv = os.urandom(16)
+        plaintext = b'Hello CFB World!'
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            ct, tag = shim.encrypt(b'\x00' * 16, plaintext,
+                                   mechanism_id=BlockCipherMode.CFB, iv=iv)
+
+        fake_key.encrypt.assert_called_once_with(
+            plaintext,
+            mechanism=_pkcs11.Mechanism.AES_CFB128,
+            mechanism_param=iv,
+        )
+        assert tag is None
+        assert ct == b'\xCC' * 16
+
+    def test_cfb_decrypt_uses_cfb128_mechanism(self, shim):
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        fake_key.decrypt.return_value = b'Hello CFB World!'
+        iv = os.urandom(16)
+        ciphertext = b'\xCC' * 16
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            pt = shim.decrypt(b'\x00' * 16, ciphertext,
+                              mechanism_id=BlockCipherMode.CFB, iv=iv)
+
+        fake_key.decrypt.assert_called_once_with(
+            ciphertext,
+            mechanism=_pkcs11.Mechanism.AES_CFB128,
+            mechanism_param=iv,
+        )
+        assert pt == b'Hello CFB World!'
+
+    def test_cfb_encrypt_pkcs11_error_raises_cryptographic_failure(self, shim):
+        import pkcs11.exceptions as _exc
+        fake_key = MagicMock()
+        fake_key.encrypt.side_effect = _exc.MechanismInvalid()
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            with pytest.raises(CryptographicFailure):
+                shim.encrypt(b'\x00' * 16, b'data',
+                             mechanism_id=BlockCipherMode.CFB, iv=os.urandom(16))
+
+
+class TestPhase2OFB:
+    """AES-OFB — mock-based (SoftHSM2 does not support OFB)."""
+
+    def test_ofb_encrypt_uses_ofb_mechanism(self, shim):
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        fake_key.encrypt.return_value = b'\xDD' * 16
+        iv = os.urandom(16)
+        plaintext = b'Hello OFB World!'
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            ct, tag = shim.encrypt(b'\x00' * 16, plaintext,
+                                   mechanism_id=BlockCipherMode.OFB, iv=iv)
+
+        fake_key.encrypt.assert_called_once_with(
+            plaintext,
+            mechanism=_pkcs11.Mechanism.AES_OFB,
+            mechanism_param=iv,
+        )
+        assert tag is None
+        assert ct == b'\xDD' * 16
+
+    def test_ofb_decrypt_uses_ofb_mechanism(self, shim):
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        fake_key.decrypt.return_value = b'Hello OFB World!'
+        iv = os.urandom(16)
+        ciphertext = b'\xDD' * 16
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            pt = shim.decrypt(b'\x00' * 16, ciphertext,
+                              mechanism_id=BlockCipherMode.OFB, iv=iv)
+
+        fake_key.decrypt.assert_called_once_with(
+            ciphertext,
+            mechanism=_pkcs11.Mechanism.AES_OFB,
+            mechanism_param=iv,
+        )
+        assert pt == b'Hello OFB World!'
+
+    def test_ofb_encrypt_pkcs11_error_raises_cryptographic_failure(self, shim):
+        import pkcs11.exceptions as _exc
+        fake_key = MagicMock()
+        fake_key.encrypt.side_effect = _exc.MechanismInvalid()
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            with pytest.raises(CryptographicFailure):
+                shim.encrypt(b'\x00' * 16, b'data',
+                             mechanism_id=BlockCipherMode.OFB, iv=os.urandom(16))
+
+
+class TestPhase2CCM:
+    """AES-CCM — mock-based (SoftHSM2 does not support CCM).
+
+    CCM is an AEAD mode; the shim treats it like GCM (GCMParams, 12-byte nonce,
+    16-byte tag appended to ciphertext). Real HSMs may require a dedicated
+    CK_CCM_PARAMS struct when that is supported by python-pkcs11.
+    """
+
+    def test_ccm_encrypt_uses_ccm_mechanism_with_gcmparams(self, shim):
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        fake_plaintext = b'Hello CCM!!'
+        fake_output = b'\xEE' * len(fake_plaintext) + b'\xFF' * 16   # ct + tag
+        fake_key.encrypt.return_value = fake_output
+        nonce = os.urandom(12)
+        aad   = b'additional data'
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            ct, tag = shim.encrypt(b'\x00' * 16, fake_plaintext,
+                                   mechanism_id=BlockCipherMode.CCM,
+                                   iv=nonce, aad=aad)
+
+        call_kwargs = fake_key.encrypt.call_args.kwargs
+        assert call_kwargs['mechanism'] == _pkcs11.Mechanism.AES_CCM
+        assert isinstance(call_kwargs['mechanism_param'], _pkcs11.GCMParams)
+        assert tag == b'\xFF' * 16
+        assert ct  == b'\xEE' * len(fake_plaintext)
+
+    def test_ccm_decrypt_uses_ccm_mechanism(self, shim):
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        expected_pt = b'Hello CCM!!'
+        fake_key.decrypt.return_value = expected_pt
+        nonce      = os.urandom(12)
+        ciphertext = b'\xEE' * len(expected_pt)
+        tag        = b'\xFF' * 16
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            pt = shim.decrypt(b'\x00' * 16, ciphertext,
+                              mechanism_id=BlockCipherMode.CCM,
+                              iv=nonce, tag=tag)
+
+        call_kwargs = fake_key.decrypt.call_args.kwargs
+        assert call_kwargs['mechanism'] == _pkcs11.Mechanism.AES_CCM
+        assert pt == expected_pt
+
+    def test_ccm_encrypt_nonce_default_is_12_bytes(self, shim):
+        """When no IV is supplied the shim uses a 12-byte zero nonce."""
+        import pkcs11 as _pkcs11
+        fake_key = MagicMock()
+        fake_key.encrypt.return_value = b'\xEE' * 11 + b'\xFF' * 16
+
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            shim.encrypt(b'\x00' * 16, b'Hello CCM!!',
+                         mechanism_id=BlockCipherMode.CCM)
+
+        param = fake_key.encrypt.call_args.kwargs['mechanism_param']
+        assert isinstance(param, _pkcs11.GCMParams)
+
+    def test_encrypt_handler_uses_12byte_nonce_for_ccm(self, store, shim):
+        """Operation-level handler generates a 12-byte IV for CCM mode."""
+        from kmip_pkcs11.operations import encrypt as enc_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        uid = _create_aes_uid(store, shim, length=256)
+        store.activate(uid)
+
+        fake_key = MagicMock()
+        fake_key.encrypt.return_value = b'\xEE' * 16 + b'\xFF' * 16
+
+        crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.CryptographicParameters_BlockCipherMode, BlockCipherMode.CCM),
+        )
+        enc_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b'Hello CCM test!!'),
+            params=crypto_params,
+        )
+        with patch.object(shim, '_find_key', return_value=fake_key):
+            enc_op.handle(enc_payload, "user", store, shim)
+
+        call_kwargs = fake_key.encrypt.call_args.kwargs
+        param = call_kwargs['mechanism_param']
+        import pkcs11 as _pkcs11
+        assert isinstance(param, _pkcs11.GCMParams)
