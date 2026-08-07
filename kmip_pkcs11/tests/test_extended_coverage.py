@@ -707,7 +707,7 @@ class TestGetOpExtended:
     def test_get_unsupported_type_raises(self, store, shim):
         from kmip_pkcs11.operations import get as op
         uid = store.create_object(
-            object_type=ObjectType.SplitKey,
+            object_type=ObjectType.PGPKey,
             state=State.Active,
             extractable=True,
         )
@@ -4759,6 +4759,377 @@ class TestPhase7QueryAndDispatcher:
         batch_item = decode_one(encode_structure(
             Tag.BatchItem,
             encode_enumeration(Tag.Operation, Operation.Check) + req_payload
+        ))
+        resp = d.dispatch(batch_item, "user")
+        item = decode_one(resp)
+        assert item.get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 8 — ReKey, ReKeyKeyPair, ReCertify, CreateSplitKey/JoinSplitKey, RNGSeed
+# ══════════════════════════════════════════════════════════════════════════════
+
+from kmip_pkcs11.core.enums import SplitKeyMethod
+
+
+class TestPhase8ReKey:
+    def test_rekey_creates_new_object_and_links(self, store, shim):
+        from kmip_pkcs11.operations import rekey as op
+        old_uid = _create_aes_uid(store, shim)
+        resp = op.handle(_uid_payload(old_uid), "user", store, shim)
+        new_uid = decode_one(resp).value
+        assert new_uid != old_uid
+        assert store.get_attribute(old_uid, "Link_ReplacementKey") == [new_uid]
+        assert store.get_attribute(new_uid, "Link_ReplacedKey") == [old_uid]
+
+    def test_rekey_inherits_attributes(self, store, shim):
+        from kmip_pkcs11.operations import rekey as op
+        old_uid = _create_aes_uid(store, shim, length=256)
+        resp = op.handle(_uid_payload(old_uid), "user", store, shim)
+        new_uid = decode_one(resp).value
+        new_obj = store.get_object(new_uid)
+        old_obj = store.get_object(old_uid)
+        assert new_obj["cryptographic_algorithm"] == old_obj["cryptographic_algorithm"]
+        assert new_obj["cryptographic_length"] == 256
+
+    def test_rekey_new_key_is_usable(self, store, shim):
+        from kmip_pkcs11.operations import rekey as op, encrypt as enc_op, decrypt as dec_op
+        old_uid = _create_aes_uid(store, shim)
+        resp = op.handle(_uid_payload(old_uid), "user", store, shim)
+        new_uid = decode_one(resp).value
+        enc_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, new_uid),
+            data=encode_byte_string(Tag.Data, b"rekeyed key works"),
+        )
+        enc_resp = enc_op.handle(enc_payload, "user", store, shim)
+        enc_items = decode_all(enc_resp)
+        ciphertext = next(i.value for i in enc_items if i.tag == Tag.Data)
+        iv = next(i.value for i in enc_items if i.tag == Tag.IVCounterNonce)
+        dec_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, new_uid),
+            data=encode_byte_string(Tag.Data, ciphertext),
+            iv=encode_byte_string(Tag.IVCounterNonce, iv),
+        )
+        dec_resp = dec_op.handle(dec_payload, "user", store, shim)
+        recovered = next(i.value for i in decode_all(dec_resp) if i.tag == Tag.Data)
+        assert recovered == b"rekeyed key works"
+
+    def test_rekey_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import rekey as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_rekey_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import rekey as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+    def test_rekey_wrong_object_type_raises(self, store, shim):
+        from kmip_pkcs11.operations import rekey as op
+        pub_uid, _ = _create_rsa_keypair(store, shim)
+        with pytest.raises(InvalidField):
+            op.handle(_uid_payload(pub_uid), "user", store, shim)
+
+
+class TestPhase8ReKeyKeyPair:
+    def test_rekey_keypair_creates_new_pair_and_links(self, store, shim):
+        from kmip_pkcs11.operations import rekey_keypair as op
+        old_pub, old_priv = _create_rsa_keypair(store, shim)
+        resp = op.handle(_uid_payload(old_priv), "user", store, shim)
+        new_pub, new_priv = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert new_pub != old_pub
+        assert new_priv != old_priv
+        assert store.get_attribute(old_priv, "Link_ReplacementKey") == [new_priv]
+        assert store.get_attribute(old_pub, "Link_ReplacementKey") == [new_pub]
+
+    def test_rekey_keypair_new_pair_works(self, store, shim):
+        from kmip_pkcs11.operations import rekey_keypair as op
+        _, old_priv = _create_rsa_keypair(store, shim)
+        resp = op.handle(_uid_payload(old_priv), "user", store, shim)
+        new_pub, new_priv = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        validity = _sign_and_verify(store, shim, new_pub, new_priv, b"rekeyed pair test")
+        assert validity == ValidityIndicator.Valid
+
+    def test_rekey_keypair_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import rekey_keypair as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_rekey_keypair_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import rekey_keypair as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+    def test_rekey_keypair_wrong_object_type_raises(self, store, shim):
+        from kmip_pkcs11.operations import rekey_keypair as op
+        pub_uid, _ = _create_rsa_keypair(store, shim)
+        with pytest.raises(InvalidField):
+            op.handle(_uid_payload(pub_uid), "user", store, shim)
+
+
+class TestPhase8ReCertify:
+    def test_recertify_creates_new_cert_and_links(self, store, shim):
+        from kmip_pkcs11.operations import recertify as op
+        cert_uid, pub_uid, priv_uid = _certify_rsa_keypair(store, shim)
+        resp = op.handle(_uid_payload(cert_uid), "user", store, shim)
+        new_cert_uid = decode_one(resp).value
+        assert new_cert_uid != cert_uid
+        assert store.get_attribute(cert_uid, "Link_ReplacementCertificate") == [new_cert_uid]
+        assert store.get_attribute(new_cert_uid, "Link_ReplacedCertificate") == [cert_uid]
+
+    def test_recertify_new_cert_is_valid(self, store, shim):
+        from kmip_pkcs11.operations import recertify as op, validate as val_op
+        cert_uid, _, _ = _certify_rsa_keypair(store, shim)
+        resp = op.handle(_uid_payload(cert_uid), "user", store, shim)
+        new_cert_uid = decode_one(resp).value
+        val_resp = val_op.handle(_uid_payload(new_cert_uid), "user", store, shim)
+        assert decode_one(val_resp).value == ValidityIndicator.Valid
+
+    def test_recertify_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import recertify as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_recertify_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import recertify as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+    def test_recertify_wrong_object_type_raises(self, store, shim):
+        from kmip_pkcs11.operations import recertify as op
+        uid = _create_aes_uid(store, shim)
+        with pytest.raises(InvalidField):
+            op.handle(_uid_payload(uid), "user", store, shim)
+
+
+class TestPhase8RNGSeed:
+    def test_rngseed_accepts_data(self, shim):
+        from kmip_pkcs11.operations import rng_seed as op
+        p = _make_payload(data=encode_byte_string(Tag.Data, b"client supplied entropy"))
+        resp = op.handle(p, "user", MagicMock(), shim)
+        assert decode_one(resp).value == len(b"client supplied entropy")
+
+    def test_rngseed_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import rng_seed as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_rngseed_missing_data_raises(self, shim):
+        from kmip_pkcs11.operations import rng_seed as op
+        with pytest.raises(MissingData):
+            op.handle(_make_payload(), "user", MagicMock(), shim)
+
+
+class TestPhase8SplitKeyLive:
+    def test_split_and_join_fresh_key_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as cs_op, join_split_key as js_op
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        p = _make_payload(
+            parts=encode_integer(Tag.SplitKeyParts, 3),
+            threshold=encode_integer(Tag.SplitKeyThreshold, 3),
+            method=encode_enumeration(Tag.SplitKeyMethod, SplitKeyMethod.XOR),
+            attrs=attrs,
+        )
+        resp = cs_op.handle(p, "user", store, shim)
+        part_uids = [i.value for i in decode_all(resp)]
+        assert len(part_uids) == 3
+        for u in part_uids:
+            assert store.get_object(u)["object_type"] == ObjectType.SplitKey
+
+        join_p = _make_payload(uids=b"".join(
+            encode_text_string(Tag.UniqueIdentifier, u) for u in part_uids
+        ))
+        join_resp = js_op.handle(join_p, "user", store, shim)
+        joined_uid = decode_one(join_resp).value
+        joined_obj = store.get_object(joined_uid)
+        assert joined_obj["object_type"] == ObjectType.SymmetricKey
+        assert joined_obj["cryptographic_algorithm"] == CryptographicAlgorithm.AES
+        assert joined_obj["cryptographic_length"] == 128
+
+    def test_split_existing_key_reconstructs_identical_material(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as cs_op, join_split_key as js_op
+        src_uid = _create_aes_uid(store, shim)
+        src_cka = bytes.fromhex(store.get_attribute(src_uid, "_pkcs11_cka_id")[0])
+        src_bytes = shim.get_key_value(src_cka)
+
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, src_uid),
+            parts=encode_integer(Tag.SplitKeyParts, 4),
+        )
+        resp = cs_op.handle(p, "user", store, shim)
+        part_uids = [i.value for i in decode_all(resp)]
+        assert len(part_uids) == 4
+
+        join_p = _make_payload(uids=b"".join(
+            encode_text_string(Tag.UniqueIdentifier, u) for u in part_uids
+        ))
+        join_resp = js_op.handle(join_p, "user", store, shim)
+        joined_uid = decode_one(join_resp).value
+        joined_cka = bytes.fromhex(store.get_attribute(joined_uid, "_pkcs11_cka_id")[0])
+        joined_bytes = shim.get_key_value(joined_cka)
+        assert joined_bytes == src_bytes
+
+    def test_split_key_part_get_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as cs_op, get as get_op
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        p = _make_payload(parts=encode_integer(Tag.SplitKeyParts, 2), attrs=attrs)
+        resp = cs_op.handle(p, "user", store, shim)
+        part_uids = [i.value for i in decode_all(resp)]
+
+        get_resp = get_op.handle(_uid_payload(part_uids[0]), "user", store, shim)
+        managed_obj = next(i for i in decode_all(get_resp) if i.tag == Tag.ManagedObject)
+        fetched = managed_obj.get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
+        assert fetched == store.get_object(part_uids[0])["raw_key_value"]
+
+
+class TestPhase8SplitKeyErrors:
+    def test_create_split_key_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_create_split_key_missing_parts_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        with pytest.raises(MissingData):
+            op.handle(_make_payload(), "user", store, shim)
+
+    def test_create_split_key_parts_below_two_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        p = _make_payload(parts=encode_integer(Tag.SplitKeyParts, 1))
+        with pytest.raises(InvalidField):
+            op.handle(p, "user", store, shim)
+
+    def test_create_split_key_threshold_below_parts_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        p = _make_payload(
+            parts=encode_integer(Tag.SplitKeyParts, 3),
+            threshold=encode_integer(Tag.SplitKeyThreshold, 2),
+        )
+        with pytest.raises(OperationNotSupported):
+            op.handle(p, "user", store, shim)
+
+    def test_create_split_key_non_xor_method_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        p = _make_payload(
+            parts=encode_integer(Tag.SplitKeyParts, 3),
+            method=encode_enumeration(Tag.SplitKeyMethod, SplitKeyMethod.PolynomialSharePrimeField),
+        )
+        with pytest.raises(OperationNotSupported):
+            op.handle(p, "user", store, shim)
+
+    def test_create_split_key_no_source_no_algorithm_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        p = _make_payload(parts=encode_integer(Tag.SplitKeyParts, 2))
+        with pytest.raises(MissingData):
+            op.handle(p, "user", store, shim)
+
+    def test_create_split_key_non_extractable_source_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as op
+        uid = _create_aes_uid(store, shim, extractable=False)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            parts=encode_integer(Tag.SplitKeyParts, 2),
+        )
+        with pytest.raises(InvalidField):
+            op.handle(p, "user", store, shim)
+
+    def test_join_split_key_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import join_split_key as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_join_split_key_missing_uids_raises(self, store, shim):
+        from kmip_pkcs11.operations import join_split_key as op
+        with pytest.raises(MissingData):
+            op.handle(_make_payload(), "user", store, shim)
+
+    def test_join_split_key_unknown_part_raises(self, store, shim):
+        from kmip_pkcs11.operations import join_split_key as op
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, "nope"))
+        with pytest.raises(ItemNotFound):
+            op.handle(p, "user", store, shim)
+
+    def test_join_split_key_wrong_type_raises(self, store, shim):
+        from kmip_pkcs11.operations import join_split_key as op
+        uid = _create_aes_uid(store, shim)
+        p = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, uid))
+        with pytest.raises(InvalidField):
+            op.handle(p, "user", store, shim)
+
+    def test_join_split_key_incomplete_parts_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as cs_op, join_split_key as js_op
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        p = _make_payload(parts=encode_integer(Tag.SplitKeyParts, 3), attrs=attrs)
+        resp = cs_op.handle(p, "user", store, shim)
+        part_uids = [i.value for i in decode_all(resp)]
+
+        join_p = _make_payload(uids=b"".join(
+            encode_text_string(Tag.UniqueIdentifier, u) for u in part_uids[:2]
+        ))
+        with pytest.raises(InvalidField):
+            js_op.handle(join_p, "user", store, shim)
+
+    def test_join_split_key_mixed_groups_raises(self, store, shim):
+        from kmip_pkcs11.operations import create_split_key as cs_op, join_split_key as js_op
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        p = _make_payload(parts=encode_integer(Tag.SplitKeyParts, 2), attrs=attrs)
+        parts_a = [i.value for i in decode_all(cs_op.handle(p, "user", store, shim))]
+        parts_b = [i.value for i in decode_all(cs_op.handle(p, "user", store, shim))]
+
+        join_p = _make_payload(uids=(
+            encode_text_string(Tag.UniqueIdentifier, parts_a[0])
+            + encode_text_string(Tag.UniqueIdentifier, parts_b[1])
+        ))
+        with pytest.raises(InvalidField):
+            js_op.handle(join_p, "user", store, shim)
+
+
+class TestPhase8QueryAndDispatcher:
+    def test_all_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        resp = op.handle(None, "user", store, shim)
+        ops = [i.value for i in decode_all(resp) if i.tag == Tag.Operations]
+        for expected in (Operation.ReKey, Operation.ReKeyKeyPair, Operation.ReCertify,
+                          Operation.RNGSeed, Operation.CreateSplitKey, Operation.JoinSplitKey):
+            assert expected in ops
+        obj_types = [i.value for i in decode_all(resp) if i.tag == Tag.ObjectTypes]
+        assert ObjectType.SplitKey in obj_types
+
+    def test_all_registered_in_dispatcher(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        for expected in (Operation.ReKey, Operation.ReKeyKeyPair, Operation.ReCertify,
+                          Operation.RNGSeed, Operation.CreateSplitKey, Operation.JoinSplitKey):
+            assert expected in d._handlers
+
+    def test_rekey_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        uid = _create_aes_uid(store, shim)
+        d = OperationDispatcher(store=store, shim=shim)
+        req_payload = encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, uid))
+        batch_item = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.ReKey) + req_payload
         ))
         resp = d.dispatch(batch_item, "user")
         item = decode_one(resp)

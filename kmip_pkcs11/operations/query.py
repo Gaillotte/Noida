@@ -23,12 +23,15 @@ SUPPORTED_OPERATIONS = [
     Operation.Certify, Operation.Validate,
     Operation.Archive, Operation.Recover,
     Operation.ObtainLease, Operation.GetUsageAllocation, Operation.Check,
+    Operation.ReKey, Operation.ReKeyKeyPair, Operation.ReCertify,
+    Operation.RNGSeed, Operation.CreateSplitKey, Operation.JoinSplitKey,
     Operation.Query, Operation.DiscoverVersions,
 ]
 
 SUPPORTED_OBJECT_TYPES = [
     ObjectType.SymmetricKey, ObjectType.PublicKey, ObjectType.PrivateKey,
     ObjectType.SecretData, ObjectType.OpaqueObject, ObjectType.Certificate,
+    ObjectType.SplitKey,
 ]
 
 

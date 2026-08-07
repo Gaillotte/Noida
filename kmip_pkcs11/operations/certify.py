@@ -31,6 +31,18 @@ def handle(payload, identity: str, store, shim) -> bytes:
         raise MissingData("UniqueIdentifier (of the PublicKey to certify) is required")
     pub_uid = uid_item.value
 
+    tmpl  = payload.get(Tag.TemplateAttribute) or payload.get(Tag.Attributes)
+    attrs = _parse_attributes(tmpl)
+    names = attrs.get("names", [])
+
+    uid = certify_public_key(pub_uid, names, identity, store, shim)
+    return encode_text_string(Tag.UniqueIdentifier, uid)
+
+
+def certify_public_key(pub_uid: str, names, identity: str, store, shim) -> str:
+    """Shared by Certify and ReCertify — resolves the PublicKey's paired
+    PrivateKey, builds and signs a fresh self-signed certificate, and stores
+    it as a new Certificate object cross-linked to the PublicKey."""
     obj = store.get_object(pub_uid)
     if obj is None:
         raise ItemNotFound(f"Object '{pub_uid}' not found")
@@ -59,11 +71,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     pub_cka_id  = bytes.fromhex(pub_cka_ids[0])
     priv_cka_id = bytes.fromhex(priv_cka_ids[0])
 
-    tmpl  = payload.get(Tag.TemplateAttribute) or payload.get(Tag.Attributes)
-    attrs = _parse_attributes(tmpl)
-    names = attrs.get("names", [])
     subject_cn = names[0] if names else f"kmip-cert-{pub_uid}"
-
     cert_der = _build_self_signed_cert(shim, pub_cka_id, priv_cka_id, subject_cn)
 
     uid = store.create_object(
@@ -80,7 +88,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     store.add_attribute(pub_uid, "Link_Certificate", uid)
 
     log.info("Certified PublicKey %s -> Certificate %s", pub_uid, uid)
-    return encode_text_string(Tag.UniqueIdentifier, uid)
+    return uid
 
 
 def _build_self_signed_cert(shim, pub_cka_id: bytes, priv_cka_id: bytes, subject_cn: str) -> bytes:

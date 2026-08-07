@@ -33,6 +33,15 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if length is None:
         raise MissingData("CryptographicLength is required")
 
+    uid = create_symmetric_key(
+        algorithm, length, usage_mask, names, sensitive, extractable, identity, store, shim
+    )
+    return encode_text_string(Tag.UniqueIdentifier, uid)
+
+
+def create_symmetric_key(algorithm, length, usage_mask, names, sensitive, extractable,
+                          identity, store, shim) -> str:
+    """Shared by Create and ReKey — generates the PKCS#11 key and the managed object."""
     encrypt = bool(usage_mask & CryptographicUsageMask.Encrypt)
     decrypt = bool(usage_mask & CryptographicUsageMask.Decrypt)
     wrap    = bool(usage_mask & CryptographicUsageMask.WrapKey)
@@ -67,7 +76,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     store.add_attribute(uid, "_pkcs11_cka_id", cka_id.hex())
 
     log.info("Created SymmetricKey uid=%s alg=%d len=%d", uid, algorithm, length)
-    return encode_text_string(Tag.UniqueIdentifier, uid)
+    return uid
 
 
 def _parse_attributes(tmpl_item) -> dict:

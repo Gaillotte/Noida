@@ -763,6 +763,12 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"RNG failed: {e}") from e
 
+    def seed_random(self, seed: bytes) -> None:
+        try:
+            self._sess().seed_random(seed)
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"RNG seed failed: {e}") from e
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod

@@ -53,6 +53,21 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if algorithm is None:
         raise MissingData("CryptographicAlgorithm is required")
 
+    pub_uid, priv_uid = create_key_pair_objects(
+        algorithm, length, curve_enum, pub_mask, priv_mask, names, identity, store, shim
+    )
+
+    payload_bytes = (
+        encode_text_string(Tag.UniqueIdentifier, pub_uid)
+        + encode_text_string(Tag.UniqueIdentifier, priv_uid)
+    )
+    return payload_bytes
+
+
+def create_key_pair_objects(algorithm, length, curve_enum, pub_mask, priv_mask, names,
+                             identity, store, shim):
+    """Shared by CreateKeyPair and ReKeyKeyPair — generates the PKCS#11 key
+    pair and the two managed objects, cross-linked to each other."""
     curve_name = CURVE_TO_NAME.get(curve_enum)
     if curve_name is None:
         raise InvalidField(f"Unsupported RecommendedCurve {curve_enum!r}")
@@ -102,9 +117,4 @@ def handle(payload, identity: str, store, shim) -> bytes:
     store.add_attribute(priv_uid, "Link_PublicKey",  pub_uid)
 
     log.info("Created KeyPair pub=%s priv=%s alg=%d", pub_uid, priv_uid, algorithm)
-
-    payload_bytes = (
-        encode_text_string(Tag.UniqueIdentifier, pub_uid)
-        + encode_text_string(Tag.UniqueIdentifier, priv_uid)
-    )
-    return payload_bytes
+    return pub_uid, priv_uid

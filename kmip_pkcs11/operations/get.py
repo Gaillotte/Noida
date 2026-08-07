@@ -40,6 +40,8 @@ def handle(payload, identity: str, store, shim) -> bytes:
         return _get_secret_data(uid, obj, store)
     elif obj_type == ObjectType.Certificate:
         return _get_certificate(uid, obj, store)
+    elif obj_type == ObjectType.SplitKey:
+        return _get_split_key(uid, obj, store)
     else:
         raise NotExtractable(f"Get not supported for object type {obj_type}")
 
@@ -123,6 +125,29 @@ def _get_certificate(uid, obj, store) -> bytes:
         encode_text_string(Tag.UniqueIdentifier, uid)
         + encode_enumeration(Tag.ObjectType, ObjectType.Certificate)
         + cert
+    )
+
+
+def _get_split_key(uid, obj, store) -> bytes:
+    if not obj["extractable"]:
+        raise NotExtractable("Split key part is not extractable")
+    raw = obj.get("raw_key_value") or b""
+    key_value = encode_structure(
+        Tag.KeyValue,
+        encode_byte_string(Tag.KeyMaterial, raw)
+    )
+    key_block = encode_structure(
+        Tag.KeyBlock,
+        encode_enumeration(Tag.KeyFormatType, KeyFormatType.Raw)
+        + key_value
+        + encode_integer(Tag.CryptographicLength, obj["cryptographic_length"] or len(raw) * 8)
+        + encode_enumeration(Tag.CryptographicAlgorithm, obj["cryptographic_algorithm"] or 0)
+    )
+    split_key = encode_structure(Tag.ManagedObject, key_block)
+    return (
+        encode_text_string(Tag.UniqueIdentifier, uid)
+        + encode_enumeration(Tag.ObjectType, ObjectType.SplitKey)
+        + split_key
     )
 
 

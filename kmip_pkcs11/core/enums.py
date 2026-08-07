@@ -151,6 +151,11 @@ class Tag(IntEnum):
     LastChangeDate          = 0x420AC6  # vendor extension slot (simplified)
     UsageLimitsCount        = 0x420AC7  # vendor extension slot (simplified)
 
+    # CreateSplitKey / JoinSplitKey
+    SplitKeyParts            = 0x420AC8  # vendor extension slot (simplified)
+    SplitKeyThreshold        = 0x420AC9  # vendor extension slot (simplified)
+    SplitKeyMethod           = 0x420ACA  # vendor extension slot (simplified)
+
 
 class Type(IntEnum):
     Structure    = 0x01
@@ -435,6 +440,12 @@ class DerivationMethod(IntEnum):
     NIST800_108_F   = 0x00000006
     NIST800_108_DPI = 0x00000007
     ASYMMETRIC_KEY  = 0x00000008
+
+
+class SplitKeyMethod(IntEnum):
+    XOR                       = 0x00000001
+    PolynomialSharePrimeField = 0x00000002
+    PolynomialShareGF216      = 0x00000003
 
 
 class NameType(IntEnum):

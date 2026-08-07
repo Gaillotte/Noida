@@ -28,6 +28,7 @@ from . import (
     import_op, export_op, derive_key,
     certify, validate,
     archive, recover, obtain_lease, get_usage_allocation, check as check_op,
+    rekey, rekey_keypair, recertify, rng_seed, create_split_key, join_split_key,
 )
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,12 @@ class OperationDispatcher:
             Operation.ObtainLease:      obtain_lease.handle,
             Operation.GetUsageAllocation: get_usage_allocation.handle,
             Operation.Check:            check_op.handle,
+            Operation.ReKey:            rekey.handle,
+            Operation.ReKeyKeyPair:     rekey_keypair.handle,
+            Operation.ReCertify:        recertify.handle,
+            Operation.RNGSeed:          rng_seed.handle,
+            Operation.CreateSplitKey:   create_split_key.handle,
+            Operation.JoinSplitKey:     join_split_key.handle,
         }
 
     def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:
