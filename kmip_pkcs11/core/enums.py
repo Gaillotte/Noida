@@ -97,6 +97,8 @@ class Tag(IntEnum):
     PaddingMethod           = 0x420063
     HashingAlgorithm        = 0x420038
     KeyRoleType             = 0x420083
+    SignatureData           = 0x420073  # Sign response / SignatureVerify request
+    ValidityIndicator       = 0x420092  # SignatureVerify response
 
     # Operation payloads
     TemplateAttribute       = 0x420091
@@ -404,3 +406,25 @@ class CredentialType(IntEnum):
     OneTimePassword      = 0x00000004
     HashedPassword       = 0x00000005
     Ticket               = 0x00000006
+
+
+class HashingAlgorithm(IntEnum):
+    MD2        = 0x00000001
+    MD4        = 0x00000002
+    MD5        = 0x00000003
+    SHA_1      = 0x00000004
+    SHA_224    = 0x00000005
+    SHA_256    = 0x00000006
+    SHA_384    = 0x00000007
+    SHA_512    = 0x00000008
+    RIPEMD_160 = 0x00000009
+    SHA3_224   = 0x0000000E
+    SHA3_256   = 0x0000000F
+    SHA3_384   = 0x00000010
+    SHA3_512   = 0x00000011
+
+
+class ValidityIndicator(IntEnum):
+    Valid   = 0x00000001
+    Invalid = 0x00000002
+    Unknown = 0x00000003

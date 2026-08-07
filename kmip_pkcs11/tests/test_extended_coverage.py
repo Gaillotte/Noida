@@ -2351,3 +2351,315 @@ class TestPhase3EncryptHandlerIV:
         enc_items = decode_all(enc_resp)
         iv_val = next(i.value for i in enc_items if i.tag == Tag.IVCounterNonce)
         assert len(iv_val) == 8, f"Expected 8-byte IV for 3DES, got {len(iv_val)}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4 — Sign / SignatureVerify operation handlers
+# ══════════════════════════════════════════════════════════════════════════════
+
+from kmip_pkcs11.core.enums import HashingAlgorithm, ValidityIndicator as ValidityIndicatorEnum
+
+
+def _create_rsa_keypair(store, shim):
+    """Create an RSA-2048 key pair via CreateKeyPair and return (pub_uid, priv_uid)."""
+    from kmip_pkcs11.operations import create_keypair as ckp
+    from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+    attrs = encode_structure(
+        Tag.TemplateAttribute,
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.RSA))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 2048)),
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+    ))
+    resp_bytes = ckp.handle(p, "user", store, shim)
+    items = decode_all(resp_bytes)
+    uids = [i.value for i in items if i.tag == Tag.UniqueIdentifier]
+    return uids[0], uids[1]   # pub_uid, priv_uid
+
+
+def _create_ec_keypair(store, shim):
+    """Create an EC key pair via CreateKeyPair and return (pub_uid, priv_uid)."""
+    from kmip_pkcs11.operations import create_keypair as ckp
+    attrs = encode_structure(
+        Tag.TemplateAttribute,
+        _attr("Cryptographic Algorithm",
+              encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.EC))
+        + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 256)),
+    )
+    p = decode_one(encode_structure(Tag.RequestPayload,
+        encode_enumeration(Tag.ObjectType, ObjectType.PublicKey) + attrs
+    ))
+    resp_bytes = ckp.handle(p, "user", store, shim)
+    items = decode_all(resp_bytes)
+    uids = [i.value for i in items if i.tag == Tag.UniqueIdentifier]
+    return uids[0], uids[1]
+
+
+class TestPhase4SignErrors:
+    """Error paths in the Sign handler."""
+
+    def test_sign_missing_payload_raises(self, store, shim):
+        from kmip_pkcs11.operations import sign as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", store, shim)
+
+    def test_sign_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import sign as op
+        with pytest.raises(MissingData):
+            op.handle(_make_payload(), "user", store, shim)
+
+    def test_sign_missing_data_raises(self, store, shim):
+        from kmip_pkcs11.operations import sign as op
+        with pytest.raises(MissingData):
+            op.handle(_uid_payload("some-uid"), "user", store, shim)
+
+    def test_sign_nonexistent_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import sign as op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "ghost"),
+            data=encode_byte_string(Tag.Data, b"hello"),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+    def test_sign_preactive_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import sign as op
+        uid = store.create_object(object_type=ObjectType.PrivateKey, state=State.PreActive)
+        store.add_attribute(uid, "_pkcs11_cka_id", os.urandom(16).hex())
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"hello"),
+        )
+        with pytest.raises(IllegalOperation):
+            op.handle(payload, "user", store, shim)
+
+    def test_sign_missing_cka_id_raises(self, store, shim):
+        from kmip_pkcs11.operations import sign as op
+        uid = store.create_object(object_type=ObjectType.PrivateKey, state=State.Active)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"hello"),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+
+class TestPhase4SignatureVerifyErrors:
+    """Error paths in the SignatureVerify handler."""
+
+    def test_sigver_missing_payload_raises(self, store, shim):
+        from kmip_pkcs11.operations import signature_verify as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", store, shim)
+
+    def test_sigver_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import signature_verify as op
+        with pytest.raises(MissingData):
+            op.handle(_make_payload(), "user", store, shim)
+
+    def test_sigver_missing_data_raises(self, store, shim):
+        from kmip_pkcs11.operations import signature_verify as op
+        with pytest.raises(MissingData):
+            op.handle(_uid_payload("x"), "user", store, shim)
+
+    def test_sigver_missing_signature_raises(self, store, shim):
+        from kmip_pkcs11.operations import signature_verify as op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "x"),
+            data=encode_byte_string(Tag.Data, b"hello"),
+        )
+        with pytest.raises(MissingData):
+            op.handle(payload, "user", store, shim)
+
+    def test_sigver_nonexistent_key_raises(self, store, shim):
+        from kmip_pkcs11.operations import signature_verify as op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "ghost"),
+            data=encode_byte_string(Tag.Data, b"hello"),
+            sig=encode_byte_string(Tag.SignatureData, b"\x00" * 32),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+    def test_sigver_missing_cka_id_raises(self, store, shim):
+        from kmip_pkcs11.operations import signature_verify as op
+        uid = store.create_object(object_type=ObjectType.PublicKey, state=State.Active)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"hello"),
+            sig=encode_byte_string(Tag.SignatureData, b"\x00" * 32),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+
+class TestPhase4RSALive:
+    """RSA-2048 sign/verify round-trips through SoftHSM2."""
+
+    def test_rsa_sign_verify_sha256_roundtrip(self, store, shim):
+        from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        pub_uid, priv_uid = _create_rsa_keypair(store, shim)
+        message = b"KMIP Sign test message"
+
+        # Sign with private key
+        sign_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            data=encode_byte_string(Tag.Data, message),
+        )
+        sign_resp  = sign_op.handle(sign_payload, "user", store, shim)
+        sign_items = decode_all(sign_resp)
+        signature  = next(i.value for i in sign_items if i.tag == Tag.SignatureData)
+        assert len(signature) > 0
+
+        # Verify with public key
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            data=encode_byte_string(Tag.Data, message),
+            sig=encode_byte_string(Tag.SignatureData, signature),
+        )
+        ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+    def test_rsa_verify_bad_signature_returns_invalid(self, store, shim):
+        """SoftHSM2 may not reject all bad RSA signatures; mock the SignatureInvalid path."""
+        import pkcs11.exceptions as _exc
+        from kmip_pkcs11.operations import signature_verify as sigver_op
+
+        pub_uid, _ = _create_rsa_keypair(store, shim)
+        message = b"Real message"
+        bad_sig = b"\xFF" * 256
+
+        fake_pub_key = MagicMock()
+        fake_pub_key.verify.side_effect = _exc.SignatureInvalid()
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            data=encode_byte_string(Tag.Data, message),
+            sig=encode_byte_string(Tag.SignatureData, bad_sig),
+        )
+        with patch.object(shim, '_find_key', return_value=fake_pub_key):
+            ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Invalid
+
+    def test_rsa_sign_with_explicit_sha256_mechanism(self, store, shim):
+        """CryptographicParameters with HashingAlgorithm overrides the default."""
+        from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
+        from kmip_pkcs11.core.ttlv import encode_enumeration as enc_enum
+
+        pub_uid, priv_uid = _create_rsa_keypair(store, shim)
+        message = b"Explicit SHA-256 test"
+
+        crypto_params = encode_structure(
+            Tag.CryptographicParameters,
+            enc_enum(Tag.HashingAlgorithm, HashingAlgorithm.SHA_256),
+        )
+        sign_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            data=encode_byte_string(Tag.Data, message),
+            params=crypto_params,
+        )
+        sign_resp  = sign_op.handle(sign_payload, "user", store, shim)
+        sign_items = decode_all(sign_resp)
+        signature  = next(i.value for i in sign_items if i.tag == Tag.SignatureData)
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            data=encode_byte_string(Tag.Data, message),
+            sig=encode_byte_string(Tag.SignatureData, signature),
+            params=crypto_params,
+        )
+        ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+
+class TestPhase4ECLive:
+    """EC (secp256r1) sign/verify round-trip through SoftHSM2."""
+
+    def test_ec_sign_verify_roundtrip(self, store, shim):
+        import hashlib
+        from kmip_pkcs11.operations import sign as sign_op, signature_verify as sigver_op
+
+        pub_uid, priv_uid = _create_ec_keypair(store, shim)
+        message = b"KMIP EC sign test"
+        # ECDSA (raw) needs pre-hashed data
+        digest = hashlib.sha256(message).digest()
+
+        sign_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, priv_uid),
+            data=encode_byte_string(Tag.Data, digest),
+        )
+        sign_resp  = sign_op.handle(sign_payload, "user", store, shim)
+        sign_items = decode_all(sign_resp)
+        signature  = next(i.value for i in sign_items if i.tag == Tag.SignatureData)
+        assert len(signature) > 0
+
+        ver_payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, pub_uid),
+            data=encode_byte_string(Tag.Data, digest),
+            sig=encode_byte_string(Tag.SignatureData, signature),
+        )
+        ver_resp  = sigver_op.handle(ver_payload, "user", store, shim)
+        ver_items = decode_all(ver_resp)
+        validity  = next(i.value for i in ver_items if i.tag == Tag.ValidityIndicator)
+        assert validity == ValidityIndicatorEnum.Valid
+
+
+class TestPhase4MechSelection:
+    """_select_mechanism picks the right PKCS#11 mechanism."""
+
+    def test_rsa_default_is_sha256(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.RSA, None)
+        assert mech == Mechanism.SHA256_RSA_PKCS
+
+    def test_rsa_sha1_hash(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.RSA, HashingAlgorithm.SHA_1)
+        assert mech == Mechanism.SHA1_RSA_PKCS
+
+    def test_rsa_sha512_hash(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.RSA, HashingAlgorithm.SHA_512)
+        assert mech == Mechanism.SHA512_RSA_PKCS
+
+    def test_ec_uses_ecdsa(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.EC, None)
+        assert mech == Mechanism.ECDSA
+
+    def test_ecdsa_algorithm_uses_ecdsa(self):
+        from kmip_pkcs11.operations.sign import _select_mechanism
+        from pkcs11 import Mechanism
+        mech = _select_mechanism(CryptographicAlgorithm.ECDSA, HashingAlgorithm.SHA_256)
+        assert mech == Mechanism.ECDSA
+
+
+class TestPhase4Dispatcher:
+    """Sign and SignatureVerify are registered in the dispatcher."""
+
+    def test_sign_registered(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.Sign in d._handlers
+
+    def test_sigver_registered(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.SignatureVerify in d._handlers

@@ -22,6 +22,7 @@ from . import (
     encrypt as enc_op, decrypt as dec_op,
     query as query_op, discover_versions,
     get_attributes, add_attribute, delete_attribute,
+    sign as sign_op, signature_verify as sigver_op,
 )
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ class OperationDispatcher:
             Operation.GetAttributes:    get_attributes.handle,
             Operation.AddAttribute:     add_attribute.handle,
             Operation.DeleteAttribute:  delete_attribute.handle,
+            Operation.Sign:             sign_op.handle,
+            Operation.SignatureVerify:  sigver_op.handle,
         }
 
     def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:
