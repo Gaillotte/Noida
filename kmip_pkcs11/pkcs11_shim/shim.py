@@ -314,6 +314,57 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(str(e)) from e
 
+    def get_private_key_der(self, cka_id: bytes) -> bytes:
+        """Export private key material (only if extractable).
+        RSA: returns PKCS#1 DER via python-pkcs11 component encoding.
+        EC: returns raw CKA_VALUE (private key scalar bytes).
+        """
+        try:
+            key = self._find_key(cka_id, ObjClass.PRIVATE_KEY)
+            try:
+                extractable = key[Attr.EXTRACTABLE]
+            except Exception:
+                extractable = False
+            if not extractable:
+                raise NotExtractable("Private key is not extractable")
+            # RSA: build PKCS#1 DER from individual CKA components via asn1crypto
+            try:
+                from asn1crypto.keys import RSAPrivateKey as _RSAKey
+                n  = int.from_bytes(bytes(key[Attr.MODULUS]),          'big')
+                e  = int.from_bytes(bytes(key[Attr.PUBLIC_EXPONENT]),  'big')
+                d  = int.from_bytes(bytes(key[Attr.PRIVATE_EXPONENT]), 'big')
+                p  = int.from_bytes(bytes(key[Attr.PRIME_1]),          'big')
+                q  = int.from_bytes(bytes(key[Attr.PRIME_2]),          'big')
+                dp = int.from_bytes(bytes(key[Attr.EXPONENT_1]),       'big')
+                dq = int.from_bytes(bytes(key[Attr.EXPONENT_2]),       'big')
+                qi = int.from_bytes(bytes(key[Attr.COEFFICIENT]),      'big')
+                return _RSAKey({
+                    'version':          'two-prime',
+                    'modulus':          n,
+                    'public_exponent':  e,
+                    'private_exponent': d,
+                    'prime1':           p,
+                    'prime2':           q,
+                    'exponent1':        dp,
+                    'exponent2':        dq,
+                    'coefficient':      qi,
+                }).dump()
+            except Exception:
+                pass
+            # EC / other: CKA_VALUE holds raw private key scalar
+            try:
+                val = key[Attr.VALUE]
+                if val is not None:
+                    return bytes(val)
+            except (pkcs11_exc.AttributeSensitive, pkcs11_exc.AttributeTypeInvalid,
+                    AttributeError, TypeError):
+                pass
+            raise NotExtractable("Private key material is not readable from token")
+        except (NotExtractable, CryptographicFailure):
+            raise
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(str(e)) from e
+
     # ── destroy ──────────────────────────────────────────────────────────────
 
     def destroy_object(self, cka_id: bytes, obj_class=None):

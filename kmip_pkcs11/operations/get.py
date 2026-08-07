@@ -85,7 +85,7 @@ def _get_asymmetric(uid, obj, store, shim, obj_type) -> bytes:
         key_bytes = shim.get_public_key_der(cka_id)
         fmt       = KeyFormatType.PKCS1
     else:
-        key_bytes = shim.get_key_value(cka_id)
+        key_bytes = shim.get_private_key_der(cka_id)
         fmt       = KeyFormatType.PKCS8
 
     key_material = encode_byte_string(Tag.KeyMaterial, key_bytes)

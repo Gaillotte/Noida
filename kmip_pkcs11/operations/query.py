@@ -10,9 +10,11 @@ log = logging.getLogger(__name__)
 
 SUPPORTED_OPERATIONS = [
     Operation.Create, Operation.CreateKeyPair, Operation.Register,
-    Operation.Get, Operation.GetAttributes, Operation.AddAttribute,
-    Operation.DeleteAttribute, Operation.Locate, Operation.Destroy,
+    Operation.Get, Operation.GetAttributes, Operation.GetAttributeList,
+    Operation.AddAttribute, Operation.DeleteAttribute,
+    Operation.Locate, Operation.Destroy,
     Operation.Activate, Operation.Revoke, Operation.Encrypt, Operation.Decrypt,
+    Operation.Sign, Operation.SignatureVerify,
     Operation.Query, Operation.DiscoverVersions,
 ]
 

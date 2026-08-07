@@ -1692,8 +1692,8 @@ class TestGetAsymmetricPrivateKey:
         )
         fake_priv_id = os.urandom(16)
         store.add_attribute(uid, "_pkcs11_cka_id", fake_priv_id.hex())
-        # Mock get_key_value so the private-key extraction path works
-        with patch.object(shim, 'get_key_value', return_value=b'\xAA' * 32):
+        # Mock get_private_key_der so the private-key extraction path works
+        with patch.object(shim, 'get_private_key_der', return_value=b'\xAA' * 32):
             payload = _uid_payload(uid)
             resp_bytes = get_op.handle(payload, "user", store, shim)
         assert len(resp_bytes) > 0
@@ -2740,3 +2740,170 @@ class TestPhase4Dispatcher:
         from kmip_pkcs11.core.enums import Operation
         d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
         assert Operation.SignatureVerify in d._handlers
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 1 — Bug Fixes & Registration Gaps
+# BUG01: Get PrivateKey class lookup  BUG02: generate_random bytes
+# GAP03: Sign/SignatureVerify in Query  GAP04: GetAttributeList dispatched
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase1BugRandom:
+    """BUG02 — generate_random() must return exactly `length` bytes."""
+
+    def test_random_16_bytes(self, shim):
+        result = shim.generate_random(16)
+        assert isinstance(result, bytes)
+        assert len(result) == 16
+
+    def test_random_32_bytes(self, shim):
+        assert len(shim.generate_random(32)) == 32
+
+    def test_random_1_byte(self, shim):
+        assert len(shim.generate_random(1)) == 1
+
+    def test_random_values_differ(self, shim):
+        # Probability of two 16-byte random values colliding is negligible
+        assert shim.generate_random(16) != shim.generate_random(16)
+
+
+class TestPhase1QueryAdvertised:
+    """GAP03 — Query must advertise Sign, SignatureVerify, and GetAttributeList."""
+
+    def _op_values(self):
+        from kmip_pkcs11.operations import query as query_op
+        resp = query_op.handle(None, "user", MagicMock(), MagicMock())
+        return {i.value for i in decode_all(resp) if i.tag == Tag.Operations}
+
+    def test_sign_advertised(self):
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.Sign in self._op_values()
+
+    def test_signature_verify_advertised(self):
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.SignatureVerify in self._op_values()
+
+    def test_get_attribute_list_advertised(self):
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.GetAttributeList in self._op_values()
+
+    def test_legacy_ops_still_advertised(self):
+        from kmip_pkcs11.core.enums import Operation
+        ops = self._op_values()
+        for op in (Operation.Create, Operation.Encrypt, Operation.Destroy):
+            assert op in ops
+
+
+class TestPhase1GetAttributeListDispatch:
+    """GAP04 — GetAttributeList must be dispatched and return attribute names."""
+
+    def test_registered_in_dispatcher(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        assert Operation.GetAttributeList in d._handlers
+
+    def test_returns_attribute_names(self, store, shim):
+        from kmip_pkcs11.operations import get_attributes as ga_op
+        uid = store.create_object(
+            object_type=ObjectType.SymmetricKey,
+            state=State.Active,
+            cryptographic_algorithm=CryptographicAlgorithm.AES,
+            cryptographic_length=256,
+            usage_mask=CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt,
+        )
+        store.add_attribute(uid, "x-label", "test-key")
+
+        payload = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, uid))
+        resp = ga_op.handle_add(payload, "user", store, shim)
+        items = decode_all(resp)
+        names = {i.value for i in items if i.tag == Tag.AttributeName}
+        assert "Object Type" in names
+        assert "State" in names
+        assert "x-label" in names
+
+    def test_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        from kmip_pkcs11.core.ttlv import encode_structure
+
+        uid = store.create_object(
+            object_type=ObjectType.SymmetricKey,
+            state=State.Active,
+            cryptographic_algorithm=CryptographicAlgorithm.AES,
+            cryptographic_length=128,
+        )
+
+        d = OperationDispatcher(store, shim)
+        inner = (
+            encode_enumeration(Tag.Operation, Operation.GetAttributeList)
+            + encode_structure(
+                Tag.RequestPayload,
+                encode_text_string(Tag.UniqueIdentifier, uid),
+            )
+        )
+        batch_item = decode_one(encode_structure(Tag.BatchItem, inner))
+        raw = d.dispatch(batch_item, "user")
+        result = decode_one(raw)
+        status_item = result.get(Tag.ResultStatus)
+        from kmip_pkcs11.core.enums import ResultStatus
+        assert status_item.value == ResultStatus.Success
+
+
+class TestPhase1GetPrivateKey:
+    """BUG01 — Get for PrivateKey must search PRIVATE_KEY class, not SECRET_KEY."""
+
+    def test_non_extractable_private_key_raises(self, store, shim):
+        """Default CreateKeyPair sets extractable=False — Get must raise NotExtractable."""
+        from kmip_pkcs11.operations import get as get_op
+        _, priv_uid = _create_rsa_keypair(store, shim)
+        payload = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, priv_uid))
+        with pytest.raises(NotExtractable):
+            get_op.handle(payload, "user", store, shim)
+
+    def test_extractable_private_key_returns_key_material(self, store, shim):
+        """An extractable RSA private key must be retrievable via Get."""
+        from kmip_pkcs11.operations import get as get_op
+
+        # Generate an extractable keypair directly via shim (bypassing KMIP defaults)
+        pub_cka_id, priv_cka_id = shim.generate_key_pair(
+            algorithm=CryptographicAlgorithm.RSA,
+            key_length=2048,
+            label="phase1-extractable-rsa",
+            extractable=True,
+            sensitive=False,
+        )
+        priv_uid = store.create_object(
+            object_type=ObjectType.PrivateKey,
+            state=State.Active,
+            cryptographic_algorithm=CryptographicAlgorithm.RSA,
+            cryptographic_length=2048,
+            usage_mask=CryptographicUsageMask.Sign,
+            extractable=True,
+            sensitive=False,
+        )
+        store.add_attribute(priv_uid, "_pkcs11_cka_id", priv_cka_id.hex())
+
+        payload = _make_payload(uid=encode_text_string(Tag.UniqueIdentifier, priv_uid))
+        resp = get_op.handle(payload, "user", store, shim)
+
+        items = decode_all(resp)
+        uid_item = next(i for i in items if i.tag == Tag.UniqueIdentifier)
+        assert uid_item.value == priv_uid
+        # Response must be non-trivial (contains key material structure)
+        assert len(resp) > 100
+
+    def test_get_private_key_der_uses_private_key_class(self, shim):
+        """Shim must locate private key via PRIVATE_KEY class, not SECRET_KEY."""
+        from pkcs11 import ObjectClass
+        # Generate a non-extractable key pair — we just want to confirm the lookup
+        _, priv_cka_id = shim.generate_key_pair(
+            algorithm=CryptographicAlgorithm.RSA,
+            key_length=2048,
+            label="phase1-class-check",
+            extractable=False,
+            sensitive=True,
+        )
+        # Non-extractable should raise NotExtractable, not ItemNotFound
+        with pytest.raises(NotExtractable):
+            shim.get_private_key_der(priv_cka_id)

@@ -46,6 +46,7 @@ class OperationDispatcher:
             Operation.Query:            query_op.handle,
             Operation.DiscoverVersions: discover_versions.handle,
             Operation.GetAttributes:    get_attributes.handle,
+            Operation.GetAttributeList: get_attributes.handle_add,
             Operation.AddAttribute:     add_attribute.handle,
             Operation.DeleteAttribute:  delete_attribute.handle,
             Operation.Sign:             sign_op.handle,
