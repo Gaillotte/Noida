@@ -28,7 +28,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
 
-    check_usage_allowed(obj["state"], "encrypt")
+    check_usage_allowed(obj["state"], "encrypt", archived=bool(obj.get("archived")))
 
     aad_item = payload.get(Tag.AuthenticatedEncryptionAdditionalData)
     aad      = aad_item.value if aad_item else None

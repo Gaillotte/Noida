@@ -52,16 +52,20 @@ def revoke_operation(reason_code: int) -> str:
     return "revoke_normal"
 
 
-def check_usage_allowed(state: int, operation_name: str):
+def check_usage_allowed(state: int, operation_name: str, archived: bool = False):
     """
     Validate that a cryptographic usage operation is allowed in the given state.
     Encrypt/Sign are only allowed in Active state.
     Decrypt/Verify are allowed in Active and Deactivated states.
+    Archived objects reject everything but metadata reads until Recovered.
     """
     if state == State.Destroyed or state == State.DestroyedCompromised:
         raise IllegalOperation(f"Object is destroyed; operation '{operation_name}' not permitted")
 
     read_ops = {"get", "get_attributes", "get_attribute_list", "export"}
+
+    if archived and operation_name not in {"get_attributes", "get_attribute_list"}:
+        raise IllegalOperation(f"Object is archived; '{operation_name}' not permitted until Recover")
     write_sensitive_ops = {"encrypt", "sign", "mac", "derive"}
     read_sensitive_ops  = {"decrypt", "verify", "mac_verify"}
 

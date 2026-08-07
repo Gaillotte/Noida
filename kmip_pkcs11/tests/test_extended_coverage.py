@@ -27,7 +27,7 @@ from kmip_pkcs11.core.ttlv import (
 from kmip_pkcs11.core.exceptions import (
     KMIPError, ItemNotFound, MissingData, IllegalOperation,
     NotExtractable, GeneralFailure, CryptographicFailure,
-    InvalidField, OperationNotSupported
+    InvalidField, OperationNotSupported, NotAuthorized
 )
 from kmip_pkcs11.metadata.store import MetadataStore
 
@@ -4448,6 +4448,317 @@ class TestPhase6QueryAndDispatcher:
         batch_item = decode_one(encode_structure(
             Tag.BatchItem,
             encode_enumeration(Tag.Operation, Operation.Validate) + req_payload
+        ))
+        resp = d.dispatch(batch_item, "user")
+        item = decode_one(resp)
+        assert item.get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 7 — Archive, Recover, ObtainLease, GetUsageAllocation, Check
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _set_usage_limit(store, uid, count):
+    store.add_attribute(uid, "Usage Limits Count", count)
+
+
+class TestPhase7Archive:
+    def test_archive_sets_flag(self, store, shim):
+        from kmip_pkcs11.operations import archive as op
+        uid = _create_aes_uid(store, shim)
+        op.handle(_uid_payload(uid), "user", store, shim)
+        obj = store.get_object(uid)
+        assert obj["archived"] == 1
+        assert obj["archive_date"] is not None
+
+    def test_archive_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import archive as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_archive_missing_uid_raises(self, store, shim):
+        from kmip_pkcs11.operations import archive as op
+        with pytest.raises(MissingData):
+            op.handle(_make_payload(), "user", store, shim)
+
+    def test_archive_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import archive as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+    def test_archive_destroyed_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import archive as op, destroy as destroy_op
+        uid = _create_aes_uid(store, shim)
+        destroy_op.handle(_uid_payload(uid), "user", store, shim)
+        with pytest.raises(IllegalOperation):
+            op.handle(_uid_payload(uid), "user", store, shim)
+
+    def test_archive_already_archived_raises(self, store, shim):
+        from kmip_pkcs11.operations import archive as op
+        uid = _create_aes_uid(store, shim)
+        op.handle(_uid_payload(uid), "user", store, shim)
+        with pytest.raises(IllegalOperation):
+            op.handle(_uid_payload(uid), "user", store, shim)
+
+
+class TestPhase7Recover:
+    def test_recover_clears_flag(self, store, shim):
+        from kmip_pkcs11.operations import archive as archive_op, recover as op
+        uid = _create_aes_uid(store, shim)
+        archive_op.handle(_uid_payload(uid), "user", store, shim)
+        op.handle(_uid_payload(uid), "user", store, shim)
+        obj = store.get_object(uid)
+        assert obj["archived"] == 0
+        assert obj["archive_date"] is None
+
+    def test_recover_not_archived_raises(self, store, shim):
+        from kmip_pkcs11.operations import recover as op
+        uid = _create_aes_uid(store, shim)
+        with pytest.raises(IllegalOperation):
+            op.handle(_uid_payload(uid), "user", store, shim)
+
+    def test_recover_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import recover as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_recover_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import recover as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+
+class TestPhase7ArchivedGating:
+    def test_get_blocked_when_archived(self, store, shim):
+        from kmip_pkcs11.operations import archive as archive_op, get as get_op
+        uid = _create_aes_uid(store, shim)
+        archive_op.handle(_uid_payload(uid), "user", store, shim)
+        with pytest.raises(IllegalOperation):
+            get_op.handle(_uid_payload(uid), "user", store, shim)
+
+    def test_encrypt_blocked_when_archived(self, store, shim):
+        from kmip_pkcs11.operations import archive as archive_op, encrypt as enc_op
+        uid = _create_aes_uid(store, shim)
+        archive_op.handle(_uid_payload(uid), "user", store, shim)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"plaintext"),
+        )
+        with pytest.raises(IllegalOperation):
+            enc_op.handle(p, "user", store, shim)
+
+    def test_get_attributes_still_allowed_when_archived(self, store, shim):
+        from kmip_pkcs11.operations import archive as archive_op, get_attributes as ga_op
+        uid = _create_aes_uid(store, shim)
+        archive_op.handle(_uid_payload(uid), "user", store, shim)
+        resp = ga_op.handle(_uid_payload(uid), "user", store, shim)
+        assert len(resp) > 0
+
+    def test_get_allowed_after_recover(self, store, shim):
+        from kmip_pkcs11.operations import archive as archive_op, recover as recover_op, get as get_op
+        uid = _create_aes_uid(store, shim)
+        archive_op.handle(_uid_payload(uid), "user", store, shim)
+        recover_op.handle(_uid_payload(uid), "user", store, shim)
+        resp = get_op.handle(_uid_payload(uid), "user", store, shim)
+        assert len(resp) > 0
+
+
+class TestPhase7ObtainLease:
+    def test_returns_lease_time_and_last_change_date(self, store, shim):
+        from kmip_pkcs11.operations import obtain_lease as op
+        uid = _create_aes_uid(store, shim)
+        resp = op.handle(_uid_payload(uid), "user", store, shim)
+        items = decode_all(resp)
+        lease_time = next(i.value for i in items if i.tag == Tag.LeaseTime)
+        last_change = next(i.value for i in items if i.tag == Tag.LastChangeDate)
+        assert lease_time > 0
+        assert last_change is not None
+
+    def test_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import obtain_lease as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import obtain_lease as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+    def test_destroyed_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import obtain_lease as op, destroy as destroy_op
+        uid = _create_aes_uid(store, shim)
+        destroy_op.handle(_uid_payload(uid), "user", store, shim)
+        with pytest.raises(IllegalOperation):
+            op.handle(_uid_payload(uid), "user", store, shim)
+
+    def test_blocked_when_archived(self, store, shim):
+        from kmip_pkcs11.operations import obtain_lease as op, archive as archive_op
+        uid = _create_aes_uid(store, shim)
+        archive_op.handle(_uid_payload(uid), "user", store, shim)
+        with pytest.raises(IllegalOperation):
+            op.handle(_uid_payload(uid), "user", store, shim)
+
+
+class TestPhase7GetUsageAllocation:
+    def test_unlimited_object_always_succeeds(self, store, shim):
+        from kmip_pkcs11.operations import get_usage_allocation as op
+        uid = _create_aes_uid(store, shim)
+        resp = op.handle(_uid_payload(uid), "user", store, shim)
+        assert decode_one(resp).value == uid
+
+    def test_allocation_decrements_remaining(self, store, shim):
+        from kmip_pkcs11.operations import get_usage_allocation as op
+        uid = _create_aes_uid(store, shim)
+        _set_usage_limit(store, uid, 5)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            count=encode_long_integer(Tag.UsageLimitsCount, 3),
+        )
+        op.handle(p, "user", store, shim)
+        assert store.get_attribute(uid, "Usage Limits Count") == [2]
+
+    def test_allocation_default_is_one(self, store, shim):
+        from kmip_pkcs11.operations import get_usage_allocation as op
+        uid = _create_aes_uid(store, shim)
+        _set_usage_limit(store, uid, 5)
+        op.handle(_uid_payload(uid), "user", store, shim)
+        assert store.get_attribute(uid, "Usage Limits Count") == [4]
+
+    def test_allocation_insufficient_raises(self, store, shim):
+        from kmip_pkcs11.operations import get_usage_allocation as op
+        uid = _create_aes_uid(store, shim)
+        _set_usage_limit(store, uid, 2)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            count=encode_long_integer(Tag.UsageLimitsCount, 5),
+        )
+        with pytest.raises(NotAuthorized):
+            op.handle(p, "user", store, shim)
+        # unchanged on failure
+        assert store.get_attribute(uid, "Usage Limits Count") == [2]
+
+    def test_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import get_usage_allocation as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import get_usage_allocation as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+
+class TestPhase7Check:
+    def test_all_checks_pass_returns_only_uid(self, store, shim):
+        from kmip_pkcs11.operations import check as op
+        uid = _create_aes_uid(store, shim)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            state=encode_enumeration(Tag.State, State.Active),
+            mask=encode_integer(Tag.CryptographicUsageMask, CryptographicUsageMask.Encrypt),
+        )
+        resp = op.handle(p, "user", store, shim)
+        items = decode_all(resp)
+        assert len(items) == 1
+        assert items[0].tag == Tag.UniqueIdentifier
+
+    def test_state_mismatch_reported(self, store, shim):
+        from kmip_pkcs11.operations import check as op
+        uid = _create_aes_uid(store, shim)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            state=encode_enumeration(Tag.State, State.PreActive),
+        )
+        resp = op.handle(p, "user", store, shim)
+        tags = [i.tag for i in decode_all(resp)]
+        assert Tag.State in tags
+
+    def test_usage_mask_mismatch_reported(self, store, shim):
+        from kmip_pkcs11.operations import check as op
+        uid = _create_aes_uid(store, shim)  # created with Encrypt|Decrypt mask
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            mask=encode_integer(Tag.CryptographicUsageMask, CryptographicUsageMask.Sign),
+        )
+        resp = op.handle(p, "user", store, shim)
+        tags = [i.tag for i in decode_all(resp)]
+        assert Tag.CryptographicUsageMask in tags
+
+    def test_usage_limits_insufficient_reported(self, store, shim):
+        from kmip_pkcs11.operations import check as op
+        uid = _create_aes_uid(store, shim)
+        _set_usage_limit(store, uid, 2)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            count=encode_long_integer(Tag.UsageLimitsCount, 10),
+        )
+        resp = op.handle(p, "user", store, shim)
+        tags = [i.tag for i in decode_all(resp)]
+        assert Tag.UsageLimitsCount in tags
+
+    def test_usage_limits_sufficient_not_reported(self, store, shim):
+        from kmip_pkcs11.operations import check as op
+        uid = _create_aes_uid(store, shim)
+        _set_usage_limit(store, uid, 10)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            count=encode_long_integer(Tag.UsageLimitsCount, 2),
+        )
+        resp = op.handle(p, "user", store, shim)
+        tags = [i.tag for i in decode_all(resp)]
+        assert Tag.UsageLimitsCount not in tags
+
+    def test_check_does_not_mutate_state(self, store, shim):
+        """Unlike GetUsageAllocation, Check must not consume the allocation."""
+        from kmip_pkcs11.operations import check as op
+        uid = _create_aes_uid(store, shim)
+        _set_usage_limit(store, uid, 5)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            count=encode_long_integer(Tag.UsageLimitsCount, 3),
+        )
+        op.handle(p, "user", store, shim)
+        assert store.get_attribute(uid, "Usage Limits Count") == [5]
+
+    def test_missing_payload_raises(self, shim):
+        from kmip_pkcs11.operations import check as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", MagicMock(), shim)
+
+    def test_unknown_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import check as op
+        with pytest.raises(ItemNotFound):
+            op.handle(_uid_payload("nope"), "user", store, shim)
+
+
+class TestPhase7QueryAndDispatcher:
+    def test_all_advertised(self, store, shim):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        resp = op.handle(None, "user", store, shim)
+        ops = [i.value for i in decode_all(resp) if i.tag == Tag.Operations]
+        for expected in (Operation.Archive, Operation.Recover, Operation.ObtainLease,
+                          Operation.GetUsageAllocation, Operation.Check):
+            assert expected in ops
+
+    def test_all_registered_in_dispatcher(self):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store=MagicMock(), shim=MagicMock())
+        for expected in (Operation.Archive, Operation.Recover, Operation.ObtainLease,
+                          Operation.GetUsageAllocation, Operation.Check):
+            assert expected in d._handlers
+
+    def test_check_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        uid = _create_aes_uid(store, shim)
+        d = OperationDispatcher(store=store, shim=shim)
+        req_payload = encode_structure(Tag.RequestPayload,
+            encode_text_string(Tag.UniqueIdentifier, uid))
+        batch_item = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.Check) + req_payload
         ))
         resp = d.dispatch(batch_item, "user")
         item = decode_one(resp)

@@ -28,7 +28,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
 
-    check_usage_allowed(obj["state"], "get")
+    check_usage_allowed(obj["state"], "get", archived=bool(obj.get("archived")))
 
     obj_type = obj["object_type"]
 

@@ -27,7 +27,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
 
-    check_usage_allowed(obj["state"], "decrypt")
+    check_usage_allowed(obj["state"], "decrypt", archived=bool(obj.get("archived")))
 
     iv_item  = payload.get(Tag.IVCounterNonce)
     iv       = iv_item.value if iv_item else None

@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS kmip_objects (
     owner_identity          TEXT,
     key_format_type         INTEGER,
     raw_key_value           BLOB,
+    archived                INTEGER DEFAULT 0,
+    archive_date            REAL,
     created_at              REAL NOT NULL
 );
 
@@ -196,6 +198,23 @@ class MetadataStore:
         conn.execute(
             "UPDATE kmip_objects SET state=?, activation_date=? WHERE uuid=?",
             (State.Active, now, uid)
+        )
+        conn.commit()
+
+    def archive_object(self, uid: str):
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        conn = self._conn()
+        conn.execute(
+            "UPDATE kmip_objects SET archived=1, archive_date=? WHERE uuid=?",
+            (now, uid)
+        )
+        conn.commit()
+
+    def recover_object(self, uid: str):
+        conn = self._conn()
+        conn.execute(
+            "UPDATE kmip_objects SET archived=0, archive_date=NULL WHERE uuid=?",
+            (uid,)
         )
         conn.commit()
 

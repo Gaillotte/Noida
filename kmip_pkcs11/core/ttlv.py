@@ -69,6 +69,10 @@ def encode_big_integer(tag: int, value: int) -> bytes:
     return encode_item(tag, Type.BigInteger, value.to_bytes(length, 'big'))
 
 
+def encode_interval(tag: int, seconds: int) -> bytes:
+    return encode_item(tag, Type.Interval, struct.pack('>I', seconds))
+
+
 # ─────────────────────────────── decoding ────────────────────────────────────
 
 class TTLVItem:

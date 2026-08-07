@@ -27,6 +27,7 @@ from . import (
     mac as mac_op, mac_verify as macver_op, hash_op,
     import_op, export_op, derive_key,
     certify, validate,
+    archive, recover, obtain_lease, get_usage_allocation, check as check_op,
 )
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,11 @@ class OperationDispatcher:
             Operation.DeriveKey:        derive_key.handle,
             Operation.Certify:          certify.handle,
             Operation.Validate:         validate.handle,
+            Operation.Archive:          archive.handle,
+            Operation.Recover:          recover.handle,
+            Operation.ObtainLease:      obtain_lease.handle,
+            Operation.GetUsageAllocation: get_usage_allocation.handle,
+            Operation.Check:            check_op.handle,
         }
 
     def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:

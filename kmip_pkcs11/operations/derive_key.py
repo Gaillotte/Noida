@@ -35,7 +35,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
             f"DeriveKey is only supported for DH/ECDH base keys, got algorithm {base_algorithm}"
         )
 
-    check_usage_allowed(obj["state"], "derive")
+    check_usage_allowed(obj["state"], "derive", archived=bool(obj.get("archived")))
 
     method_item = payload.get(Tag.DerivationMethod)
     method = method_item.value if method_item else DerivationMethod.ASYMMETRIC_KEY

@@ -21,6 +21,8 @@ SUPPORTED_OPERATIONS = [
     Operation.Import, Operation.Export,
     Operation.DeriveKey,
     Operation.Certify, Operation.Validate,
+    Operation.Archive, Operation.Recover,
+    Operation.ObtainLease, Operation.GetUsageAllocation, Operation.Check,
     Operation.Query, Operation.DiscoverVersions,
 ]
 

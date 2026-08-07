@@ -64,7 +64,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
 
-    check_usage_allowed(obj["state"], "sign")
+    check_usage_allowed(obj["state"], "sign", archived=bool(obj.get("archived")))
 
     hash_alg = None
     crypto_params = payload.get(Tag.CryptographicParameters)

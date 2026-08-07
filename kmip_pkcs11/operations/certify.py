@@ -41,7 +41,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if algorithm != CryptographicAlgorithm.RSA:
         raise OperationNotSupported(f"Certify currently only supports RSA, got algorithm {algorithm}")
 
-    check_usage_allowed(obj["state"], "get")
+    check_usage_allowed(obj["state"], "get", archived=bool(obj.get("archived")))
 
     priv_links = store.get_attribute(pub_uid, "Link_PrivateKey")
     if not priv_links:
@@ -50,7 +50,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     priv_obj = store.get_object(priv_uid)
     if priv_obj is None:
         raise ItemNotFound(f"Paired PrivateKey '{priv_uid}' not found")
-    check_usage_allowed(priv_obj["state"], "sign")
+    check_usage_allowed(priv_obj["state"], "sign", archived=bool(priv_obj.get("archived")))
 
     pub_cka_ids  = store.get_attribute(pub_uid, "_pkcs11_cka_id")
     priv_cka_ids = store.get_attribute(priv_uid, "_pkcs11_cka_id")

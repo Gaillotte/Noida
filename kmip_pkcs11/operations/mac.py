@@ -40,7 +40,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
 
-    check_usage_allowed(obj["state"], "mac")
+    check_usage_allowed(obj["state"], "mac", archived=bool(obj.get("archived")))
 
     algorithm = obj.get("cryptographic_algorithm")
     mechanism = HMAC_ALG_TO_MECH.get(algorithm, Mechanism.SHA256_HMAC)

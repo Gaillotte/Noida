@@ -146,6 +146,11 @@ class Tag(IntEnum):
     DerivationParameters    = 0x420AC3  # vendor extension slot (simplified)
     DerivationData          = 0x420AC4  # vendor extension slot (simplified)
 
+    # ObtainLease / GetUsageAllocation
+    LeaseTime               = 0x420AC5  # vendor extension slot (simplified)
+    LastChangeDate          = 0x420AC6  # vendor extension slot (simplified)
+    UsageLimitsCount        = 0x420AC7  # vendor extension slot (simplified)
+
 
 class Type(IntEnum):
     Structure    = 0x01
