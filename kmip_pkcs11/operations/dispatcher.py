@@ -23,6 +23,7 @@ from . import (
     query as query_op, discover_versions,
     get_attributes, add_attribute, delete_attribute,
     sign as sign_op, signature_verify as sigver_op,
+    rng_retrieve, modify_attribute, set_attribute, adjust_attribute,
 )
 
 log = logging.getLogger(__name__)
@@ -49,8 +50,12 @@ class OperationDispatcher:
             Operation.GetAttributeList: get_attributes.handle_add,
             Operation.AddAttribute:     add_attribute.handle,
             Operation.DeleteAttribute:  delete_attribute.handle,
+            Operation.ModifyAttribute:  modify_attribute.handle,
+            Operation.SetAttribute:     set_attribute.handle,
+            Operation.AdjustAttribute:  adjust_attribute.handle,
             Operation.Sign:             sign_op.handle,
             Operation.SignatureVerify:  sigver_op.handle,
+            Operation.RNGRetrieve:      rng_retrieve.handle,
         }
 
     def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:

@@ -211,6 +211,23 @@ class MetadataStore:
         )
         self._conn().commit()
 
+    def update_attribute(self, uid: str, name: str, value: Any, index: int = 0) -> int:
+        cur = self._conn().execute(
+            "UPDATE kmip_attributes SET attr_value=? WHERE object_uuid=? AND attr_name=? AND attr_index=?",
+            (json.dumps(value), uid, name, index)
+        )
+        self._conn().commit()
+        return cur.rowcount
+
+    def set_or_add_attribute(self, uid: str, name: str, value: Any, index: int = 0):
+        rows = self.update_attribute(uid, name, value, index)
+        if rows == 0:
+            self._conn().execute(
+                "INSERT INTO kmip_attributes (object_uuid, attr_name, attr_index, attr_value) VALUES (?,?,?,?)",
+                (uid, name, index, json.dumps(value))
+            )
+            self._conn().commit()
+
     def set_activation_date(self, uid: str, dt: datetime.datetime):
         conn = self._conn()
         conn.execute(

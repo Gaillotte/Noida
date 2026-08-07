@@ -2907,3 +2907,255 @@ class TestPhase1GetPrivateKey:
         # Non-extractable should raise NotExtractable, not ItemNotFound
         with pytest.raises(NotExtractable):
             shim.get_private_key_der(priv_cka_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 — RNGRetrieve, ModifyAttribute, SetAttribute, AdjustAttribute, Query
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _create_plain_uid(store, object_type=ObjectType.SecretData):
+    return store.create_object(
+        object_type=object_type,
+        state=State.Active,
+        usage_mask=CryptographicUsageMask.Encrypt,
+        extractable=True,
+        sensitive=False,
+        owner_identity="user",
+    )
+
+
+class TestPhase2RNGRetrieve:
+    def test_default_length(self, store, shim):
+        from kmip_pkcs11.operations import rng_retrieve as op
+        resp = op.handle(None, "user", store, shim)
+        item = decode_one(encode_structure(Tag.RequestPayload, resp))
+        data = item.get(Tag.Data).value
+        assert len(data) == 32
+
+    def test_custom_length(self, store, shim):
+        from kmip_pkcs11.operations import rng_retrieve as op
+        payload = _make_payload(dl=encode_integer(Tag.DataLength, 16))
+        resp = op.handle(payload, "user", store, shim)
+        item = decode_one(encode_structure(Tag.RequestPayload, resp))
+        data = item.get(Tag.Data).value
+        assert len(data) == 16
+
+    def test_zero_length_raises(self, store, shim):
+        from kmip_pkcs11.operations import rng_retrieve as op
+        payload = _make_payload(dl=encode_integer(Tag.DataLength, 0))
+        with pytest.raises(MissingData):
+            op.handle(payload, "user", store, shim)
+
+    def test_oversized_length_raises(self, store, shim):
+        from kmip_pkcs11.operations import rng_retrieve as op
+        payload = _make_payload(dl=encode_integer(Tag.DataLength, 100000))
+        with pytest.raises(MissingData):
+            op.handle(payload, "user", store, shim)
+
+    def test_values_differ(self, store, shim):
+        from kmip_pkcs11.operations import rng_retrieve as op
+        item1 = decode_one(encode_structure(Tag.RequestPayload, op.handle(None, "user", store, shim)))
+        item2 = decode_one(encode_structure(Tag.RequestPayload, op.handle(None, "user", store, shim)))
+        assert item1.get(Tag.Data).value != item2.get(Tag.Data).value
+
+
+class TestPhase2ModifyAttribute:
+    def test_modify_existing_attribute(self, store, shim):
+        from kmip_pkcs11.operations import modify_attribute as op
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "Comment", "old-value")
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            attr=_attr("Comment", encode_text_string(Tag.AttributeValue, "new-value")),
+        )
+        resp = op.handle(payload, "user", store, shim)
+        items = decode_all(resp)
+        assert any(i.tag == Tag.UniqueIdentifier and i.value == uid for i in items)
+        assert store.get_attribute(uid, "Comment") == ["new-value"]
+
+    def test_modify_missing_attribute_raises(self, store, shim):
+        from kmip_pkcs11.operations import modify_attribute as op
+        uid = _create_plain_uid(store)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            attr=_attr("Nonexistent", encode_text_string(Tag.AttributeValue, "x")),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+    def test_modify_missing_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import modify_attribute as op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "does-not-exist"),
+            attr=_attr("Comment", encode_text_string(Tag.AttributeValue, "x")),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+    def test_modify_missing_payload_raises(self, store, shim):
+        from kmip_pkcs11.operations import modify_attribute as op
+        with pytest.raises(MissingData):
+            op.handle(None, "user", store, shim)
+
+
+class TestPhase2SetAttribute:
+    def test_set_new_attribute(self, store, shim):
+        from kmip_pkcs11.operations import set_attribute as op
+        uid = _create_plain_uid(store)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            name=encode_text_string(Tag.AttributeName, "Comment"),
+            value=encode_text_string(Tag.AttributeValue, "hello"),
+        )
+        op.handle(payload, "user", store, shim)
+        assert store.get_attribute(uid, "Comment") == ["hello"]
+
+    def test_set_overwrites_existing(self, store, shim):
+        from kmip_pkcs11.operations import set_attribute as op
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "Comment", "first")
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            name=encode_text_string(Tag.AttributeName, "Comment"),
+            value=encode_text_string(Tag.AttributeValue, "second"),
+        )
+        op.handle(payload, "user", store, shim)
+        assert store.get_attribute(uid, "Comment") == ["second"]
+
+    def test_set_missing_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import set_attribute as op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "does-not-exist"),
+            name=encode_text_string(Tag.AttributeName, "Comment"),
+            value=encode_text_string(Tag.AttributeValue, "x"),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+
+class TestPhase2AdjustAttribute:
+    def test_increment(self, store, shim):
+        from kmip_pkcs11.operations import adjust_attribute as op
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "UsageLimitCount", 10)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            attr=_attr("UsageLimitCount", encode_integer(Tag.AttributeValue, 5)),
+            adj=encode_enumeration(Tag.AdjustmentType, 1),  # Increment
+        )
+        op.handle(payload, "user", store, shim)
+        assert store.get_attribute(uid, "UsageLimitCount") == [15]
+
+    def test_decrement(self, store, shim):
+        from kmip_pkcs11.operations import adjust_attribute as op
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "UsageLimitCount", 10)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            attr=_attr("UsageLimitCount", encode_integer(Tag.AttributeValue, 3)),
+            adj=encode_enumeration(Tag.AdjustmentType, 2),  # Decrement
+        )
+        op.handle(payload, "user", store, shim)
+        assert store.get_attribute(uid, "UsageLimitCount") == [7]
+
+    def test_set_via_adjustment_type(self, store, shim):
+        from kmip_pkcs11.operations import adjust_attribute as op
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "UsageLimitCount", 10)
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            attr=_attr("UsageLimitCount", encode_integer(Tag.AttributeValue, 99)),
+            adj=encode_enumeration(Tag.AdjustmentType, 3),  # Set
+        )
+        op.handle(payload, "user", store, shim)
+        assert store.get_attribute(uid, "UsageLimitCount") == [99]
+
+    def test_non_numeric_raises(self, store, shim):
+        from kmip_pkcs11.operations import adjust_attribute as op
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "Comment", "text-value")
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            attr=_attr("Comment", encode_integer(Tag.AttributeValue, 1)),
+            adj=encode_enumeration(Tag.AdjustmentType, 1),
+        )
+        with pytest.raises(InvalidField):
+            op.handle(payload, "user", store, shim)
+
+    def test_missing_object_raises(self, store, shim):
+        from kmip_pkcs11.operations import adjust_attribute as op
+        payload = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, "does-not-exist"),
+            attr=_attr("UsageLimitCount", encode_integer(Tag.AttributeValue, 1)),
+        )
+        with pytest.raises(ItemNotFound):
+            op.handle(payload, "user", store, shim)
+
+
+class TestPhase2Dispatcher:
+    def test_all_ops_registered(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store, shim)
+        for op in (Operation.RNGRetrieve, Operation.ModifyAttribute,
+                   Operation.SetAttribute, Operation.AdjustAttribute):
+            assert op in d._handlers
+
+    def test_rng_retrieve_via_dispatcher(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store, shim)
+        batch = decode_one(encode_structure(
+            Tag.BatchItem,
+            encode_enumeration(Tag.Operation, Operation.RNGRetrieve)
+        ))
+        resp = d.dispatch(batch, "user")
+        item = decode_one(resp)
+        assert item.get(Tag.ResultStatus).value == 0  # Success
+
+
+class TestPhase2QueryAdvertised:
+    def test_rng_retrieve_advertised(self):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.RNGRetrieve in op.SUPPORTED_OPERATIONS
+
+    def test_modify_attribute_advertised(self):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.ModifyAttribute in op.SUPPORTED_OPERATIONS
+
+    def test_set_attribute_advertised(self):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.SetAttribute in op.SUPPORTED_OPERATIONS
+
+    def test_adjust_attribute_advertised(self):
+        from kmip_pkcs11.operations import query as op
+        from kmip_pkcs11.core.enums import Operation
+        assert Operation.AdjustAttribute in op.SUPPORTED_OPERATIONS
+
+
+class TestPhase2StoreHelpers:
+    def test_update_attribute_returns_zero_when_missing(self, store, shim):
+        uid = _create_plain_uid(store)
+        rows = store.update_attribute(uid, "Nope", "x")
+        assert rows == 0
+
+    def test_update_attribute_returns_one_when_found(self, store, shim):
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "Comment", "a")
+        rows = store.update_attribute(uid, "Comment", "b")
+        assert rows == 1
+        assert store.get_attribute(uid, "Comment") == ["b"]
+
+    def test_set_or_add_creates_when_missing(self, store, shim):
+        uid = _create_plain_uid(store)
+        store.set_or_add_attribute(uid, "Comment", "created")
+        assert store.get_attribute(uid, "Comment") == ["created"]
+
+    def test_set_or_add_overwrites_when_present(self, store, shim):
+        uid = _create_plain_uid(store)
+        store.add_attribute(uid, "Comment", "first")
+        store.set_or_add_attribute(uid, "Comment", "overwritten")
+        assert store.get_attribute(uid, "Comment") == ["overwritten"]

@@ -129,6 +129,9 @@ class Tag(IntEnum):
     AsynchronousIndicator   = 0x42000E
     AsynchronousCorrelationValue = 0x42000F
 
+    # AdjustAttribute
+    AdjustmentType          = 0x420AC1  # vendor extension slot (simplified)
+
 
 class Type(IntEnum):
     Structure    = 0x01
@@ -387,6 +390,12 @@ class QueryFunction(IntEnum):
     QueryProfiles           = 0x0000000A
     QueryCapabilities       = 0x0000000B
     QueryClientRegistrationMethods = 0x0000000C
+
+
+class AdjustmentType(IntEnum):
+    Increment = 0x00000001
+    Decrement = 0x00000002
+    Set       = 0x00000003
 
 
 class NameType(IntEnum):
