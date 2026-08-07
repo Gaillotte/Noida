@@ -53,5 +53,9 @@ class MissingData(KMIPError):
     reason = ResultReason.MissingData
 
 
+class ResponseTooLarge(KMIPError):
+    reason = ResultReason.ResponseTooLarge
+
+
 class GeneralFailure(KMIPError):
     reason = ResultReason.GeneralFailure

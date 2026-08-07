@@ -13,7 +13,7 @@ from typing import Optional, List
 from ..core.enums import (
     Tag, Type, Operation, ObjectType, CryptographicAlgorithm,
     CryptographicUsageMask, BlockCipherMode, ResultStatus, QueryFunction,
-    State
+    State, CredentialType
 )
 from ..core.ttlv import (
     TTLVItem, decode_one,
@@ -36,12 +36,16 @@ class KMIPClient:
         tls_cert: Optional[str] = None,
         tls_key:  Optional[str] = None,
         tls_ca:   Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         self._host    = host
         self._port    = port
         self._tls_cert = tls_cert
         self._tls_key  = tls_key
         self._tls_ca   = tls_ca
+        self._username = username
+        self._password = password
         self._sock: Optional[socket.socket] = None
         self._batch_counter = 0
 
@@ -290,25 +294,67 @@ class KMIPClient:
         return self._unwrap_response(response, operation)
 
     def _build_request(self, operation: int, payload_bytes: bytes) -> bytes:
-        self._batch_counter += 1
-        batch_id = self._batch_counter.to_bytes(4, 'big')
+        return self._build_batch_request([(operation, payload_bytes)])
 
+    def _build_batch_request(
+        self,
+        items: List[tuple],
+        batch_error_continuation: Optional[int] = None,
+        max_response_size: Optional[int] = None,
+    ) -> bytes:
+        """Build a RequestMessage with one or more BatchItems. `items` is a
+        list of (operation, payload_bytes) tuples."""
         pv = (
             encode_integer(Tag.ProtocolVersionMajor, self.PROTOCOL_VERSION[0])
             + encode_integer(Tag.ProtocolVersionMinor, self.PROTOCOL_VERSION[1])
         )
-        header = encode_structure(
-            Tag.RequestHeader,
-            encode_structure(Tag.ProtocolVersion, pv)
-            + encode_integer(Tag.BatchCount, 1)
-        )
-        batch_item = encode_structure(
-            Tag.BatchItem,
-            encode_enumeration(Tag.Operation, operation)
-            + encode_byte_string(Tag.UniqueBatchItemID, batch_id)
-            + encode_structure(Tag.RequestPayload, payload_bytes)
-        )
-        return encode_structure(Tag.RequestMessage, header + batch_item)
+        header_fields = encode_structure(Tag.ProtocolVersion, pv)
+
+        if self._username is not None:
+            cred_value = (
+                encode_text_string(Tag.Username, self._username)
+                + encode_text_string(Tag.Password, self._password or "")
+            )
+            credential = encode_structure(
+                Tag.Credential,
+                encode_enumeration(Tag.CredentialType, CredentialType.UsernameAndPassword)
+                + encode_structure(Tag.CredentialValue, cred_value)
+            )
+            header_fields += encode_structure(Tag.Authentication, credential)
+
+        if batch_error_continuation is not None:
+            header_fields += encode_enumeration(Tag.BatchErrorContinuationOption, batch_error_continuation)
+        if max_response_size is not None:
+            header_fields += encode_integer(Tag.MaximumResponseSize, max_response_size)
+
+        header_fields += encode_integer(Tag.BatchCount, len(items))
+        header = encode_structure(Tag.RequestHeader, header_fields)
+
+        batch_bytes = b""
+        for operation, payload_bytes in items:
+            self._batch_counter += 1
+            batch_id = self._batch_counter.to_bytes(4, 'big')
+            batch_bytes += encode_structure(
+                Tag.BatchItem,
+                encode_enumeration(Tag.Operation, operation)
+                + encode_byte_string(Tag.UniqueBatchItemID, batch_id)
+                + encode_structure(Tag.RequestPayload, payload_bytes)
+            )
+        return encode_structure(Tag.RequestMessage, header + batch_bytes)
+
+    def raw_batch_request(
+        self,
+        items: List[tuple],
+        batch_error_continuation: Optional[int] = None,
+        max_response_size: Optional[int] = None,
+    ) -> TTLVItem:
+        """Send a multi-item batch request and return the decoded
+        ResponseMessage as-is (no unwrap/raise) — for tests inspecting
+        per-item results or whole-message-level errors directly."""
+        request = self._build_batch_request(items, batch_error_continuation, max_response_size)
+        self._send(request)
+        raw = self._recv()
+        return decode_one(raw)
 
     def _send(self, data: bytes):
         self._sock.sendall(data)

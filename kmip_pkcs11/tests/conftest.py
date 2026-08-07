@@ -89,3 +89,34 @@ def server_client(tmp_path, shim):
             srv._sock.close()
         except Exception:
             pass
+
+
+@pytest.fixture
+def kmip_server(tmp_path, shim):
+    """Spin up a KMIP server on a fresh port without attaching a client, so
+    tests can connect multiple KMIPClients (e.g. with different Credentials)
+    against the same running server."""
+    from kmip_pkcs11.metadata.store import MetadataStore
+    from kmip_pkcs11.server.server import KMIPServer
+
+    port  = next(_port_counter)
+    store = MetadataStore(str(tmp_path / "srv2.db"))
+    srv   = KMIPServer(store, shim, port=port)
+    srv.start_background()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+
+    yield store, port
+
+    srv._running = False
+    if srv._sock:
+        try:
+            srv._sock.close()
+        except Exception:
+            pass

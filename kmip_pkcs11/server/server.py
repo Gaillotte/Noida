@@ -13,12 +13,14 @@ import struct
 import threading
 from typing import Optional
 
-from ..core.enums import Tag, ResultStatus, ResultReason
+from ..core.enums import (
+    Tag, ResultStatus, ResultReason, CredentialType, BatchErrorContinuationOption
+)
 from ..core.ttlv import (
     TTLVItem, decode_one, encode_structure, encode_enumeration,
     encode_integer, encode_text_string
 )
-from ..core.exceptions import KMIPError, InvalidMessage
+from ..core.exceptions import KMIPError, InvalidMessage, AuthenticationFailed
 from ..metadata.store import MetadataStore
 from ..pkcs11_shim.shim import PKCS11Shim
 from ..operations.dispatcher import OperationDispatcher
@@ -179,6 +181,9 @@ class KMIPServer:
 
         try:
             return self._build_response(request, identity)
+        except KMIPError as e:
+            log.warning("Request processing error: %s", e)
+            return _error_response(e.reason, str(e))
         except Exception as e:
             log.exception("Request processing error: %s", e)
             return _error_response(ResultReason.GeneralFailure, str(e))
@@ -190,22 +195,90 @@ class KMIPServer:
         major  = pv.get(Tag.ProtocolVersionMajor).value if pv else 2
         minor  = pv.get(Tag.ProtocolVersionMinor).value if pv else 1
 
-        # Process each batch item
+        # Credential-based auth (UsernameAndPassword) overrides the TLS-cert
+        # identity when present; raises AuthenticationFailed on bad credentials.
+        identity = self._authenticate(header, identity)
+
+        continuation_item = header.get(Tag.BatchErrorContinuationOption) if header else None
+        continuation = continuation_item.value if continuation_item else BatchErrorContinuationOption.Continue
+        if continuation == BatchErrorContinuationOption.Undo:
+            raise KMIPError(
+                "BatchErrorContinuationOption=Undo is not supported",
+                reason=ResultReason.FeatureNotSupported,
+            )
+        # BatchOrderOption (sequential vs any-order) is accepted but doesn't
+        # change behavior — this server always processes items in listed
+        # order, which satisfies either setting.
+
+        max_size_item = header.get(Tag.MaximumResponseSize) if header else None
+        max_size = max_size_item.value if max_size_item else None
+
+        # Process each batch item, honoring BatchErrorContinuationOption=Stop
         batch_items_bytes = b""
+        processed = 0
         for item in request.get_all(Tag.BatchItem):
-            batch_items_bytes += self._dispatcher.dispatch(item, identity)
+            item_bytes = self._dispatcher.dispatch(item, identity)
+            batch_items_bytes += item_bytes
+            processed += 1
+            if continuation == BatchErrorContinuationOption.Stop:
+                item_view = decode_one(item_bytes)
+                status_item = item_view.get(Tag.ResultStatus)
+                if status_item and status_item.value == ResultStatus.OperationFailed:
+                    break
 
         # Build response header
         resp_header = encode_structure(
             Tag.ResponseHeader,
             _encode_version(major, minor)
-            + encode_integer(Tag.BatchCount, len(request.get_all(Tag.BatchItem)))
+            + encode_integer(Tag.BatchCount, processed)
         )
 
-        return encode_structure(
+        response = encode_structure(
             Tag.ResponseMessage,
             resp_header + batch_items_bytes
         )
+
+        if max_size is not None and len(response) > max_size:
+            raise KMIPError(
+                f"Response size {len(response)} exceeds MaximumResponseSize {max_size}",
+                reason=ResultReason.ResponseTooLarge,
+            )
+
+        return response
+
+    def _authenticate(self, header, fallback_identity: str) -> str:
+        """Parse an optional Authentication/Credential from the request
+        header. Only CredentialType.UsernameAndPassword is supported; the
+        password is checked against the configured PKCS#11 token PIN — the
+        one shared secret this server already trusts for HSM access, reused
+        here as the KMIP-level credential. Falls back to the connection's
+        TLS-cert identity (or "anonymous") when no Credential is present."""
+        if header is None:
+            return fallback_identity
+        auth_item = header.get(Tag.Authentication)
+        if auth_item is None:
+            return fallback_identity
+        cred_item = auth_item.get(Tag.Credential)
+        if cred_item is None:
+            return fallback_identity
+
+        type_item = cred_item.get(Tag.CredentialType)
+        cred_type = type_item.value if type_item else None
+        if cred_type != CredentialType.UsernameAndPassword:
+            raise AuthenticationFailed(f"CredentialType {cred_type!r} is not supported")
+
+        value_item = cred_item.get(Tag.CredentialValue)
+        if value_item is None:
+            raise AuthenticationFailed("CredentialValue is required")
+        username_item = value_item.get(Tag.Username)
+        if username_item is None:
+            raise AuthenticationFailed("Username is required")
+        password_item = value_item.get(Tag.Password)
+        password = password_item.value if password_item else ""
+
+        if not self._shim.verify_pin(password):
+            raise AuthenticationFailed(f"Invalid credentials for user '{username_item.value}'")
+        return username_item.value
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

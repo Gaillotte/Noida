@@ -162,6 +162,12 @@ class PKCS11Shim:
         # _lib is retained — PKCS#11 cannot be re-initialized in the same process
         log.info("PKCS#11 session closed")
 
+    def verify_pin(self, pin: str) -> bool:
+        """Constant-time-ish comparison against the configured token PIN, used
+        as the shared secret for KMIP UsernameAndPassword Credential auth."""
+        import hmac
+        return hmac.compare_digest(pin or "", self._user_pin or "")
+
     def _sess(self):
         if self._session is None:
             raise GeneralFailure("PKCS#11 session not initialized")

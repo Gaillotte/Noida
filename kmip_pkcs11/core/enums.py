@@ -143,6 +143,9 @@ class Tag(IntEnum):
     UniqueBatchItemID       = 0x420093
     AsynchronousIndicator   = 0x420007
     AsynchronousCorrelationValue = 0x420006
+    BatchErrorContinuationOption = 0x42000E
+    BatchOrderOption        = 0x420010
+    MaximumResponseSize     = 0x420050
 
     # AdjustAttribute
     AdjustmentType          = 0x420158
@@ -253,6 +256,9 @@ class ResultStatus(IntEnum):
 
 
 class ResultReason(IntEnum):
+    """Codepoints verified against PyKMIP's ResultReason table (same reference
+    used to correct Tag in Phase 9); only the subset this server actually
+    raises is kept, plus a couple of plausible near-term additions."""
     ItemNotFound                    = 0x00000001
     ResponseTooLarge                = 0x00000002
     AuthenticationNotSuccessful     = 0x00000003
@@ -266,12 +272,10 @@ class ResultReason(IntEnum):
     IllegalOperation                = 0x0000000B
     PermissionDenied                = 0x0000000C
     ObjectArchived                  = 0x0000000D
-    AddressRangeError               = 0x0000000E
-    KeyValueNotPresent              = 0x0000000F
-    NotExtractable                  = 0x00000010
-    ResponseTooLarge2               = 0x00000011
-    InvalidCSRError                 = 0x00000012
-    InvalidField2                   = 0x00000013
+    IndexOutOfBounds                = 0x0000000E
+    KeyValueNotPresent              = 0x00000013
+    NotExtractable                  = 0x00000017
+    InvalidCSR                      = 0x0000002F
     GeneralFailure                  = 0x00000100
 
 
@@ -460,6 +464,12 @@ class WrappingMethod(IntEnum):
     Encrypt_then_MACSign   = 0x00000003
     MACSign_then_Encrypt   = 0x00000004
     TR31                   = 0x00000005
+
+
+class BatchErrorContinuationOption(IntEnum):
+    Continue = 0x00000001
+    Stop     = 0x00000002
+    Undo     = 0x00000003
 
 
 class NameType(IntEnum):

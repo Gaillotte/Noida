@@ -5485,3 +5485,241 @@ class TestPhase10ImportUnwrap:
 
         new_cka = bytes.fromhex(store.get_attribute(client_uid, "_pkcs11_cka_id")[0])
         assert shim.get_key_value(new_cka) == plaintext
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Phase 11 — Credential auth, BatchErrorContinuationOption, MaximumResponseSize
+# ══════════════════════════════════════════════════════════════════════════════
+
+from kmip_pkcs11.core.enums import (
+    BatchErrorContinuationOption, CredentialType, Operation, ResultReason, ResultStatus
+)
+from kmip_pkcs11.core.exceptions import AuthenticationFailed
+
+_TEST_TOKEN_PIN = "9999"  # matches conftest.USER_PIN
+
+
+def _auth_header(username=None, password=None):
+    fields = b""
+    if username is not None:
+        cred_value = (
+            encode_text_string(Tag.Username, username)
+            + encode_text_string(Tag.Password, password or "")
+        )
+        credential = encode_structure(
+            Tag.Credential,
+            encode_enumeration(Tag.CredentialType, CredentialType.UsernameAndPassword)
+            + encode_structure(Tag.CredentialValue, cred_value)
+        )
+        fields += encode_structure(Tag.Authentication, credential)
+    return decode_one(encode_structure(Tag.RequestHeader, fields)) if fields else None
+
+
+class TestPhase11AuthenticateUnit:
+    def _server(self, pin_matches=True):
+        from kmip_pkcs11.server.server import KMIPServer
+        shim = MagicMock()
+        shim.verify_pin = MagicMock(return_value=pin_matches)
+        return KMIPServer(store=MagicMock(), shim=shim)
+
+    def test_no_header_returns_fallback(self):
+        srv = self._server()
+        assert srv._authenticate(None, "anonymous") == "anonymous"
+
+    def test_no_authentication_field_returns_fallback(self):
+        srv = self._server()
+        header = decode_one(encode_structure(Tag.RequestHeader, b""))
+        assert srv._authenticate(header, "tls-cn-identity") == "tls-cn-identity"
+
+    def test_valid_credential_returns_username(self):
+        srv = self._server(pin_matches=True)
+        header = _auth_header("alice", _TEST_TOKEN_PIN)
+        assert srv._authenticate(header, "anonymous") == "alice"
+
+    def test_invalid_password_raises(self):
+        srv = self._server(pin_matches=False)
+        header = _auth_header("mallory", "wrong-pin")
+        with pytest.raises(AuthenticationFailed):
+            srv._authenticate(header, "anonymous")
+
+    def test_missing_username_raises(self):
+        srv = self._server(pin_matches=True)
+        credential = encode_structure(
+            Tag.Credential,
+            encode_enumeration(Tag.CredentialType, CredentialType.UsernameAndPassword)
+            + encode_structure(Tag.CredentialValue, encode_text_string(Tag.Password, _TEST_TOKEN_PIN))
+        )
+        header = decode_one(encode_structure(Tag.RequestHeader,
+            encode_structure(Tag.Authentication, credential)))
+        with pytest.raises(AuthenticationFailed):
+            srv._authenticate(header, "anonymous")
+
+    def test_missing_credential_value_raises(self):
+        srv = self._server(pin_matches=True)
+        credential = encode_structure(
+            Tag.Credential,
+            encode_enumeration(Tag.CredentialType, CredentialType.UsernameAndPassword)
+        )
+        header = decode_one(encode_structure(Tag.RequestHeader,
+            encode_structure(Tag.Authentication, credential)))
+        with pytest.raises(AuthenticationFailed):
+            srv._authenticate(header, "anonymous")
+
+    def test_unsupported_credential_type_raises(self):
+        srv = self._server(pin_matches=True)
+        credential = encode_structure(
+            Tag.Credential,
+            encode_enumeration(Tag.CredentialType, CredentialType.Device)
+        )
+        header = decode_one(encode_structure(Tag.RequestHeader,
+            encode_structure(Tag.Authentication, credential)))
+        with pytest.raises(AuthenticationFailed):
+            srv._authenticate(header, "anonymous")
+
+
+class TestPhase11VerifyPin:
+    def test_correct_pin_matches(self, shim):
+        assert shim.verify_pin(_TEST_TOKEN_PIN) is True
+
+    def test_wrong_pin_does_not_match(self, shim):
+        assert shim.verify_pin("wrong-pin") is False
+
+    def test_empty_pin_does_not_match(self, shim):
+        assert shim.verify_pin("") is False
+
+
+class TestPhase11AuthenticationLive:
+    def test_correct_credential_sets_owner_identity(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        store, port = kmip_server
+        client = KMIPClient(port=port, username="alice", password=_TEST_TOKEN_PIN)
+        client.connect()
+        uid = client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="cred-live-test")
+        assert store.get_object(uid)["owner_identity"] == "alice"
+        client.close()
+
+    def test_wrong_credential_rejected(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        from kmip_pkcs11.test_app.client import KMIPClientError
+        _, port = kmip_server
+        client = KMIPClient(port=port, username="mallory", password="wrong-pin")
+        client.connect()
+        with pytest.raises(KMIPClientError):
+            client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="should-not-exist")
+        client.close()
+
+    def test_no_credential_falls_back_to_anonymous(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        store, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        uid = client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="no-cred-test")
+        assert store.get_object(uid)["owner_identity"] == "anonymous"
+        client.close()
+
+
+class TestPhase11BatchContinuationLive:
+    def test_continue_mode_processes_all_items(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        _, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        bad = encode_text_string(Tag.UniqueIdentifier, "does-not-exist")
+        resp = client.raw_batch_request([(Operation.Destroy, bad), (Operation.Destroy, bad)])
+        assert resp.get(Tag.ResponseHeader).get(Tag.BatchCount).value == 2
+        assert len(resp.get_all(Tag.BatchItem)) == 2
+        client.close()
+
+    def test_stop_mode_halts_after_first_failure(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        _, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        bad = encode_text_string(Tag.UniqueIdentifier, "does-not-exist")
+        resp = client.raw_batch_request(
+            [(Operation.Destroy, bad), (Operation.Destroy, bad)],
+            batch_error_continuation=BatchErrorContinuationOption.Stop,
+        )
+        assert resp.get(Tag.ResponseHeader).get(Tag.BatchCount).value == 1
+        assert len(resp.get_all(Tag.BatchItem)) == 1
+        client.close()
+
+    def test_stop_mode_all_succeed_processes_everything(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        _, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        attrs = encode_structure(
+            Tag.TemplateAttribute,
+            _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128)),
+        )
+        create_payload = encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey) + attrs
+        resp = client.raw_batch_request(
+            [(Operation.Create, create_payload), (Operation.Create, create_payload)],
+            batch_error_continuation=BatchErrorContinuationOption.Stop,
+        )
+        assert resp.get(Tag.ResponseHeader).get(Tag.BatchCount).value == 2
+        statuses = [i.get(Tag.ResultStatus).value for i in resp.get_all(Tag.BatchItem)]
+        assert all(s == ResultStatus.Success for s in statuses)
+        client.close()
+
+    def test_undo_mode_rejected(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        _, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        bad = encode_text_string(Tag.UniqueIdentifier, "does-not-exist")
+        resp = client.raw_batch_request(
+            [(Operation.Destroy, bad)],
+            batch_error_continuation=BatchErrorContinuationOption.Undo,
+        )
+        item = resp.get_all(Tag.BatchItem)[0]
+        assert item.get(Tag.ResultReason).value == ResultReason.FeatureNotSupported
+        client.close()
+
+
+class TestPhase11MaximumResponseSizeLive:
+    def test_response_too_large_rejected(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        _, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        bad = encode_text_string(Tag.UniqueIdentifier, "does-not-exist")
+        resp = client.raw_batch_request([(Operation.Destroy, bad)], max_response_size=4)
+        item = resp.get_all(Tag.BatchItem)[0]
+        assert item.get(Tag.ResultReason).value == ResultReason.ResponseTooLarge
+        client.close()
+
+    def test_response_within_limit_succeeds(self, kmip_server):
+        from kmip_pkcs11.test_app.client import KMIPClient
+        _, port = kmip_server
+        client = KMIPClient(port=port)
+        client.connect()
+        bad = encode_text_string(Tag.UniqueIdentifier, "does-not-exist")
+        resp = client.raw_batch_request([(Operation.Destroy, bad)], max_response_size=100_000)
+        item = resp.get_all(Tag.BatchItem)[0]
+        assert item.get(Tag.ResultStatus).value == ResultStatus.OperationFailed
+        assert item.get(Tag.ResultReason).value == ResultReason.ItemNotFound
+        client.close()
+
+
+class TestPhase11ResultReasonFidelity:
+    """Locks in the Phase 11 ResultReason codepoint corrections (same class of
+    bug as Phase 9's Tag fixes — spot-checked against the same reference)."""
+
+    def test_core_values_match_spec(self):
+        assert ResultReason.ItemNotFound == 0x00000001
+        assert ResultReason.ResponseTooLarge == 0x00000002
+        assert ResultReason.AuthenticationNotSuccessful == 0x00000003
+        assert ResultReason.FeatureNotSupported == 0x00000008
+        assert ResultReason.ObjectArchived == 0x0000000D
+        assert ResultReason.GeneralFailure == 0x00000100
+
+    def test_corrected_values_no_longer_collide(self):
+        assert ResultReason.IndexOutOfBounds == 0x0000000E
+        assert ResultReason.KeyValueNotPresent == 0x00000013
+        assert ResultReason.NotExtractable == 0x00000017
+        assert ResultReason.InvalidCSR == 0x0000002F
+        values = [r.value for r in ResultReason]
+        assert len(values) == len(set(values))
