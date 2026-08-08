@@ -19,6 +19,10 @@ HMAC_ALG_TO_MECH = {
     CryptographicAlgorithm.HMACSHA256: Mechanism.SHA256_HMAC,
     CryptographicAlgorithm.HMACSHA384: Mechanism.SHA384_HMAC,
     CryptographicAlgorithm.HMACSHA512: Mechanism.SHA512_HMAC,
+    CryptographicAlgorithm.HMACSHA3224: Mechanism.SHA3_224_HMAC,
+    CryptographicAlgorithm.HMACSHA3256: Mechanism.SHA3_256_HMAC,
+    CryptographicAlgorithm.HMACSHA3384: Mechanism.SHA3_384_HMAC,
+    CryptographicAlgorithm.HMACSHA3512: Mechanism.SHA3_512_HMAC,
 }
 
 

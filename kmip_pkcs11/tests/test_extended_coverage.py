@@ -1954,17 +1954,47 @@ class TestPhase2Mapping:
         assert BLOCKMODE_TO_MECH[BlockCipherMode.CCM] == pkcs11.Mechanism.AES_CCM
 
 
-class TestPhase2CFB:
-    """AES-CFB128 — mock-based (SoftHSM2 does not support CFB)."""
+class TestPhase2ModeCapabilityGate:
+    """CFB, OFB, and CCM select real PKCS#11 mechanisms (AES_CFB128, AES_OFB,
+    AES_CCM), but this SoftHSM2 build does not implement them — confirmed
+    against the live token via slot.get_mechanisms(), not assumed. The shim's
+    capability probe (supports_mechanism/_require_mechanism) must reject them
+    with OperationNotSupported *before* attempting the native call, instead
+    of letting SoftHSM2's own error surface as a generic CryptographicFailure
+    (or, worse, silently succeed against a mock in a test that never talks to
+    the real token — which is what the previous version of this test class did)."""
 
-    def _make_shim_with_mock_key(self, shim):
+    def test_supports_mechanism_false_for_cfb_ofb_ccm(self, shim):
         import pkcs11 as _pkcs11
-        from kmip_pkcs11.pkcs11_shim.shim import BLOCKMODE_TO_MECH
-        fake_key = MagicMock()
-        fake_ct = b'\xAB' * 16
-        fake_key.encrypt.return_value = fake_ct
-        fake_key.decrypt.return_value = b'Hello CFB World!'
-        return fake_key
+        assert shim.supports_mechanism(_pkcs11.Mechanism.AES_CFB128) is False
+        assert shim.supports_mechanism(_pkcs11.Mechanism.AES_OFB) is False
+        assert shim.supports_mechanism(_pkcs11.Mechanism.AES_CCM) is False
+
+    def test_supports_mechanism_true_for_aes_cbc(self, shim):
+        import pkcs11 as _pkcs11
+        assert shim.supports_mechanism(_pkcs11.Mechanism.AES_CBC_PAD) is True
+
+    @pytest.mark.parametrize("mode", [BlockCipherMode.CFB, BlockCipherMode.OFB, BlockCipherMode.CCM])
+    def test_encrypt_raises_operation_not_supported_live(self, store, shim, mode):
+        uid = _create_aes_uid(store, shim, length=256)
+        store.activate(uid)
+        cka_id = bytes.fromhex(store.get_attribute(uid, "_pkcs11_cka_id")[0])
+        with pytest.raises(OperationNotSupported):
+            shim.encrypt(cka_id, b"some plaintext..", mechanism_id=mode, iv=os.urandom(16))
+
+    @pytest.mark.parametrize("mode", [BlockCipherMode.CFB, BlockCipherMode.OFB, BlockCipherMode.CCM])
+    def test_decrypt_raises_operation_not_supported_live(self, store, shim, mode):
+        uid = _create_aes_uid(store, shim, length=256)
+        store.activate(uid)
+        cka_id = bytes.fromhex(store.get_attribute(uid, "_pkcs11_cka_id")[0])
+        with pytest.raises(OperationNotSupported):
+            shim.decrypt(cka_id, b"\x00" * 16, mechanism_id=mode, iv=os.urandom(16))
+
+
+class TestPhase2CFB:
+    """AES-CFB128 mechanism/parameter selection — mock-based with the
+    capability gate stubbed out, since SoftHSM2 doesn't implement CFB (see
+    TestPhase2ModeCapabilityGate for the live-rejection behavior)."""
 
     def test_cfb_encrypt_uses_cfb128_mechanism(self, shim):
         import pkcs11 as _pkcs11
@@ -1973,7 +2003,8 @@ class TestPhase2CFB:
         iv = os.urandom(16)
         plaintext = b'Hello CFB World!'
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             ct, tag = shim.encrypt(b'\x00' * 16, plaintext,
                                    mechanism_id=BlockCipherMode.CFB, iv=iv)
 
@@ -1992,7 +2023,8 @@ class TestPhase2CFB:
         iv = os.urandom(16)
         ciphertext = b'\xCC' * 16
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             pt = shim.decrypt(b'\x00' * 16, ciphertext,
                               mechanism_id=BlockCipherMode.CFB, iv=iv)
 
@@ -2008,14 +2040,16 @@ class TestPhase2CFB:
         fake_key = MagicMock()
         fake_key.encrypt.side_effect = _exc.MechanismInvalid()
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             with pytest.raises(CryptographicFailure):
                 shim.encrypt(b'\x00' * 16, b'data',
                              mechanism_id=BlockCipherMode.CFB, iv=os.urandom(16))
 
 
 class TestPhase2OFB:
-    """AES-OFB — mock-based (SoftHSM2 does not support OFB)."""
+    """AES-OFB mechanism/parameter selection — mock-based with the
+    capability gate stubbed out (see TestPhase2ModeCapabilityGate)."""
 
     def test_ofb_encrypt_uses_ofb_mechanism(self, shim):
         import pkcs11 as _pkcs11
@@ -2024,7 +2058,8 @@ class TestPhase2OFB:
         iv = os.urandom(16)
         plaintext = b'Hello OFB World!'
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             ct, tag = shim.encrypt(b'\x00' * 16, plaintext,
                                    mechanism_id=BlockCipherMode.OFB, iv=iv)
 
@@ -2043,7 +2078,8 @@ class TestPhase2OFB:
         iv = os.urandom(16)
         ciphertext = b'\xDD' * 16
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             pt = shim.decrypt(b'\x00' * 16, ciphertext,
                               mechanism_id=BlockCipherMode.OFB, iv=iv)
 
@@ -2059,14 +2095,17 @@ class TestPhase2OFB:
         fake_key = MagicMock()
         fake_key.encrypt.side_effect = _exc.MechanismInvalid()
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             with pytest.raises(CryptographicFailure):
                 shim.encrypt(b'\x00' * 16, b'data',
                              mechanism_id=BlockCipherMode.OFB, iv=os.urandom(16))
 
 
 class TestPhase2CCM:
-    """AES-CCM — mock-based (SoftHSM2 does not support CCM).
+    """AES-CCM mechanism/parameter selection — mock-based with the capability
+    gate stubbed out, since SoftHSM2 doesn't implement CCM (see
+    TestPhase2ModeCapabilityGate for the live-rejection behavior).
 
     CCM is an AEAD mode; the shim treats it like GCM (GCMParams, 12-byte nonce,
     16-byte tag appended to ciphertext). Real HSMs may require a dedicated
@@ -2082,7 +2121,8 @@ class TestPhase2CCM:
         nonce = os.urandom(12)
         aad   = b'additional data'
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             ct, tag = shim.encrypt(b'\x00' * 16, fake_plaintext,
                                    mechanism_id=BlockCipherMode.CCM,
                                    iv=nonce, aad=aad)
@@ -2102,7 +2142,8 @@ class TestPhase2CCM:
         ciphertext = b'\xEE' * len(expected_pt)
         tag        = b'\xFF' * 16
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             pt = shim.decrypt(b'\x00' * 16, ciphertext,
                               mechanism_id=BlockCipherMode.CCM,
                               iv=nonce, tag=tag)
@@ -2117,7 +2158,8 @@ class TestPhase2CCM:
         fake_key = MagicMock()
         fake_key.encrypt.return_value = b'\xEE' * 11 + b'\xFF' * 16
 
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             shim.encrypt(b'\x00' * 16, b'Hello CCM!!',
                          mechanism_id=BlockCipherMode.CCM)
 
@@ -2144,7 +2186,8 @@ class TestPhase2CCM:
             data=encode_byte_string(Tag.Data, b'Hello CCM test!!'),
             params=crypto_params,
         )
-        with patch.object(shim, '_find_key', return_value=fake_key):
+        with patch.object(shim, '_find_key', return_value=fake_key), \
+             patch.object(shim, 'supports_mechanism', return_value=True):
             enc_op.handle(enc_payload, "user", store, shim)
 
         call_kwargs = fake_key.encrypt.call_args.kwargs
@@ -3387,6 +3430,23 @@ class TestPhase3HashLive:
             hash_op.handle(payload, "user", MagicMock(), shim)
 
     def test_hash_unsupported_algorithm_raises(self, shim):
+        """RIPEMD-160 has no HASH_ALG_TO_MECH entry at all — CryptographicFailure."""
+        from kmip_pkcs11.operations import hash_op
+        payload = _make_payload(
+            data=encode_byte_string(Tag.Data, b"x"),
+            params=encode_structure(
+                Tag.CryptographicParameters,
+                encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.RIPEMD_160),
+            ),
+        )
+        with pytest.raises(CryptographicFailure):
+            hash_op.handle(payload, "user", MagicMock(), shim)
+
+    def test_hash_sha3_mapped_but_unavailable_on_token_raises_operation_not_supported(self, shim):
+        """SHA3-256 has a real HASH_ALG_TO_MECH entry (Mechanism.SHA3_256 is a
+        genuine PKCS#11 mechanism), but this SoftHSM2 build doesn't implement
+        it — confirmed live via slot.get_mechanisms(). The capability gate
+        must reject it cleanly rather than a raw PKCS#11 error surfacing."""
         from kmip_pkcs11.operations import hash_op
         payload = _make_payload(
             data=encode_byte_string(Tag.Data, b"x"),
@@ -3395,7 +3455,7 @@ class TestPhase3HashLive:
                 encode_enumeration(Tag.HashingAlgorithm, HashingAlgorithm.SHA3_256),
             ),
         )
-        with pytest.raises(CryptographicFailure):
+        with pytest.raises(OperationNotSupported):
             hash_op.handle(payload, "user", MagicMock(), shim)
 
 
@@ -5759,3 +5819,80 @@ class TestPhase11WrapSpecOnAsymmetricKeyRejected:
         pub_uid, _ = _create_rsa_keypair(store, shim)
         resp = get_op.handle(_uid_payload(pub_uid), "user", store, shim)
         assert next(i for i in decode_all(resp) if i.tag == Tag.PublicKey) is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 12 — algorithm capability probe + Tier-1 mapping (SHA-3 HMAC,
+# Blowfish, Twofish). All three are real PKCS#11 mechanisms, wired into the
+# shim and gated by supports_mechanism() so they activate automatically on a
+# token that implements them. This SoftHSM2 build doesn't (confirmed live
+# via slot.get_mechanisms()) — every path below must fail *cleanly* with
+# OperationNotSupported instead of a raw PKCS#11 error surfacing.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase12CapabilityProbe:
+    """The shim caches slot.get_mechanisms() once at initialize() time."""
+
+    def test_probe_populated_after_initialize(self, shim):
+        assert len(shim._available_mechanisms) > 0
+
+    def test_get_mechanism_list_matches_probe(self, shim):
+        assert set(shim.get_mechanism_list()) == shim._available_mechanisms
+
+    def test_supports_mechanism_accepts_raw_int(self, shim):
+        import pkcs11
+        assert shim.supports_mechanism(int(pkcs11.Mechanism.AES_CBC_PAD)) is True
+
+    def test_require_mechanism_raises_with_readable_name(self, shim):
+        import pkcs11
+        with pytest.raises(OperationNotSupported, match="AES_CFB128"):
+            shim._require_mechanism(pkcs11.Mechanism.AES_CFB128, "Encrypt")
+
+
+class TestPhase12BlowfishTwofishGated:
+    """Blowfish/Twofish key generation: real CKM_BLOWFISH_KEY_GEN /
+    CKM_TWOFISH_KEY_GEN mechanisms, absent from this token."""
+
+    def test_create_blowfish_key_raises_operation_not_supported(self, shim):
+        with pytest.raises(OperationNotSupported):
+            shim.generate_symmetric_key(CryptographicAlgorithm.Blowfish, 128)
+
+    def test_create_twofish_key_raises_operation_not_supported(self, shim):
+        with pytest.raises(OperationNotSupported):
+            shim.generate_symmetric_key(CryptographicAlgorithm.Twofish, 128)
+
+    def test_blowfish_still_maps_to_a_pkcs11_keytype(self):
+        """The algorithm mapping itself is real, independent of this token's
+        capability — proves the gap is backend availability, not missing code."""
+        from kmip_pkcs11.pkcs11_shim.shim import ALGO_TO_PKCS11_KEYTYPE
+        import pkcs11
+        assert ALGO_TO_PKCS11_KEYTYPE[CryptographicAlgorithm.Blowfish] == pkcs11.KeyType.BLOWFISH
+        assert ALGO_TO_PKCS11_KEYTYPE[CryptographicAlgorithm.Twofish] == pkcs11.KeyType.TWOFISH
+
+
+class TestPhase12HmacSha3Gated:
+    """HMAC-SHA3: key generation succeeds (CKM_GENERIC_SECRET_KEY_GEN is
+    present on this token), but the SHA3_*_HMAC sign/verify mechanism used
+    at MAC-compute time is not — the gate must fire there instead."""
+
+    def test_hmac_sha3_key_generation_succeeds(self, shim):
+        """Generation doesn't need a SHA3-specific mechanism at all."""
+        _, cka_id = shim.generate_symmetric_key(CryptographicAlgorithm.HMACSHA3256, 256)
+        assert cka_id is not None
+
+    def test_shim_mac_with_hmac_sha3_raises_operation_not_supported(self, shim):
+        import pkcs11
+        _, cka_id = shim.generate_symmetric_key(CryptographicAlgorithm.HMACSHA3256, 256)
+        with pytest.raises(OperationNotSupported):
+            shim.mac(cka_id, b"data", mechanism=pkcs11.Mechanism.SHA3_256_HMAC)
+
+    def test_mac_op_handler_with_hmac_sha3_raises_operation_not_supported(self, store, shim):
+        """End-to-end through operations/mac.py's HMAC_ALG_TO_MECH table."""
+        from kmip_pkcs11.operations import mac as mac_op
+        uid = _create_hmac_uid(store, shim, algorithm=CryptographicAlgorithm.HMACSHA3256)
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"payload"),
+        )
+        with pytest.raises(OperationNotSupported):
+            mac_op.handle(p, "user", store, shim)

@@ -22,7 +22,8 @@ from pkcs11 import exceptions as pkcs11_exc
 
 from ..core.enums import CryptographicAlgorithm, BlockCipherMode, KeyFormatType
 from ..core.exceptions import (
-    CryptographicFailure, NotExtractable, GeneralFailure, ItemNotFound
+    CryptographicFailure, NotExtractable, GeneralFailure, ItemNotFound,
+    OperationNotSupported
 )
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,17 @@ ALGO_TO_PKCS11_KEYTYPE = {
     CryptographicAlgorithm.HMACSHA256: KT.SHA256_HMAC,
     CryptographicAlgorithm.HMACSHA384: KT.SHA384_HMAC,
     CryptographicAlgorithm.HMACSHA512: KT.SHA512_HMAC,
+    # SHA-3 HMAC + Blowfish/Twofish: real PKCS#11 mechanisms (present in the
+    # python-pkcs11 binding), gated at call time via supports_mechanism() —
+    # this SoftHSM2 build does not implement them, but a capable token
+    # (Botan-backed SoftHSM2, a newer OpenSSL-3-linked build, or real
+    # hardware) needs no code change here to light these up.
+    CryptographicAlgorithm.HMACSHA3224: KT.SHA3_224_HMAC,
+    CryptographicAlgorithm.HMACSHA3256: KT.SHA3_256_HMAC,
+    CryptographicAlgorithm.HMACSHA3384: KT.SHA3_384_HMAC,
+    CryptographicAlgorithm.HMACSHA3512: KT.SHA3_512_HMAC,
+    CryptographicAlgorithm.Blowfish:    KT.BLOWFISH,
+    CryptographicAlgorithm.Twofish:     KT.TWOFISH,
 }
 
 # HMAC key types require CKM_GENERIC_SECRET_KEY_GEN + SIGN/VERIFY capabilities
@@ -78,6 +90,18 @@ ALGO_TO_PKCS11_KEYTYPE = {
 _MAC_KEY_TYPES = {
     KT._MD5_HMAC, KT.SHA_1_HMAC, KT.SHA224_HMAC,
     KT.SHA256_HMAC, KT.SHA384_HMAC, KT.SHA512_HMAC,
+    KT.SHA3_224_HMAC, KT.SHA3_256_HMAC, KT.SHA3_384_HMAC, KT.SHA3_512_HMAC,
+}
+
+# Non-MAC symmetric key types → their PKCS#11 key-generation Mechanism.
+# Used only to capability-gate generation up front (see supports_mechanism);
+# MAC key types always use GENERIC_SECRET_KEY_GEN, handled separately above.
+_SYMMETRIC_KEYGEN_MECH = {
+    KT.AES:      Mechanism.AES_KEY_GEN,
+    KT._DES:     Mechanism._DES_KEY_GEN,
+    KT.DES3:     Mechanism.DES3_KEY_GEN,
+    KT.BLOWFISH: Mechanism.BLOWFISH_KEY_GEN,
+    KT.TWOFISH:  Mechanism.TWOFISH_KEY_GEN,
 }
 
 # KMIP HashingAlgorithm → PKCS#11 digest Mechanism (session.digest)
@@ -88,11 +112,17 @@ HASH_ALG_TO_MECH = {
     6: Mechanism.SHA256,   # HashingAlgorithm.SHA_256
     7: Mechanism.SHA384,   # HashingAlgorithm.SHA_384
     8: Mechanism.SHA512,   # HashingAlgorithm.SHA_512
+    0xe: Mechanism.SHA3_224,   # HashingAlgorithm.SHA3_224 — gated, see above
+    0xf: Mechanism.SHA3_256,   # HashingAlgorithm.SHA3_256
+    0x10: Mechanism.SHA3_384,  # HashingAlgorithm.SHA3_384
+    0x11: Mechanism.SHA3_512,  # HashingAlgorithm.SHA3_512
 }
 
 # Map KMIP block cipher mode → PKCS#11 Mechanism, per key family.
-# CFB128/OFB require real-hardware HSMs; SoftHSM2 does not support them.
-# CCM is treated like GCM (AEAD); SoftHSM2 does not support CCM.
+# CFB128/OFB/CCM are real PKCS#11 mechanisms that this specific SoftHSM2
+# build does not implement (confirmed via slot.get_mechanisms() — see
+# supports_mechanism()); encrypt()/decrypt() capability-gate on it and
+# raise a clean OperationNotSupported instead of a raw PKCS#11 error.
 # Single-DES ECB/CBC use raw CKM values (0x121/0x122) because python-pkcs11
 # omits the DES_ECB / DES_CBC named constants (they are cryptographically broken).
 BLOCKMODE_TO_MECH = {          # AES (default)
@@ -111,6 +141,12 @@ DES3_BLOCKMODE_TO_MECH = {     # Triple-DES; SoftHSM2 supports ECB + CBC_PAD
 DES_BLOCKMODE_TO_MECH = {      # Single-DES (legacy only; CBC has no padding variant)
     BlockCipherMode.CBC: Mechanism(0x0122),   # CKM_DES_CBC
     BlockCipherMode.ECB: Mechanism(0x0121),   # CKM_DES_ECB
+}
+BLOWFISH_BLOCKMODE_TO_MECH = { # Blowfish only defines a padded-CBC mechanism
+    BlockCipherMode.CBC: Mechanism.BLOWFISH_CBC_PAD,
+}
+TWOFISH_BLOCKMODE_TO_MECH = {  # Twofish only defines a padded-CBC mechanism
+    BlockCipherMode.CBC: Mechanism.TWOFISH_CBC_PAD,
 }
 
 # IV block size by key family: DES/3DES use 64-bit blocks → 8-byte IV
@@ -131,6 +167,7 @@ class PKCS11Shim:
         self._token       = None
         self._session     = None
         self._initialized = False
+        self._available_mechanisms = frozenset()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -146,10 +183,33 @@ class PKCS11Shim:
                 raise GeneralFailure(f"Token '{self._token_label}' not found")
             self._token   = tokens[0]
             self._session = self._token.open(rw=True, user_pin=self._user_pin)
+            # Capability probe: cache once so every algorithm/mode dispatch
+            # can check availability up front rather than discovering it via
+            # a native PKCS#11 error mid-operation.
+            self._available_mechanisms = frozenset(
+                int(m) for m in self._token.slot.get_mechanisms()
+            )
             self._initialized = True
-            log.info("PKCS#11 session opened on token '%s'", self._token_label)
+            log.info(
+                "PKCS#11 session opened on token '%s' (%d mechanisms available)",
+                self._token_label, len(self._available_mechanisms),
+            )
         except pkcs11_exc.PKCS11Error as e:
             raise GeneralFailure(f"PKCS#11 init failed: {e}") from e
+
+    def supports_mechanism(self, mechanism) -> bool:
+        """True if this token's slot advertises the given Mechanism (or raw
+        CKM_* int) via C_GetMechanismList. Used to reject an unsupported
+        algorithm/mode cleanly (OperationNotSupported) instead of letting a
+        native PKCS#11 error surface mid-operation."""
+        return int(mechanism) in self._available_mechanisms
+
+    def _require_mechanism(self, mechanism, what: str):
+        if not self.supports_mechanism(mechanism):
+            name = getattr(mechanism, "name", None) or f"0x{int(mechanism):04x}"
+            raise OperationNotSupported(
+                f"{what}: mechanism {name} is not available on this PKCS#11 token"
+            )
 
     def finalize(self):
         if self._session:
@@ -202,6 +262,7 @@ class PKCS11Shim:
             effective_sensitive = sensitive and not extractable
             if key_type in _MAC_KEY_TYPES:
                 # HMAC key types are generic secrets: fixed keygen mechanism + SIGN/VERIFY caps
+                self._require_mechanism(Mechanism.GENERIC_SECRET_KEY_GEN, "Create")
                 key = self._sess().generate_key(
                     key_type,
                     length_bits,
@@ -216,6 +277,9 @@ class PKCS11Shim:
                     },
                 )
             else:
+                keygen_mech = _SYMMETRIC_KEYGEN_MECH.get(key_type)
+                if keygen_mech is not None:
+                    self._require_mechanism(keygen_mech, "Create")
                 key = self._sess().generate_key(
                     key_type,
                     length_bits,
@@ -645,6 +709,7 @@ class PKCS11Shim:
             key      = self._find_key(cka_id, ObjClass.SECRET_KEY)
             key_type = self._key_type(key)
             mech     = self._resolve_mech(mechanism_id, key_type)
+            self._require_mechanism(mech, "Encrypt")
 
             if mech in (Mechanism.AES_GCM, Mechanism.AES_CCM):
                 # Both GCM and CCM are AEAD modes returning (ciphertext, tag).
@@ -684,6 +749,7 @@ class PKCS11Shim:
             key      = self._find_key(cka_id, ObjClass.SECRET_KEY)
             key_type = self._key_type(key)
             mech     = self._resolve_mech(mechanism_id, key_type)
+            self._require_mechanism(mech, "Decrypt")
 
             if mech in (Mechanism.AES_GCM, Mechanism.AES_CCM):
                 data = ciphertext + (tag or b'')
@@ -736,7 +802,10 @@ class PKCS11Shim:
         try:
             key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
             mech = mechanism or Mechanism.SHA256_HMAC
+            self._require_mechanism(mech, "MAC")
             return bytes(key.sign(data, mechanism=mech))
+        except (NotExtractable, CryptographicFailure, OperationNotSupported):
+            raise
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"MAC failed: {e}") from e
 
@@ -744,6 +813,7 @@ class PKCS11Shim:
         try:
             key    = self._find_key(cka_id, ObjClass.SECRET_KEY)
             mech   = mechanism or Mechanism.SHA256_HMAC
+            self._require_mechanism(mech, "MACVerify")
             result = key.verify(data, mac_value, mechanism=mech)
             # python-pkcs11 raises SignatureInvalid for asymmetric mechanisms but
             # returns a bool directly for HMAC/MAC mechanisms — honor whichever.
@@ -757,6 +827,7 @@ class PKCS11Shim:
         mech = HASH_ALG_TO_MECH.get(hash_alg)
         if mech is None:
             raise CryptographicFailure(f"Unsupported HashingAlgorithm {hash_alg}")
+        self._require_mechanism(mech, "Hash")
         try:
             return bytes(self._sess().digest(data, mechanism=mech))
         except pkcs11_exc.PKCS11Error as e:
@@ -847,6 +918,10 @@ class PKCS11Shim:
             return DES3_BLOCKMODE_TO_MECH.get(mode_id, Mechanism.DES3_CBC_PAD)
         if key_type == KT._DES:
             return DES_BLOCKMODE_TO_MECH.get(mode_id, Mechanism(0x0122))  # CKM_DES_CBC
+        if key_type == KT.BLOWFISH:
+            return BLOWFISH_BLOCKMODE_TO_MECH.get(mode_id, Mechanism.BLOWFISH_CBC_PAD)
+        if key_type == KT.TWOFISH:
+            return TWOFISH_BLOCKMODE_TO_MECH.get(mode_id, Mechanism.TWOFISH_CBC_PAD)
         return BLOCKMODE_TO_MECH.get(mode_id, Mechanism.AES_CBC_PAD)
 
     @staticmethod
@@ -859,6 +934,8 @@ class PKCS11Shim:
         return flags
 
     def get_mechanism_list(self):
+        if self._initialized:
+            return list(self._available_mechanisms)
         try:
             return list(self._token.slot.get_mechanisms())
         except Exception:
