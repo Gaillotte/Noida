@@ -5,6 +5,7 @@ import logging
 from ..core.enums import Tag, ObjectType
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData, InvalidField
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes
 from .certify import certify_public_key
 
@@ -23,6 +24,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     old_cert = store.get_object(old_cert_uid)
     if old_cert is None:
         raise ItemNotFound(f"Object '{old_cert_uid}' not found")
+    check_owner(identity, old_cert.get("owner_identity"), "ReCertify")
     if old_cert["object_type"] != ObjectType.Certificate:
         raise InvalidField("ReCertify requires the UniqueIdentifier of a Certificate")
 

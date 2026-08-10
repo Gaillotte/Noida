@@ -9,6 +9,7 @@ from ..core.ttlv import (
     encode_integer, encode_datetime, encode_long_integer
 )
 from ..core.exceptions import ItemNotFound, MissingData
+from ..lifecycle.access_control import check_owner
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "GetAttributes")
 
     # Requested attribute names
     requested = [i.value for i in payload.get_all(Tag.AttributeName)]
@@ -100,6 +102,7 @@ def handle_add(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "GetAttributeList")
 
     response = encode_text_string(Tag.UniqueIdentifier, uid)
     for name in ["Object Type", "State", "Cryptographic Algorithm",

@@ -73,7 +73,9 @@ def _register_symmetric(payload, identity, store, shim, uid=None) -> str:
         if length is None:
             raise MissingData("CryptographicLength is required when registering wrapped key material")
         wrapping_uid = _resolve_wrapping_key(wrapping_data, store)
-        wrapping_cka_id = _wrapping_key_cka_id(wrapping_uid, store, "decrypt", CryptographicUsageMask.UnwrapKey)
+        wrapping_cka_id = _wrapping_key_cka_id(
+            wrapping_uid, store, "decrypt", CryptographicUsageMask.UnwrapKey, identity
+        )
         cka_id = shim.unwrap_key(
             wrapping_cka_id, key_bytes, target_algorithm=algorithm,
             label=label, extractable=True,

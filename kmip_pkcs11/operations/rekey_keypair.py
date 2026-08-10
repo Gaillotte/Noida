@@ -13,6 +13,7 @@ import logging
 from ..core.enums import Tag, ObjectType, RecommendedCurve
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData, InvalidField
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes
 from .create_keypair import create_key_pair_objects
 
@@ -31,6 +32,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     old_priv = store.get_object(old_priv_uid)
     if old_priv is None:
         raise ItemNotFound(f"Object '{old_priv_uid}' not found")
+    check_owner(identity, old_priv.get("owner_identity"), "ReKeyKeyPair")
     if old_priv["object_type"] != ObjectType.PrivateKey:
         raise InvalidField("ReKeyKeyPair requires the UniqueIdentifier of a PrivateKey")
 

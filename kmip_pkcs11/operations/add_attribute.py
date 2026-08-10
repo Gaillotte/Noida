@@ -4,6 +4,7 @@ import logging
 from ..core.enums import Tag
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData
+from ..lifecycle.access_control import check_owner
 
 log = logging.getLogger(__name__)
 
@@ -17,8 +18,10 @@ def handle(payload, identity: str, store, shim) -> bytes:
         raise MissingData("UniqueIdentifier required")
     uid = uid_item.value
 
-    if not store.object_exists(uid):
+    owner = store.get_owner(uid)
+    if owner is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, owner, "AddAttribute")
 
     attr_item = payload.get(Tag.Attribute)
     if attr_item is None:

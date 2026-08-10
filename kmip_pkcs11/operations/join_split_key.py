@@ -5,6 +5,7 @@ import logging
 from ..core.enums import Tag, ObjectType, State
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import MissingData, InvalidField, ItemNotFound
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         obj = store.get_object(part_uid)
         if obj is None:
             raise ItemNotFound(f"Object '{part_uid}' not found")
+        check_owner(identity, obj.get("owner_identity"), "JoinSplitKey")
         if obj["object_type"] != ObjectType.SplitKey:
             raise InvalidField(f"'{part_uid}' is not a SplitKey part")
 

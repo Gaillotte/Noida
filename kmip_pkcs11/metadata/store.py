@@ -141,6 +141,15 @@ class MetadataStore:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_owner(self, uid: str) -> Optional[str]:
+        """Lightweight existence + ownership lookup, for handlers (attribute
+        mutation ops) that don't need the full object row. Returns None if
+        the object doesn't exist."""
+        row = self._conn().execute(
+            "SELECT owner_identity FROM kmip_objects WHERE uuid = ?", (uid,)
+        ).fetchone()
+        return row["owner_identity"] if row else None
+
     def get_attributes(self, uid: str) -> List[Dict]:
         rows = self._conn().execute(
             "SELECT attr_name, attr_index, attr_value FROM kmip_attributes WHERE object_uuid = ? ORDER BY attr_name, attr_index",

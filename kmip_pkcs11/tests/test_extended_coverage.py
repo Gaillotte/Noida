@@ -179,14 +179,14 @@ class TestMetadataExtended:
         assert obj["state"] == State.PreActive
 
     def test_set_activation_date(self, store):
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         dt  = datetime.datetime(2025, 6, 15, tzinfo=datetime.timezone.utc)
         store.set_activation_date(uid, dt)
         obj = store.get_object(uid)
         assert abs(obj["activation_date"] - dt.timestamp()) < 1
 
     def test_list_objects(self, store):
-        uids = [store.create_object(object_type=ObjectType.SymmetricKey) for _ in range(3)]
+        uids = [store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user") for _ in range(3)]
         result = store.list_objects()
         for uid in uids:
             assert uid in result
@@ -195,7 +195,7 @@ class TestMetadataExtended:
         assert store.list_objects() == []
 
     def test_object_exists_true(self, store):
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         assert store.object_exists(uid) is True
 
     def test_object_exists_false(self, store):
@@ -710,6 +710,7 @@ class TestGetOpExtended:
             object_type=ObjectType.PGPKey,
             state=State.Active,
             extractable=True,
+            owner_identity="user",
         )
         with pytest.raises(NotExtractable):
             op.handle(_uid_payload(uid), "user", store, shim)
@@ -842,7 +843,7 @@ class TestAddAttributeExtended:
 
     def test_add_attr_missing_attribute_raises(self, store, shim):
         from kmip_pkcs11.operations import add_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         inner = encode_text_string(Tag.UniqueIdentifier, uid)
         payload = decode_one(encode_structure(Tag.RequestPayload, inner))
         with pytest.raises(MissingData):
@@ -850,7 +851,7 @@ class TestAddAttributeExtended:
 
     def test_add_attr_missing_name_raises(self, store, shim):
         from kmip_pkcs11.operations import add_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         attr_inner = encode_text_string(Tag.AttributeValue, "val")
         inner = (
             encode_text_string(Tag.UniqueIdentifier, uid)
@@ -862,7 +863,7 @@ class TestAddAttributeExtended:
 
     def test_add_attr_no_value_uses_empty_string(self, store, shim):
         from kmip_pkcs11.operations import add_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         attr_inner = encode_text_string(Tag.AttributeName, "x-empty")
         inner = (
             encode_text_string(Tag.UniqueIdentifier, uid)
@@ -903,7 +904,7 @@ class TestDeleteAttributeOp:
 
     def test_delete_attr_missing_attribute_raises(self, store, shim):
         from kmip_pkcs11.operations import delete_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         inner = encode_text_string(Tag.UniqueIdentifier, uid)
         payload = decode_one(encode_structure(Tag.RequestPayload, inner))
         with pytest.raises(MissingData):
@@ -911,7 +912,7 @@ class TestDeleteAttributeOp:
 
     def test_delete_attr_missing_name_raises(self, store, shim):
         from kmip_pkcs11.operations import delete_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         attr_inner = encode_text_string(Tag.AttributeValue, "val")
         inner = (
             encode_text_string(Tag.UniqueIdentifier, uid)
@@ -923,7 +924,7 @@ class TestDeleteAttributeOp:
 
     def test_delete_attr_success(self, store, shim):
         from kmip_pkcs11.operations import delete_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         store.add_attribute(uid, "x-temp", "removeme")
         attr_inner = (
             encode_text_string(Tag.AttributeName, "x-temp")
@@ -941,7 +942,7 @@ class TestDeleteAttributeOp:
 
     def test_delete_attr_with_explicit_index(self, store, shim):
         from kmip_pkcs11.operations import delete_attribute as op
-        uid = store.create_object(object_type=ObjectType.SymmetricKey)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey, owner_identity="user")
         store.add_attribute(uid, "x-multi", "v0")
         store.add_attribute(uid, "x-multi", "v1")
         attr_inner = (
@@ -982,14 +983,14 @@ class TestActivateExtended:
     def test_activate_already_active_raises(self, store, shim):
         from kmip_pkcs11.operations import activate as op
         uid = store.create_object(
-            object_type=ObjectType.SymmetricKey, state=State.Active)
+            object_type=ObjectType.SymmetricKey, state=State.Active, owner_identity="user")
         with pytest.raises(IllegalOperation):
             op.handle(_uid_payload(uid), "user", store, shim)
 
     def test_activate_pre_active_succeeds(self, store, shim):
         from kmip_pkcs11.operations import activate as op
         uid = store.create_object(
-            object_type=ObjectType.SymmetricKey, state=State.PreActive)
+            object_type=ObjectType.SymmetricKey, state=State.PreActive, owner_identity="user")
         resp_bytes = op.handle(_uid_payload(uid), "user", store, shim)
         items = decode_all(resp_bytes)
         uid_val = next(i.value for i in items if i.tag == Tag.UniqueIdentifier)
@@ -1015,7 +1016,7 @@ class TestRevokeExtended:
     def test_revoke_no_reason_defaults_unspecified(self, store, shim):
         from kmip_pkcs11.operations import revoke as op
         uid = store.create_object(
-            object_type=ObjectType.SymmetricKey, state=State.Active)
+            object_type=ObjectType.SymmetricKey, state=State.Active, owner_identity="user")
         # Payload has UID but no RevocationReason
         inner = encode_text_string(Tag.UniqueIdentifier, uid)
         payload = decode_one(encode_structure(Tag.RequestPayload, inner))
@@ -1029,7 +1030,7 @@ class TestRevokeExtended:
     def test_revoke_with_message(self, store, shim):
         from kmip_pkcs11.operations import revoke as op
         uid = store.create_object(
-            object_type=ObjectType.SymmetricKey, state=State.Active)
+            object_type=ObjectType.SymmetricKey, state=State.Active, owner_identity="user")
         rev_reason = (
             encode_enumeration(Tag.RevocationReasonCode, RevocationReasonCode.Superseded)
             + encode_text_string(Tag.RevocationMessage, "superseded by v2")
@@ -1082,7 +1083,7 @@ class TestDestroyExtended:
         from kmip_pkcs11.operations import destroy as op
         # Create an object that has no _pkcs11_cka_id attribute
         uid = store.create_object(
-            object_type=ObjectType.SecretData, state=State.Active)
+            object_type=ObjectType.SecretData, state=State.Active, owner_identity="user")
         resp_bytes = op.handle(_uid_payload(uid), "user", store, shim)
         items = decode_all(resp_bytes)
         uid_val = next(i.value for i in items if i.tag == Tag.UniqueIdentifier)
@@ -1141,7 +1142,7 @@ class TestEncryptExtended:
     def test_encrypt_no_cka_id_raises(self, store, shim):
         from kmip_pkcs11.operations import encrypt as op
         uid = store.create_object(
-            object_type=ObjectType.SymmetricKey, state=State.Active)
+            object_type=ObjectType.SymmetricKey, state=State.Active, owner_identity="user")
         inner = (
             encode_text_string(Tag.UniqueIdentifier, uid)
             + encode_byte_string(Tag.Data, b"\x00" * 16)
@@ -1205,7 +1206,7 @@ class TestDecryptExtended:
     def test_decrypt_no_cka_id_raises(self, store, shim):
         from kmip_pkcs11.operations import decrypt as op
         uid = store.create_object(
-            object_type=ObjectType.SymmetricKey, state=State.Active)
+            object_type=ObjectType.SymmetricKey, state=State.Active, owner_identity="user")
         inner = (
             encode_text_string(Tag.UniqueIdentifier, uid)
             + encode_byte_string(Tag.Data, b"\x00" * 16)
@@ -2470,7 +2471,7 @@ class TestPhase4SignErrors:
 
     def test_sign_preactive_key_raises(self, store, shim):
         from kmip_pkcs11.operations import sign as op
-        uid = store.create_object(object_type=ObjectType.PrivateKey, state=State.PreActive)
+        uid = store.create_object(object_type=ObjectType.PrivateKey, state=State.PreActive, owner_identity="user")
         store.add_attribute(uid, "_pkcs11_cka_id", os.urandom(16).hex())
         payload = _make_payload(
             uid=encode_text_string(Tag.UniqueIdentifier, uid),
@@ -2481,7 +2482,7 @@ class TestPhase4SignErrors:
 
     def test_sign_missing_cka_id_raises(self, store, shim):
         from kmip_pkcs11.operations import sign as op
-        uid = store.create_object(object_type=ObjectType.PrivateKey, state=State.Active)
+        uid = store.create_object(object_type=ObjectType.PrivateKey, state=State.Active, owner_identity="user")
         payload = _make_payload(
             uid=encode_text_string(Tag.UniqueIdentifier, uid),
             data=encode_byte_string(Tag.Data, b"hello"),
@@ -2529,7 +2530,7 @@ class TestPhase4SignatureVerifyErrors:
 
     def test_sigver_missing_cka_id_raises(self, store, shim):
         from kmip_pkcs11.operations import signature_verify as op
-        uid = store.create_object(object_type=ObjectType.PublicKey, state=State.Active)
+        uid = store.create_object(object_type=ObjectType.PublicKey, state=State.Active, owner_identity="user")
         payload = _make_payload(
             uid=encode_text_string(Tag.UniqueIdentifier, uid),
             data=encode_byte_string(Tag.Data, b"hello"),
@@ -2854,6 +2855,7 @@ class TestPhase1GetAttributeListDispatch:
             cryptographic_algorithm=CryptographicAlgorithm.AES,
             cryptographic_length=256,
             usage_mask=CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt,
+            owner_identity="user",
         )
         store.add_attribute(uid, "x-label", "test-key")
 
@@ -2875,6 +2877,7 @@ class TestPhase1GetAttributeListDispatch:
             state=State.Active,
             cryptographic_algorithm=CryptographicAlgorithm.AES,
             cryptographic_length=128,
+            owner_identity="user",
         )
 
         d = OperationDispatcher(store, shim)
@@ -2924,6 +2927,7 @@ class TestPhase1GetPrivateKey:
             usage_mask=CryptographicUsageMask.Sign,
             extractable=True,
             sensitive=False,
+            owner_identity="user",
         )
         store.add_attribute(priv_uid, "_pkcs11_cka_id", priv_cka_id.hex())
 
@@ -5896,3 +5900,177 @@ class TestPhase12HmacSha3Gated:
         )
         with pytest.raises(OperationNotSupported):
             mac_op.handle(p, "user", store, shim)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KMS hardening — owner-only access control.
+# Every object records owner_identity at create time; operations against an
+# existing object must come from that same identity (lifecycle/access_control.py).
+# This is the minimal fix for the gap where `identity` was stamped on create
+# but never checked on any subsequent operation.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _create_aes_uid_owned_by(store, shim, owner: str, length=128, extractable=True) -> str:
+    """Like _create_aes_uid, but via direct store/shim calls so the owner
+    can be someone other than the fixed "user" identity _create_aes_uid bakes in."""
+    cka_id_pair = shim.generate_symmetric_key(
+        CryptographicAlgorithm.AES, length, extractable=extractable,
+        encrypt=True, decrypt=True,
+    )
+    cka_id = cka_id_pair[1]
+    uid = store.create_object(
+        object_type=ObjectType.SymmetricKey,
+        state=State.Active,
+        cryptographic_algorithm=CryptographicAlgorithm.AES,
+        cryptographic_length=length,
+        usage_mask=CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt,
+        extractable=extractable,
+        owner_identity=owner,
+    )
+    store.add_attribute(uid, "_pkcs11_cka_id", cka_id.hex())
+    return uid
+
+
+class TestOwnershipEnforcement:
+    """Cross-identity access must be rejected; same-identity access must
+    keep working; objects with no recorded owner remain open (legacy/system)."""
+
+    def test_get_by_non_owner_raises(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        with pytest.raises(NotAuthorized):
+            get_op.handle(_uid_payload(uid), "bob", store, shim)
+
+    def test_get_by_owner_succeeds(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        resp = get_op.handle(_uid_payload(uid), "alice", store, shim)
+        assert next(i for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier).value == uid
+
+    def test_destroy_by_non_owner_raises(self, store, shim):
+        from kmip_pkcs11.operations import destroy as destroy_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        with pytest.raises(NotAuthorized):
+            destroy_op.handle(_uid_payload(uid), "bob", store, shim)
+        assert store.get_object(uid)["state"] != State.Destroyed
+
+    def test_encrypt_by_non_owner_raises(self, store, shim):
+        from kmip_pkcs11.operations import encrypt as encrypt_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"0123456789012345"),
+        )
+        with pytest.raises(NotAuthorized):
+            encrypt_op.handle(p, "bob", store, shim)
+
+    def test_add_attribute_by_non_owner_raises(self, store, shim):
+        from kmip_pkcs11.operations import add_attribute as op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        attr_inner = (
+            encode_text_string(Tag.AttributeName, "x-tag")
+            + encode_text_string(Tag.AttributeValue, "v")
+        )
+        inner = (
+            encode_text_string(Tag.UniqueIdentifier, uid)
+            + encode_structure(Tag.Attribute, attr_inner)
+        )
+        payload = decode_one(encode_structure(Tag.RequestPayload, inner))
+        with pytest.raises(NotAuthorized):
+            op.handle(payload, "bob", store, shim)
+
+    def test_locate_only_returns_own_objects(self, store, shim):
+        from kmip_pkcs11.operations import locate as locate_op
+        alice_uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+        bob_uid   = _create_aes_uid_owned_by(store, shim, "bob", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "alice", store, shim)
+        uids = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert alice_uid in uids
+        assert bob_uid not in uids
+
+    def test_object_with_no_owner_is_accessible_by_anyone(self, store, shim):
+        """Objects with owner_identity=None (legacy/pre-ownership-tracking)
+        stay reachable rather than becoming permanently orphaned."""
+        from kmip_pkcs11.operations import get as get_op
+        cka_id_pair = shim.generate_symmetric_key(CryptographicAlgorithm.AES, 128, extractable=True)
+        uid = store.create_object(
+            object_type=ObjectType.SymmetricKey,
+            state=State.Active,
+            cryptographic_algorithm=CryptographicAlgorithm.AES,
+            cryptographic_length=128,
+            usage_mask=CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt,
+            extractable=True,
+            owner_identity=None,
+        )
+        store.add_attribute(uid, "_pkcs11_cka_id", cka_id_pair[1].hex())
+        resp = get_op.handle(_uid_payload(uid), "whoever", store, shim)
+        assert next(i for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier).value == uid
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KMS hardening — PKCS#11 session concurrency.
+# server.py runs one thread per connection sharing a single PKCS11Shim; this
+# regression test hammers the shim from many real Python threads at once —
+# the exact scenario the shim docstring flagged as unsafe before _synchronized
+# was added — and checks every call completes with the right answer, not
+# just "didn't crash" (a race could easily produce silently wrong ciphertext
+# rather than an exception).
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestShimConcurrency:
+    def test_lock_exists_and_is_reentrant(self, shim):
+        import threading
+        assert isinstance(shim._lock, type(threading.RLock()))
+        # RLock: the same thread can reacquire without deadlocking.
+        with shim._lock:
+            with shim._lock:
+                pass
+
+    def test_concurrent_encrypt_decrypt_across_many_threads(self, store, shim):
+        """Each thread gets its own key and repeatedly encrypts/decrypts
+        distinct plaintext concurrently with every other thread. Without the
+        lock, python-pkcs11 session state can be clobbered mid-operation by
+        another thread, producing wrong plaintext back or a native crash."""
+        import concurrent.futures
+        from kmip_pkcs11.operations import encrypt as encrypt_op, decrypt as decrypt_op
+
+        N_THREADS = 12
+        ROUNDS = 8
+        errors = []
+
+        def worker(i):
+            try:
+                uid = _create_aes_uid_owned_by(store, shim, f"thread-{i}", length=256)
+                for r in range(ROUNDS):
+                    plaintext = f"thread-{i}-round-{r}--payload".encode().ljust(32, b"\0")
+                    iv = os.urandom(16)
+                    enc_payload = _make_payload(
+                        uid=encode_text_string(Tag.UniqueIdentifier, uid),
+                        data=encode_byte_string(Tag.Data, plaintext),
+                        iv=encode_byte_string(Tag.IVCounterNonce, iv),
+                    )
+                    enc_resp = encrypt_op.handle(enc_payload, f"thread-{i}", store, shim)
+                    ciphertext = next(
+                        it.value for it in decode_all(enc_resp) if it.tag == Tag.Data
+                    )
+                    dec_payload = _make_payload(
+                        uid=encode_text_string(Tag.UniqueIdentifier, uid),
+                        data=encode_byte_string(Tag.Data, ciphertext),
+                        iv=encode_byte_string(Tag.IVCounterNonce, iv),
+                    )
+                    dec_resp = decrypt_op.handle(dec_payload, f"thread-{i}", store, shim)
+                    recovered = next(
+                        it.value for it in decode_all(dec_resp) if it.tag == Tag.Data
+                    )
+                    if recovered != plaintext:
+                        errors.append(f"thread {i} round {r}: got {recovered!r}, want {plaintext!r}")
+            except Exception as exc:
+                errors.append(f"thread {i} raised: {exc!r}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=N_THREADS) as pool:
+            futures = [pool.submit(worker, i) for i in range(N_THREADS)]
+            for f in futures:
+                f.result(timeout=60)
+
+        assert errors == []

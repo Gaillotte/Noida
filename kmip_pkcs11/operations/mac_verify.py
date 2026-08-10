@@ -5,6 +5,7 @@ from ..core.enums import Tag, ValidityIndicator
 from ..core.ttlv import encode_text_string, encode_enumeration
 from ..core.exceptions import ItemNotFound, MissingData
 from ..lifecycle.state_machine import check_usage_allowed
+from ..lifecycle.access_control import check_owner
 from .mac import HMAC_ALG_TO_MECH
 from pkcs11 import Mechanism
 
@@ -33,6 +34,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "MACVerify")
 
     check_usage_allowed(obj["state"], "mac_verify", archived=bool(obj.get("archived")))
 

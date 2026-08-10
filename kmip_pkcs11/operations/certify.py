@@ -15,6 +15,7 @@ from ..core.enums import Tag, ObjectType, State, CryptographicAlgorithm, Certifi
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData, InvalidField, OperationNotSupported
 from ..lifecycle.state_machine import check_usage_allowed
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ def certify_public_key(pub_uid: str, names, identity: str, store, shim) -> str:
     obj = store.get_object(pub_uid)
     if obj is None:
         raise ItemNotFound(f"Object '{pub_uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "Certify")
     if obj["object_type"] != ObjectType.PublicKey:
         raise InvalidField("Certify requires the UniqueIdentifier of a PublicKey")
 

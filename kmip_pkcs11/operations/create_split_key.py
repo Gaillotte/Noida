@@ -13,6 +13,7 @@ import logging
 from ..core.enums import Tag, ObjectType, State, SplitKeyMethod, CryptographicUsageMask
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import MissingData, InvalidField, ItemNotFound, OperationNotSupported
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         source = store.get_object(source_uid)
         if source is None:
             raise ItemNotFound(f"Object '{source_uid}' not found")
+        check_owner(identity, source.get("owner_identity"), "CreateSplitKey")
         if not source["extractable"]:
             raise InvalidField("Source key must be extractable to split")
         cka_ids = store.get_attribute(source_uid, "_pkcs11_cka_id")

@@ -169,6 +169,7 @@ class TestActivateRevoke:
             state=State.PreActive,
             cryptographic_algorithm=CryptographicAlgorithm.AES,
             cryptographic_length=128,
+            owner_identity="user",
         )
         from kmip_pkcs11.operations import activate as act_mod
         from kmip_pkcs11.core.enums import Tag
@@ -234,6 +235,6 @@ def _create_aes(store, shim, length, name=None, extractable=True) -> str:
         + encode_structure(Tag.TemplateAttribute, attrs)
     )
     payload    = decode_one(encode_structure(Tag.RequestPayload, payload_bytes))
-    resp_bytes = create_mod.handle(payload, "test_user", store, shim)
+    resp_bytes = create_mod.handle(payload, "user", store, shim)
     resp       = decode_one(encode_structure(Tag.ResponsePayload, resp_bytes))
     return resp.get(Tag.UniqueIdentifier).value

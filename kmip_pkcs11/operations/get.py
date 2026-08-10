@@ -13,6 +13,7 @@ from ..core.exceptions import (
     ItemNotFound, NotExtractable, IllegalOperation, MissingData, OperationNotSupported
 )
 from ..lifecycle.state_machine import check_usage_allowed
+from ..lifecycle.access_control import check_owner
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "Get")
 
     check_usage_allowed(obj["state"], "get", archived=bool(obj.get("archived")))
 
@@ -36,7 +38,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     wrap_spec = payload.get(Tag.KeyWrappingSpecification)
 
     if obj_type == ObjectType.SymmetricKey:
-        return _get_symmetric(uid, obj, store, shim, wrap_spec)
+        return _get_symmetric(uid, obj, store, shim, wrap_spec, identity)
     elif obj_type in (ObjectType.PublicKey, ObjectType.PrivateKey):
         return _get_asymmetric(uid, obj, store, shim, obj_type, wrap_spec)
     elif obj_type == ObjectType.SecretData:
@@ -49,7 +51,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         raise NotExtractable(f"Get not supported for object type {obj_type}")
 
 
-def _get_symmetric(uid, obj, store, shim, wrap_spec=None) -> bytes:
+def _get_symmetric(uid, obj, store, shim, wrap_spec=None, identity=None) -> bytes:
     if not obj["extractable"]:
         raise NotExtractable("Key is not extractable")
 
@@ -61,7 +63,9 @@ def _get_symmetric(uid, obj, store, shim, wrap_spec=None) -> bytes:
     wrapping_data = b""
     if wrap_spec is not None:
         wrapping_uid = _resolve_wrapping_key(wrap_spec, store)
-        wrapping_cka_id = _wrapping_key_cka_id(wrapping_uid, store, "encrypt", CryptographicUsageMask.WrapKey)
+        wrapping_cka_id = _wrapping_key_cka_id(
+            wrapping_uid, store, "encrypt", CryptographicUsageMask.WrapKey, identity
+        )
         key_bytes = shim.wrap_key(wrapping_cka_id, cka_id)
         wrapping_data = encode_structure(
             Tag.KeyWrappingData,
@@ -110,11 +114,13 @@ def _resolve_wrapping_key(wrap_spec, store) -> str:
     return wrapping_uid_item.value
 
 
-def _wrapping_key_cka_id(wrapping_uid, store, usage_op: str, required_mask: int) -> bytes:
+def _wrapping_key_cka_id(wrapping_uid, store, usage_op: str, required_mask: int, identity=None) -> bytes:
     """Resolve and validate a wrapping/unwrapping SymmetricKey, returning its cka_id."""
     wrapping_obj = store.get_object(wrapping_uid)
     if wrapping_obj is None:
         raise ItemNotFound(f"Wrapping key '{wrapping_uid}' not found")
+    if identity is not None:
+        check_owner(identity, wrapping_obj.get("owner_identity"), "Get (wrapping key)")
     if wrapping_obj["object_type"] != ObjectType.SymmetricKey:
         raise OperationNotSupported("Key wrapping currently only supports a SymmetricKey wrapping key")
     if not (wrapping_obj["usage_mask"] and (wrapping_obj["usage_mask"] & required_mask)):

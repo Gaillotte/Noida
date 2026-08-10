@@ -6,6 +6,7 @@ from ..core.enums import Tag, ObjectType, State
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, IllegalOperation, MissingData
 from ..lifecycle.state_machine import transition
+from ..lifecycle.access_control import check_owner
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "Destroy")
 
     # Validate transition
     transition(obj["state"], "destroy")

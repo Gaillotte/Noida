@@ -45,6 +45,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         name=filter_name,
         cryptographic_algorithm=filter_algo,
         cryptographic_length=filter_length,
+        owner=identity,
         max_items=max_items,
     )
 

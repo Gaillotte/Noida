@@ -4,6 +4,7 @@ import logging
 from ..core.enums import Tag
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, IllegalOperation, MissingData
+from ..lifecycle.access_control import check_owner
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "Recover")
 
     if not obj.get("archived"):
         raise IllegalOperation("Object is not archived")

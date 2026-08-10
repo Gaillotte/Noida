@@ -9,6 +9,7 @@ from ..core.enums import (
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData, OperationNotSupported
 from ..lifecycle.state_machine import check_usage_allowed
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(base_uid)
     if obj is None:
         raise ItemNotFound(f"Object '{base_uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "DeriveKey")
 
     base_algorithm = obj.get("cryptographic_algorithm")
     if base_algorithm not in _KEY_AGREEMENT_ALGORITHMS:

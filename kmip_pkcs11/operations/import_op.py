@@ -5,6 +5,7 @@ import logging
 from ..core.enums import Tag, ObjectType
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import MissingData, InvalidField
+from ..lifecycle.access_control import check_owner
 from .register import register_object
 from .destroy import _pkcs11_class
 
@@ -32,6 +33,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if existing is not None:
         if not replace_existing:
             raise InvalidField(f"Object '{uid}' already exists; ReplaceExisting was not set")
+        check_owner(identity, existing.get("owner_identity"), "Import (replace)")
 
         cka_ids = store.get_attribute(uid, "_pkcs11_cka_id")
         if cka_ids:

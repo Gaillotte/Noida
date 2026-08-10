@@ -6,8 +6,10 @@ The shim returns opaque object handles (integers); key bytes are only returned
 when the caller explicitly requests export AND the key is marked extractable.
 """
 
+import functools
 import logging
 import os
+import threading
 from typing import Optional, Tuple
 
 import pkcs11
@@ -153,10 +155,27 @@ TWOFISH_BLOCKMODE_TO_MECH = {  # Twofish only defines a padded-CBC mechanism
 _DES_KEY_TYPES = {KT._DES, KT.DES3}
 
 
+def _synchronized(method):
+    """Serialize calls to a PKCS11Shim method behind self._lock.
+
+    server.py runs one thread per connection, but every thread shares this
+    one PKCS#11 session (see the class docstring) and python-pkcs11 session
+    objects aren't safe for concurrent use from multiple threads. This is a
+    coarse fix — correctness now, not maximum throughput — see the KMS
+    hardening plan for the session-pool follow-up that would relax it.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class PKCS11Shim:
     """
-    Thin stateful wrapper around a single PKCS#11 session.
-    One instance per server process; session pool can be added for HA.
+    Thin stateful wrapper around a single PKCS#11 session, shared across all
+    connection-handling threads and serialized via self._lock (see
+    _synchronized). A session pool can be added later for real concurrency.
     """
 
     def __init__(self, lib_path: str, token_label: str, user_pin: str):
@@ -168,9 +187,11 @@ class PKCS11Shim:
         self._session     = None
         self._initialized = False
         self._available_mechanisms = frozenset()
+        self._lock = threading.RLock()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
+    @_synchronized
     def initialize(self):
         if self._initialized:
             return
@@ -211,6 +232,7 @@ class PKCS11Shim:
                 f"{what}: mechanism {name} is not available on this PKCS#11 token"
             )
 
+    @_synchronized
     def finalize(self):
         if self._session:
             try:
@@ -235,6 +257,7 @@ class PKCS11Shim:
 
     # ── key generation ───────────────────────────────────────────────────────
 
+    @_synchronized
     def generate_symmetric_key(
         self,
         algorithm: int,
@@ -297,6 +320,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Key generation failed: {e}") from e
 
+    @_synchronized
     def generate_key_pair(
         self,
         algorithm: int,
@@ -415,6 +439,7 @@ class PKCS11Shim:
 
     # ── import (register) ────────────────────────────────────────────────────
 
+    @_synchronized
     def import_symmetric_key(
         self,
         algorithm: int,
@@ -451,6 +476,7 @@ class PKCS11Shim:
 
     # ── key wrapping (SymmetricKey only — see wrap_key/unwrap_key docstrings) ──
 
+    @_synchronized
     def wrap_key(self, wrapping_cka_id: bytes, target_cka_id: bytes) -> bytes:
         """Wrap a SecretKey using another SecretKey (the KEK) via CKM_AES_KEY_WRAP_PAD.
         Both keys must already exist as PKCS#11 objects on the token; the target
@@ -463,6 +489,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Key wrap failed: {e}") from e
 
+    @_synchronized
     def unwrap_key(
         self,
         wrapping_cka_id: bytes,
@@ -504,6 +531,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Key unwrap failed: {e}") from e
 
+    @_synchronized
     def import_public_key(
         self,
         algorithm: int,
@@ -535,6 +563,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as exc:
             raise CryptographicFailure(f"Public key import failed: {exc}") from exc
 
+    @_synchronized
     def import_private_key(
         self,
         algorithm: int,
@@ -583,6 +612,7 @@ class PKCS11Shim:
             return obj
         raise ItemNotFound(f"PKCS#11 object with CKA_ID not found")
 
+    @_synchronized
     def get_key_value(self, cka_id: bytes) -> bytes:
         """Export key material (only if extractable)."""
         try:
@@ -607,6 +637,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(str(e)) from e
 
+    @_synchronized
     def get_public_key_der(self, cka_id: bytes) -> bytes:
         """Export public key material.
         RSA: PKCS#1 DER (via python-pkcs11 component encoding).
@@ -628,6 +659,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(str(e)) from e
 
+    @_synchronized
     def get_private_key_der(self, cka_id: bytes) -> bytes:
         """Export private key material (only if extractable).
         RSA: returns PKCS#1 DER via python-pkcs11 component encoding.
@@ -681,6 +713,7 @@ class PKCS11Shim:
 
     # ── destroy ──────────────────────────────────────────────────────────────
 
+    @_synchronized
     def destroy_object(self, cka_id: bytes, obj_class=None):
         try:
             obj = self._find_key(cka_id, obj_class)
@@ -693,6 +726,7 @@ class PKCS11Shim:
 
     # ── encrypt / decrypt ────────────────────────────────────────────────────
 
+    @_synchronized
     def encrypt(
         self,
         cka_id: bytes,
@@ -736,6 +770,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Encrypt failed: {e}") from e
 
+    @_synchronized
     def decrypt(
         self,
         cka_id: bytes,
@@ -774,6 +809,7 @@ class PKCS11Shim:
 
     # ── sign / verify ────────────────────────────────────────────────────────
 
+    @_synchronized
     def sign(self, cka_id: bytes, data: bytes, mechanism=None) -> bytes:
         try:
             key = self._find_key(cka_id, ObjClass.PRIVATE_KEY)
@@ -783,6 +819,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"Sign failed: {e}") from e
 
+    @_synchronized
     def verify(self, cka_id: bytes, data: bytes, signature: bytes, mechanism=None) -> bool:
         try:
             key    = self._find_key(cka_id, ObjClass.PUBLIC_KEY)
@@ -798,6 +835,7 @@ class PKCS11Shim:
 
     # ── MAC / hash ───────────────────────────────────────────────────────────
 
+    @_synchronized
     def mac(self, cka_id: bytes, data: bytes, mechanism=None) -> bytes:
         try:
             key  = self._find_key(cka_id, ObjClass.SECRET_KEY)
@@ -809,6 +847,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"MAC failed: {e}") from e
 
+    @_synchronized
     def mac_verify(self, cka_id: bytes, data: bytes, mac_value: bytes, mechanism=None) -> bool:
         try:
             key    = self._find_key(cka_id, ObjClass.SECRET_KEY)
@@ -823,6 +862,7 @@ class PKCS11Shim:
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"MACVerify failed: {e}") from e
 
+    @_synchronized
     def hash_data(self, data: bytes, hash_alg: int) -> bytes:
         mech = HASH_ALG_TO_MECH.get(hash_alg)
         if mech is None:
@@ -835,6 +875,7 @@ class PKCS11Shim:
 
     # ── key agreement / derive ──────────────────────────────────────────────
 
+    @_synchronized
     def derive_key(
         self,
         cka_id: bytes,
@@ -889,12 +930,14 @@ class PKCS11Shim:
 
     # ── random ───────────────────────────────────────────────────────────────
 
+    @_synchronized
     def generate_random(self, length: int) -> bytes:
         try:
             return bytes(self._sess().generate_random(length * 8))
         except pkcs11_exc.PKCS11Error as e:
             raise CryptographicFailure(f"RNG failed: {e}") from e
 
+    @_synchronized
     def seed_random(self, seed: bytes) -> None:
         try:
             self._sess().seed_random(seed)
@@ -933,6 +976,7 @@ class PKCS11Shim:
         if unwrap:  flags |= MF.UNWRAP
         return flags
 
+    @_synchronized
     def get_mechanism_list(self):
         if self._initialized:
             return list(self._available_mechanisms)
@@ -941,6 +985,7 @@ class PKCS11Shim:
         except Exception:
             return []
 
+    @_synchronized
     def get_token_info(self):
         try:
             return str(self._token.slot.get_token())

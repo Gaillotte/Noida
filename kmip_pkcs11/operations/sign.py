@@ -6,6 +6,7 @@ from ..core.enums import Tag, CryptographicAlgorithm, HashingAlgorithm
 from ..core.ttlv import encode_byte_string, encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData
 from ..lifecycle.state_machine import check_usage_allowed
+from ..lifecycle.access_control import check_owner
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
+    check_owner(identity, obj.get("owner_identity"), "Sign")
 
     check_usage_allowed(obj["state"], "sign", archived=bool(obj.get("archived")))
 

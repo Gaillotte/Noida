@@ -5,6 +5,7 @@ import logging
 from ..core.enums import Tag, ObjectType, CryptographicUsageMask
 from ..core.ttlv import encode_text_string
 from ..core.exceptions import ItemNotFound, MissingData, InvalidField
+from ..lifecycle.access_control import check_owner
 from .create import _parse_attributes, create_symmetric_key
 
 log = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     old_obj = store.get_object(old_uid)
     if old_obj is None:
         raise ItemNotFound(f"Object '{old_uid}' not found")
+    check_owner(identity, old_obj.get("owner_identity"), "ReKey")
     if old_obj["object_type"] != ObjectType.SymmetricKey:
         raise InvalidField("ReKey requires the UniqueIdentifier of a SymmetricKey")
 
