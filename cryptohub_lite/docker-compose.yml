@@ -1,0 +1,120 @@
+# IDEMIA CryptoHub Lite — full stack
+#
+#   docker compose -f cryptohub_lite/docker-compose.yml up -d --build
+#
+# Deliberately four plain services with no orchestration layer, matching the
+# brief's constraint to avoid Kubernetes and microservice sprawl.
+#
+# The API and the KMIP server run the same image and share one SoftHSM2 token
+# volume and one database. That is what makes the portal and a KMIP client two
+# views of one system rather than two systems that must be reconciled.
+
+name: cryptohub-lite
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chl-postgres
+    environment:
+      POSTGRES_USER: cryptohub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpass}
+      POSTGRES_DB: cryptohub
+    volumes:
+      - chl_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cryptohub -d cryptohub"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [chl]
+
+  api:
+    build:
+      context: ..
+      dockerfile: cryptohub_lite/docker/Dockerfile.api
+    image: cryptohub-lite/api:dev
+    container_name: chl-api
+    environment:
+      SERVICE: api
+      CRYPTOHUB_DB: postgresql://cryptohub:${POSTGRES_PASSWORD:-devpass}@postgres:5432/cryptohub
+      SOFTHSM2_LIB: /usr/local/lib/softhsm/libsofthsm2.so
+      PKCS11_TOKEN: ${PKCS11_TOKEN:-CryptoHubLite}
+      PKCS11_PIN: ${PKCS11_PIN:-1234}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      BOOTSTRAP_ADMIN: ${BOOTSTRAP_ADMIN:-admin}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-admin}
+    volumes:
+      # Shared with the KMIP service: one token, one set of keys.
+      - chl_tokens:/var/lib/softhsm/tokens
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [chl]
+
+  kmip:
+    build:
+      context: ..
+      dockerfile: cryptohub_lite/docker/Dockerfile.api
+    image: cryptohub-lite/api:dev
+    container_name: chl-kmip
+    environment:
+      SERVICE: kmip
+      CRYPTOHUB_DB: postgresql://cryptohub:${POSTGRES_PASSWORD:-devpass}@postgres:5432/cryptohub
+      SOFTHSM2_LIB: /usr/local/lib/softhsm/libsofthsm2.so
+      PKCS11_TOKEN: ${PKCS11_TOKEN:-CryptoHubLite}
+      PKCS11_PIN: ${PKCS11_PIN:-1234}
+      # The listener now refuses to start without TLS unless plaintext is
+      # named explicitly. Development says so here rather than inheriting it
+      # from an absent setting — so the choice is visible in the compose file
+      # and has to be removed deliberately for production.
+      KMIP_ALLOW_PLAINTEXT: ${KMIP_ALLOW_PLAINTEXT:-true}
+      KMIP_TLS_CERT: ${KMIP_TLS_CERT:-}
+      KMIP_TLS_KEY: ${KMIP_TLS_KEY:-}
+      KMIP_REQUIRE_CLIENT_CERT: ${KMIP_REQUIRE_CLIENT_CERT:-false}
+      # Off: KMIP clients authenticate against portal accounts. Turn on only
+      # while migrating clients that still use the shared PIN.
+      KMIP_ALLOW_PIN_FALLBACK: ${KMIP_ALLOW_PIN_FALLBACK:-false}
+    volumes:
+      - chl_tokens:/var/lib/softhsm/tokens
+    ports:
+      # 5696 is KMIP's IANA-registered port, so clients find it without being
+      # told. Override with KMIP_HOST_PORT if another KMIP server on this host
+      # already holds it — the container always listens on 5696 internally.
+      - "${KMIP_HOST_PORT:-5696}:5696"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [chl]
+
+  portal:
+    build:
+      context: ..
+      dockerfile: cryptohub_lite/docker/Dockerfile.portal
+    image: cryptohub-lite/portal:dev
+    container_name: chl-portal
+    environment:
+      # Service name, not localhost: the portal reaches the API across the
+      # compose network, not through the published host port.
+      CRYPTOHUB_API: http://api:8000
+    ports:
+      - "8081:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [chl]
+
+volumes:
+  chl_pgdata:
+  chl_tokens:
+
+networks:
+  chl:
+    driver: bridge

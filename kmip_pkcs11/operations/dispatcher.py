@@ -34,10 +34,64 @@ from . import (
 log = logging.getLogger(__name__)
 
 
+def _operation_name(op_code) -> str:
+    """Symbolic operation name for the audit trail.
+
+    An audit row reading "kmip.Destroy" is answerable; one reading
+    "kmip.0x00000014" sends the reader to a specification table first.
+    """
+    if op_code is None:
+        return "Unknown"
+    try:
+        return Operation(op_code).name
+    except (ValueError, KeyError):
+        return f"0x{op_code:08X}"
+
+
+def _extract_uid(payload) -> "str | None":
+    """Reads the Unique Identifier from a request payload, if it carries one."""
+    if payload is None:
+        return None
+    try:
+        item = payload.get(Tag.UniqueIdentifier)
+        return item.value if item is not None else None
+    except Exception:                          # noqa: BLE001
+        return None
+
+
+def _extract_uid_from_bytes(payload_bytes: bytes) -> "str | None":
+    """Reads the Unique Identifier out of an encoded response payload.
+
+    Used for Create and its relatives, where the identifier the operation
+    produced only exists in the response. Decoding failure is not propagated:
+    a malformed-looking payload here must not fail an operation that already
+    succeeded, so the record simply carries no UID.
+    """
+    if not payload_bytes:
+        return None
+    try:
+        item, _ = decode_one(encode_structure(Tag.ResponsePayload, payload_bytes), 0)
+        uid = item.get(Tag.UniqueIdentifier)
+        return uid.value if uid is not None else None
+    except Exception:                          # noqa: BLE001 - see docstring
+        return None
+
+
 class OperationDispatcher:
-    def __init__(self, store: MetadataStore, shim: PKCS11Shim):
+    def __init__(self, store: MetadataStore, shim: PKCS11Shim, audit_sink=None):
+        """
+        :param audit_sink: optional ``callable(record: dict)`` invoked once per
+            operation, successful or not.
+
+            Placed here rather than in each of the 41 handlers deliberately.
+            This is the single point every KMIP operation passes through, so a
+            new operation is audited the moment it is routed — there is no
+            handler to forget to instrument, which is exactly how audit
+            coverage decays.
+        """
         self._store = store
         self._shim  = shim
+        self._audit_sink = audit_sink
         self._handlers: Dict[int, Callable] = {
             Operation.Create:           create.handle,
             Operation.CreateKeyPair:    create_keypair.handle,
@@ -90,6 +144,9 @@ class OperationDispatcher:
         payload = batch_item.get(Tag.RequestPayload)
         uid_item = batch_item.get(Tag.UniqueBatchItemID)
 
+        operation_name = _operation_name(op_code)
+        object_uid = _extract_uid(payload)
+
         try:
             handler = self._handlers.get(op_code)
             if handler is None:
@@ -97,14 +154,44 @@ class OperationDispatcher:
 
             response_payload = handler(payload, identity, self._store, self._shim)
 
+            # Created objects have no UID in the request, only the response —
+            # so a Create audit record would otherwise never name what it made.
+            if object_uid is None and response_payload:
+                object_uid = _extract_uid_from_bytes(response_payload)
+
+            self._audit(operation_name, identity, object_uid, "SUCCESS", None)
             return self._success_item(op_code, response_payload, uid_item)
 
         except KMIPError as e:
             log.warning("KMIP operation 0x%08X failed: %s", op_code or 0, e)
+            self._audit(operation_name, identity, object_uid, "FAILURE", str(e))
             return self._failure_item(op_code, e.reason, str(e), uid_item)
         except Exception as e:
             log.exception("Unexpected error in operation 0x%08X", op_code or 0)
+            self._audit(operation_name, identity, object_uid, "FAILURE", str(e))
             return self._failure_item(op_code, ResultReason.GeneralFailure, str(e), uid_item)
+
+    def _audit(self, operation: str, identity: str, uid, result: str, detail):
+        """Emits one audit record.
+
+        Never raises. An audit backend that is down must not turn a completed
+        key operation into a client-visible error — that would make the system
+        less reliable the more closely it is watched. Failures degrade to a log
+        line, which is the one place a fallback is acceptable.
+        """
+        if self._audit_sink is None:
+            return
+        try:
+            self._audit_sink({
+                "action": f"kmip.{operation}",
+                "username": identity,
+                "object_uid": uid,
+                "result": result,
+                "detail": detail,
+                "provider": "KMIP",
+            })
+        except Exception:                      # noqa: BLE001 - see docstring
+            log.exception("Audit sink failed for %s by %s", operation, identity)
 
     @staticmethod
     def _success_item(op_code, payload_bytes: bytes, uid_item) -> bytes:

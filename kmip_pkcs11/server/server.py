@@ -44,16 +44,30 @@ class KMIPServer:
         tls_key:  Optional[str] = None,
         tls_ca:   Optional[str] = None,
         require_client_cert: bool = False,
+        authenticator=None,
+        audit_sink=None,
     ):
+        """
+        :param authenticator: optional ``callable(username, password) -> bool``
+            verifying a real per-user credential. When omitted the password is
+            compared against the token PIN, which authenticates the PIN rather
+            than the user — see ``_authenticate``. Left optional so existing
+            callers and the test suite keep their current behaviour.
+        :param audit_sink: optional callable receiving one dict per operation.
+            Passed to the dispatcher so every KMIP operation is recorded at the
+            single point they all pass through.
+        """
         self._store  = store
         self._shim   = shim
+        self._authenticator = authenticator
+        self._audit_sink = audit_sink
         self._host   = host
         self._port   = port
         self._tls_cert = tls_cert
         self._tls_key  = tls_key
         self._tls_ca   = tls_ca
         self._require_client_cert = require_client_cert
-        self._dispatcher = OperationDispatcher(store, shim)
+        self._dispatcher = OperationDispatcher(store, shim, audit_sink=audit_sink)
         self._sock: Optional[socket.socket] = None
         self._running = False
 
@@ -136,6 +150,39 @@ class KMIPServer:
                 pass
             log.debug("Connection closed: %s", addr)
 
+    def _audit_auth_failure(self, header, message: str) -> None:
+        """Records a rejected KMIP authentication.
+
+        Reports the username that was *claimed*, which is the useful fact: a
+        run of failures against one account name is what a brute-force attempt
+        looks like. Never raises — an audit problem must not become the
+        client's error.
+        """
+        if self._audit_sink is None:
+            return
+
+        claimed = None
+        try:
+            auth = header.get(Tag.Authentication) if header else None
+            credential = auth.get(Tag.Credential) if auth else None
+            value = credential.get(Tag.CredentialValue) if credential else None
+            username = value.get(Tag.Username) if value else None
+            claimed = username.value if username else None
+        except Exception:                       # noqa: BLE001
+            pass
+
+        try:
+            self._audit_sink({
+                "action": "kmip.Authenticate",
+                "username": claimed,
+                "object_uid": None,
+                "result": "FAILURE",
+                "detail": message,
+                "provider": "KMIP",
+            })
+        except Exception:                       # noqa: BLE001 - see docstring
+            log.exception("Could not record a KMIP authentication failure")
+
     @staticmethod
     def _get_identity(conn) -> str:
         if isinstance(conn, ssl.SSLSocket):
@@ -197,7 +244,16 @@ class KMIPServer:
 
         # Credential-based auth (UsernameAndPassword) overrides the TLS-cert
         # identity when present; raises AuthenticationFailed on bad credentials.
-        identity = self._authenticate(header, identity)
+        #
+        # A rejection is audited here rather than left to the dispatcher: it
+        # never reaches the dispatcher, so a failed sign-in would otherwise be
+        # the one security event that leaves no record — precisely the event
+        # worth keeping.
+        try:
+            identity = self._authenticate(header, identity)
+        except AuthenticationFailed as e:
+            self._audit_auth_failure(header, str(e))
+            raise
 
         continuation_item = header.get(Tag.BatchErrorContinuationOption) if header else None
         continuation = continuation_item.value if continuation_item else BatchErrorContinuationOption.Continue
@@ -276,9 +332,24 @@ class KMIPServer:
         password_item = value_item.get(Tag.Password)
         password = password_item.value if password_item else ""
 
+        username = username_item.value
+
+        # An injected authenticator is preferred over the shared PIN.
+        #
+        # Checking the password against the token PIN authenticates *the PIN*,
+        # not the user: every caller presents the same secret, and the username
+        # beside it is simply believed. Since authorization keys off that
+        # username — including the admin role — anyone holding the PIN can
+        # assert any identity. An authenticator verifies the pair, so the
+        # identity that access control then uses has actually been proven.
+        if self._authenticator is not None:
+            if not self._authenticator(username, password):
+                raise AuthenticationFailed(f"Invalid credentials for user '{username}'")
+            return username
+
         if not self._shim.verify_pin(password):
-            raise AuthenticationFailed(f"Invalid credentials for user '{username_item.value}'")
-        return username_item.value
+            raise AuthenticationFailed(f"Invalid credentials for user '{username}'")
+        return username
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

@@ -1,0 +1,13 @@
+{
+  // Installed on first open via the "Recommended" prompt. Kept to what the
+  // project actually uses — a long list trains people to dismiss it.
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-azuretools.vscode-docker",
+    "bmewburn.vscode-intelephense-client",
+    "ckolkman.vscode-postgres",
+    "humao.rest-client",
+    "redhat.vscode-yaml"
+  ]
+}

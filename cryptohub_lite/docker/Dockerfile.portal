@@ -1,0 +1,22 @@
+# IDEMIA CryptoHub Lite — PHP portal
+#
+# Apache with mod_php. The portal renders only; it holds no cryptographic or
+# KMIP logic and never touches the database directly.
+FROM php:8.3-apache
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcurl4-openssl-dev \
+    && docker-php-ext-install curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# public/ is the document root so inc/ cannot be fetched over HTTP.
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+        /etc/apache2/sites-available/*.conf /etc/apache2/apache2.conf
+
+COPY cryptohub_lite/portal/ /var/www/html/
+# Assets live beside the pages so relative links work under any mount point.
+RUN cp -r /var/www/html/assets /var/www/html/public/assets
+
+RUN a2enmod rewrite headers
+EXPOSE 80

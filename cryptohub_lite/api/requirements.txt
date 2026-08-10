@@ -1,0 +1,15 @@
+# Pinned, not floated. The existing setup.py floats python-pkcs11 at >=0.7.0
+# while the code is tested against 0.9.5; a floating floor is how a working
+# deployment silently becomes a broken one.
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+pydantic==2.6.1
+python-pkcs11==0.9.5
+# PyKCS11 is intentionally absent. setup.py lists it, but no module imports
+# it — the code uses python-pkcs11 (`import pkcs11`) throughout. Carrying it
+# would force a C toolchain into the runtime image to build a package that is
+# never loaded. Recorded as a finding rather than silently dropped.
+psycopg2-binary==2.9.9
+PyJWT==2.8.0
+asn1crypto==1.5.1
+python-multipart==0.0.9

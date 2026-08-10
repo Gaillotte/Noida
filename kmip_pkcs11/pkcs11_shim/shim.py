@@ -155,6 +155,26 @@ TWOFISH_BLOCKMODE_TO_MECH = {  # Twofish only defines a padded-CBC mechanism
 _DES_KEY_TYPES = {KT._DES, KT.DES3}
 
 
+def _render_attribute(value):
+    """Renders a PKCS#11 attribute value for display.
+
+    Enum members become their spec name (CKO_PRIVATE_KEY, not 3) because the
+    Explorer's purpose is to show the token's own vocabulary. Binary values
+    become hex — CKA_ID is routinely non-printable and str() on it produces
+    noise or raises.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    name = getattr(value, "name", None)
+    if name is not None:
+        return name
+    if isinstance(value, int):
+        return value
+    return str(value)
+
+
 def _synchronized(method):
     """Serialize calls to a PKCS11Shim method behind self._lock.
 
@@ -1003,3 +1023,109 @@ class PKCS11Shim:
             return str(self._token.slot.get_token())
         except Exception:
             return "SoftHSM2 Token"
+
+    # ── introspection (PKCS#11 Explorer) ─────────────────────────────────────
+    #
+    # These exist so the management portal can browse the token without
+    # opening a PKCS#11 session of its own. That matters: this class owns
+    # exactly one session behind a lock precisely because concurrent sessions
+    # crash the binding (see the module docstring and design document §13).
+    # A second consumer opening its own session would reintroduce the fault
+    # this design exists to avoid, so introspection is served from here,
+    # inside the same lock, like every other session-touching call.
+
+    @_synchronized
+    def list_slots(self) -> list:
+        """Slots visible to the module, with their token if one is present."""
+        slots = []
+        try:
+            if self._lib is None:
+                self._lib = pkcs11.lib(self._lib_path)
+            for slot in self._lib.get_slots():
+                entry = {
+                    "slot_id": slot.slot_id,
+                    "description": (slot.slot_description or "").strip(),
+                    "manufacturer": (slot.manufacturer_id or "").strip(),
+                    "has_token": False,
+                    "token": None,
+                }
+                try:
+                    token = slot.get_token()
+                    entry["has_token"] = True
+                    entry["token"] = {
+                        "label": (token.label or "").strip(),
+                        "manufacturer": (token.manufacturer_id or "").strip(),
+                        "model": (token.model or "").strip(),
+                        "serial": (token.serial or "").strip()
+                                  if isinstance(token.serial, str)
+                                  else token.serial.decode(errors="replace").strip(),
+                        "initialized": bool(token.flags & pkcs11.TokenFlag.TOKEN_INITIALIZED),
+                        "login_required": bool(token.flags & pkcs11.TokenFlag.LOGIN_REQUIRED),
+                        "write_protected": bool(token.flags & pkcs11.TokenFlag.WRITE_PROTECTED),
+                    }
+                except Exception:
+                    # A slot with no token is normal - modules commonly
+                    # publish a spare for provisioning.
+                    pass
+                slots.append(entry)
+        except Exception as e:
+            log.error("list_slots failed: %s", e)
+        return slots
+
+    @_synchronized
+    def list_objects(self, limit: int = 500) -> list:
+        """Objects on the logged-in token, with their readable attributes.
+
+        Attributes are read individually rather than as one template: a token
+        legitimately refuses sensitive ones (CKA_VALUE on a secret key is the
+        key), and a batched read would lose every attribute to a single
+        refusal. Secret-bearing attributes are never requested at all — a
+        management plane should not be the thing asking.
+        """
+        readable = [
+            (Attribute.CLASS, "CKA_CLASS"),
+            (Attribute.LABEL, "CKA_LABEL"),
+            (Attribute.ID, "CKA_ID"),
+            (Attribute.KEY_TYPE, "CKA_KEY_TYPE"),
+            (Attribute.TOKEN, "CKA_TOKEN"),
+            (Attribute.PRIVATE, "CKA_PRIVATE"),
+            (Attribute.MODIFIABLE, "CKA_MODIFIABLE"),
+            (Attribute.SENSITIVE, "CKA_SENSITIVE"),
+            (Attribute.EXTRACTABLE, "CKA_EXTRACTABLE"),
+            (Attribute.ALWAYS_SENSITIVE, "CKA_ALWAYS_SENSITIVE"),
+            (Attribute.NEVER_EXTRACTABLE, "CKA_NEVER_EXTRACTABLE"),
+            (Attribute.SIGN, "CKA_SIGN"),
+            (Attribute.VERIFY, "CKA_VERIFY"),
+            (Attribute.ENCRYPT, "CKA_ENCRYPT"),
+            (Attribute.DECRYPT, "CKA_DECRYPT"),
+            (Attribute.WRAP, "CKA_WRAP"),
+            (Attribute.UNWRAP, "CKA_UNWRAP"),
+            (Attribute.DERIVE, "CKA_DERIVE"),
+            (Attribute.MODULUS_BITS, "CKA_MODULUS_BITS"),
+        ]
+
+        results = []
+        try:
+            for obj in self._sess().get_objects():
+                if len(results) >= limit:
+                    log.warning("list_objects truncated at %d objects", limit)
+                    break
+
+                attributes = {}
+                for attribute, name in readable:
+                    try:
+                        value = obj[attribute]
+                    except Exception:
+                        continue          # sensitive, absent, or unsupported
+                    attributes[name] = _render_attribute(value)
+
+                results.append({
+                    "handle": getattr(obj, "_handle", None),
+                    "label": attributes.get("CKA_LABEL", ""),
+                    "class": attributes.get("CKA_CLASS", "UNKNOWN"),
+                    "key_type": attributes.get("CKA_KEY_TYPE"),
+                    "attributes": attributes,
+                })
+        except Exception as e:
+            log.error("list_objects failed: %s", e)
+        return results

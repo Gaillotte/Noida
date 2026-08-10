@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Runs the REST API on the host against the containerised database and
+      // token, so breakpoints work without rebuilding an image.
+      "name": "API (FastAPI, reload)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"],
+      "cwd": "${workspaceFolder}/cryptohub_lite/api",
+      "env": {
+        "CRYPTOHUB_DB": "postgresql://cryptohub:devpass@localhost:5432/cryptohub",
+        "SOFTHSM2_LIB": "/usr/local/lib/softhsm/libsofthsm2.so",
+        "PKCS11_TOKEN": "CryptoHubLite",
+        "PKCS11_PIN": "1234",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "KMIP server",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "app.kmip_server_main",
+      "cwd": "${workspaceFolder}/cryptohub_lite/api",
+      "env": {
+        "CRYPTOHUB_DB": "postgresql://cryptohub:devpass@localhost:5432/cryptohub",
+        "KMIP_ALLOW_PLAINTEXT": "true",
+        "KMIP_PORT": "5696",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Tests: KMIP engine",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["kmip_pkcs11/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    }
+  ]
+}

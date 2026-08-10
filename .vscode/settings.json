@@ -1,0 +1,14 @@
+{
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["kmip_pkcs11/tests"],
+  "python.analysis.extraPaths": ["${workspaceFolder}", "${workspaceFolder}/cryptohub_lite/api"],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.egg-info": true
+  },
+  // The test fixtures expect the OpenSSL-built SoftHSM2, not the packaged
+  // Botan one — without this, eight EC tests fail for environmental reasons
+  // and look like code defects.
+  "python.envFile": "${workspaceFolder}/.env",
+  "intelephense.environment.phpVersion": "8.3.0"
+}

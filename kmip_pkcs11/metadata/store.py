@@ -12,9 +12,12 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.enums import State, ObjectType
+from . import db
 
 log = logging.getLogger(__name__)
 
+# Retained for backwards compatibility: the canonical DDL now lives in db.py,
+# which holds a variant per engine.
 _local = threading.local()
 
 SCHEMA = """
@@ -79,24 +82,32 @@ CREATE INDEX IF NOT EXISTS idx_grants_object
 
 
 class MetadataStore:
+    """KMIP metadata persistence.
+
+    Accepts either a SQLite file path (the default, and what the test suite
+    uses) or a ``postgresql://`` DSN. The SQL below is unchanged between the
+    two: :mod:`kmip_pkcs11.metadata.db` adapts the handful of dialect
+    differences so this class did not have to be rewritten - and so the 624
+    tests covering it still exercise the same statements.
+    """
+
     def __init__(self, db_path: str = ":memory:"):
         self._db_path = db_path
         self._init_db()
 
-    def _conn(self) -> sqlite3.Connection:
-        if not hasattr(_local, 'conn') or _local.db_path != self._db_path:
-            _local.conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            _local.conn.row_factory = sqlite3.Row
-            _local.conn.execute("PRAGMA journal_mode=WAL")
-            _local.conn.execute("PRAGMA foreign_keys=ON")
-            _local.db_path = self._db_path
-        return _local.conn
+    @property
+    def dsn(self) -> str:
+        return self._db_path
+
+    @property
+    def is_postgres(self) -> bool:
+        return db.is_postgres(self._db_path)
+
+    def _conn(self):
+        return db.get_thread_connection(self._db_path)
 
     def _init_db(self):
-        conn = sqlite3.connect(self._db_path)
-        conn.executescript(SCHEMA)
-        conn.commit()
-        conn.close()
+        db.initialise(self._db_path)
 
     # ── create ────────────────────────────────────────────────────────────────
 
@@ -378,11 +389,18 @@ class MetadataStore:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
         if name is not None:
+            # GROUP BY rather than SELECT DISTINCT: an object can carry more
+            # than one Name attribute, so the join needs de-duplicating, but
+            # PostgreSQL rejects "SELECT DISTINCT ... ORDER BY o.created_at"
+            # because the sort key is not in the select list. Grouping on both
+            # columns expresses the same intent and is valid in both engines,
+            # which keeps this as one statement rather than two dialects.
             sql = f"""
-                SELECT DISTINCT o.uuid FROM kmip_objects o
+                SELECT o.uuid FROM kmip_objects o
                 JOIN kmip_attributes a ON a.object_uuid = o.uuid
                 {where + (' AND ' if where else 'WHERE ')} a.attr_name = 'Name'
                   AND json_extract(a.attr_value, '$.value') = ?
+                GROUP BY o.uuid, o.created_at
                 ORDER BY o.created_at DESC
             """
             params.append(name)

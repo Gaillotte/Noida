@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Setup: bootstrap everything",
+      "type": "shell",
+      "command": "${workspaceFolder}/cryptohub_lite/scripts/setup.sh",
+      "windows": { "command": "${workspaceFolder}\cryptohub_lite\scripts\setup.cmd" },
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "Stack: up",
+      "type": "shell",
+      "command": "docker compose -f cryptohub_lite/docker-compose.yml up -d --build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Stack: down",
+      "type": "shell",
+      "command": "docker compose -f cryptohub_lite/docker-compose.yml down",
+      "problemMatcher": []
+    },
+    {
+      "label": "Stack: logs",
+      "type": "shell",
+      "command": "docker compose -f cryptohub_lite/docker-compose.yml logs -f --tail 100",
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "Tests: KMIP engine (624)",
+      "type": "shell",
+      "command": "docker compose -f cryptohub_lite/docker-compose.yml exec -T api python -m pytest /app -q",
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true }
+    },
+    {
+      "label": "Open: portal",
+      "type": "shell",
+      "command": "python -m webbrowser http://localhost:8081",
+      "problemMatcher": []
+    },
+    {
+      "label": "Open: API docs",
+      "type": "shell",
+      "command": "python -m webbrowser http://localhost:8000/api/docs",
+      "problemMatcher": []
+    }
+  ]
+}

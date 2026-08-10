@@ -1,0 +1,76 @@
+# IDEMIA CryptoHub Lite — API and KMIP service
+#
+# SoftHSM2 is built from source, from master rather than the 2.6.1 release.
+#
+# Verified by listing mechanisms from each build:
+#
+#   2.6.1 (either crypto backend) : ECDSA only
+#   2.7.0 (master)                : ECDSA, ECDSA-SHA1/224/256/384/512
+#
+# The engine's EC signing uses CKM_ECDSA_SHA256/384/512, so on 2.6.1 eight of
+# the 624 tests fail with MechanismInvalid — and no configuration fixes that,
+# because the release genuinely does not implement those mechanisms. The
+# crypto backend is a red herring; the version is what matters. OpenSSL is
+# still selected over Botan for wider algorithm coverage generally.
+#
+# The project's own fixtures already expect this build at
+# /usr/local/lib/softhsm/libsofthsm2.so.
+
+FROM python:3.11-slim AS softhsm-build
+
+# Pinned to a commit rather than a moving branch: "master" would make the
+# image non-reproducible, and this is the layer that decides which
+# mechanisms exist.
+ARG SOFTHSM_REF=HEAD
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential automake autoconf libtool pkg-config \
+        libssl-dev git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clones the default branch rather than naming one: upstream's default is not
+# called "master", so --branch master fails to resolve (git exits 128).
+RUN git clone --depth 1 https://github.com/opendnssec/SoftHSMv2.git /tmp/softhsm \
+    && cd /tmp/softhsm \
+    && git checkout ${SOFTHSM_REF} \
+    && sh autogen.sh \
+    && ./configure --with-crypto-backend=openssl --disable-gost \
+    && make -j"$(nproc)" \
+    && make install
+
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl3 opensc curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# The OpenSSL-backed module and its tooling from the build stage.
+# Only these two paths are copied: the token directory and configuration are
+# created by the entrypoint at runtime, so carrying the build stage's copies
+# would just be state that the entrypoint immediately overwrites.
+COPY --from=softhsm-build /usr/local/lib/softhsm /usr/local/lib/softhsm
+COPY --from=softhsm-build /usr/local/bin/softhsm2-util /usr/local/bin/softhsm2-util
+
+WORKDIR /app
+
+COPY cryptohub_lite/api/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# The existing KMIP package, installed as a real dependency. The API imports
+# it in-process; it is never reimplemented or forked.
+COPY setup.py /app/setup.py
+COPY kmip_pkcs11 /app/kmip_pkcs11
+RUN pip install --no-cache-dir -e /app
+
+COPY cryptohub_lite/api/app /app/app
+COPY cryptohub_lite/docker/entrypoint-api.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV SOFTHSM2_CONF=/etc/softhsm2.conf \
+    SOFTHSM2_LIB=/usr/local/lib/softhsm/libsofthsm2.so \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000 5696
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
