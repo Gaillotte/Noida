@@ -21,7 +21,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Recover")
+    check_owner(identity, obj.get("owner_identity"), "Recover", store=store, uid=uid)
 
     if not obj.get("archived"):
         raise IllegalOperation("Object is not archived")

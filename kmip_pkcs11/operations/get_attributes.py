@@ -26,7 +26,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "GetAttributes")
+    check_owner(identity, obj.get("owner_identity"), "GetAttributes", store=store, uid=uid)
 
     # Requested attribute names
     requested = [i.value for i in payload.get_all(Tag.AttributeName)]
@@ -102,7 +102,7 @@ def handle_add(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "GetAttributeList")
+    check_owner(identity, obj.get("owner_identity"), "GetAttributeList", store=store, uid=uid)
 
     response = encode_text_string(Tag.UniqueIdentifier, uid)
     for name in ["Object Type", "State", "Cryptographic Algorithm",

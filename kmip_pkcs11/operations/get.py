@@ -30,7 +30,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Get")
+    check_owner(identity, obj.get("owner_identity"), "Get", store=store, uid=uid)
 
     check_usage_allowed(obj["state"], "get", archived=bool(obj.get("archived")))
 
@@ -120,7 +120,8 @@ def _wrapping_key_cka_id(wrapping_uid, store, usage_op: str, required_mask: int,
     if wrapping_obj is None:
         raise ItemNotFound(f"Wrapping key '{wrapping_uid}' not found")
     if identity is not None:
-        check_owner(identity, wrapping_obj.get("owner_identity"), "Get (wrapping key)")
+        check_owner(identity, wrapping_obj.get("owner_identity"), "Get (wrapping key)",
+                    store=store, uid=wrapping_uid)
     if wrapping_obj["object_type"] != ObjectType.SymmetricKey:
         raise OperationNotSupported("Key wrapping currently only supports a SymmetricKey wrapping key")
     if not (wrapping_obj["usage_mask"] and (wrapping_obj["usage_mask"] & required_mask)):

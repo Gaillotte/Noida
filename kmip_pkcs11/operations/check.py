@@ -30,7 +30,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Check")
+    check_owner(identity, obj.get("owner_identity"), "Check", store=store, uid=uid)
 
     response = encode_text_string(Tag.UniqueIdentifier, uid)
 

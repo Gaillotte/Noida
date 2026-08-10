@@ -6074,3 +6074,140 @@ class TestShimConcurrency:
                 f.result(timeout=60)
 
         assert errors == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KMS hardening — RBAC: admin role + delegated per-object grants, layered on
+# top of the owner-only model. No KMIP wire operation manages roles/grants
+# (the spec doesn't define one) — they're a MetadataStore admin surface,
+# exercised here directly plus through operation handlers end-to-end.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestRolesStoreCRUD:
+    def test_assign_and_get_roles(self, store):
+        assert store.get_roles("alice") == []
+        store.assign_role("alice", "admin")
+        assert store.get_roles("alice") == ["admin"]
+
+    def test_assign_role_idempotent(self, store):
+        store.assign_role("alice", "admin")
+        store.assign_role("alice", "admin")
+        assert store.get_roles("alice") == ["admin"]
+
+    def test_revoke_role(self, store):
+        store.assign_role("alice", "admin")
+        store.revoke_role("alice", "admin")
+        assert store.get_roles("alice") == []
+
+    def test_multiple_roles(self, store):
+        store.assign_role("alice", "admin")
+        store.assign_role("alice", "auditor")
+        assert set(store.get_roles("alice")) == {"admin", "auditor"}
+
+
+class TestGrantsStoreCRUD:
+    def test_grant_and_get(self, store, shim):
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        assert store.get_grant(uid, "bob") is None
+        store.grant_access(uid, "bob", "read")
+        assert store.get_grant(uid, "bob") == "read"
+
+    def test_grant_upsert_overwrites_permission(self, store, shim):
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "read")
+        store.grant_access(uid, "bob", "full")
+        assert store.get_grant(uid, "bob") == "full"
+
+    def test_revoke_access(self, store, shim):
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "full")
+        store.revoke_access(uid, "bob")
+        assert store.get_grant(uid, "bob") is None
+
+    def test_list_grants(self, store, shim):
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "read")
+        store.grant_access(uid, "carol", "full")
+        grants = {g["grantee"]: g["permission"] for g in store.list_grants(uid)}
+        assert grants == {"bob": "read", "carol": "full"}
+
+
+class TestAdminBypass:
+    def test_is_admin_false_by_default(self, store):
+        from kmip_pkcs11.lifecycle.access_control import is_admin
+        assert is_admin("alice", store) is False
+
+    def test_is_admin_true_after_role_assigned(self, store):
+        from kmip_pkcs11.lifecycle.access_control import is_admin
+        store.assign_role("alice", "admin")
+        assert is_admin("alice", store) is True
+
+    def test_admin_can_get_others_object(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        store.assign_role("root", "admin")
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        resp = get_op.handle(_uid_payload(uid), "root", store, shim)
+        assert next(i for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier).value == uid
+
+    def test_admin_can_destroy_others_object(self, store, shim):
+        from kmip_pkcs11.operations import destroy as destroy_op
+        store.assign_role("root", "admin")
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        destroy_op.handle(_uid_payload(uid), "root", store, shim)
+        assert store.get_object(uid)["state"] == State.Destroyed
+
+    def test_non_admin_still_rejected(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        store.assign_role("root", "auditor")  # some role, but not "admin"
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        with pytest.raises(NotAuthorized):
+            get_op.handle(_uid_payload(uid), "root", store, shim)
+
+
+class TestDelegatedGrants:
+    def test_read_grant_allows_get(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "read")
+        resp = get_op.handle(_uid_payload(uid), "bob", store, shim)
+        assert next(i for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier).value == uid
+
+    def test_read_grant_does_not_allow_destroy(self, store, shim):
+        from kmip_pkcs11.operations import destroy as destroy_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "read")
+        with pytest.raises(NotAuthorized):
+            destroy_op.handle(_uid_payload(uid), "bob", store, shim)
+
+    def test_full_grant_allows_destroy(self, store, shim):
+        from kmip_pkcs11.operations import destroy as destroy_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "full")
+        destroy_op.handle(_uid_payload(uid), "bob", store, shim)
+        assert store.get_object(uid)["state"] == State.Destroyed
+
+    def test_full_grant_allows_encrypt(self, store, shim):
+        from kmip_pkcs11.operations import encrypt as encrypt_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "full")
+        p = _make_payload(
+            uid=encode_text_string(Tag.UniqueIdentifier, uid),
+            data=encode_byte_string(Tag.Data, b"0123456789012345"),
+        )
+        resp = encrypt_op.handle(p, "bob", store, shim)
+        assert next(i for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier).value == uid
+
+    def test_grant_to_someone_else_does_not_leak_to_third_party(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "full")
+        with pytest.raises(NotAuthorized):
+            get_op.handle(_uid_payload(uid), "carol", store, shim)
+
+    def test_revoked_grant_is_rejected_again(self, store, shim):
+        from kmip_pkcs11.operations import get as get_op
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        store.grant_access(uid, "bob", "full")
+        store.revoke_access(uid, "bob")
+        with pytest.raises(NotAuthorized):
+            get_op.handle(_uid_payload(uid), "bob", store, shim)

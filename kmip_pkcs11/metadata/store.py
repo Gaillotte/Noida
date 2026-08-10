@@ -59,6 +59,22 @@ CREATE INDEX IF NOT EXISTS idx_attr_lookup
 
 CREATE INDEX IF NOT EXISTS idx_state
     ON kmip_objects(state);
+
+CREATE TABLE IF NOT EXISTS kmip_identity_roles (
+    identity TEXT NOT NULL,
+    role     TEXT NOT NULL,
+    PRIMARY KEY (identity, role)
+);
+
+CREATE TABLE IF NOT EXISTS kmip_object_grants (
+    object_uuid TEXT NOT NULL REFERENCES kmip_objects(uuid) ON DELETE CASCADE,
+    grantee     TEXT NOT NULL,
+    permission  TEXT NOT NULL DEFAULT 'full',
+    PRIMARY KEY (object_uuid, grantee)
+);
+
+CREATE INDEX IF NOT EXISTS idx_grants_object
+    ON kmip_object_grants(object_uuid);
 """
 
 
@@ -149,6 +165,63 @@ class MetadataStore:
             "SELECT owner_identity FROM kmip_objects WHERE uuid = ?", (uid,)
         ).fetchone()
         return row["owner_identity"] if row else None
+
+    # ── roles ────────────────────────────────────────────────────────────────
+    # No KMIP wire operation manages these (the spec doesn't define one) —
+    # they're a server-admin surface, called directly against MetadataStore.
+
+    def assign_role(self, identity: str, role: str):
+        self._conn().execute(
+            "INSERT OR IGNORE INTO kmip_identity_roles (identity, role) VALUES (?, ?)",
+            (identity, role),
+        )
+        self._conn().commit()
+
+    def revoke_role(self, identity: str, role: str):
+        self._conn().execute(
+            "DELETE FROM kmip_identity_roles WHERE identity = ? AND role = ?",
+            (identity, role),
+        )
+        self._conn().commit()
+
+    def get_roles(self, identity: str) -> List[str]:
+        rows = self._conn().execute(
+            "SELECT role FROM kmip_identity_roles WHERE identity = ?", (identity,)
+        ).fetchall()
+        return [r["role"] for r in rows]
+
+    # ── delegated object grants ─────────────────────────────────────────────
+    # Also admin-surface-only; see lifecycle/access_control.py for how these
+    # are consulted (after ownership, before falling through to NotAuthorized).
+
+    def grant_access(self, uid: str, grantee: str, permission: str = "full"):
+        self._conn().execute(
+            """INSERT INTO kmip_object_grants (object_uuid, grantee, permission)
+               VALUES (?, ?, ?)
+               ON CONFLICT(object_uuid, grantee) DO UPDATE SET permission = excluded.permission""",
+            (uid, grantee, permission),
+        )
+        self._conn().commit()
+
+    def revoke_access(self, uid: str, grantee: str):
+        self._conn().execute(
+            "DELETE FROM kmip_object_grants WHERE object_uuid = ? AND grantee = ?",
+            (uid, grantee),
+        )
+        self._conn().commit()
+
+    def get_grant(self, uid: str, grantee: str) -> Optional[str]:
+        row = self._conn().execute(
+            "SELECT permission FROM kmip_object_grants WHERE object_uuid = ? AND grantee = ?",
+            (uid, grantee),
+        ).fetchone()
+        return row["permission"] if row else None
+
+    def list_grants(self, uid: str) -> List[Dict]:
+        rows = self._conn().execute(
+            "SELECT grantee, permission FROM kmip_object_grants WHERE object_uuid = ?", (uid,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_attributes(self, uid: str) -> List[Dict]:
         rows = self._conn().execute(

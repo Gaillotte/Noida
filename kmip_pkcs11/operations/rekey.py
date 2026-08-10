@@ -23,7 +23,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     old_obj = store.get_object(old_uid)
     if old_obj is None:
         raise ItemNotFound(f"Object '{old_uid}' not found")
-    check_owner(identity, old_obj.get("owner_identity"), "ReKey")
+    check_owner(identity, old_obj.get("owner_identity"), "ReKey", store=store, uid=old_uid)
     if old_obj["object_type"] != ObjectType.SymmetricKey:
         raise InvalidField("ReKey requires the UniqueIdentifier of a SymmetricKey")
 

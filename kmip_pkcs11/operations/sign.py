@@ -64,7 +64,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Sign")
+    check_owner(identity, obj.get("owner_identity"), "Sign", store=store, uid=uid)
 
     check_usage_allowed(obj["state"], "sign", archived=bool(obj.get("archived")))
 

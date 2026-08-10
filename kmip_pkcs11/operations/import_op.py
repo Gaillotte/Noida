@@ -33,7 +33,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if existing is not None:
         if not replace_existing:
             raise InvalidField(f"Object '{uid}' already exists; ReplaceExisting was not set")
-        check_owner(identity, existing.get("owner_identity"), "Import (replace)")
+        check_owner(identity, existing.get("owner_identity"), "Import (replace)", store=store, uid=uid)
 
         cka_ids = store.get_attribute(uid, "_pkcs11_cka_id")
         if cka_ids:

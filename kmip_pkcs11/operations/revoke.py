@@ -34,7 +34,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Revoke")
+    check_owner(identity, obj.get("owner_identity"), "Revoke", store=store, uid=uid)
 
     op_name  = revoke_operation(reason_code)
     new_state = transition(obj["state"], op_name)

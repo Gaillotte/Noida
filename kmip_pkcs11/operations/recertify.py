@@ -24,7 +24,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     old_cert = store.get_object(old_cert_uid)
     if old_cert is None:
         raise ItemNotFound(f"Object '{old_cert_uid}' not found")
-    check_owner(identity, old_cert.get("owner_identity"), "ReCertify")
+    check_owner(identity, old_cert.get("owner_identity"), "ReCertify", store=store, uid=old_cert_uid)
     if old_cert["object_type"] != ObjectType.Certificate:
         raise InvalidField("ReCertify requires the UniqueIdentifier of a Certificate")
 

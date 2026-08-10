@@ -47,7 +47,7 @@ def certify_public_key(pub_uid: str, names, identity: str, store, shim) -> str:
     obj = store.get_object(pub_uid)
     if obj is None:
         raise ItemNotFound(f"Object '{pub_uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Certify")
+    check_owner(identity, obj.get("owner_identity"), "Certify", store=store, uid=pub_uid)
     if obj["object_type"] != ObjectType.PublicKey:
         raise InvalidField("Certify requires the UniqueIdentifier of a PublicKey")
 

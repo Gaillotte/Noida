@@ -29,7 +29,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(base_uid)
     if obj is None:
         raise ItemNotFound(f"Object '{base_uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "DeriveKey")
+    check_owner(identity, obj.get("owner_identity"), "DeriveKey", store=store, uid=base_uid)
 
     base_algorithm = obj.get("cryptographic_algorithm")
     if base_algorithm not in _KEY_AGREEMENT_ALGORITHMS:

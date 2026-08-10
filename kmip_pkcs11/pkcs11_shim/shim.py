@@ -160,9 +160,21 @@ def _synchronized(method):
 
     server.py runs one thread per connection, but every thread shares this
     one PKCS#11 session (see the class docstring) and python-pkcs11 session
-    objects aren't safe for concurrent use from multiple threads. This is a
-    coarse fix — correctness now, not maximum throughput — see the KMS
-    hardening plan for the session-pool follow-up that would relax it.
+    objects aren't safe for concurrent use from multiple threads.
+
+    A session-pool (one PKCS#11 session per thread, no lock) was evaluated
+    and rejected: python-pkcs11 0.9.5 calls C_Initialize(NULL) — see its
+    _pkcs11.pyx — which leaves CKF_OS_LOCKING_OK unset, so the underlying
+    library never enables its own internal thread safety. Verified live
+    against this SoftHSM2 build: N threads each on their *own* session,
+    calling generate_key/encrypt/decrypt concurrently, reproducibly either
+    segfaults the native extension or returns GeneralError/MechanismInvalid
+    on most threads — separate sessions do not make this safe. A real fix
+    needs either a PKCS#11 binding that passes CKF_OS_LOCKING_OK at
+    C_Initialize, or a multi-process worker pool (each process owns one
+    session, used by only one thread) — both larger changes than a lock.
+    This lock is therefore the permanent design, not a stopgap: correctness
+    over throughput, deliberately.
     """
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):

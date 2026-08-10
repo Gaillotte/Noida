@@ -21,7 +21,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     owner = store.get_owner(uid)
     if owner is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, owner, "ModifyAttribute")
+    check_owner(identity, owner, "ModifyAttribute", store=store, uid=uid)
 
     attr_item = payload.get(Tag.Attribute)
     if attr_item is None:

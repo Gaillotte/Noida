@@ -33,7 +33,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         obj = store.get_object(part_uid)
         if obj is None:
             raise ItemNotFound(f"Object '{part_uid}' not found")
-        check_owner(identity, obj.get("owner_identity"), "JoinSplitKey")
+        check_owner(identity, obj.get("owner_identity"), "JoinSplitKey", store=store, uid=part_uid)
         if obj["object_type"] != ObjectType.SplitKey:
             raise InvalidField(f"'{part_uid}' is not a SplitKey part")
 

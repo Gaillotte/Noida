@@ -32,7 +32,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     old_priv = store.get_object(old_priv_uid)
     if old_priv is None:
         raise ItemNotFound(f"Object '{old_priv_uid}' not found")
-    check_owner(identity, old_priv.get("owner_identity"), "ReKeyKeyPair")
+    check_owner(identity, old_priv.get("owner_identity"), "ReKeyKeyPair", store=store, uid=old_priv_uid)
     if old_priv["object_type"] != ObjectType.PrivateKey:
         raise InvalidField("ReKeyKeyPair requires the UniqueIdentifier of a PrivateKey")
 

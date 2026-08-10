@@ -50,7 +50,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
         source = store.get_object(source_uid)
         if source is None:
             raise ItemNotFound(f"Object '{source_uid}' not found")
-        check_owner(identity, source.get("owner_identity"), "CreateSplitKey")
+        check_owner(identity, source.get("owner_identity"), "CreateSplitKey", store=store, uid=source_uid)
         if not source["extractable"]:
             raise InvalidField("Source key must be extractable to split")
         cka_ids = store.get_attribute(source_uid, "_pkcs11_cka_id")

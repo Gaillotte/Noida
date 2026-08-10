@@ -29,7 +29,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "GetUsageAllocation")
+    check_owner(identity, obj.get("owner_identity"), "GetUsageAllocation", store=store, uid=uid)
 
     check_usage_allowed(obj["state"], "get", archived=bool(obj.get("archived")))
 

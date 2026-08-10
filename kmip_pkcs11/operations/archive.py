@@ -26,7 +26,7 @@ def handle(payload, identity: str, store, shim) -> bytes:
     obj = store.get_object(uid)
     if obj is None:
         raise ItemNotFound(f"Object '{uid}' not found")
-    check_owner(identity, obj.get("owner_identity"), "Archive")
+    check_owner(identity, obj.get("owner_identity"), "Archive", store=store, uid=uid)
 
     if obj["state"] in (State.Destroyed, State.DestroyedCompromised):
         raise IllegalOperation("Cannot archive a destroyed object")
