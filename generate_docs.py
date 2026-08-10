@@ -181,19 +181,30 @@ def build():
         "implementation of the OASIS Key Management Interoperability Protocol (KMIP) "
         "version 2.1 built on top of a PKCS#11 Hardware Security Module (HSM). "
         "Cryptographic material never leaves the HSM: the KMIP layer manages object "
-        "lifecycle, metadata, and protocol framing while delegating all key operations "
-        "to PKCS#11."
+        "lifecycle, metadata, access control, and protocol framing while delegating all "
+        "key operations to PKCS#11."
     )
     section_break(doc)
 
     add_para(doc, "Key properties of this implementation:", bold=True)
     bullets = [
-        "Standards-compliant: OASIS KMIP 2.1 wire format (TTLV binary encoding)",
-        "HSM-backed: all key material stored in SoftHSM2 via PKCS#11 (Cryptoki)",
-        "Full lifecycle: Pre-Active → Active → Deactivated / Compromised → Destroyed",
+        "Standards-compliant: OASIS KMIP 2.1 wire format (TTLV binary encoding, batching, "
+        "BatchErrorContinuationOption, MaximumResponseSize)",
+        "HSM-backed: all key material stored in SoftHSM2 via PKCS#11 (Cryptoki); the shim "
+        "is the only file that imports pkcs11, so a FIPS-validated token can be swapped "
+        "in with no change above pkcs11_shim/",
+        "Full lifecycle: Pre-Active → Active → Deactivated / Compromised → Destroyed, "
+        "plus Archive/Recover, ReKey/ReKeyKeyPair/ReCertify, and split-key XOR sharing",
+        "Access control (RBAC): every object records its creator; operations against an "
+        "existing object require ownership, the admin role, or an explicit delegated "
+        "grant — see Section 4.4b",
+        "Capability-probed algorithms: the shim queries the token's real mechanism list "
+        "at startup and rejects unsupported algorithm/mode combinations cleanly "
+        "(OperationNotSupported) instead of leaking a raw PKCS#11 error",
         "Transport: TCP with optional TLS 1.3 + mutual TLS (mTLS) client authentication",
-        "Persistent metadata: SQLite store for KMIP attributes (name, state, dates, tags)",
-        "15 KMIP operations implemented; 122 automated tests; 100 % pass rate",
+        "Persistent metadata: SQLite store for KMIP attributes, roles, and grants "
+        "(name, state, dates, tags, owner, role assignments, delegated access)",
+        "41 of 53 KMIP operations implemented; 624 automated tests; 100 % pass rate",
     ]
     for b in bullets:
         add_bullet(doc, b)
@@ -207,44 +218,51 @@ def build():
     tree = [
         "kmip_pkcs11/",
         "├── core/",
-        "│   ├── enums.py          # KMIP enumerations (Tag, Operation, State …)",
-        "│   ├── ttlv.py           # TTLV encoder / decoder",
-        "│   └── exceptions.py     # KMIP exception hierarchy",
+        "│   ├── enums.py                # KMIP enumerations (Tag, Operation, State …)",
+        "│   ├── ttlv.py                 # TTLV encoder / decoder",
+        "│   └── exceptions.py           # KMIP exception hierarchy",
         "├── lifecycle/",
-        "│   └── state_machine.py  # Key lifecycle state transitions",
+        "│   ├── state_machine.py        # Key lifecycle state transitions",
+        "│   └── access_control.py       # Owner / admin role / delegated grants",
         "├── metadata/",
-        "│   └── store.py          # SQLite metadata store",
+        "│   └── store.py                # SQLite metadata store (objects, attrs, roles, grants)",
         "├── pkcs11_shim/",
-        "│   └── shim.py           # PKCS#11 / SoftHSM2 wrapper",
-        "├── operations/",
-        "│   ├── dispatcher.py     # Routes batch items to handlers",
-        "│   ├── create.py         # Create symmetric key",
-        "│   ├── create_keypair.py # Create RSA / EC key pair",
-        "│   ├── register.py       # Register external key material",
-        "│   ├── get.py            # Get (export) key",
-        "│   ├── get_attributes.py # GetAttributes / GetAttributeList",
-        "│   ├── add_attribute.py  # AddAttribute",
-        "│   ├── delete_attribute.py # DeleteAttribute",
-        "│   ├── locate.py         # Locate objects",
-        "│   ├── activate.py       # Activate",
-        "│   ├── revoke.py         # Revoke",
-        "│   ├── destroy.py        # Destroy",
-        "│   ├── encrypt.py        # Encrypt",
-        "│   ├── decrypt.py        # Decrypt",
-        "│   ├── query.py          # Query server capabilities",
-        "│   └── discover_versions.py # DiscoverVersions",
+        "│   └── shim.py                 # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock",
+        "├── operations/                 # One file per KMIP operation (41 files) — dispatcher.py routes",
+        "│   ├── dispatcher.py",
+        "│   ├── create.py                create_keypair.py       register.py",
+        "│   ├── import_op.py             export_op.py",
+        "│   ├── get.py                   get_attributes.py       get_usage_allocation.py",
+        "│   ├── locate.py",
+        "│   ├── add_attribute.py         modify_attribute.py     delete_attribute.py",
+        "│   ├── set_attribute.py         adjust_attribute.py",
+        "│   ├── activate.py              revoke.py               destroy.py",
+        "│   ├── archive.py               recover.py              check.py",
+        "│   ├── encrypt.py               decrypt.py",
+        "│   ├── sign.py                  signature_verify.py",
+        "│   ├── mac.py                   mac_verify.py           hash_op.py",
+        "│   ├── rekey.py                 rekey_keypair.py",
+        "│   ├── certify.py               recertify.py",
+        "│   ├── derive_key.py",
+        "│   ├── create_split_key.py      join_split_key.py",
+        "│   ├── validate.py              obtain_lease.py",
+        "│   ├── rng_retrieve.py          rng_seed.py",
+        "│   └── query.py                 discover_versions.py",
         "├── server/",
-        "│   └── server.py         # TCP server (thread-per-client, optional TLS)",
+        "│   └── server.py               # TCP server (thread-per-client, Credential auth, optional TLS)",
         "├── test_app/",
-        "│   ├── client.py         # Synchronous KMIP 2.1 client",
-        "│   └── demo.py           # End-to-end demo application",
+        "│   ├── client.py               # Synchronous KMIP 2.1 client",
+        "│   └── demo.py                 # End-to-end demo application",
         "└── tests/",
-        "    ├── conftest.py       # pytest fixtures (SoftHSM2, store, shim, server)",
-        "    ├── test_ttlv.py      # 22 TTLV unit tests",
-        "    ├── test_lifecycle.py # 18 lifecycle unit tests",
-        "    ├── test_metadata.py  # 16 metadata store unit tests",
-        "    ├── test_operations.py# 8 operation integration tests",
-        "    └── test_conformance.py # 48 KMIP conformance tests",
+        "    ├── conftest.py             # pytest fixtures (SoftHSM2, store, shim, server)",
+        "    ├── test_ttlv.py            #  22 TTLV unit tests",
+        "    ├── test_lifecycle.py       #  26 lifecycle state-machine tests",
+        "    ├── test_metadata.py        #  18 metadata store unit tests",
+        "    ├── test_operations.py      #   8 operation integration tests",
+        "    ├── test_conformance.py     #  48 OASIS KMIP conformance tests",
+        "    └── test_extended_coverage.py # 502 live tests: every operation, algorithm",
+        "                                 #  coverage, error paths, access control,",
+        "                                 #  session concurrency",
     ]
     for line in tree:
         add_code(doc, line)
@@ -270,16 +288,21 @@ def build():
         ("Layer 3 – Protocol", "core/ttlv.py, operations/dispatcher.py",
          "Decodes the TTLV binary stream into a tree of TTLVItem objects, routes each "
          "RequestBatchItem to the correct handler, and serialises the ResponseMessage."),
-        ("Layer 2 – Business Logic", "operations/*.py, lifecycle/state_machine.py",
-         "Implements each KMIP operation: validates inputs, enforces lifecycle rules "
-         "(state machine), updates metadata, and calls the HSM shim."),
+        ("Layer 2 – Business Logic", "operations/*.py, lifecycle/state_machine.py, "
+                                      "lifecycle/access_control.py",
+         "Implements each of the 41 KMIP operations: validates inputs, enforces lifecycle "
+         "rules (state machine) and access control (owner / admin role / delegated grant), "
+         "updates metadata, and calls the HSM shim."),
         ("Layer 1 – HSM Integration", "pkcs11_shim/shim.py",
-         "Wraps python-pkcs11. All cryptographic operations (generate, encrypt, decrypt, "
-         "sign, verify, destroy) execute inside the HSM. Metadata the HSM cannot hold "
-         "(lifecycle dates, names, state) is delegated to Layer 0."),
+         "Wraps python-pkcs11 behind a single session serialized by a threading.RLock "
+         "(see Section 3.3). All cryptographic operations (generate, encrypt, decrypt, "
+         "sign, verify, MAC, hash, derive, destroy) execute inside the HSM, gated by a "
+         "capability probe of the token's mechanism list. Metadata the HSM cannot hold "
+         "(lifecycle dates, names, state, ownership) is delegated to Layer 0."),
         ("Layer 0 – Persistence", "metadata/store.py",
          "Thread-safe SQLite store (WAL mode, connection-per-thread). Holds the "
-         "authoritative KMIP object state and all KMIP attributes."),
+         "authoritative KMIP object state, all KMIP attributes, and the access-control "
+         "tables (identity roles, delegated object grants)."),
     ]
 
     tbl = doc.add_table(rows=1, cols=3)
@@ -296,10 +319,11 @@ def build():
         "2. Client sends a TTLV-encoded RequestMessage.",
         "3. Server reads exactly one TTLV top-level item using the 8-byte header length.",
         "4. Server decodes the RequestMessage into a TTLVItem tree.",
-        "5. For each BatchItem in the request:",
+        "5. For each BatchItem in the request (of 41 registered Operation handlers):",
         "   a. OperationDispatcher reads the Operation tag.",
         "   b. Dispatches to the matching handler function.",
-        "   c. Handler validates inputs, checks lifecycle state, calls shim/store.",
+        "   c. Handler validates inputs, checks lifecycle state, checks access control",
+        "      (owner / admin role / delegated grant — Section 4.4b), calls shim/store.",
         "   d. Handler returns response payload bytes.",
         "   e. Dispatcher wraps in a success or failure BatchItem.",
         "6. Server encodes the full ResponseMessage and sends it back.",
@@ -311,13 +335,49 @@ def build():
     section_break(doc)
     add_heading(doc, "3.3 Threading Model", 2, MID_BLUE)
     add_para(doc,
-        "The server spawns one daemon thread per client connection. The accept loop "
-        "itself runs in a daemon thread (start_background()). "
-        "Thread safety is achieved by:"
+        "The server is thread-per-connection: the accept loop runs in a daemon thread "
+        "(start_background()), and every accepted client connection is handled in its "
+        "own dedicated daemon thread for the lifetime of that connection."
     )
-    add_bullet(doc, "MetadataStore: threading.local connection-per-thread (SQLite WAL mode)")
-    add_bullet(doc, "PKCS11Shim: single session, used concurrently (SoftHSM2 handles internal locking)")
-    add_bullet(doc, "No shared mutable state at the Python layer between request threads")
+    add_bullet(doc, "MetadataStore: threading.local connection-per-thread (SQLite WAL mode) "
+                    "— each request thread gets its own SQLite connection, so no locking "
+                    "is needed at this layer.")
+    add_bullet(doc, "PKCS11Shim: exactly ONE shared PKCS#11 session for the whole process, "
+                    "used by every connection thread, serialized behind a single "
+                    "threading.RLock. shim.py's @_synchronized decorator wraps every "
+                    "session-touching method (generate, encrypt, decrypt, sign, verify, "
+                    "MAC, hash, derive, destroy, initialize, finalize) so only one thread "
+                    "is ever inside the PKCS#11 session at a time.")
+    section_break(doc)
+
+    add_para(doc,
+        "This single locked session is a deliberate, permanent design decision — not a "
+        "stopgap awaiting a connection/session pool. A session pool (one PKCS#11 session "
+        "per thread, no shared lock) was built and tested, and reproducibly segfaulted "
+        "or corrupted operations under concurrency. The root cause: python-pkcs11 0.9.5 "
+        "calls C_Initialize(NULL), which leaves CKF_OS_LOCKING_OK unset, so the "
+        "underlying PKCS#11 library's own internal thread safety is never enabled. "
+        "Verified live against this SoftHSM2 build — N threads, each on its own session, "
+        "calling generate_key/encrypt/decrypt concurrently, reproducibly either "
+        "segfaulted the native extension or returned GeneralError/MechanismInvalid on "
+        "most threads. Separate sessions do not make PKCS#11 access safe under this "
+        "binding, so a session pool is not a viable fix here.",
+        bold=False,
+    )
+    section_break(doc)
+    add_para(doc, "A real fix for this would require one of:", bold=True)
+    add_bullet(doc, "A PKCS#11 binding that passes CKF_OS_LOCKING_OK at C_Initialize, "
+                    "enabling the library's own internal thread safety, or")
+    add_bullet(doc, "A multi-process worker pool, where each process owns exactly one "
+                    "PKCS#11 session used by only one thread.")
+    add_para(doc,
+        "Both are materially larger changes than a lock, and neither has been "
+        "implemented; the lock is therefore treated as correctness over throughput, "
+        "by design, for the lifetime of this codebase."
+    )
+    section_break(doc)
+    add_bullet(doc, "No other shared mutable state exists at the Python layer between "
+                    "request threads beyond the single PKCS#11 session described above.")
 
     # ═══════════════════════════════════════════════════════════════════════
     # 4. MODULE REFERENCE
@@ -487,10 +547,70 @@ def build():
 
     section_break(doc)
 
+    # ── 4.4b lifecycle/access_control.py ─────────────────────────────────
+    add_heading(doc, "4.4b lifecycle/access_control.py — Access Control", 2, MID_BLUE)
+    add_para(doc,
+        "Every managed object records the identity that created it. Operations against "
+        "an existing object are authorized by a three-tier check, evaluated in this "
+        "order for every operation:"
+    )
+    section_break(doc)
+    ac_tiers = [
+        ("1. Admin role", "store.assign_role(identity, \"admin\")",
+         "Unconditional access to every object, regardless of owner."),
+        ("2. Ownership", "identity == owner_identity",
+         "The owner_identity recorded on the object at Create / Register / CreateKeyPair / "
+         "Certify / JoinSplitKey time."),
+        ("3. Delegated grant", "store.grant_access(uid, grantee, \"read\" | \"full\")",
+         "\"read\" covers Get, GetAttributes, GetAttributeList, Check, Export, "
+         "ObtainLease; every other operation (Encrypt, Destroy, ReKey, …) requires "
+         "\"full\"."),
+    ]
+    tbl = doc.add_table(rows=1, cols=3)
+    tbl.style = 'Table Grid'
+    add_table_header_row(tbl, ["Tier", "Mechanism", "Detail"])
+    for i, row in enumerate(ac_tiers):
+        add_table_row(tbl, row, alt=(i % 2 == 0))
+
+    section_break(doc)
+    add_para(doc,
+        "Objects with no recorded owner (owner_identity = None) remain reachable by any "
+        "identity — this only applies to objects created outside the normal Create/"
+        "Register path, so nothing pre-existing is orphaned by layering access control "
+        "on top of the store. check_owner() in this module implements the check and "
+        "raises NotAuthorized when none of the three tiers grant access; the store and "
+        "uid parameters are optional so any pre-existing call site keeps owner-only "
+        "semantics if it doesn't pass them, but every operations/*.py handler now passes "
+        "both, so the admin/grant checks apply everywhere ownership is enforced."
+    )
+    section_break(doc)
+    add_para(doc,
+        "Locate results are filtered to the caller's own objects (or all objects, for an "
+        "admin) — a non-admin identity cannot enumerate objects it doesn't own or hold a "
+        "grant on."
+    )
+    section_break(doc)
+    add_para(doc, "There is NO KMIP wire operation for role or grant management", bold=True)
+    add_para(doc,
+        "The KMIP spec does not define an operation for it. Role and grant assignment is "
+        "purely a MetadataStore admin surface, called directly from an admin script or "
+        "console — never over the KMIP wire protocol:"
+    )
+    for line in [
+        "store.assign_role(\"alice\", \"admin\")     # alice can touch anything",
+        "store.grant_access(uid, \"bob\", \"read\")   # bob can Get this one object",
+        "store.revoke_access(uid, \"bob\")",
+        "store.revoke_role(\"alice\", \"admin\")",
+    ]:
+        add_code(doc, line)
+
+    section_break(doc)
+
     # ── 4.5 metadata/store.py ────────────────────────────────────────────
     add_heading(doc, "4.5 metadata/store.py — MetadataStore", 2, MID_BLUE)
     add_para(doc,
-        "SQLite-backed store for all KMIP attributes that PKCS#11 cannot hold. "
+        "SQLite-backed store for all KMIP attributes that PKCS#11 cannot hold, plus the "
+        "access-control tables (identity roles, delegated object grants). "
         "Uses WAL journal mode and a connection-per-thread pattern for concurrent access."
     )
     section_break(doc)
@@ -523,6 +643,15 @@ def build():
         "  attr_name   TEXT",
         "  attr_index  INTEGER   — multi-valued attribute index",
         "  attr_value  TEXT      — JSON-encoded value",
+        "",
+        "TABLE kmip_identity_roles          — new: role-based access control",
+        "  identity TEXT              — PK (identity, role)",
+        "  role     TEXT              — e.g. \"admin\"",
+        "",
+        "TABLE kmip_object_grants           — new: delegated per-object access",
+        "  object_uuid TEXT FK → kmip_objects.uuid  — PK (object_uuid, grantee)",
+        "  grantee     TEXT",
+        "  permission  TEXT DEFAULT 'full'   — \"read\" or \"full\"",
     ]:
         add_code(doc, line)
 
@@ -538,7 +667,15 @@ def build():
         ("set_destroy(uid)", "Sets state=Destroyed, destroy_date=now, pkcs11_handle=NULL."),
         ("add_attribute(uid, name, value)", "Appends a JSON-encoded attribute; auto-increments attr_index."),
         ("delete_attribute(uid, name, index)", "Removes a specific attribute value."),
-        ("locate(**filters) → list[str]", "Flexible object search with optional filters on type, state, name, algorithm."),
+        ("locate(**filters) → list[str]", "Flexible object search with optional filters on type, state, name, algorithm, owner."),
+        ("get_owner(uid) → str|None", "Lightweight ownership lookup for handlers that don't need the full object row."),
+        ("assign_role(identity, role)", "Inserts into kmip_identity_roles (INSERT OR IGNORE). No wire operation — admin surface only."),
+        ("revoke_role(identity, role)", "Deletes the matching kmip_identity_roles row."),
+        ("get_roles(identity) → list[str]", "Returns all roles assigned to an identity (checked by lifecycle/access_control.is_admin())."),
+        ("grant_access(uid, grantee, permission='full')", "Upserts a kmip_object_grants row (\"read\" or \"full\")."),
+        ("revoke_access(uid, grantee)", "Deletes the matching kmip_object_grants row."),
+        ("get_grant(uid, grantee) → str|None", "Returns the grantee's permission level for one object, or None."),
+        ("list_grants(uid) → list[dict]", "Returns all {grantee, permission} grants for one object."),
     ]
     tbl = doc.add_table(rows=1, cols=2)
     tbl.style = 'Table Grid'
@@ -555,7 +692,33 @@ def build():
         "Wraps python-pkcs11 to provide KMIP-oriented operations. "
         "All cryptographic material remains inside the HSM (SoftHSM2 or real hardware). "
         "Key handles are returned as CKA_ID byte strings (16 random bytes per key); "
-        "these are stored as the _pkcs11_cka_id attribute in the metadata store."
+        "these are stored as the _pkcs11_cka_id attribute in the metadata store. "
+        "This is the only file in the project that imports pkcs11 — swapping in a "
+        "different (e.g. FIPS-validated) token requires no change above this module."
+    )
+    section_break(doc)
+
+    add_para(doc, "Capability probe:", bold=True)
+    add_para(doc,
+        "initialize() queries slot.get_mechanisms() once, immediately after opening the "
+        "session, and caches the result as self._available_mechanisms. Every "
+        "algorithm/mode-specific method (generate, encrypt, decrypt, MAC, hash) calls "
+        "supports_mechanism(mechanism) or the internal _require_mechanism(mechanism, what) "
+        "before dispatching to PKCS#11. If the token doesn't advertise the mechanism, "
+        "_require_mechanism raises OperationNotSupported with a clear message instead of "
+        "letting a native PKCS#11 error surface mid-operation. On this SoftHSM2 build, "
+        "15 of 40 CryptographicAlgorithm values map to a mechanism that is actually "
+        "present — see Section 6 for the full breakdown."
+    )
+    section_break(doc)
+
+    add_para(doc, "Single locked session:", bold=True)
+    add_para(doc,
+        "self._lock is a threading.RLock; the module-level @_synchronized decorator wraps "
+        "every session-touching method so only one thread executes inside the shared "
+        "PKCS#11 session at a time. This is the permanent design, not a stopgap — see "
+        "Section 3.3 Threading Model for the full rationale and the concurrency test that "
+        "verified a lock-free session pool is unsafe with python-pkcs11 0.9.5."
     )
     section_break(doc)
 
@@ -577,24 +740,45 @@ def build():
          "Generates RSA or EC key pair. Returns two CKA_IDs."),
         ("import_symmetric_key(algorithm, length_bits, key_bytes, …) → cka_id",
          "Imports externally-supplied raw key material via C_CreateObject."),
+        ("import_public_key / import_private_key(algorithm, der_bytes, …) → cka_id",
+         "Imports an externally-supplied RSA public/private key (PKCS#1 or PKCS#8 DER) for Register."),
+        ("wrap_key(wrapping_cka_id, target_cka_id) → bytes",
+         "Wraps a SecretKey with another SecretKey (KEK) via CKM_AES_KEY_WRAP_PAD."),
+        ("unwrap_key(wrapping_cka_id, wrapped_bytes, target_algorithm, …) → cka_id",
+         "Unwraps key material directly into a new SecretKey object; plaintext never "
+         "leaves the HSM/server boundary into Python memory."),
         ("get_key_value(cka_id) → bytes",
          "Exports CKA_VALUE of a SECRET_KEY object. Raises NotExtractable if CKA_EXTRACTABLE=False."),
         ("get_public_key_der(cka_id) → bytes",
-         "Exports PUBLIC_KEY in SubjectPublicKeyInfo (DER) format."),
+         "Exports PUBLIC_KEY in SubjectPublicKeyInfo/PKCS#1 DER, EC point, or DH value form."),
+        ("get_private_key_der(cka_id) → bytes",
+         "Exports PRIVATE_KEY DER (only if extractable)."),
         ("destroy_object(cka_id, obj_class=None)",
          "Calls C_DestroyObject. Silently ignores ItemNotFound."),
+        ("supports_mechanism(mechanism) → bool / _require_mechanism(mechanism, what)",
+         "Capability-probe check against self._available_mechanisms; _require_mechanism "
+         "raises OperationNotSupported if absent. See the capability-probe note above."),
         ("encrypt(cka_id, plaintext, mechanism_id, iv, aad) → (ct, tag_or_None)",
-         "Encrypts with HSM-resident key. Supports CBC, ECB, GCM, CTR modes."),
+         "Encrypts with HSM-resident key. Supports CBC, ECB, GCM, CTR, CFB, OFB, CCM "
+         "(AES) plus DES/3DES/Blowfish/Twofish variants, gated by supports_mechanism()."),
         ("decrypt(cka_id, ciphertext, mechanism_id, iv, aad, tag) → bytes",
          "Decrypts with HSM-resident key."),
         ("sign(cka_id, data, mechanism) → bytes",
          "Signs data with a PRIVATE_KEY."),
         ("verify(cka_id, data, signature, mechanism) → bool",
          "Verifies a signature against a PUBLIC_KEY."),
-        ("generate_random(length) → bytes",
-         "Retrieves HSM-generated random bytes via C_GenerateRandom."),
+        ("mac(cka_id, data, mechanism) → bytes / mac_verify(cka_id, data, mac_value, mechanism) → bool",
+         "HMAC generate/verify against a SecretKey, capability-gated per mechanism."),
+        ("hash_data(data, hash_alg) → bytes",
+         "Digests data via session.digest(), capability-gated per HashingAlgorithm."),
+        ("derive_key(cka_id, base_algorithm, peer_value, target_algorithm, …) → cka_id",
+         "Derives a symmetric key from a DH/ECDH private key and a peer's public value."),
+        ("generate_random(length) → bytes / seed_random(seed)",
+         "Retrieves/seeds HSM-generated random bytes via C_GenerateRandom / C_SeedRandom."),
+        ("verify_pin(pin) → bool",
+         "Constant-time-ish comparison used for KMIP UsernameAndPassword Credential auth."),
         ("get_mechanism_list() → list",
-         "Returns mechanisms supported by the token slot."),
+         "Returns the cached (or freshly queried) mechanisms supported by the token slot."),
         ("get_token_info() → str",
          "Returns a string representation of the token slot info."),
     ]
@@ -610,7 +794,11 @@ def build():
     add_heading(doc, "4.7 operations/ — KMIP Operation Handlers", 2, MID_BLUE)
     add_para(doc,
         "Each handler is a module-level handle(payload, identity, store, shim) → bytes function. "
-        "The dispatcher calls them after extracting the RequestPayload TTLVItem."
+        "The dispatcher calls them after extracting the RequestPayload TTLVItem. "
+        "41 operations are implemented across four categories: object lifecycle (18), "
+        "retrieval & discovery (8), attributes (5), and cryptographic operations (10). "
+        "See Section 6 for the full categorized table; the notes below cover the "
+        "handlers' key implementation details."
     )
     section_break(doc)
     ops = [
@@ -647,6 +835,49 @@ def build():
                                                      "vendor identification string."),
         ("discover_versions.py","DiscoverVersions", "Returns list of supported KMIP versions "
                                                      "(currently 1.0, 1.1, 1.2, 1.3, 1.4, 2.0, 2.1)."),
+        ("import_op.py",        "Import",           "Imports key material (symmetric or RSA public/private) "
+                                                     "via the shim's import_* methods; access-controlled like Register."),
+        ("export_op.py",        "Export",           "Exports a key/object; requires \"read\"-level access "
+                                                     "(owner, admin, or grant) and CKA_EXTRACTABLE=True."),
+        ("get_usage_allocation.py", "GetUsageAllocation", "Reserves/decrements a usage-limit counter on an "
+                                                     "object (KMIP usage-limits attribute)."),
+        ("modify_attribute.py",  "ModifyAttribute",  "Replaces an existing attribute value in kmip_attributes."),
+        ("set_attribute.py",     "SetAttribute",     "KMIP 2.x single-value attribute set; upserts via "
+                                                     "store.set_or_add_attribute()."),
+        ("adjust_attribute.py",  "AdjustAttribute",  "Increments/decrements a numeric attribute (e.g. usage "
+                                                     "counters) in place."),
+        ("archive.py",           "Archive",          "Marks an object archived (archived=1); state is unchanged "
+                                                     "but the object is unusable for anything but metadata reads."),
+        ("recover.py",           "Recover",          "Clears the archived flag, restoring normal usability."),
+        ("check.py",             "Check",            "Validates requested attribute values against the "
+                                                     "object's actual stored values without exporting key material."),
+        ("sign.py",              "Sign",             "Enforces Active-state usage; delegates to shim.sign() "
+                                                     "against a PRIVATE_KEY."),
+        ("signature_verify.py",  "SignatureVerify",  "Delegates to shim.verify() against a PUBLIC_KEY; "
+                                                     "returns a KMIP ValidationSuccess/Failure indicator."),
+        ("mac.py",               "MAC",              "Delegates to shim.mac(); capability-gated on the HMAC "
+                                                     "mechanism via _require_mechanism()."),
+        ("mac_verify.py",        "MACVerify",        "Delegates to shim.mac_verify(); returns pass/fail."),
+        ("hash_op.py",           "Hash",             "Delegates to shim.hash_data(); capability-gated per "
+                                                     "HashingAlgorithm."),
+        ("rekey.py",             "ReKey",            "Creates a new symmetric key that supersedes an existing "
+                                                     "one; copies forward compatible attributes."),
+        ("rekey_keypair.py",     "ReKeyKeyPair",     "Creates a new key pair that supersedes an existing one."),
+        ("certify.py",           "Certify",          "Creates a Certificate object bound to a public key "
+                                                     "(self-signed / CA-signed depending on inputs)."),
+        ("recertify.py",         "ReCertify",        "Renews/replaces an existing Certificate object."),
+        ("derive_key.py",        "DeriveKey",        "Delegates to shim.derive_key() for DH/ECDH key agreement; "
+                                                     "returns the new symmetric key's UniqueIdentifier."),
+        ("create_split_key.py",  "CreateSplitKey",   "Splits a key into N shares via XOR secret sharing; "
+                                                     "creates one metadata row per share."),
+        ("join_split_key.py",    "JoinSplitKey",     "XORs the shares back together and re-registers the "
+                                                     "reconstructed key on the HSM."),
+        ("validate.py",          "Validate",         "Validates a certificate chain against KMIP Validate "
+                                                     "semantics."),
+        ("obtain_lease.py",      "ObtainLease",      "Returns a lease/expiration time for an object; "
+                                                     "\"read\"-level access."),
+        ("rng_retrieve.py",      "RNGRetrieve",      "Delegates to shim.generate_random() — HSM-backed RNG."),
+        ("rng_seed.py",          "RNGSeed",          "Delegates to shim.seed_random()."),
     ]
     tbl = doc.add_table(rows=1, cols=3)
     tbl.style = 'Table Grid'
@@ -739,7 +970,7 @@ def build():
     prereqs = [
         ("Python", "3.9 or newer"),
         ("SoftHSM2", "2.6+ (Ubuntu: apt install softhsm2)"),
-        ("python-pkcs11", ">=0.7.0 (pip install python-pkcs11)"),
+        ("python-pkcs11", "0.9.5 (pip install python-pkcs11)"),
         ("pytest", ">=7.0 (for running the test suite)"),
     ]
     tbl = doc.add_table(rows=1, cols=2)
@@ -791,12 +1022,27 @@ def build():
         add_code(doc, line)
 
     section_break(doc)
+    add_heading(doc, "5.4b Assigning the First Admin", 2, MID_BLUE)
+    add_para(doc,
+        "There is no environment variable or server constructor argument for this — "
+        "assign at least one admin identity directly against the store before "
+        "starting the server, since there is no KMIP wire operation for role "
+        "management (see Section 4.4b):"
+    )
+    for line in [
+        "# Optional: grant one identity the admin role before anyone connects",
+        "# (there's no wire operation for this — call the store directly)",
+        "store.assign_role('ops-team', 'admin')",
+    ]:
+        add_code(doc, line)
+
+    section_break(doc)
     add_heading(doc, "5.5 Running the Demo", 2, MID_BLUE)
     add_code(doc, "python -m kmip_pkcs11.test_app.demo")
     add_para(doc,
-        "The demo exercises 16 operations end-to-end: DiscoverVersions, Query, "
-        "Create AES-256, GetAttributes, Locate, Encrypt, Decrypt, CreateKeyPair, "
-        "Get, AddAttribute, Register, lifecycle flow, and Destroy."
+        "The demo walks through DiscoverVersions, Query, Create AES-256, "
+        "GetAttributes, Locate, Encrypt/Decrypt, CreateKeyPair, Register, and a "
+        "full Revoke → Destroy lifecycle."
     )
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -806,40 +1052,50 @@ def build():
     add_heading(doc, "6. Supported KMIP Operations", 1, DARK_BLUE)
 
     add_para(doc,
-        "The following table lists all operations supported by this implementation, "
-        "their KMIP operation codes, conformance classification (M = Mandatory, "
-        "O = Optional per KMIP 2.1 Baseline Server profile), and implementation status."
+        "41 of 53 KMIP 2.1 operations are implemented, grouped below by category. "
+        "The remaining 12 are a deliberate scope decision — see Section 9 Known "
+        "Limitations for why each was excluded."
     )
     section_break(doc)
 
-    supported_ops = [
-        ("DiscoverVersions", "0x0000001E", "M", "Full"),
-        ("Query",            "0x00000018", "M", "Full"),
-        ("Create",           "0x00000001", "M", "Full"),
-        ("CreateKeyPair",    "0x00000002", "O", "Full (RSA, EC)"),
-        ("Register",         "0x00000003", "M", "Full"),
-        ("Get",              "0x0000000A", "M", "Full (extractable keys)"),
-        ("GetAttributes",    "0x0000000B", "M", "Full"),
-        ("GetAttributeList", "0x0000000C", "M", "Full"),
-        ("AddAttribute",     "0x0000000D", "M", "Full"),
-        ("DeleteAttribute",  "0x0000000F", "M", "Full"),
-        ("Locate",           "0x00000008", "M", "Full"),
-        ("Activate",         "0x00000012", "M", "Full"),
-        ("Revoke",           "0x00000013", "M", "Full"),
-        ("Destroy",          "0x00000014", "M", "Full"),
-        ("Encrypt",          "0x0000001F", "O", "Full (AES-CBC, GCM, ECB, CTR)"),
-        ("Decrypt",          "0x00000020", "O", "Full"),
-        ("Sign",             "0x00000021", "O", "Shim only (no KMIP wrapper)"),
-        ("SignatureVerify",  "0x00000022", "O", "Shim only"),
-        ("MAC",              "0x00000023", "O", "Not implemented"),
-        ("Import",           "0x0000002A", "O", "Handled via Register"),
+    op_categories = [
+        ("Object lifecycle (18)",
+         "Create, CreateKeyPair, Register, ReKey, ReKeyKeyPair, DeriveKey, Certify, "
+         "ReCertify, CreateSplitKey, JoinSplitKey, Import, Export, Activate, Revoke, "
+         "Destroy, Archive, Recover, Check"),
+        ("Retrieval & discovery (8)",
+         "Get, GetAttributes, GetAttributeList, Locate, Query, DiscoverVersions, "
+         "ObtainLease, GetUsageAllocation"),
+        ("Attributes (5)",
+         "AddAttribute, ModifyAttribute, DeleteAttribute, SetAttribute, AdjustAttribute"),
+        ("Cryptographic operations (10)",
+         "Encrypt, Decrypt, Sign, SignatureVerify, MAC, MACVerify, Hash, RNGRetrieve, "
+         "RNGSeed, Validate"),
     ]
-
-    tbl = doc.add_table(rows=1, cols=4)
+    tbl = doc.add_table(rows=1, cols=2)
     tbl.style = 'Table Grid'
-    add_table_header_row(tbl, ["Operation", "Code", "Class", "Status"])
-    for i, row in enumerate(supported_ops):
+    add_table_header_row(tbl, ["Category", "Operations"])
+    for i, row in enumerate(op_categories):
         add_table_row(tbl, row, alt=(i % 2 == 0))
+
+    section_break(doc)
+    add_para(doc, "Deferred (12) — not implemented, by design:", bold=True)
+    add_para(doc,
+        "Cancel, Poll, Notify — asynchronous operation control; this server processes "
+        "every request synchronously within its batch, so there is nothing to cancel "
+        "or poll for."
+    )
+    add_para(doc,
+        "Put, Log, Login, Logout, DelegatedLogin, SetEndpointRole — session/identity "
+        "management operations that don't fit a synchronous, per-request-authenticated "
+        "server; auth here is Credential-based per connection, not a login/logout "
+        "session state machine."
+    )
+    add_para(doc,
+        "PKCS11, Interop, ReProvision — vendor/profile-specific and provisioning "
+        "operations outside the KMIP Baseline/Symmetric/Asymmetric Key server "
+        "profiles this implementation targets."
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # 7. TEST SPECIFICATION
@@ -848,22 +1104,28 @@ def build():
     add_heading(doc, "7. Test Specification", 1, DARK_BLUE)
 
     add_para(doc,
-        "The test suite comprises 122 tests organised into five modules. "
-        "All tests are executed with pytest. The test suite requires a running "
-        "SoftHSM2 token (initialised automatically by the conftest.py session fixture). "
-        "Each test class maps to an OASIS KMIP TC (Test Case) identifier."
+        "The test suite comprises 624 tests organised into six modules, all passing "
+        "(100 % pass rate). All tests are executed with pytest. The test suite requires "
+        "a running SoftHSM2 token (initialised automatically by the conftest.py session "
+        "fixture). The original five modules' test classes map to OASIS KMIP TC (Test "
+        "Case) identifiers; the sixth module, test_extended_coverage.py, is a later, "
+        "much larger addition covering everything built after the original five files "
+        "— see Section 7.9."
     )
     section_break(doc)
 
     # ── 7.1 Suite summary ────────────────────────────────────────────────
     add_heading(doc, "7.1 Test Suite Summary", 2, MID_BLUE)
     summary = [
-        ("test_ttlv.py",        "TTLV codec unit tests",                "22", "Pure unit (no HSM)"),
-        ("test_lifecycle.py",   "Lifecycle state machine unit tests",   "18", "Pure unit (no HSM)"),
-        ("test_metadata.py",    "MetadataStore unit tests",             "16", "SQLite only (no HSM)"),
-        ("test_operations.py",  "Operation integration tests",          "8",  "Requires SoftHSM2"),
-        ("test_conformance.py", "KMIP conformance tests (end-to-end)",  "48", "Requires SoftHSM2"),
-        ("TOTAL",               "",                                     "122",""),
+        ("test_ttlv.py",        "TTLV codec unit tests",                "22",  "Pure unit (no HSM)"),
+        ("test_lifecycle.py",   "Lifecycle state machine unit tests",   "26",  "Pure unit (no HSM)"),
+        ("test_metadata.py",    "MetadataStore unit tests",             "18",  "SQLite only (no HSM)"),
+        ("test_operations.py",  "Operation integration tests",          "8",   "Requires SoftHSM2"),
+        ("test_conformance.py", "KMIP conformance tests (end-to-end)",  "48",  "Requires SoftHSM2"),
+        ("test_extended_coverage.py", "All 41 operations, algorithm/mode coverage, "
+                                      "error paths, access control, session concurrency",
+                                      "502", "Requires SoftHSM2"),
+        ("TOTAL",               "",                                     "624", ""),
     ]
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = 'Table Grid'
@@ -884,7 +1146,7 @@ def build():
     # ── 7.2 Running the tests ─────────────────────────────────────────────
     add_heading(doc, "7.2 Running the Test Suite", 2, MID_BLUE)
     for line in [
-        "# Run all 122 tests",
+        "# Run all 624 tests",
         "pytest",
         "",
         "# Run a specific module",
@@ -1002,11 +1264,10 @@ def build():
         ("LC-026", "test_compromised_encrypt_forbidden",  "Compromised forbids encrypt"),
     ]
 
-    # Only first 18 have IDs in the test file; map remaining
     tbl = doc.add_table(rows=1, cols=3)
     tbl.style = 'Table Grid'
     add_table_header_row(tbl, ["ID", "Test Name", "Assertion"])
-    for i, row in enumerate(lc_tests[:18]):  # 18 per spec
+    for i, row in enumerate(lc_tests):  # 26 total
         add_table_row(tbl, row, alt=(i % 2 == 0))
 
     section_break(doc)
@@ -1198,6 +1459,45 @@ def build():
     for i, row in enumerate(conformance):
         add_table_row(tbl, row, alt=(i % 2 == 0))
 
+    section_break(doc)
+
+    # ── 7.9 Extended Coverage Tests ──────────────────────────────────────
+    doc.add_page_break()
+    add_heading(doc, "7.9 Extended Coverage Tests — test_extended_coverage.py", 2, MID_BLUE)
+    add_para(doc,
+        "test_conformance.py covers the mandatory/optional KMIP TC surface described in "
+        "Section 7.8 above — the operations and behaviors present when this project had "
+        "15 operations and 122 tests. test_extended_coverage.py is a later, much larger "
+        "addition (502 tests, over four times the size of the original five test modules "
+        "combined) covering everything built since: the remaining 25 operations not "
+        "exercised by test_conformance.py, algorithm and cipher-mode coverage across the "
+        "capability-probed CryptographicAlgorithm set, error paths, and the access-control "
+        "and session-concurrency work described in Sections 3.3 and 4.4b."
+    )
+    section_break(doc)
+    ext_areas = [
+        ("All 41 operations", "End-to-end coverage of every operation in Section 6's "
+         "table, not just the 16 covered by the original conformance suite."),
+        ("Algorithm / mode coverage", "Every CryptographicAlgorithm + BlockCipherMode "
+         "combination the capability probe reports as available on this SoftHSM2 token, "
+         "plus confirmation that unsupported combinations fail cleanly with "
+         "OperationNotSupported."),
+        ("Error paths", "Invalid input, missing fields, wrong object state, and "
+         "cross-identity access attempts across every operation, not just the small "
+         "TC-ERR-001 subset in test_conformance.py."),
+        ("Access control", "Ownership enforcement, the admin-role bypass, and delegated "
+         "\"read\" vs \"full\" grants — the three tiers described in Section 4.4b — "
+         "exercised against real operations over TCP."),
+        ("Session concurrency", "Concurrent client threads driving the server's single "
+         "locked PKCS#11 session (Section 3.3) to confirm correctness under load, given "
+         "that the earlier lock-free session-pool approach was proven unsafe."),
+    ]
+    tbl = doc.add_table(rows=1, cols=2)
+    tbl.style = 'Table Grid'
+    add_table_header_row(tbl, ["Coverage Area", "Detail"])
+    for i, row in enumerate(ext_areas):
+        add_table_row(tbl, row, alt=(i % 2 == 0))
+
     # ═══════════════════════════════════════════════════════════════════════
     # 8. TEST RESULTS SUMMARY
     # ═══════════════════════════════════════════════════════════════════════
@@ -1205,18 +1505,19 @@ def build():
     add_heading(doc, "8. Test Results Summary", 1, DARK_BLUE)
 
     add_para(doc,
-        "All 122 tests pass on a standard Ubuntu 22.04 installation with "
+        "All 624 tests pass on a standard Ubuntu 22.04 installation with "
         "SoftHSM2 2.6.1 and Python 3.11."
     )
     section_break(doc)
 
     result_table = [
-        ("test_ttlv.py",        "22",  "22",  "0",  "100 %"),
-        ("test_lifecycle.py",   "18",  "18",  "0",  "100 %"),
-        ("test_metadata.py",    "16",  "16",  "0",  "100 %"),
-        ("test_operations.py",  "8",   "8",   "0",  "100 %"),
-        ("test_conformance.py", "48",  "48",  "0",  "100 %"),
-        ("TOTAL",               "122", "122", "0",  "100 %"),
+        ("test_ttlv.py",             "22",  "22",  "0",  "100 %"),
+        ("test_lifecycle.py",        "26",  "26",  "0",  "100 %"),
+        ("test_metadata.py",         "18",  "18",  "0",  "100 %"),
+        ("test_operations.py",       "8",   "8",   "0",  "100 %"),
+        ("test_conformance.py",      "48",  "48",  "0",  "100 %"),
+        ("test_extended_coverage.py","502", "502", "0",  "100 %"),
+        ("TOTAL",                    "624", "624", "0",  "100 %"),
     ]
 
     tbl = doc.add_table(rows=1, cols=5)
@@ -1241,21 +1542,39 @@ def build():
 
     add_heading(doc, "9.1 Current Limitations", 2, MID_BLUE)
     limits = [
-        ("Tag Overlap", "A few TTLV tags are reused across contexts (e.g., Tag.Data and "
-                        "Tag.CryptographicAlgorithm share 0x420028). This is intentional per "
-                        "the KMIP spec but requires careful context-aware parsing."),
-        ("Single-session PKCS#11", "One PKCS#11 session is shared across all threads. "
-                                    "SoftHSM2 serialises concurrent calls internally. A real "
-                                    "deployment should use a session pool."),
-        ("No authentication", "The server accepts anonymous connections. For production, "
-                               "enable mTLS and map client certificates to identity strings."),
-        ("Encrypt/Sign without KMIP wrapper", "Sign and SignatureVerify are implemented in "
-                                              "the PKCS#11 shim but have no KMIP operation handler yet."),
-        ("SoftHSM2 SENSITIVE+EXTRACTABLE", "SoftHSM2 blocks CKA_VALUE read when both "
-                                            "SENSITIVE and EXTRACTABLE are True. Workaround: "
-                                            "effective_sensitive = sensitive AND NOT extractable."),
-        ("No batch atomicity", "Multiple batch items in one request are processed independently; "
-                               "a failure in item N does not roll back items 1..N-1."),
+        ("Single, locked PKCS#11 session", "server.py runs one thread per connection, "
+         "but they share one PKCS11Shim session serialized by a threading.RLock. This is "
+         "the deliberate, permanent design, not a stopgap — a session pool (separate "
+         "session per thread) was built and tested, and reproducibly segfaults or "
+         "corrupts operations under concurrency: python-pkcs11 0.9.5 calls "
+         "C_Initialize(NULL), so the library's own internal thread safety is never "
+         "enabled, and separate sessions don't work around that. A real fix needs a "
+         "PKCS#11 binding that passes CKF_OS_LOCKING_OK, or a multi-process worker pool. "
+         "See Section 3.3."),
+        ("RBAC has no wire protocol", "Role and grant management (assign_role, "
+         "grant_access, …) is a MetadataStore admin surface only — KMIP itself doesn't "
+         "define an operation for it. No groups, no per-role operation allowlist yet; "
+         "every non-admin identity is evaluated individually against ownership and "
+         "grants. See Section 4.4b."),
+        ("No audit trail", "Operations are logged via Python logging only — nothing "
+         "persisted, queryable, or tamper-evident."),
+        ("TLS optional, not enforced", "The server accepts plain TCP if no certificate "
+         "is configured; cert/key load from a static path with no rotation or ACME "
+         "integration."),
+        ("Not FIPS/CC validated", "SoftHSM2 isn't a validated HSM. The PKCS#11 boundary "
+         "means a validated token can be swapped in with no code change above "
+         "pkcs11_shim/, but that swap hasn't happened here."),
+        ("SoftHSM2 SENSITIVE+EXTRACTABLE bug", "SENSITIVE=True AND EXTRACTABLE=True "
+         "blocks CKA_VALUE read on this token; the shim downgrades sensitivity "
+         "automatically (effective_sensitive = sensitive AND NOT extractable) when "
+         "extractability is explicitly requested."),
+        ("No batch atomicity", "Failure in one BatchItem does not roll back previous "
+         "items in the same batch."),
+        ("Algorithm coverage", "15 of 40 CryptographicAlgorithm values work against "
+         "this token, capability-probed at startup; the rest are cleanly rejected with "
+         "OperationNotSupported rather than a raw PKCS#11 error. See Section 4.6."),
+        ("No HA / backup tooling", "Single process, single SQLite file, single HSM "
+         "token; no clustering, replication, or coordinated backup/restore."),
     ]
     tbl = doc.add_table(rows=1, cols=2)
     tbl.style = 'Table Grid'
@@ -1266,14 +1585,18 @@ def build():
     section_break(doc)
     add_heading(doc, "9.2 Roadmap", 2, MID_BLUE)
     roadmap = [
-        "PKCS#11 session pool for high-concurrency deployments",
-        "mTLS client authentication with identity-based access control",
-        "Sign, SignatureVerify, MAC KMIP operation handlers",
+        "A PKCS#11 binding that passes CKF_OS_LOCKING_OK at C_Initialize, or a "
+        "multi-process worker pool — the two real fixes for the single-session lock "
+        "(a same-process session pool is not viable; see Section 3.3)",
+        "RBAC groups and a per-role operation allowlist, beyond the current "
+        "admin / owner / delegated-grant model",
+        "Persistent, queryable audit trail (beyond Python logging)",
+        "Enforced TLS by default, with certificate rotation / ACME integration",
+        "FIPS/CC-validated HSM backend swap-in and validation",
         "KMIP Batch Item atomicity (rollback on error)",
-        "KMIP 2.0 Attributes object model (replaces TemplateAttribute)",
-        "Post-quantum algorithm support (ML-KEM / FIPS 203, ML-DSA / FIPS 204) for KMIP 3.0",
-        "REST / JSON transport binding (KMIP 2.0 §14)",
-        "Prometheus metrics endpoint for monitoring",
+        "Additional PKCS#11-backed mechanisms (SHA-3 HMAC/hash, Blowfish, Twofish) once "
+        "a capable token/backend is available — no code change needed above the shim",
+        "HA / clustering / coordinated backup and restore tooling",
     ]
     for r in roadmap:
         add_bullet(doc, r)

@@ -268,7 +268,9 @@ def build():
     body(doc,
         "This document describes how to install all dependencies, build the "
         "kmip_pkcs11 Python package, initialise a SoftHSM2 token, and execute "
-        "the automated test suite (274 tests, 93 % coverage). All steps have "
+        "the automated test suite (624 tests, 100 % pass rate). The server "
+        "implements 41 of the 53 KMIP 2.1 operations (see Known Limitations "
+        "in README_KMIP.md for the 12 deliberately deferred). All steps have "
         "been validated on Ubuntu 22.04 LTS / Debian 12 with Python 3.11.")
 
     make_table(doc,
@@ -276,8 +278,8 @@ def build():
         [
             ["Python",          "3.9",    "Runtime language"],
             ["SoftHSM2",        "2.6",    "Software PKCS#11 HSM (token storage)"],
-            ["python-pkcs11",   "0.7.0",  "PKCS#11 Python bindings"],
-            ["PyKCS11",         "1.5.0",  "Alternate PKCS#11 binding (optional)"],
+            ["python-pkcs11",   "0.9.5",  "PKCS#11 Python bindings"],
+            ["PyKCS11",         "1.5.0",  "Alternate PKCS#11 binding (optional, declared in setup.py)"],
             ["pytest",          "7.0",    "Test runner"],
             ["pytest-cov",      "4.0",    "Coverage reporting"],
             ["setuptools",      "40.0",   "Package build tool (standard library)"],
@@ -374,7 +376,7 @@ def build():
     make_table(doc,
         ["Package", "Installed Version"],
         [
-            ["`python-pkcs11`", "0.9.4"],
+            ["`python-pkcs11`", "0.9.5"],
             ["`PyKCS11`",       "1.5.18"],
             ["`pytest`",        "9.1.0"],
             ["`pytest-cov`",    "7.1.0"],
@@ -446,7 +448,7 @@ def build():
         "# Or explicitly point pytest at the test directory",
         "pytest kmip_pkcs11/tests/",
     ], title="Shell")
-    tip(doc, "All 274 tests should pass in approximately 10 seconds on a modern laptop.")
+    tip(doc, "All 624 tests should pass, at a 100 % pass rate, run live against a real SoftHSM2 token.")
 
     h2(doc, "5.2  Verbose Output")
     code_block(doc, [
@@ -454,9 +456,9 @@ def build():
         "",
         "# Example output (excerpt):",
         "# kmip_pkcs11/tests/test_ttlv.py::TestEncodeDecode::test_integer_positive PASSED",
-        "# kmip_pkcs11/tests/test_lifecycle.py::TestStateMachine::test_activate  PASSED",
+        "# kmip_pkcs11/tests/test_lifecycle.py::TestTransitions::test_activate  PASSED",
         "# ...",
-        "# 274 passed in 9.97s",
+        "# 624 passed",
     ], title="Shell — verbose mode")
 
     h2(doc, "5.3  Run a Single Test Module")
@@ -467,16 +469,23 @@ def build():
         "# Lifecycle state machine tests only",
         "pytest kmip_pkcs11/tests/test_lifecycle.py -v",
         "",
+        "# Metadata store unit tests only",
+        "pytest kmip_pkcs11/tests/test_metadata.py -v",
+        "",
+        "# Operation integration tests (requires SoftHSM2)",
+        "pytest kmip_pkcs11/tests/test_operations.py -v",
+        "",
         "# KMIP conformance tests (requires SoftHSM2)",
         "pytest kmip_pkcs11/tests/test_conformance.py -v",
         "",
-        "# Extended coverage tests",
+        "# Extended coverage tests — every operation, algorithm/mode coverage,",
+        "# error paths, access control, session concurrency (requires SoftHSM2)",
         "pytest kmip_pkcs11/tests/test_extended_coverage.py -v",
     ], title="Shell — individual modules")
 
     h2(doc, "5.4  Run Tests Without a Hardware Token")
     body(doc,
-        "Two modules do not require SoftHSM2 and can be run in any environment:")
+        "Three modules do not require SoftHSM2 and can be run in any environment:")
     code_block(doc, [
         "pytest kmip_pkcs11/tests/test_ttlv.py \\",
         "       kmip_pkcs11/tests/test_lifecycle.py \\",
@@ -531,25 +540,25 @@ def build():
     ], title="Shell — HTML report")
 
     h2(doc, "6.3  Current Coverage Summary")
-    body(doc, "Results from the final test run (274 tests):")
+    body(doc, "Results from the current test run (624 tests, run live against a real SoftHSM2 token):")
     make_table(doc,
-        ["Test Module", "Tests", "Coverage", "Notes"],
+        ["Test Module", "Tests", "Pass Rate", "Notes"],
         [
             ["test_ttlv.py",              "22",  "100 %", "TTLV codec — no HSM needed"],
-            ["test_lifecycle.py",          "18",  "100 %", "State machine — no HSM needed"],
-            ["test_metadata.py",           "16",  "100 %", "SQLite store — no HSM needed"],
+            ["test_lifecycle.py",          "26",  "100 %", "State machine — no HSM needed"],
+            ["test_metadata.py",           "18",  "100 %", "SQLite store — no HSM needed"],
             ["test_operations.py",          "8",  "100 %", "Operation integration"],
-            ["test_conformance.py",        "48",  "100 %", "KMIP 2.1 conformance"],
-            ["test_extended_coverage.py", "162",  "99 %",  "Branch / gap coverage"],
-            ["TOTAL",                     "274",  "93 %",  "97.5 % excl. demo script"],
+            ["test_conformance.py",        "48",  "100 %", "KMIP 2.1 conformance (OASIS TC mapping)"],
+            ["test_extended_coverage.py", "502",  "100 %", "Every operation, algorithm/mode coverage, error paths, access control, session concurrency"],
+            ["TOTAL",                     "624",  "100 %", "All modules run live against a real SoftHSM2 token"],
         ],
         col_widths=[6, 2.5, 3, 6.5]
     )
     doc.add_paragraph()
     note(doc,
-        "demo.py (153 lines) is intentionally excluded from the coverage target "
-        "as it requires a fully running server and interactive environment. "
-        "Excluding it, library coverage is 97.5 %.")
+        "demo.py is intentionally excluded from the automated test suite — it "
+        "requires a fully running server and an interactive environment and is "
+        "exercised manually (see Section 1 / README_KMIP.md Quick Start).")
 
     # ── 7  Test Module Reference ─────────────────────────────────────────────
     h1(doc, "7  Test Module Reference")
@@ -564,14 +573,15 @@ def build():
              "Interval, Enumeration), structure nesting, padding, tag repr.",
              "No"],
             ["test_lifecycle.py",
-             "18 unit tests for the key lifecycle state machine: all legal transitions "
-             "(PreActive→Active→Deactivated→Compromised→Destroyed), all forbidden "
-             "transitions, and operation permission checks.",
+             "26 unit tests for the key lifecycle state machine (lifecycle/state_machine.py): "
+             "all legal transitions (PreActive→Active→Deactivated→Compromised→Destroyed / "
+             "DestroyedCompromised), all forbidden transitions, revoke(normal) vs. "
+             "revoke(compromise) branching, and usage-allowed checks per state.",
              "No"],
             ["test_metadata.py",
-             "16 unit tests for the SQLite metadata store: create/get/update/delete, "
-             "activation-date auto-activation, locate filters (name, type, algorithm, "
-             "state, owner), attribute CRUD.",
+             "18 unit tests for the SQLite metadata store: create/get/update/delete, "
+             "activation-date auto-activation, state transitions, locate filters (name, "
+             "type, algorithm, state, owner), attribute CRUD.",
              "No"],
             ["test_operations.py",
              "8 integration tests exercising the operation handlers end-to-end through "
@@ -585,11 +595,18 @@ def build():
              "Attributes, ErrorHandling.",
              "Yes"],
             ["test_extended_coverage.py",
-             "162 targeted branch-coverage tests: every uncovered line in all 16 "
-             "operation handlers, the PKCS#11 shim (import/export, sign/verify, EC "
-             "keys, random), server error paths, client context manager, and "
-             "lifecycle edge cases.",
-             "Yes (most tests)"],
+             "502 live tests — by far the largest module. Exercises every one of the "
+             "41 implemented KMIP operations end-to-end against the live SoftHSM2 token; "
+             "full algorithm and block-cipher-mode coverage (GCM/CTR/CFB/OFB/CCM, RSA, "
+             "EC/ECDSA/ECDH, DSA, DH, HMAC, MAC, hashing, split-key, derive-key, wrap/"
+             "unwrap); capability-gating (mechanisms the token doesn't support must fail "
+             "cleanly with OperationNotSupported, never a raw PKCS#11 error); error paths "
+             "across every handler; the access-control model (object ownership, the admin "
+             "role, and delegated read/full grants — see README_KMIP.md's Access Control "
+             "section); and session-concurrency regression tests that hammer the shared "
+             "PKCS#11 session with multiple threads at once, verifying correctness under "
+             "the threading.RLock in pkcs11_shim/shim.py.",
+             "Yes (nearly all tests)"],
         ],
         col_widths=[4.5, 11, 2.5]
     )
@@ -604,16 +621,23 @@ def build():
         [
             ["softhsm_token", "session (auto-use)",
              "Creates /tmp/softhsm2_tests/ and initialises a SoftHSM2 token "
-             "labelled KMIPTestSuite (PIN: 9999)."],
+             "labelled KMIPTestSuite (PIN: 9999, SO-PIN: 8888)."],
             ["store",         "function",
              "Returns a fresh MetadataStore backed by a temporary SQLite file "
              "in pytest's tmp_path directory."],
             ["shim",          "session",
              "Opens and yields an initialised PKCS11Shim connected to the "
-             "KMIPTestSuite token. Finalises after all tests complete."],
+             "KMIPTestSuite token. Finalised after all tests complete."],
             ["server_client", "function",
-             "Spins up a KMIPServer on a unique port (starting at 15700), "
-             "connects a KMIPClient, and yields both. Tears down after each test."],
+             "Spins up a KMIPServer on a unique port (starting at 15700) backed "
+             "by the session-scoped shim, connects a single KMIPClient, and "
+             "yields (client, store). Tears down after each test."],
+            ["kmip_server",   "function",
+             "Spins up a KMIPServer the same way as server_client but without "
+             "attaching a client, so a test can connect multiple KMIPClients "
+             "(e.g. with different Credentials) against the same running "
+             "server — used by the access-control and concurrency tests. "
+             "Yields (store, port)."],
         ],
         col_widths=[3.5, 4, 10.5]
     )
@@ -668,6 +692,31 @@ def build():
         ("pytest: unrecognized arguments: --cov",
          "pytest-cov must be loaded explicitly when invoking via 'python -m pytest'.",
          ["python -m pytest -p pytest_cov --cov=kmip_pkcs11 --cov-report=term-missing"]),
+        ("Native crash / segfault under concurrent load",
+         "This is not a bug to fix — it is the known python-pkcs11 / SoftHSM2 "
+         "threading limitation documented in README_KMIP.md's Known Limitations. "
+         "python-pkcs11 0.9.5 calls C_Initialize(NULL), so the library never "
+         "enables its own internal thread safety; separate PKCS#11 sessions per "
+         "thread do not work around that and reproducibly segfault or corrupt "
+         "operations under concurrency. The fix already in place is the single, "
+         "shared PKCS#11 session serialized by the threading.RLock in "
+         "pkcs11_shim/shim.py (server.py runs one thread per client connection, "
+         "but all threads share that one locked session). Do not attempt to add "
+         "a session pool as a fix — a real fix would require a PKCS#11 binding "
+         "that passes CKF_OS_LOCKING_OK, or a multi-process worker pool.",
+         ["# No user action required — the lock in pkcs11_shim/shim.py is the fix."]),
+        ("OperationFailed / NotAuthorized or PermissionDenied on an operation that used to work",
+         "The calling identity is neither the owner of the object nor holds the "
+         "admin role nor has a delegated grant for it. Access control "
+         "(lifecycle/access_control.py) checks, in order: admin role, "
+         "ownership (set at Create/Register/etc. time), then a delegated "
+         "'read' or 'full' grant. See the Access Control section of "
+         "README_KMIP.md for the full authorization model.",
+         ["# Grant an identity the admin role (unconditional access to every object):",
+          "store.assign_role(\"alice\", \"admin\")",
+          "",
+          "# Or delegate access to one specific object without transferring ownership:",
+          "store.grant_access(uid, \"bob\", \"read\")   # or \"full\" for mutating ops"]),
     ]
 
     for title, desc, cmds in problems:
@@ -689,45 +738,44 @@ def build():
         "├── coverage_html/              # HTML coverage report (generated)",
         "└── kmip_pkcs11/",
         "    ├── core/",
-        "    │   ├── enums.py            # KMIP enumerations",
+        "    │   ├── enums.py            # KMIP enumerations (Tag, Operation, State, …)",
         "    │   ├── ttlv.py             # TTLV encoder / decoder",
         "    │   └── exceptions.py       # KMIP exception hierarchy",
         "    ├── lifecycle/",
-        "    │   └── state_machine.py    # Key lifecycle state transitions",
+        "    │   ├── state_machine.py    # Key lifecycle state transitions",
+        "    │   └── access_control.py   # Owner / admin role / delegated grants",
         "    ├── metadata/",
-        "    │   └── store.py            # SQLite metadata store (WAL mode)",
+        "    │   └── store.py            # SQLite metadata store (objects, attrs, roles, grants)",
         "    ├── pkcs11_shim/",
-        "    │   └── shim.py             # PKCS#11 / SoftHSM2 wrapper",
-        "    ├── operations/             # One file per KMIP operation",
+        "    │   └── shim.py             # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock",
+        "    ├── operations/             # One file per KMIP operation (41 files total) — dispatcher.py routes",
         "    │   ├── dispatcher.py",
-        "    │   ├── create.py",
-        "    │   ├── create_keypair.py",
-        "    │   ├── register.py",
-        "    │   ├── get.py",
-        "    │   ├── get_attributes.py",
-        "    │   ├── add_attribute.py",
-        "    │   ├── delete_attribute.py",
-        "    │   ├── locate.py",
-        "    │   ├── activate.py",
-        "    │   ├── revoke.py",
-        "    │   ├── destroy.py",
-        "    │   ├── encrypt.py",
-        "    │   ├── decrypt.py",
-        "    │   ├── query.py",
-        "    │   └── discover_versions.py",
+        "    │   ├── create.py, create_keypair.py, register.py, import_op.py, export_op.py",
+        "    │   ├── get.py, get_attributes.py, get_usage_allocation.py, locate.py",
+        "    │   ├── add_attribute.py, modify_attribute.py, delete_attribute.py,",
+        "    │   │   set_attribute.py, adjust_attribute.py",
+        "    │   ├── activate.py, revoke.py, destroy.py, archive.py, recover.py, check.py",
+        "    │   ├── encrypt.py, decrypt.py, sign.py, signature_verify.py",
+        "    │   ├── mac.py, mac_verify.py, hash_op.py",
+        "    │   ├── rekey.py, rekey_keypair.py, certify.py, recertify.py",
+        "    │   ├── derive_key.py, create_split_key.py, join_split_key.py",
+        "    │   ├── validate.py, obtain_lease.py, rng_retrieve.py, rng_seed.py",
+        "    │   └── query.py, discover_versions.py",
         "    ├── server/",
-        "    │   └── server.py           # TCP server (thread-per-client)",
+        "    │   └── server.py           # TCP server (thread-per-client, Credential auth, optional TLS)",
         "    ├── test_app/",
         "    │   ├── client.py           # Synchronous KMIP 2.1 client",
-        "    │   └── demo.py             # 16-step end-to-end demo",
+        "    │   └── demo.py             # End-to-end demo",
         "    └── tests/",
         "        ├── conftest.py         # Shared fixtures",
-        "        ├── test_ttlv.py",
-        "        ├── test_lifecycle.py",
-        "        ├── test_metadata.py",
-        "        ├── test_operations.py",
-        "        ├── test_conformance.py",
-        "        └── test_extended_coverage.py",
+        "        ├── test_ttlv.py              #  22 TTLV unit tests",
+        "        ├── test_lifecycle.py         #  26 lifecycle state-machine tests",
+        "        ├── test_metadata.py          #  18 metadata store unit tests",
+        "        ├── test_operations.py        #   8 operation integration tests",
+        "        ├── test_conformance.py       #  48 OASIS KMIP conformance tests",
+        "        └── test_extended_coverage.py # 502 live tests: every operation, algorithm",
+        "                                      #  coverage, error paths, access control,",
+        "                                      #  session concurrency",
     ], title="Repository layout")
 
     # ── 11  Quick-Reference Commands ─────────────────────────────────────────
@@ -742,11 +790,11 @@ def build():
             ["Run with verbose output",
              "`pytest -v`"],
             ["Run unit tests only (no HSM)",
-             "`pytest kmip_pkcs11/tests/test_ttlv.py test_lifecycle.py test_metadata.py`"],
+             "`pytest kmip_pkcs11/tests/test_ttlv.py kmip_pkcs11/tests/test_lifecycle.py kmip_pkcs11/tests/test_metadata.py`"],
             ["Run a specific test class",
              "`pytest -k TestCreate -v`"],
             ["Run a specific test method",
-             "`pytest kmip_pkcs11/tests/test_conformance.py::TestCreate::test_create_aes256 -v`"],
+             "`pytest kmip_pkcs11/tests/test_conformance.py::TestCreate::test_create_aes256_returns_uid -v`"],
             ["Stop on first failure",
              "`pytest -x`"],
             ["Re-run only last failures",

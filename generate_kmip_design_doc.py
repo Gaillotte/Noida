@@ -225,24 +225,25 @@ def diag_init():
         ("meta", "Metadata Store", "meta"),
     ]
     msgs = [
-        ("cli", "srv",  "TLS ClientHello",                    "call"),
-        ("srv", "cli",  "TLS ServerHello + Certificate",      "return"),
-        ("cli", "srv",  "Client Certificate (mTLS)",          "call"),
-        ("srv", "p11",  "C_Initialize()",                     "call"),
+        ("cli", "srv",  "TCP connect (TLS ClientHello only if tls_cert configured)", "call"),
+        ("srv", "cli",  "ServerHello + Certificate  [if TLS enabled — off by default]", "return"),
+        ("srv", "p11",  "C_Initialize()  [python-pkcs11: NULL args, no OS locking]", "call"),
         ("p11", "hsm",  "HSM Driver Init",                    "call"),
         ("hsm", "p11",  "CKR_OK",                             "return"),
-        ("srv", "p11",  "C_OpenSession(slot, CKF_RW_SESSION)","call"),
+        ("srv", "p11",  "C_OpenSession(slot, CKF_RW_SESSION)  — the ONE shared session","call"),
         ("p11", "hsm",  "Open secure channel to HSM",         "call"),
         ("hsm", "p11",  "hSession",                           "return"),
         ("srv", "p11",  "C_Login(hSession, CKU_USER, PIN)",   "call"),
         ("p11", "hsm",  "Authenticate operator",              "call"),
         ("hsm", "p11",  "CKR_OK",                             "return"),
+        ("srv", "p11",  "C_GetMechanismList()  — capability probe, cached",  "call"),
+        ("p11", "srv",  "supported mechanism set",             "return"),
         ("srv", "meta", "Open metadata DB",                   "call"),
         ("meta","srv",  "DB ready",                           "return"),
         ("srv", "cli",  "KMIP: Ready (Discover Versions resp)","return"),
     ]
     return draw_sequence("SD-01  System Initialization & HSM Login",
-                         actors, msgs, figsize=(13, 8))
+                         actors, msgs, figsize=(13, 9))
 
 def diag_create_key():
     actors = [
@@ -302,10 +303,10 @@ def diag_get():
     ]
     msgs = [
         ("cli", "srv",  "Get(UniqueIdentifier=UUID, KeyWrapping?)",       "call"),
-        ("srv", "srv",  "Auth + ACL check",                               "self"),
-        ("srv", "meta", "SELECT hKey, state, extractable WHERE UUID",     "call"),
-        ("meta","srv",  "hKey, state=Active, extractable=True",           "return"),
-        ("srv", "srv",  "Check state == Active",                          "self"),
+        ("srv", "meta", "SELECT hKey, state, extractable, owner WHERE UUID","call"),
+        ("meta","srv",  "hKey, state=Active, extractable=True, owner",    "return"),
+        ("srv", "srv",  "check_owner(): admin role, or owner, or grant — else PermissionDenied", "self"),
+        ("srv", "srv",  "check_usage_allowed(state)",                     "self"),
         ("srv", "p11",  "C_GetAttributeValue(hKey, CKA_VALUE)",           "call"),
         ("p11", "hsm",  "Export key material (if extractable)",           "call"),
         ("hsm", "p11",  "Key bytes (or wrapped)",                         "return"),
@@ -325,10 +326,11 @@ def diag_encrypt():
     ]
     msgs = [
         ("cli", "srv", "Encrypt(UUID, plaintext, AES-GCM, IV)",  "call"),
-        ("srv", "srv", "Auth + ACL (CryptographicUsageMask)",    "self"),
-        ("srv", "meta","SELECT hKey, state WHERE UUID",           "call"),
-        ("meta","srv", "hKey, state=Active",                     "return"),
-        ("srv", "p11", "C_EncryptInit(hSession, AES-GCM, hKey)", "call"),
+        ("srv", "meta","SELECT hKey, state, owner WHERE UUID",   "call"),
+        ("meta","srv", "hKey, state=Active, owner",              "return"),
+        ("srv", "srv", "check_owner() + check_usage_allowed()",  "self"),
+        ("srv", "p11", "supports_mechanism(AES_GCM)? — capability probe","self"),
+        ("srv", "p11", "C_EncryptInit(hSession, AES-GCM, hKey)  [shared, locked session]", "call"),
         ("p11", "hsm", "Init AES-GCM with HSM-resident key",     "call"),
         ("hsm", "p11", "CKR_OK",                                 "return"),
         ("srv", "p11", "C_Encrypt(plaintext)",                   "call"),
@@ -350,19 +352,23 @@ def diag_lifecycle():
     ]
     msgs = [
         ("cli", "srv",  "Activate(UUID)",                                   "call"),
+        ("srv", "meta", "SELECT owner, state WHERE UUID",                   "call"),
+        ("meta","srv",  "owner, state=Pre-Active",                          "return"),
+        ("srv", "srv",  "check_owner() + transition(state,\"activate\")",   "self"),
         ("srv", "meta", "UPDATE state = Active WHERE UUID",                 "call"),
         ("meta","srv",  "OK",                                               "return"),
         ("srv", "cli",  "ActivateResponse()",                               "return"),
         ("cli", "srv",  "Revoke(UUID, reason=Superseded)",                  "call"),
-        ("srv", "meta", "UPDATE state = Deactivated WHERE UUID",            "call"),
+        ("srv", "meta", "SELECT owner, state WHERE UUID",                   "call"),
+        ("meta","srv",  "owner, state=Active",                              "return"),
+        ("srv", "srv",  "check_owner() + transition(state,\"revoke_normal\")","self"),
+        ("srv", "meta", "UPDATE state = Deactivated WHERE UUID  [metadata only — no HSM call]", "call"),
         ("meta","srv",  "OK",                                               "return"),
-        ("srv", "p11",  "C_SetAttributeValue(hKey, CKA_ENCRYPT=False)",     "call"),
-        ("p11", "hsm",  "Restrict key usage on HSM",                       "call"),
-        ("hsm", "p11",  "CKR_OK",                                          "return"),
         ("srv", "cli",  "RevokeResponse()",                                 "return"),
         ("cli", "srv",  "Destroy(UUID)",                                    "call"),
-        ("srv", "meta", "SELECT hKey WHERE UUID",                           "call"),
-        ("meta","srv",  "hKey",                                             "return"),
+        ("srv", "meta", "SELECT hKey, owner, state WHERE UUID",             "call"),
+        ("meta","srv",  "hKey, owner, state",                               "return"),
+        ("srv", "srv",  "check_owner() + transition(state,\"destroy\")",    "self"),
         ("srv", "p11",  "C_DestroyObject(hKey)",                            "call"),
         ("p11", "hsm",  "Zeroize key material in HSM",                     "call"),
         ("hsm", "p11",  "CKR_OK",                                          "return"),
@@ -383,14 +389,8 @@ def diag_locate():
     ]
     msgs = [
         ("cli", "srv",  "Locate(Name='mykey', ObjectType=SymmetricKey, State=Active)", "call"),
-        ("srv", "srv",  "Auth + ACL",                                                  "self"),
-        ("srv", "meta", "SELECT UUID WHERE name='mykey' AND type=Sym AND state=Active","call"),
-        ("meta","srv",  "[UUID1, UUID2, ...]",                                         "return"),
-        ("srv", "p11",  "C_FindObjectsInit(attr template) [optional verify]",          "call"),
-        ("p11", "hsm",  "Enumerate matching HSM objects",                              "call"),
-        ("hsm", "p11",  "hKey list",                                                   "return"),
-        ("p11", "srv",  "hKey list",                                                   "return"),
-        ("srv", "srv",  "Intersect metadata results + HSM results",                    "self"),
+        ("srv", "meta", "SELECT UUID WHERE name='mykey' AND type=Sym AND state=Active AND owner=identity","call"),
+        ("meta","srv",  "[UUID1, UUID2, ...] — caller's own objects only",             "return"),
         ("srv", "cli",  "LocateResponse([UUID1, UUID2])",                              "return"),
     ]
     return draw_sequence("SD-07  Locate Operation",
@@ -398,26 +398,29 @@ def diag_locate():
 
 def diag_auth():
     actors = [
-        ("cli",  "KMIP Client",  "client"),
-        ("srv",  "KMIP Server",  "server"),
-        ("tls",  "TLS Layer",    "pkcs11"),
-        ("acl",  "ACL / AuthN",  "meta"),
+        ("cli",  "KMIP Client",   "client"),
+        ("srv",  "KMIP Server",   "server"),
+        ("shim", "PKCS#11 Shim",  "pkcs11"),
+        ("meta", "Metadata Store","meta"),
     ]
     msgs = [
-        ("cli", "tls", "TCP connect",                                              "call"),
-        ("tls", "cli", "TLS 1.3 ServerHello",                                     "return"),
-        ("cli", "tls", "Client Certificate (X.509)",                              "call"),
-        ("tls", "srv", "Client identity (Subject DN / SAN)",                      "call"),
-        ("srv", "acl", "Resolve identity → KMIP principal",                       "call"),
-        ("acl", "srv", "Principal + permission set",                              "return"),
-        ("cli", "srv", "KMIP Request + Authentication{UsernamePassword / Token}","call"),
-        ("srv", "acl", "Validate credential",                                     "call"),
-        ("acl", "srv", "Combined identity confirmed",                             "return"),
-        ("srv", "srv", "Apply ACL to requested operation",                        "self"),
-        ("srv", "cli", "KMIP Response (allowed) OR ResultStatus=OperationFailed","return"),
+        ("cli",  "srv",  "TCP connect  (TLS optional — off unless configured)",     "call"),
+        ("cli",  "srv",  "KMIP Request + Credential{UsernamePasswordCredential}",   "call"),
+        ("srv",  "shim", "verify_pin(password)  — hmac.compare_digest vs token PIN","call"),
+        ("shim", "srv",  "True/False",                                             "return"),
+        ("srv",  "srv",  "identity = username if match, else AuthenticationFailed; \"anonymous\" if no Credential", "self"),
+        ("cli",  "srv",  "e.g. Destroy(UUID)  — identity resolved, not yet authorized for this object", "call"),
+        ("srv",  "meta", "SELECT owner_identity WHERE UUID",                        "call"),
+        ("meta", "srv",  "owner_identity",                                          "return"),
+        ("srv",  "meta", "get_roles(identity)  — tier 1: admin role?",              "call"),
+        ("meta", "srv",  "[] or [\"admin\", ...]",                                  "return"),
+        ("srv",  "srv",  "tier 2: identity == owner_identity ?",                    "self"),
+        ("srv",  "meta", "get_grant(uid, identity)  — tier 3: delegated grant?",    "call"),
+        ("meta", "srv",  "None, or \"read\"/\"full\"",                              "return"),
+        ("srv",  "cli",  "KMIP Response  OR  ResultReason=PermissionDenied",        "return"),
     ]
     return draw_sequence("SD-08  Authentication & Authorization Flow",
-                         actors, msgs, figsize=(13, 8))
+                         actors, msgs, figsize=(13, 11))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -488,7 +491,7 @@ def build_document(out_path):
         ("  8.7", "SD-07 Locate Operation"),
         ("  8.8", "SD-08 Authentication & Authorization"),
         ("9", "Transport & TLS Configuration"),
-        ("10", "Authentication Mechanisms"),
+        ("10", "Authentication & Access Control"),
         ("11", "Metadata Store Schema"),
         ("12", "Error Handling & Result Codes"),
         ("13", "Security Considerations"),
@@ -513,11 +516,14 @@ def build_document(out_path):
     doc.add_paragraph()
     add_para(doc, "Scope:", bold=True)
     for item in [
-        "KMIP versions covered: 1.4 and 2.1 (with 3.0 PQC extensions noted).",
-        "PKCS#11 (Cryptoki) version: 2.40 / 3.0.",
-        "Transport: TLS 1.3 over TCP (port 5696).",
-        "Authentication: mTLS + KMIP credential (username/password, device credential).",
-        "Managed objects: Symmetric Keys, Asymmetric Key Pairs, Certificates, Secret Data, Opaque Objects.",
+        "KMIP version covered: 2.1 (OASIS, December 2020) — 41 of 53 operations implemented.",
+        "PKCS#11 (Cryptoki) binding: python-pkcs11 0.9.5, tested against SoftHSM2.",
+        "Transport: raw TCP on port 5696; TLS 1.3/mTLS supported but optional, not enforced by default.",
+        "Authentication: KMIP Credential (UsernameAndPassword, checked against the token PIN).",
+        "Access control: owner-only enforcement, an admin role, and delegated per-object grants "
+        "(added after the initial design — see Section 10).",
+        "Managed objects: Symmetric Keys, Asymmetric Key Pairs, Certificates, Secret Data, "
+        "Opaque Objects, Split Key parts.",
     ]:
         p = doc.add_paragraph(item, style="List Bullet")
         p.runs[0].font.size = Pt(10)
@@ -593,6 +599,14 @@ def build_document(out_path):
 "          │  (key gen, crypto, storage) │\n"
 "          └─────────────────────────────┘")
     doc.add_paragraph()
+    add_para(doc,
+        "As built, two details in this diagram are more specific than the generic boxes suggest: "
+        "the PKCS#11 Shim wraps exactly one PKCS#11 session, shared by every connection thread and "
+        "serialized behind a lock (Section 4, Section 13) rather than a session pool; and the "
+        "Auth/ACL block is a two-stage check — Credential authentication against the token PIN, "
+        "then per-operation authorization in lifecycle/access_control.py (Section 10).",
+        italic=True, size=9)
+    doc.add_paragraph()
     doc.add_page_break()
 
     # ════════════════════════════════════════════════════
@@ -615,18 +629,31 @@ def build_document(out_path):
          "Compromised → Destroyed. Enforces date-based transitions (Activation Date, "
          "Deactivation Date). Calls the Metadata Store for state persistence."),
         ("Auth / ACL Module",
-         "Validates mTLS client certificates and KMIP Credential structures "
-         "(UsernamePassword, DeviceCredential, AttestationCredential). Maps identities "
-         "to KMIP principals and enforces CryptographicUsageMask per operation."),
+         "Resolves identity from the KMIP Credential (UsernameAndPassword, checked against "
+         "the token PIN — see Section 10); TLS client certificates are supported as an optional "
+         "additional transport control but are not mapped to a separate principal today. Every "
+         "operation against an existing object is then authorized by lifecycle/access_control.py "
+         "in three tiers, checked in order: the admin role (unconditional), ownership "
+         "(identity == owner_identity, recorded at create time), and delegated per-object grants "
+         "(read or full, assigned independently of ownership). There is no KMIP wire operation for "
+         "role/grant management — it's a server-admin surface against the metadata store directly."),
         ("PKCS#11 Shim",
-         "Wraps the vendor PKCS#11 shared library. Manages slot/token enumeration, "
-         "session pooling (C_OpenSession / C_CloseSession), login (C_Login), "
-         "and provides a clean Go/Rust/C API to the layers above."),
+         "Wraps the PKCS#11 shared library via python-pkcs11. Owns exactly one PKCS#11 session, "
+         "shared by every connection thread and serialized behind a threading.RLock — a session "
+         "pool (one session per thread) was built and evaluated, and rejected: the python-pkcs11 "
+         "binding in use calls C_Initialize(NULL), so the library's own thread-safety is never "
+         "enabled, and concurrent access from separate sessions reproducibly corrupted operations "
+         "or crashed the native extension in testing (Section 13). The shim also probes the "
+         "token's actual supported mechanism list once at startup (supports_mechanism() / "
+         "_require_mechanism()) and rejects an algorithm or mode the token doesn't implement "
+         "before attempting the native call, rather than surfacing a raw PKCS#11 error."),
         ("Metadata Store",
          "Stores KMIP-specific attributes that PKCS#11 does not natively support: "
          "Unique Identifier (UUID), Activation Date, Deactivation Date, State, "
-         "Name, Link, Application Specific Information, Revocation Reason, and "
-         "PKCS#11 handle reference. SQLite for single-node; PostgreSQL for HA."),
+         "Name, Link, Application Specific Information, Revocation Reason, owner identity, "
+         "and PKCS#11 handle reference — plus, since the access-control work, identity role "
+         "assignments and delegated object grants (Section 11). Implemented as a single SQLite "
+         "database (WAL mode, connection-per-thread); there is no multi-node/HA backend today."),
     ]
     for name, desc in components:
         add_heading(doc, name, 2)
@@ -640,40 +667,46 @@ def build_document(out_path):
     # ════════════════════════════════════════════════════
     add_heading(doc, "5. KMIP ↔ PKCS#11 Operation Mapping", 1)
     add_para(doc,
-        "The following table shows how each KMIP operation maps to one or more PKCS#11 "
-        "Cryptoki function calls. Operations marked 'Metadata only' require no HSM call.")
+        "The following table shows how each of the 41 implemented KMIP operations maps to "
+        "PKCS#11 Cryptoki calls (via python-pkcs11) and/or the metadata store. Operations "
+        "marked 'Metadata only' require no HSM call at all — this is more common than the "
+        "original design anticipated: state transitions in particular (Activate, Revoke, "
+        "most of Archive/Recover) turned out not to need a corresponding PKCS#11 attribute "
+        "change, since HSM-side usage restriction is enforced at the mechanism-dispatch layer "
+        "(the capability-probed shim), not by flipping CKA_ENCRYPT/CKA_DECRYPT on the object.")
     doc.add_paragraph()
 
     add_table(doc,
         ["KMIP Operation", "PKCS#11 Call(s)", "Notes"],
         [
             ["Create (symmetric)",    "C_GenerateKey",                          "Template built from CryptoAlg + KeyLength"],
-            ["Create Key Pair",       "C_GenerateKeyPair",                      "Two handles returned: hPub, hPriv"],
+            ["CreateKeyPair",         "C_GenerateKeyPair",                      "RSA/EC/DSA/DH; two UIDs returned"],
             ["Register",              "C_CreateObject",                         "Client supplies key material"],
-            ["Import (v2.0+)",        "C_CreateObject / C_UnwrapKey",          "Optionally unwrap if wrapped"],
-            ["Get",                   "C_GetAttributeValue(CKA_VALUE)",         "Only if CKA_EXTRACTABLE = TRUE"],
-            ["Export (v2.0+)",        "C_WrapKey or C_GetAttributeValue",       "Wrapping key UUID specified"],
-            ["Locate",                "C_FindObjectsInit + C_FindObjects",      "Cross-reference with Metadata Store"],
+            ["Import (v2.0+)",        "C_CreateObject, or C_UnwrapKey via wrap_key/unwrap_key", "ReplaceExisting requires ownership of the existing UID"],
+            ["Export (v2.0+)",        "Same as Get (aliases it)",               ""],
+            ["Get",                   "C_GetAttributeValue(CKA_VALUE), or C_WrapKey", "Only if extractable; wrapping scoped to SymmetricKey"],
+            ["Locate",                "Metadata only",                          "Filtered by owner_identity — a non-admin caller cannot enumerate objects it doesn't own"],
             ["Destroy",               "C_DestroyObject",                        "HSM zeroizes key material"],
-            ["Activate",              "Metadata only",                          "State → Active; no HSM call needed"],
-            ["Revoke (deactivate)",   "C_SetAttributeValue(CKA_ENCRYPT=F)",    "Restrict usage on HSM"],
-            ["Revoke (compromise)",   "C_SetAttributeValue + C_DestroyObject", "Compromise + optional destroy"],
-            ["Encrypt",               "C_EncryptInit + C_Encrypt",             "IV/AAD passed in KMIP request"],
-            ["Decrypt",               "C_DecryptInit + C_Decrypt",             "Tag verified for AEAD modes"],
-            ["Sign",                  "C_SignInit + C_Sign",                   "Mechanism = CKM_RSA_PKCS, CKM_ECDSA…"],
-            ["Signature Verify",      "C_VerifyInit + C_Verify",               ""],
-            ["MAC",                   "C_SignInit (HMAC mechanism)",            "CKM_SHA256_HMAC etc."],
-            ["MAC Verify",            "C_VerifyInit (HMAC mechanism)",          ""],
-            ["Derive Key",            "C_DeriveKey",                            "ECDH, HKDF mechanisms"],
-            ["Re-key",                "C_GenerateKey + C_DestroyObject (old)", "New UUID linked to old"],
-            ["Get Attributes",        "C_GetAttributeValue",                    "Merge with Metadata Store"],
-            ["Set Attribute",         "C_SetAttributeValue",                    "For mutable PKCS#11 attrs only"],
-            ["Query",                 "C_GetInfo + C_GetMechanismList",        "Capabilities discovery"],
-            ["Discover Versions",     "Metadata only",                          "Returns supported KMIP versions"],
-            ["RNG Retrieve",          "C_GenerateRandom",                       "HSM TRNG output"],
-            ["RNG Seed",              "C_SeedRandom",                           "Optional on HSMs"],
+            ["Activate",              "Metadata only",                          "State → Active"],
+            ["Revoke",                "Metadata only",                          "State → Deactivated/Compromised per reason code; no PKCS#11 call"],
+            ["Archive / Recover",     "Metadata only",                          "Orthogonal to State; blocks all ops but metadata reads until Recovered"],
+            ["Check",                 "Metadata only",                          "Reports which requested constraints (usage mask, state, usage limit) fail, without mutating"],
+            ["ReKey / ReKeyKeyPair",  "C_GenerateKey / C_GenerateKeyPair",      "New object(s), cross-linked to the old via Link attributes"],
+            ["Certify / ReCertify",   "C_Sign (self-signed X.509, built with asn1crypto)", "RSA only"],
+            ["CreateSplitKey / JoinSplitKey", "C_GenerateRandom, or none",      "XOR N-of-N sharing only; no threshold (k-of-n) scheme"],
+            ["Encrypt / Decrypt",     "C_EncryptInit/C_Encrypt, C_DecryptInit/C_Decrypt", "Mode gated by the capability probe first"],
+            ["Sign / SignatureVerify","C_SignInit + C_Sign / C_VerifyInit + C_Verify", "Mechanism = CKM_RSA_PKCS, CKM_ECDSA_*, CKM_DSA_*"],
+            ["MAC / MACVerify",       "C_SignInit / C_VerifyInit (HMAC mechanism)", "CKM_SHA256_HMAC etc.; SHA-3 HMAC wired but token-gated"],
+            ["Hash",                  "C_DigestInit + C_Digest",                "No key involved"],
+            ["Validate",              "C_VerifyInit + C_Verify (ephemeral imported issuer key)", "RSA-signed certificate chains only"],
+            ["DeriveKey",             "C_DeriveKey",                            "DH/ECDH key agreement only"],
+            ["GetAttributes / GetAttributeList", "Metadata only",               ""],
+            ["AddAttribute / ModifyAttribute / DeleteAttribute / SetAttribute / AdjustAttribute", "Metadata only", "AdjustAttribute does atomic increment/decrement/set on numeric attrs"],
+            ["ObtainLease / GetUsageAllocation", "Metadata only",               "Lease has no client-tracked expiry enforcement; usage allocation atomically decrements a counter attribute"],
+            ["Query / DiscoverVersions", "C_GetMechanismList (for Query's capability probe)", "Advertises 3 of 12 QueryFunction values"],
+            ["RNGRetrieve / RNGSeed", "C_GenerateRandom / C_SeedRandom",        ""],
         ],
-        col_widths=[5.0, 6.0, 7.0]
+        col_widths=[5.0, 6.5, 6.5]
     )
     doc.add_paragraph()
     doc.add_page_break()
@@ -711,9 +744,16 @@ def build_document(out_path):
             ["Never Extractable",          "PKCS#11 Token",          "CKA_NEVER_EXTRACTABLE"],
             ["Application Specific Info",  "Metadata Store",         "—"],
             ["Custom Attribute",           "Metadata Store",         "—"],
+            ["Owner identity",             "Metadata Store",         "— (Credential username, or \"anonymous\"; not derived from an mTLS DN)"],
         ],
         col_widths=[5.5, 4.5, 8.0]
     )
+    doc.add_paragraph()
+    add_para(doc,
+        "Two more tables exist outside the KMIP attribute model proper, supporting the access-control "
+        "layer added after the initial design: identity role assignments and delegated per-object "
+        "grants. Neither has a KMIP wire representation — see Section 10 and Section 11.",
+        italic=True, size=9)
     doc.add_paragraph()
     doc.add_page_break()
 
@@ -801,18 +841,20 @@ def build_document(out_path):
     # 9. TRANSPORT & TLS
     # ════════════════════════════════════════════════════
     add_heading(doc, "9. Transport & TLS Configuration", 1)
+    add_para(doc,
+        "TLS is optional, not enforced — this is a tracked known limitation (Section 13), "
+        "not the original intent. If no certificate is configured the server accepts plain "
+        "TCP; if configured, it wraps the socket via Python's ssl module.", italic=True, size=9)
+    doc.add_paragraph()
 
     add_table(doc,
         ["Parameter", "Value"],
         [
             ["Default TCP port",         "5696 (IANA assigned to KMIP)"],
-            ["TLS version",              "TLS 1.3 (minimum); TLS 1.2 allowed for legacy clients"],
-            ["Client authentication",    "Mutual TLS (mTLS) — mandatory"],
-            ["Cipher suites (TLS 1.3)", "TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256"],
-            ["Certificate format",       "X.509 v3 with SubjectAltName"],
-            ["Session resumption",       "TLS 1.3 session tickets; max lifetime 24 h"],
-            ["KMIP over HTTPS",          "Optional — same TTLV payload over HTTPS/443"],
-            ["PQC (KMIP 3.0)",          "TLS 1.3 + Kyber/ML-KEM hybrid key exchange"],
+            ["TLS",                      "Optional — off unless tls_cert/tls_key are configured"],
+            ["Client authentication",    "Mutual TLS (mTLS) — optional, only if require_client_cert=True"],
+            ["Certificate format",       "X.509 v3, loaded from a static file path (no rotation, no ACME)"],
+            ["KMIP over HTTPS",          "Not implemented — this server only speaks raw-TCP TTLV"],
         ],
         col_widths=[6.0, 12.0]
     )
@@ -822,25 +864,64 @@ def build_document(out_path):
     # ════════════════════════════════════════════════════
     # 10. AUTHENTICATION MECHANISMS
     # ════════════════════════════════════════════════════
-    add_heading(doc, "10. Authentication Mechanisms", 1)
+    add_heading(doc, "10. Authentication & Access Control", 1)
     add_para(doc,
-        "Authentication is two-layered: channel-level (TLS) and application-level "
-        "(KMIP Credential). Both layers are evaluated; the server uses the intersection "
-        "of identities to determine the effective KMIP principal.")
+        "Authentication resolves a request to an identity string. Access control then decides, "
+        "per operation and per object, whether that identity may proceed. These are implemented "
+        "as two separate, sequential steps — not the combined TLS-plus-credential model originally "
+        "envisioned.")
+    doc.add_paragraph()
+
+    add_heading(doc, "10.1 Authentication", 2)
+    add_para(doc,
+        "Only one Credential type is implemented today. The table below also records what was "
+        "originally planned but is not built, so the gap is explicit rather than silently dropped.")
     doc.add_paragraph()
 
     add_table(doc,
-        ["Credential Type", "KMIP Structure", "Use Case"],
+        ["Credential Type", "KMIP Structure", "Status"],
         [
-            ["Mutual TLS",          "TLS client certificate (X.509)",              "Machine / service authentication"],
-            ["UsernameAndPassword", "Credential{UsernamePasswordCredential}",      "Human operator authentication"],
-            ["Device Credential",   "Credential{DeviceCredential}",                "IoT / embedded device authentication"],
-            ["Attestation",         "Credential{AttestationCredential}",           "TPM / hardware attestation"],
-            ["One-Time Password",   "Credential{OneTimePasswordCredential}",       "MFA scenarios"],
-            ["Hashed Password",     "Credential{HashedPasswordCredential}",        "Legacy system integration"],
+            ["UsernameAndPassword", "Credential{UsernamePasswordCredential}", "Implemented — password checked against the token's shared PIN (hmac.compare_digest); any username with the correct PIN is accepted as that identity"],
+            ["(no credential)",     "—",                                      "Implemented — identity defaults to \"anonymous\""],
+            ["Device Credential",   "Credential{DeviceCredential}",           "Not implemented"],
+            ["Attestation",         "Credential{AttestationCredential}",      "Not implemented"],
+            ["One-Time Password",   "Credential{OneTimePasswordCredential}",  "Not implemented"],
+            ["Hashed Password",     "Credential{HashedPasswordCredential}",   "Not implemented"],
+            ["mTLS-derived identity","TLS client certificate (X.509)",        "mTLS itself is supported (Section 9) but the certificate's Subject/SAN is not mapped to a KMIP identity — it isn't a Credential alternative here"],
         ],
-        col_widths=[4.5, 7.0, 6.5]
+        col_widths=[4.5, 6.0, 7.5]
     )
+    doc.add_paragraph()
+
+    add_heading(doc, "10.2 Access Control (Authorization)", 2)
+    add_para(doc,
+        "Every managed object records owner_identity, the identity that created it. Operations "
+        "against an existing object are authorized in this order by lifecycle/access_control.py:")
+    doc.add_paragraph()
+    for i, item in enumerate([
+        "Admin role — the reserved role \"admin\", assigned via MetadataStore.assign_role"
+        "(identity, \"admin\"): unconditional access to every object, regardless of owner.",
+        "Ownership — identity == owner_identity.",
+        "Delegated grant — MetadataStore.grant_access(uid, grantee, \"read\"|\"full\") lets a "
+        "specific identity reach a specific object it doesn't own. \"read\" covers Get, "
+        "GetAttributes, GetAttributeList, Check, Export, ObtainLease; every other operation "
+        "requires \"full\".",
+    ], start=1):
+        p = doc.add_paragraph(f"{i}. {item}", style="List Number")
+        p.runs[0].font.size = Pt(10)
+    doc.add_paragraph()
+    add_para(doc,
+        "Objects with no recorded owner (owner_identity = NULL) remain reachable by any identity — "
+        "this only applies to objects created outside the normal Create/Register/etc. path, so "
+        "nothing already in the store is orphaned by adding this on top of it. Failing all three "
+        "checks raises NotAuthorized (ResultReason.PermissionDenied, Section 12).")
+    doc.add_paragraph()
+    add_para(doc,
+        "There is no KMIP wire operation for role or grant management — the specification doesn't "
+        "define one. Both are a MetadataStore admin surface, called directly by an admin script or "
+        "console, not exposed over the network. There are no groups and no per-role operation "
+        "allowlist yet — every non-admin identity is evaluated individually against ownership and "
+        "grants (Section 14 — Roadmap).", italic=True, size=9)
     doc.add_paragraph()
     doc.add_page_break()
 
@@ -849,44 +930,73 @@ def build_document(out_path):
     # ════════════════════════════════════════════════════
     add_heading(doc, "11. Metadata Store Schema", 1)
     add_para(doc,
-        "The Metadata Store persists KMIP-specific attributes not natively held "
-        "in PKCS#11. Two primary tables are required.")
+        "The Metadata Store persists KMIP-specific attributes not natively held in PKCS#11, plus "
+        "(since the access-control work) role and grant records. It is SQLite (WAL mode, "
+        "connection-per-thread) — there is no multi-node/HA backend; that remains future work "
+        "(Section 14), not the Postgres-based design originally sketched.")
     doc.add_paragraph()
 
     add_heading(doc, "Table: kmip_objects", 2)
     add_code(doc,
 "CREATE TABLE kmip_objects (\n"
-"  uuid              TEXT PRIMARY KEY,   -- KMIP Unique Identifier\n"
-"  object_type       TEXT NOT NULL,      -- SymmetricKey | PublicKey | PrivateKey | ...\n"
-"  pkcs11_handle     BIGINT,             -- CK_OBJECT_HANDLE (0 = metadata-only)\n"
-"  pkcs11_slot       INT,                -- CK_SLOT_ID\n"
-"  state             TEXT NOT NULL,      -- PreActive | Active | Deactivated | Compromised | Destroyed\n"
-"  cryptographic_algorithm TEXT,\n"
-"  cryptographic_length    INT,\n"
-"  usage_mask        TEXT,               -- JSON array of allowed operations\n"
-"  initial_date      TIMESTAMP,\n"
-"  activation_date   TIMESTAMP,\n"
-"  deactivation_date TIMESTAMP,\n"
-"  destroy_date      TIMESTAMP,\n"
-"  compromise_date   TIMESTAMP,\n"
-"  revocation_reason TEXT,\n"
-"  sensitive         BOOLEAN DEFAULT TRUE,\n"
-"  extractable       BOOLEAN DEFAULT FALSE,\n"
-"  owner_identity    TEXT,               -- KMIP principal (from mTLS DN)\n"
-"  created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n"
+"  uuid                    TEXT PRIMARY KEY,      -- KMIP Unique Identifier\n"
+"  object_type             INTEGER NOT NULL,       -- ObjectType enum value\n"
+"  pkcs11_handle           INTEGER,\n"
+"  pkcs11_slot             INTEGER DEFAULT 0,\n"
+"  state                   INTEGER NOT NULL DEFAULT 1,  -- State enum value\n"
+"  cryptographic_algorithm INTEGER,\n"
+"  cryptographic_length    INTEGER,\n"
+"  usage_mask              INTEGER,\n"
+"  initial_date            REAL,\n"
+"  activation_date         REAL,\n"
+"  deactivation_date       REAL,\n"
+"  destroy_date            REAL,\n"
+"  compromise_date         REAL,\n"
+"  revocation_reason       INTEGER,\n"
+"  revocation_message      TEXT,\n"
+"  sensitive               INTEGER DEFAULT 1,\n"
+"  extractable             INTEGER DEFAULT 0,\n"
+"  never_extractable       INTEGER DEFAULT 0,\n"
+"  always_sensitive        INTEGER DEFAULT 1,\n"
+"  owner_identity          TEXT,      -- Credential username, or \"anonymous\" (not an mTLS DN)\n"
+"  key_format_type         INTEGER,\n"
+"  raw_key_value           BLOB,      -- certificates, split-key parts, secret data\n"
+"  archived                INTEGER DEFAULT 0,\n"
+"  archive_date            REAL,\n"
+"  created_at              REAL NOT NULL\n"
 ");")
 
     doc.add_paragraph()
     add_heading(doc, "Table: kmip_attributes", 2)
     add_code(doc,
 "CREATE TABLE kmip_attributes (\n"
-"  id          SERIAL PRIMARY KEY,\n"
-"  object_uuid TEXT NOT NULL REFERENCES kmip_objects(uuid),\n"
+"  id          INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+"  object_uuid TEXT NOT NULL REFERENCES kmip_objects(uuid) ON DELETE CASCADE,\n"
 "  attr_name   TEXT NOT NULL,   -- e.g. 'Name', 'Link', 'x-custom'\n"
-"  attr_index  INT  DEFAULT 0,  -- for multi-valued attrs\n"
-"  attr_value  TEXT NOT NULL\n"
+"  attr_index  INTEGER DEFAULT 0,\n"
+"  attr_value  TEXT NOT NULL    -- JSON-encoded\n"
 ");\n"
 "CREATE INDEX idx_attr_lookup ON kmip_attributes(object_uuid, attr_name);")
+    doc.add_paragraph()
+
+    add_heading(doc, "Table: kmip_identity_roles  (added with access control)", 2)
+    add_code(doc,
+"CREATE TABLE kmip_identity_roles (\n"
+"  identity TEXT NOT NULL,\n"
+"  role     TEXT NOT NULL,      -- \"admin\" is the only role the code special-cases\n"
+"  PRIMARY KEY (identity, role)\n"
+");")
+    doc.add_paragraph()
+
+    add_heading(doc, "Table: kmip_object_grants  (added with access control)", 2)
+    add_code(doc,
+"CREATE TABLE kmip_object_grants (\n"
+"  object_uuid TEXT NOT NULL REFERENCES kmip_objects(uuid) ON DELETE CASCADE,\n"
+"  grantee     TEXT NOT NULL,\n"
+"  permission  TEXT NOT NULL DEFAULT 'full',   -- \"read\" | \"full\"\n"
+"  PRIMARY KEY (object_uuid, grantee)\n"
+");\n"
+"CREATE INDEX idx_grants_object ON kmip_object_grants(object_uuid);")
     doc.add_paragraph()
     doc.add_page_break()
 
@@ -896,8 +1006,19 @@ def build_document(out_path):
     add_heading(doc, "12. Error Handling & Result Codes", 1)
     add_para(doc,
         "Every KMIP Batch Item response carries a ResultStatus enumeration and, on failure, "
-        "a ResultReason and ResultMessage. PKCS#11 return codes must be mapped to "
-        "KMIP result reasons.")
+        "a ResultReason and ResultMessage. Most PKCS#11 return codes are mapped to a KMIP "
+        "result reason, but two important cases are raised entirely at the KMIP layer, "
+        "before any PKCS#11 call is attempted:")
+    doc.add_paragraph()
+
+    add_table(doc,
+        ["Source", "KMIP Result Reason", "Trigger"],
+        [
+            ["lifecycle/access_control.py", "PermissionDenied (NotAuthorized)", "check_owner() fails all three tiers — not owner, not admin, no sufficient grant"],
+            ["pkcs11_shim capability probe", "OperationNotSupported",           "Algorithm/mode not in the token's live slot.get_mechanisms() list — rejected before the native call, not after it fails"],
+        ],
+        col_widths=[6.0, 5.5, 6.5]
+    )
     doc.add_paragraph()
 
     add_table(doc,
@@ -905,16 +1026,13 @@ def build_document(out_path):
         [
             ["CKR_OK",                       "(success)",                        "200 OK"],
             ["CKR_PIN_INCORRECT",            "AuthenticationNotSuccessful",      "401"],
-            ["CKR_USER_NOT_LOGGED_IN",       "NotAuthorized",                    "403"],
             ["CKR_OBJECT_HANDLE_INVALID",    "ItemNotFound",                     "404"],
             ["CKR_KEY_HANDLE_INVALID",       "ItemNotFound",                     "404"],
             ["CKR_KEY_SIZE_RANGE",           "InvalidField (key length)",         "400"],
-            ["CKR_MECHANISM_INVALID",        "InvalidMessage",                   "400"],
+            ["CKR_MECHANISM_INVALID",        "CryptographicFailure",             "400"],
             ["CKR_ATTRIBUTE_READ_ONLY",      "InvalidField",                     "400"],
             ["CKR_DEVICE_ERROR",             "GeneralFailure",                   "500"],
             ["CKR_TOKEN_NOT_PRESENT",        "GeneralFailure",                   "503"],
-            ["CKR_SESSION_COUNT",            "GeneralFailure (session pool full)","503"],
-            ["CKR_OPERATION_NOT_INITIALIZED","OperationNotSupported",            "501"],
         ],
         col_widths=[6.0, 6.0, 6.0]
     )
@@ -925,30 +1043,54 @@ def build_document(out_path):
     # 13. SECURITY CONSIDERATIONS
     # ════════════════════════════════════════════════════
     add_heading(doc, "13. Security Considerations", 1)
+    add_para(doc,
+        "The first four items below were part of the original design and remain accurate. "
+        "The next two — access control and session concurrency — were the two items found, "
+        "during a later hardening pass, to already be unsafe as originally built (not just "
+        "\"missing polish\"), and are recorded here with what was actually done about them, "
+        "including a rejected approach and why.", italic=True, size=9)
+    doc.add_paragraph()
 
     items = [
         ("Key Material Exposure",
-         "Keys with CKA_EXTRACTABLE=FALSE never leave the HSM. The KMIP 'Get' operation "
-         "on such keys MUST return ResultReason=PermissionDenied. Sensitive attribute "
-         "MUST be set TRUE on all newly generated keys."),
+         "Keys with CKA_EXTRACTABLE=FALSE never leave the HSM. Get on such keys raises "
+         "NotExtractable. Newly generated keys default to Sensitive=True, Extractable=False "
+         "unless the request explicitly asks otherwise."),
         ("PIN / HSM Credential Protection",
-         "The HSM SO-PIN and User-PIN must be stored in a secrets manager (e.g., "
-         "HashiCorp Vault, AWS Secrets Manager). Never store in plaintext config files."),
+         "The HSM SO-PIN and User-PIN should be stored in a secrets manager (e.g., "
+         "HashiCorp Vault, AWS Secrets Manager), not a plaintext config file. This is an "
+         "operational recommendation — the server itself takes the PIN as a constructor "
+         "argument and does no secrets-manager integration of its own."),
         ("Metadata Store Integrity",
-         "The Metadata Store must be encrypted at rest and backed up with integrity "
-         "verification. Divergence between PKCS#11 token state and Metadata Store "
-         "state must trigger an alert and reconciliation procedure."),
-        ("Session Hijacking",
-         "TLS 1.3 with mTLS prevents session hijacking. KMIP request batch items "
-         "must be validated atomically — partial batch success must not leave "
-         "the system in an inconsistent state."),
+         "The metadata store is not encrypted at rest and there is no backup/restore tooling "
+         "today (tracked in Section 14). Divergence between PKCS#11 token state and metadata "
+         "store state has no automated detection or reconciliation procedure."),
+        ("Batch Atomicity",
+         "KMIP request batch items are processed independently — a failure partway through "
+         "a batch does not roll back items that already succeeded."),
+        ("Access Control",
+         "Originally out of scope for this document; found later to be a real gap, not a "
+         "future nice-to-have — every operation handler received an identity string but "
+         "never checked it against anything, and \"authentication\" was one shared PIN "
+         "shared by every caller. Fixed with the three-tier model in Section 10.2 "
+         "(admin role, ownership, delegated grants). Remaining gap: no groups, no per-role "
+         "operation allowlist, no dual-control / M-of-N approval for destructive operations."),
+        ("Session Concurrency",
+         "The server is multi-threaded (one thread per connection) but PKCS#11 access is not "
+         "safe to parallelize casually. A session-pool design (one PKCS#11 session per thread, "
+         "no cross-thread lock) was implemented and load-tested; it reproducibly either "
+         "segfaulted the native pkcs11 extension or returned GeneralError/MechanismInvalid on "
+         "most threads. Root cause: the python-pkcs11 binding calls C_Initialize(NULL), so the "
+         "library never enables its own internal thread safety — separate sessions do not work "
+         "around that. The fix in place is a single shared session behind a threading.RLock "
+         "(pkcs11_shim/shim.py's @_synchronized decorator, applied to every session-touching "
+         "method). This is the permanent design, not a stopgap: a real concurrent-session fix "
+         "needs either a PKCS#11 binding that passes CKF_OS_LOCKING_OK at C_Initialize, or a "
+         "multi-process worker pool — both larger changes than this codebase currently takes on."),
         ("Audit Logging",
-         "Every KMIP operation (success or failure), including operator, timestamp, "
-         "operation type, and object UUID, must be written to an immutable audit log."),
-        ("KMIP 3.0 PQC Readiness",
-         "Plan for ML-KEM and ML-DSA by ensuring the HSM firmware supports FIPS 203/204/205 "
-         "mechanisms and the TLS stack supports hybrid key exchange "
-         "(X25519Kyber768Draft00 or equivalent)."),
+         "Not implemented. Operations are recorded via Python's logging module only — nothing "
+         "persisted, queryable, or tamper-evident. There is no answer today to \"who exported "
+         "this key, and when\" beyond whatever remains in a log file."),
     ]
     for title, body in items:
         add_para(doc, title, bold=True)
@@ -961,22 +1103,48 @@ def build_document(out_path):
     # 14. IMPLEMENTATION ROADMAP
     # ════════════════════════════════════════════════════
     add_heading(doc, "14. Implementation Roadmap", 1)
+    add_para(doc,
+        "The phased plan originally in this section (TTLV parser through PQC extensions) has "
+        "been delivered and superseded by actual build history; PQC (KMIP 3.0 / ML-KEM / ML-DSA) "
+        "was never pursued and is out of scope. What follows is the current state instead: what's "
+        "done, and what's genuinely still missing.")
+    doc.add_paragraph()
 
+    add_heading(doc, "14.1 Delivered", 2)
     add_table(doc,
-        ["Phase", "Deliverable", "Duration"],
+        ["Area", "Status"],
         [
-            ["Phase 1", "TTLV parser + serializer (all primitive types + structures)",   "3 weeks"],
-            ["Phase 2", "PKCS#11 shim: session pool, C_GenerateKey, C_DestroyObject",   "2 weeks"],
-            ["Phase 3", "Metadata Store schema + CRUD layer",                            "1 week"],
-            ["Phase 4", "Create, Register, Get, Destroy, Locate operations",             "3 weeks"],
-            ["Phase 5", "Lifecycle engine (Activate, Revoke, state machine)",            "2 weeks"],
-            ["Phase 6", "Encrypt, Decrypt, Sign, Verify, MAC operations",                "2 weeks"],
-            ["Phase 7", "TLS 1.3 / mTLS server, Auth module, ACL",                      "2 weeks"],
-            ["Phase 8", "KMIP 2.1 compliance testing (OASIS test vectors)",              "2 weeks"],
-            ["Phase 9", "Derive Key, Re-key, Import/Export, batch support",              "2 weeks"],
-            ["Phase 10","PQC extensions (KMIP 3.0 ML-KEM, ML-DSA, TLS hybrid)",         "3 weeks"],
+            ["Core protocol", "TTLV encoding/decoding, batching, BatchErrorContinuationOption, MaximumResponseSize"],
+            ["Operations", "41 of 53 KMIP operations — the remaining 12 are session/async/vendor operations, a deliberate scope line (14.2)"],
+            ["Lifecycle", "Full state machine, Archive/Recover, ReKey/ReKeyKeyPair/ReCertify, split-key XOR sharing"],
+            ["Algorithm coverage", "15 of 40 CryptographicAlgorithm values, capability-probed at startup so unsupported ones fail cleanly rather than erroring deep in a PKCS#11 call"],
+            ["Access control", "Owner-only enforcement, admin role, delegated per-object grants (Section 10.2)"],
+            ["Session concurrency", "Single locked PKCS#11 session — the permanent design, not a stopgap (Section 13)"],
         ],
-        col_widths=[3.0, 12.0, 3.0]
+        col_widths=[4.5, 13.5]
+    )
+    doc.add_paragraph()
+
+    add_heading(doc, "14.2 Deliberately out of scope", 2)
+    add_para(doc,
+        "Cancel, Poll, Notify, Put, Log, Login, Logout, DelegatedLogin, SetEndpointRole, PKCS11, "
+        "Interop, ReProvision — session/async/vendor operations that don't fit this server's "
+        "synchronous, per-request-authenticated model.")
+    doc.add_paragraph()
+
+    add_heading(doc, "14.3 Genuinely remaining", 2)
+    add_table(doc,
+        ["Area", "Gap"],
+        [
+            ["Audit", "No persisted, queryable, tamper-evident log of who did what to which object when"],
+            ["TLS", "Optional, not enforced by default; static cert/key path, no rotation or ACME"],
+            ["HSM validation", "SoftHSM2 is not FIPS 140-2/3 or Common Criteria validated"],
+            ["RBAC depth", "No groups, no per-role operation allowlist, no dual control / M-of-N approval for destructive operations"],
+            ["HA / backup", "Single process, single SQLite file, single HSM token; no clustering, replication, or coordinated backup/restore"],
+            ["Key governance", "No cryptoperiod enforcement, auto-rotation, or expiry alerting — every lifecycle transition is reactive to an explicit client call"],
+            ["Query surface", "3 of 12 QueryFunction values handled — the rest are narrow capability-discovery variants this server has nothing to report for"],
+        ],
+        col_widths=[4.5, 13.5]
     )
     doc.add_paragraph()
     doc.add_page_break()
@@ -987,19 +1155,16 @@ def build_document(out_path):
     add_heading(doc, "15. References", 1)
 
     refs = [
-        "[1]  OASIS KMIP Specification v2.1 — https://docs.oasis-open.org/kmip/kmip-spec/v2.1/",
-        "[2]  OASIS KMIP Profiles v2.1 — https://docs.oasis-open.org/kmip/kmip-profiles/v2.1/",
+        "[1]  OASIS KMIP Specification v2.1 — https://docs.oasis-open.org/kmip/kmip-spec/v2.1/os/kmip-spec-v2.1-os.html",
+        "[2]  OASIS KMIP Test Cases v2.1 — https://docs.oasis-open.org/kmip/kmip-testcases/v2.1/",
         "[3]  OASIS KMIP Usage Guide v2.1 — https://docs.oasis-open.org/kmip/kmip-ug/v2.1/",
-        "[4]  KMIP Specification v3.0 CSD01 (August 2024) — https://docs.oasis-open.org/kmip/kmip-spec/v3.0/",
-        "[5]  OASIS PKCS#11 v3.0 — https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.0/",
-        "[6]  RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3",
-        "[7]  NIST FIPS 203 — Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM)",
-        "[8]  NIST FIPS 204 — Module-Lattice-Based Digital Signature Standard (ML-DSA)",
-        "[9]  NIST FIPS 205 — Stateless Hash-Based Digital Signature Standard (SLH-DSA)",
-        "[10] cascade-hsm-bridge (NLnet Labs) — https://github.com/NLnetLabs/cascade-hsm-bridge",
-        "[11] P6R KMIP Server Gateway — https://support.p6r.com/p6r/docs/ksg/",
-        "[12] OpenKMIP / PyKMIP — https://github.com/OpenKMIP/PyKMIP",
-        "[13] KMIP Additional Message Encodings v1.0 — https://docs.oasis-open.org/kmip/kmip-addtl-msg-enc/",
+        "[4]  OASIS PKCS#11 Specification v3.0 — https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.0/",
+        "[5]  RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3",
+        "[6]  SoftHSM2 — https://github.com/opendnssec/SoftHSMv2",
+        "[7]  python-pkcs11 — https://python-pkcs11.readthedocs.io/",
+        "[8]  cascade-hsm-bridge (NLnet Labs) — https://github.com/NLnetLabs/cascade-hsm-bridge",
+        "[9]  P6R KMIP Server Gateway — https://support.p6r.com/p6r/docs/ksg/",
+        "[10] OpenKMIP / PyKMIP — https://github.com/OpenKMIP/PyKMIP",
     ]
     for ref in refs:
         p = doc.add_paragraph(ref, style="List Number")

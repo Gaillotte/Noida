@@ -1,10 +1,11 @@
 # KMIP on PKCS#11
 
-A complete implementation of the **OASIS Key Management Interoperability Protocol (KMIP) 2.1**
-built on top of a **PKCS#11 Hardware Security Module**.
+A **OASIS Key Management Interoperability Protocol (KMIP) 2.1** server built on top of a
+**PKCS#11 Hardware Security Module**.
 
 Cryptographic material never leaves the HSM. The KMIP layer manages object lifecycle,
-metadata, and binary protocol framing while delegating all key operations to PKCS#11.
+metadata, access control, and binary protocol framing while delegating every key
+operation to PKCS#11.
 
 ---
 
@@ -16,24 +17,39 @@ metadata, and binary protocol framing while delegating all key operations to PKC
 4. [Installation](#installation)
 5. [Quick Start](#quick-start)
 6. [Supported Operations](#supported-operations)
-7. [Running the Tests](#running-the-tests)
-8. [Test Specification](#test-specification)
-9. [Configuration](#configuration)
-10. [Known Limitations](#known-limitations)
+7. [Access Control](#access-control)
+8. [Algorithm Coverage](#algorithm-coverage)
+9. [Running the Tests](#running-the-tests)
+10. [Test Specification](#test-specification)
+11. [Configuration](#configuration)
+12. [Key Lifecycle States](#key-lifecycle-states)
+13. [Known Limitations](#known-limitations)
+14. [References](#references)
 
 ---
 
 ## Features
 
-- **KMIP 2.1 wire protocol** — full TTLV binary encoding/decoding
-- **15 KMIP operations** — Create, CreateKeyPair, Register, Get, GetAttributes,
-  AddAttribute, DeleteAttribute, Locate, Activate, Revoke, Destroy,
-  Encrypt, Decrypt, Query, DiscoverVersions
-- **Full key lifecycle** — Pre-Active → Active → Deactivated / Compromised → Destroyed
-- **HSM-backed** — all keys live inside SoftHSM2 (or any PKCS#11 HSM)
-- **Optional TLS + mTLS** — standard TCP on port 5696
-- **SQLite metadata store** — thread-safe, WAL mode, JSON attribute values
-- **122 automated tests** — 100% pass rate
+- **KMIP 2.1 wire protocol** — full TTLV binary encoding/decoding, batching,
+  `BatchErrorContinuationOption`, `MaximumResponseSize`
+- **41 of 53 KMIP operations** — see [Supported Operations](#supported-operations);
+  the other 12 are session/async/vendor operations that don't fit a
+  synchronous, per-request-auth server (see [Known Limitations](#known-limitations))
+- **Full key lifecycle** — Pre-Active → Active → Deactivated / Compromised → Destroyed,
+  plus Archive/Recover, ReKey/ReKeyKeyPair/ReCertify, split-key XOR sharing
+- **HSM-backed** — all keys live inside SoftHSM2 (or any PKCS#11 HSM); the shim is the
+  only file that imports `pkcs11`, so swapping in a different (e.g. FIPS-validated)
+  token needs no change above `pkcs11_shim/`
+- **Capability-probed algorithms** — the shim queries the token's actual mechanism
+  list at startup and rejects unsupported algorithms/modes cleanly
+  (`OperationNotSupported`) instead of leaking a raw PKCS#11 error
+- **Access control** — every object records its creator; operations against an
+  existing object require ownership, the admin role, or an explicit delegated
+  grant (see [Access Control](#access-control))
+- **Optional TLS + mTLS** — standard TCP, KMIP's IANA port 5696
+- **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
+  JSON attribute values
+- **624 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -43,30 +59,36 @@ metadata, and binary protocol framing while delegating all key operations to PKC
 ┌────────────────────────────────────────────┐
 │           KMIP Client (TCP/TLS)            │  ← test_app/client.py
 └───────────────────┬────────────────────────┘
-                    │ TTLV binary (RFC 5696)
+                    │ TTLV binary (port 5696)
 ┌───────────────────▼────────────────────────┐
 │           KMIPServer (TCP)                 │  ← server/server.py
 │  • thread-per-client                       │
-│  • optional TLS 1.3 / mTLS                │
+│  • Credential auth, optional TLS 1.3/mTLS  │
 └───────────────────┬────────────────────────┘
                     │ TTLVItem tree
 ┌───────────────────▼────────────────────────┐
 │         OperationDispatcher                │  ← operations/dispatcher.py
-│  • routes BatchItem → handler              │
+│  • routes BatchItem → handler (41 ops)     │
 │  • error → KMIP OperationFailed response   │
 └──────┬─────────────────────────┬───────────┘
        │                         │
-┌──────▼──────────┐   ┌──────────▼──────────┐
-│  Operations     │   │  Lifecycle SM        │
-│  create.py      │   │  state_machine.py    │
-│  get.py   ...   │   │  PreActive→Active…   │
-└──────┬──────────┘   └──────────────────────┘
+┌──────▼──────────┐   ┌──────────▼──────────────┐
+│  Operations     │   │  Lifecycle              │
+│  create.py      │   │  state_machine.py        │
+│  get.py   ...   │   │  PreActive→Active…       │
+│  (41 files)     │   │  access_control.py        │
+│                 │   │  owner / admin / grants   │
+└──────┬──────────┘   └──────────────────────────┘
        │
 ┌──────▼────────────────┬──────────────────────┐
-│  PKCS11Shim           │  MetadataStore        │
-│  pkcs11_shim/shim.py  │  metadata/store.py    │
-│  SoftHSM2 / PKCS#11   │  SQLite (WAL)         │
-└───────────────────────┴──────────────────────┘
+│  PKCS11Shim            │  MetadataStore        │
+│  pkcs11_shim/shim.py   │  metadata/store.py    │
+│  • single locked       │  SQLite (WAL)         │
+│    session (see        │  • objects/attrs      │
+│    Known Limitations)  │  • roles/grants        │
+│  • capability probe    │                        │
+│  SoftHSM2 / PKCS#11    │                        │
+└────────────────────────┴────────────────────────┘
 ```
 
 ---
@@ -76,44 +98,44 @@ metadata, and binary protocol framing while delegating all key operations to PKC
 ```
 kmip_pkcs11/
 ├── core/
-│   ├── enums.py          # KMIP enumerations (Tag, Operation, State, …)
-│   ├── ttlv.py           # TTLV encoder / decoder
-│   └── exceptions.py     # KMIP exception hierarchy
+│   ├── enums.py               # KMIP enumerations (Tag, Operation, State, …)
+│   ├── ttlv.py                # TTLV encoder / decoder
+│   └── exceptions.py          # KMIP exception hierarchy
 ├── lifecycle/
-│   └── state_machine.py  # Key lifecycle state transitions
+│   ├── state_machine.py       # Key lifecycle state transitions
+│   └── access_control.py      # Owner / admin role / delegated grants
 ├── metadata/
-│   └── store.py          # SQLite metadata store
+│   └── store.py               # SQLite metadata store (objects, attrs, roles, grants)
 ├── pkcs11_shim/
-│   └── shim.py           # PKCS#11 / SoftHSM2 wrapper
-├── operations/
+│   └── shim.py                # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock
+├── operations/                # One file per KMIP operation (41 files) — dispatcher.py routes
 │   ├── dispatcher.py
-│   ├── create.py
-│   ├── create_keypair.py
-│   ├── register.py
-│   ├── get.py
-│   ├── get_attributes.py
-│   ├── add_attribute.py
-│   ├── delete_attribute.py
-│   ├── locate.py
-│   ├── activate.py
-│   ├── revoke.py
-│   ├── destroy.py
-│   ├── encrypt.py
-│   ├── decrypt.py
-│   ├── query.py
-│   └── discover_versions.py
+│   ├── create.py, create_keypair.py, register.py, import_op.py, export_op.py
+│   ├── get.py, get_attributes.py, get_usage_allocation.py, locate.py
+│   ├── add_attribute.py, modify_attribute.py, delete_attribute.py,
+│   │   set_attribute.py, adjust_attribute.py
+│   ├── activate.py, revoke.py, destroy.py, archive.py, recover.py, check.py
+│   ├── encrypt.py, decrypt.py, sign.py, signature_verify.py
+│   ├── mac.py, mac_verify.py, hash_op.py
+│   ├── rekey.py, rekey_keypair.py, certify.py, recertify.py
+│   ├── derive_key.py, create_split_key.py, join_split_key.py
+│   ├── validate.py, obtain_lease.py, rng_retrieve.py, rng_seed.py
+│   └── query.py, discover_versions.py
 ├── server/
-│   └── server.py         # TCP server (thread-per-client, optional TLS)
+│   └── server.py               # TCP server (thread-per-client, Credential auth, optional TLS)
 ├── test_app/
-│   ├── client.py         # Synchronous KMIP 2.1 client
-│   └── demo.py           # End-to-end demo (16 steps)
+│   ├── client.py                # Synchronous KMIP 2.1 client
+│   └── demo.py                  # End-to-end demo
 └── tests/
     ├── conftest.py
-    ├── test_ttlv.py          # 22 TTLV unit tests
-    ├── test_lifecycle.py     # 18 lifecycle unit tests
-    ├── test_metadata.py      # 16 metadata store unit tests
-    ├── test_operations.py    #  8 operation integration tests
-    └── test_conformance.py   # 48 KMIP conformance tests
+    ├── test_ttlv.py              #  22 TTLV unit tests
+    ├── test_lifecycle.py         #  26 lifecycle state-machine tests
+    ├── test_metadata.py          #  18 metadata store unit tests
+    ├── test_operations.py        #   8 operation integration tests
+    ├── test_conformance.py       #  48 OASIS KMIP conformance tests
+    └── test_extended_coverage.py # 502 live tests: every operation, algorithm
+                                   #  coverage, error paths, access control,
+                                   #  session concurrency
 ```
 
 ---
@@ -126,7 +148,7 @@ kmip_pkcs11/
 |---------------|----------|---------------------------------|
 | Python        | ≥ 3.9    | —                               |
 | SoftHSM2      | ≥ 2.6    | `apt install softhsm2`          |
-| python-pkcs11 | ≥ 0.7.0  | `pip install python-pkcs11`     |
+| python-pkcs11 | 0.9.5    | `pip install python-pkcs11`     |
 | pytest        | ≥ 7.0    | `pip install pytest`            |
 
 ### Steps
@@ -153,9 +175,8 @@ softhsm2-util --init-token --slot 0 \
 python -m kmip_pkcs11.test_app.demo
 ```
 
-The demo exercises 16 operations: DiscoverVersions, Query, Create AES-256,
-GetAttributes, Locate, Encrypt, Decrypt, CreateKeyPair, Get, AddAttribute,
-Register, lifecycle flow (Revoke → Destroy), and teardown.
+Walks through DiscoverVersions, Query, Create AES-256, GetAttributes, Locate,
+Encrypt/Decrypt, CreateKeyPair, Register, and a full Revoke → Destroy lifecycle.
 
 ### Embed in your code
 
@@ -172,6 +193,10 @@ shim   = PKCS11Shim("/usr/lib/.../libsofthsm2.so", "MyToken", "userpin")
 server = KMIPServer(store, shim, host="127.0.0.1", port=5696)
 server.start_background()
 
+# Optional: grant one identity the admin role before anyone connects
+# (see Access Control — there's no wire operation for this)
+store.assign_role("ops-team", "admin")
+
 # Connect a client
 with KMIPClient(port=5696) as c:
     uid = c.create(algorithm=CryptographicAlgorithm.AES, length=256)
@@ -184,31 +209,77 @@ with KMIPClient(port=5696) as c:
 
 ## Supported Operations
 
-| Operation          | Code        | Conformance | Status                  |
-|--------------------|------------|-------------|-------------------------|
-| DiscoverVersions   | 0x0000001E | Mandatory   | Full                    |
-| Query              | 0x00000018 | Mandatory   | Full                    |
-| Create             | 0x00000001 | Mandatory   | Full                    |
-| CreateKeyPair      | 0x00000002 | Optional    | Full (RSA, EC)          |
-| Register           | 0x00000003 | Mandatory   | Full                    |
-| Get                | 0x0000000A | Mandatory   | Full (extractable keys) |
-| GetAttributes      | 0x0000000B | Mandatory   | Full                    |
-| GetAttributeList   | 0x0000000C | Mandatory   | Full                    |
-| AddAttribute       | 0x0000000D | Mandatory   | Full                    |
-| DeleteAttribute    | 0x0000000F | Mandatory   | Full                    |
-| Locate             | 0x00000008 | Mandatory   | Full                    |
-| Activate           | 0x00000012 | Mandatory   | Full                    |
-| Revoke             | 0x00000013 | Mandatory   | Full                    |
-| Destroy            | 0x00000014 | Mandatory   | Full                    |
-| Encrypt            | 0x0000001F | Optional    | Full (CBC, GCM, ECB, CTR) |
-| Decrypt            | 0x00000020 | Optional    | Full                    |
+**41 of 53** KMIP 2.1 operations, grouped by category. The remaining 12 are a
+deliberate scope decision — see [Known Limitations](#known-limitations).
+
+| Category | Operations |
+|---|---|
+| **Object lifecycle** | Create, CreateKeyPair, Register, ReKey, ReKeyKeyPair, DeriveKey, Certify, ReCertify, CreateSplitKey, JoinSplitKey, Import, Export, Activate, Revoke, Destroy, Archive, Recover, Check |
+| **Retrieval & discovery** | Get, GetAttributes, GetAttributeList, Locate, Query, DiscoverVersions, ObtainLease, GetUsageAllocation |
+| **Attributes** | AddAttribute, ModifyAttribute, DeleteAttribute, SetAttribute, AdjustAttribute |
+| **Cryptographic operations** | Encrypt, Decrypt, Sign, SignatureVerify, MAC, MACVerify, Hash, RNGRetrieve, RNGSeed, Validate |
+| **Deferred** (12) | Cancel, Poll, Notify, Put, Log, Login, Logout, DelegatedLogin, SetEndpointRole, PKCS11, Interop, ReProvision |
+
+---
+
+## Access Control
+
+Every managed object records the identity that created it. Operations against
+an *existing* object are authorized in this order (`lifecycle/access_control.py`):
+
+1. **Admin role** — `store.assign_role(identity, "admin")` grants unconditional
+   access to every object.
+2. **Ownership** — `identity == owner_identity` (set at Create/Register/etc. time).
+3. **Delegated grant** — `store.grant_access(uid, grantee, "read" | "full")`
+   lets a specific identity reach a specific object without owning it.
+   `"read"` covers Get/GetAttributes/GetAttributeList/Check/Export/ObtainLease;
+   everything else (Encrypt, Destroy, ReKey, …) needs `"full"`.
+
+Objects with no recorded owner (`owner_identity=None`) stay reachable by any
+identity — this only applies to objects created outside the normal Create/Register
+path, so nothing gets orphaned by adding access control on top of an existing store.
+
+**There is no KMIP wire operation for role or grant management** — the spec
+doesn't define one. Call the `MetadataStore` methods directly from an admin
+script or console:
+
+```python
+store.assign_role("alice", "admin")           # alice can touch anything
+store.grant_access(uid, "bob", "read")         # bob can Get this one object
+store.revoke_access(uid, "bob")
+store.revoke_role("alice", "admin")
+```
+
+`Locate` results are filtered to the caller's own objects (or all objects, for
+an admin) — a non-admin identity can't enumerate objects it doesn't own or
+have a grant on.
+
+---
+
+## Algorithm Coverage
+
+**15 of 40** `CryptographicAlgorithm` values map to a working PKCS#11 mechanism
+on this SoftHSM2 build: AES, DES, TDES, RSA, EC, ECDSA, ECDH, DSA, DH, and
+HMAC-MD5/SHA1/224/256/384/512.
+
+The shim probes `slot.get_mechanisms()` at startup and gates every
+algorithm/mode dispatch on it, so an unsupported request fails cleanly with
+`OperationNotSupported` rather than a raw PKCS#11 error. Several mappings —
+SHA-3 HMAC (224/256/384/512), SHA-3 hashing, Blowfish, and Twofish — are wired
+in but inactive on *this* token; point the shim at a token that implements
+those mechanisms (a Botan-backed SoftHSM2 build, a newer OpenSSL-3 build, or
+real hardware) and they activate with no code change. A further 12 algorithms
+(RC2/RC4/RC5, IDEA, CAST5, Camellia, ChaCha20/Poly1305, SKIPJACK, MARS,
+OneTimePad, SHAKE128/256) have no PKCS#11 mechanism implemented by any
+backend this project has tested against, or — for SKIPJACK/MARS/OneTimePad —
+no PKCS#11 mechanism was ever standardized for them at all.
 
 ---
 
 ## Running the Tests
 
 ```bash
-# Run all 122 tests
+# Run all 624 tests
 pytest
 
 # Run with verbose output
@@ -228,12 +299,13 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 
 | Module               | Tests | Passed | Failed | Pass Rate |
 |---------------------|-------|--------|--------|-----------|
-| test_ttlv.py        | 22    | 22     | 0      | 100 %     |
-| test_lifecycle.py   | 18    | 18     | 0      | 100 %     |
-| test_metadata.py    | 16    | 16     | 0      | 100 %     |
-| test_operations.py  | 8     | 8      | 0      | 100 %     |
-| test_conformance.py | 48    | 48     | 0      | 100 %     |
-| **TOTAL**           | **122** | **122** | **0** | **100 %** |
+| test_ttlv.py            |  22 |  22 | 0 | 100 % |
+| test_lifecycle.py       |  26 |  26 | 0 | 100 % |
+| test_metadata.py        |  18 |  18 | 0 | 100 % |
+| test_operations.py      |   8 |   8 | 0 | 100 % |
+| test_conformance.py     |  48 |  48 | 0 | 100 % |
+| test_extended_coverage.py | 502 | 502 | 0 | 100 % |
+| **TOTAL**            | **624** | **624** | **0** | **100 %** |
 
 ---
 
@@ -255,13 +327,19 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | TC-ATTR-001    | TestAttributes (2 tests)                              | CS-AC-M        |
 | TC-ERR-001     | TestErrorHandling (5 tests)                           | CS-AC-M        |
 
+`test_conformance.py` covers the mandatory/optional KMIP TC surface above;
+`test_extended_coverage.py` covers everything added since — the remaining 25
+operations, algorithm/mode coverage, error paths, and the access-control and
+session-concurrency work described in this document.
+
 ### Key conformance assertions
 
 - **DiscoverVersions** must return a list including (2, 1); versions descending
 - **Create** must return a UUID-format UniqueIdentifier; state must be Active immediately
 - **Lifecycle**: Revoke(KeyCompromise) → Compromised; Destroy after Revoke → Destroyed
 - **Encrypt** must fail on Deactivated key; **Decrypt** must succeed on Deactivated key (data recovery)
-- **Error handling**: unknown UIDs must return `OperationFailed / ItemNotFound`
+- **Error handling**: unknown UIDs must return `OperationFailed / ItemNotFound`;
+  cross-identity access to an owned object must return `OperationFailed / PermissionDenied`
 
 ---
 
@@ -285,9 +363,15 @@ KMIPServer(
 ### Environment variables
 
 | Variable        | Default                                                | Purpose              |
-|----------------|--------------------------------------------------------|----------------------|
+|----------------|----------------------------------------------------------|----------------------|
 | `SOFTHSM2_LIB`  | `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so`   | PKCS#11 library path |
 | `SOFTHSM2_CONF` | auto-created by test fixtures                          | SoftHSM2 config path |
+
+### Roles and grants
+
+No environment variable or server constructor argument — assign the first
+admin identity directly against the store before starting the server (see
+the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 
 ---
 
@@ -315,19 +399,25 @@ KMIPServer(
         └──────────────────────┘
 
    All states (except DestroyedCompromised) can transition to Destroyed via destroy.
+   Archive/Recover is orthogonal to State — an archived object keeps its State
+   but is unusable for anything but metadata reads until Recovered.
 ```
 
 ---
 
 ## Known Limitations
 
-| Limitation               | Detail                                                     |
-|--------------------------|------------------------------------------------------------|
-| Single PKCS#11 session   | SoftHSM2 handles concurrency internally; add a session pool for production HA |
-| No authentication        | Enable mTLS for production deployments                      |
-| SoftHSM2 SENSITIVE bug   | `SENSITIVE=True AND EXTRACTABLE=True` blocks `CKA_VALUE` read; workaround applied |
-| No batch atomicity       | Failure in one BatchItem does not roll back previous items  |
-| Sign/Verify KMIP ops     | Implemented in shim; no KMIP protocol handler yet           |
+| Limitation | Detail |
+|---|---|
+| Single, locked PKCS#11 session | `server.py` runs one thread per connection, but they share one `PKCS11Shim` session serialized by a `threading.RLock`. **This is the deliberate, permanent design, not a stopgap** — a session-pool (separate session per thread) was built and tested, and reproducibly segfaults or corrupts operations under concurrency: `python-pkcs11` 0.9.5 calls `C_Initialize(NULL)`, so the library's own internal thread safety is never enabled, and separate sessions don't work around that. A real fix needs a PKCS#11 binding that passes `CKF_OS_LOCKING_OK`, or a multi-process worker pool. |
+| RBAC has no wire protocol | Role and grant management (`assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define an operation for it. No groups, no per-role operation allowlist yet; every non-admin identity is evaluated individually against ownership and grants. |
+| No audit trail | Operations are logged via Python `logging` only — nothing persisted, queryable, or tamper-evident. |
+| TLS optional, not enforced | The server accepts plain TCP if no certificate is configured; cert/key load from a static path with no rotation or ACME integration. |
+| Not FIPS/CC validated | SoftHSM2 isn't a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above `pkcs11_shim/`, but that swap hasn't happened here. |
+| SoftHSM2 SENSITIVE bug | `SENSITIVE=True AND EXTRACTABLE=True` blocks `CKA_VALUE` read; the shim downgrades sensitivity automatically when extractability is explicitly requested. |
+| No batch atomicity | Failure in one `BatchItem` does not roll back previous items in the same batch. |
+| Algorithm coverage | 15 of 40 `CryptographicAlgorithm` values work against this token — see [Algorithm Coverage](#algorithm-coverage). |
+| No HA / backup tooling | Single process, single SQLite file, single HSM token; no clustering, replication, or coordinated backup/restore. |
 
 ---
 
