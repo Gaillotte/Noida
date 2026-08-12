@@ -1,0 +1,105 @@
+# Keeps the UI branch current with the kmip_pkcs11 branch it builds on.
+#
+# The UI branch consumes kmip_pkcs11 directly (cryptohub_lite imports
+# MetadataStore, the dispatcher and the PKCS#11 shim), so it goes stale the
+# moment the component branch moves. This merges one direction only —
+# component -> UI — and never the reverse.
+#
+# Clean merges are pushed automatically. Conflicts open a pull request instead
+# of being resolved by a robot, because the overlap between these two branches
+# is real source code, not a changelog.
+
+name: Sync kmip_pkcs11 branch into UI branch
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub only honours `schedule` on the default branch,
+    # so this file has to live on main for the timer to fire at all.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  # A second run starting while the first is mid-merge would race on the push.
+  group: sync-kmip-to-ui
+  cancel-in-progress: false
+
+env:
+  SOURCE_BRANCH: claude/kmip-specifications-iprzym
+  TARGET_BRANCH: claude/kmip-specification-iprzym-ui
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          # A shallow clone has no merge base, so the merge would fail or
+          # produce a bogus diff.
+          fetch-depth: 0
+          ref: ${{ env.TARGET_BRANCH }}
+
+      - name: Identify the committer
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Skip if there is nothing to bring across
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..origin/${SOURCE_BRANCH})
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "::notice::UI branch already contains every commit from ${SOURCE_BRANCH}."
+          else
+            echo "::notice::${BEHIND} commit(s) to merge from ${SOURCE_BRANCH}."
+          fi
+
+      - name: Merge and push
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          if git merge --no-edit \
+               -m "Sync: merge ${SOURCE_BRANCH} into ${TARGET_BRANCH}" \
+               "origin/${SOURCE_BRANCH}"; then
+            git push origin "HEAD:${TARGET_BRANCH}"
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            # Left as-is the working tree would poison later steps, and a
+            # half-merged state must never reach the remote.
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a pull request when the merge conflicts
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXISTING=$(gh pr list --base "${TARGET_BRANCH}" --head "${SOURCE_BRANCH}" \
+                       --state open --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::PR #${EXISTING} is already open for this sync."
+            exit 0
+          fi
+          gh pr create \
+            --base  "${TARGET_BRANCH}" \
+            --head  "${SOURCE_BRANCH}" \
+            --title "Sync ${SOURCE_BRANCH} into ${TARGET_BRANCH} (conflicts)" \
+            --body  "Automatic sync could not merge cleanly — the two branches
+          changed the same lines.
+
+          The overlap is in \`kmip_pkcs11/\`, which both branches modify. Resolve
+          here, or merge locally:
+
+              git checkout ${TARGET_BRANCH}
+              git pull
+              git merge origin/${SOURCE_BRANCH}
+              # resolve, then
+              git push
+
+          Opened by \`.github/workflows/sync-kmip-to-ui.yml\`."

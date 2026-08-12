@@ -48,6 +48,12 @@ function can(string $capability): bool
     return in_array($capability, $_SESSION['capabilities'] ?? [], true);
 }
 
+/** True while this account still uses the shipped bootstrap password. */
+function using_default_password(): bool
+{
+    return !empty($_SESSION['default_password']);
+}
+
 function initials(string $name): string
 {
     $parts = preg_split('/[\s_.-]+/', trim($name)) ?: [];
@@ -161,18 +167,28 @@ function render_head(string $title): void
             <div class="chl-topbar-actions">
                 <button class="chl-btn chl-btn-sm" onclick="toggleTheme()" id="themeBtn"
                         title="Switch theme">☀ Light</button>
-                <div class="chl-user-chip">
+                <a class="chl-user-chip" href="account.php" title="My account"
+                   style="text-decoration:none;color:inherit">
                     <div class="chl-avatar"><?= e(initials(current_display_name())) ?></div>
                     <div>
                         <div class="chl-user-name"><?= e(current_display_name()) ?></div>
                         <div class="chl-user-role"><?= e(current_role()) ?></div>
                     </div>
-                </div>
+                </a>
                 <a class="chl-btn chl-btn-sm" href="logout.php">Sign out</a>
             </div>
         </header>
         <main class="chl-content">
     <?php
+    if (using_default_password() && basename($_SERVER['PHP_SELF']) !== 'account.php') {
+        echo '<div class="chl-alert" role="alert">'
+           . '<strong>This account is using the default password.</strong> '
+           . 'It is published in the project README, so anyone who can reach this '
+           . 'portal — or the KMIP port — can sign in as you. '
+           . '<a href="account.php" class="chl-btn chl-btn-sm" style="margin-left:8px">'
+           . 'Change it now</a>'
+           . '</div>';
+    }
 }
 
 function render_foot(): void

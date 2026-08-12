@@ -4,14 +4,20 @@ Operating IDEMIA CryptoHub Lite.
 
 ## First run
 
-A bootstrap administrator (`admin` / `admin`) is created **only when the user
+A bootstrap administrator (`admin` / `admin123`) is created **only when the user
 table is empty**, so it cannot silently reappear on a running system. Change
 it before anything else:
 
 1. Sign in at http://localhost:8081
-2. Administration → Users
-3. Create a named administrator for yourself
+2. Click your name in the top-right → **My Account** → change the password
+3. **Administration → Add User** — create a named administrator for yourself
 4. Sign in as that account and disable `admin`
+
+Every role can change its own password from **My Account**; that page is
+deliberately outside Administration, because an Operator or Auditor has no
+user-management rights but must still be able to rotate their own credential.
+An Administrator can reset anyone else's from **Administration → Users →
+Reset**.
 
 You cannot disable or delete your own account — locking yourself out is easy
 and tedious to undo.
@@ -142,7 +148,7 @@ production:
 | `KMIP_REQUIRE_CLIENT_CERT` | `false` | `true` where clients have certificates |
 | `JWT_SECRET` | `dev-only-change-me` | a strong random value from a secrets manager |
 | `POSTGRES_PASSWORD` | `devpass` | strong, from a secrets manager |
-| `BOOTSTRAP_PASSWORD` | `admin` | changed at first sign-in |
+| `BOOTSTRAP_PASSWORD` | `admin123` | changed at first sign-in |
 | `PKCS11_PIN` | `1234` | from a secrets manager |
 | Portal | HTTP on 8081 | behind TLS termination |
 
@@ -171,4 +177,4 @@ Carried forward honestly from the platform assessment:
 | KMIP container exits at start | TLS not configured and plaintext not permitted |
 | Portal "Cannot reach the CryptoHub API" | `docker compose ps` — is `api` *healthy*? |
 | KMIP client rejected | The client needs a portal account; check `kmip.Authenticate` in the audit trail |
-| EC operations unsupported | SoftHSM2 built against Botan — see [SOFTHSM2_SETUP.md](SOFTHSM2_SETUP.md) |
+| EC operations unsupported | SoftHSM2 older than 2.7.0 — it has no `CKM_ECDSA_SHA*`. See [SOFTHSM2_SETUP.md](SOFTHSM2_SETUP.md) |

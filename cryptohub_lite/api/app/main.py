@@ -8,6 +8,7 @@ implementation.
 """
 
 import datetime
+import hmac
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -86,6 +87,11 @@ class LoginResponse(BaseModel):
     role: str
     display_name: str
     capabilities: List[str]
+    # True when the account still uses the shipped bootstrap password. Decided
+    # here, at the one moment the plaintext is legitimately in hand, rather
+    # than by storing a "must change password" flag that could drift out of
+    # step with the actual credential.
+    using_default_password: bool = False
 
 
 class UserCreate(BaseModel):
@@ -120,6 +126,14 @@ def login(body: LoginRequest, request: Request):
     portal.audit("auth.login", "SUCCESS", username=user["username"],
                  source_ip=client_ip(request))
 
+    # Compared in constant time, and only against the known default — this
+    # reveals nothing an attacker does not already have, since they just
+    # supplied the password themselves.
+    using_default = hmac.compare_digest(body.password, settings.bootstrap_password)
+    if using_default:
+        log.warning("User '%s' signed in with the default bootstrap password",
+                    user["username"])
+
     from .security import CAPABILITIES
     return LoginResponse(
         access_token=create_token(user["username"], user["role"]),
@@ -127,6 +141,7 @@ def login(body: LoginRequest, request: Request):
         role=user["role"],
         display_name=user.get("display_name") or user["username"],
         capabilities=sorted(CAPABILITIES.get(user["role"], set())),
+        using_default_password=using_default,
     )
 
 
@@ -134,6 +149,42 @@ def login(body: LoginRequest, request: Request):
 def whoami(user: Dict[str, Any] = Depends(current_user)):
     from .security import CAPABILITIES
     return {**user, "capabilities": sorted(CAPABILITIES.get(user["role"], set()))}
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+@app.post("/api/auth/password", tags=["Authentication"])
+def change_own_password(body: PasswordChange, request: Request,
+                        user: Dict[str, Any] = Depends(current_user)):
+    """Changes the signed-in user's own password.
+
+    Deliberately not behind ``user.manage``. That capability belongs to
+    administrators, and requiring it here would mean an Operator, Auditor or
+    ReadOnly user could never change their own password — leaving whatever an
+    administrator first set in place indefinitely.
+
+    The current password is re-checked even though the caller holds a valid
+    token: a token may have been taken from an unattended session, and this is
+    the one operation that would let it lock the real owner out.
+    """
+    portal: PortalStore = request.app.state.portal
+
+    if portal.verify_password(user["username"], body.current_password) is None:
+        portal.audit("auth.password_change", "FAILURE", username=user["username"],
+                     source_ip=client_ip(request), detail="Current password incorrect")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect")
+
+    if body.current_password == body.new_password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "The new password must differ from the current one")
+
+    portal.set_password(user["username"], body.new_password)
+    portal.audit("auth.password_change", "SUCCESS", username=user["username"],
+                 source_ip=client_ip(request))
+    return {"detail": "Password changed"}
 
 
 @app.post("/api/auth/logout", tags=["Authentication"])

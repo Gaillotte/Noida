@@ -31,8 +31,14 @@ class Settings:
     jwt_ttl_minutes: int = int(os.getenv("JWT_TTL_MINUTES", "480"))
 
     # Seed administrator, created once if no users exist at all.
+    #
+    # The default meets the 8-character minimum the API enforces on every
+    # other password. It previously did not ("admin", 5 characters), which
+    # meant the shipped default could not be re-entered through any normal
+    # path — an administrator who changed it could never set it back, and the
+    # system was contradicting a rule it enforces on everyone else.
     bootstrap_admin: str = os.getenv("BOOTSTRAP_ADMIN", "admin")
-    bootstrap_password: str = os.getenv("BOOTSTRAP_PASSWORD", "admin")
+    bootstrap_password: str = os.getenv("BOOTSTRAP_PASSWORD", "admin123")
 
     cors_origins: list = (os.getenv("CORS_ORIGINS", "*")).split(",")
 

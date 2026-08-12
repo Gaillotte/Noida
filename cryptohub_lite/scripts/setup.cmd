@@ -36,10 +36,10 @@ echo   ok API is serving
 echo.
 echo   IDEMIA CryptoHub Lite is running.
 echo.
-echo     Portal      http://localhost:8081       admin / admin
+echo     Portal      http://localhost:8081       admin / admin123
 echo     REST API    http://localhost:8000/api/docs
-echo     KMIP        localhost:5697
+echo     KMIP        localhost:5696
 echo     PostgreSQL  localhost:5432              cryptohub / devpass
 echo.
-echo   Change the bootstrap administrator password: Administration -^> Users.
+echo   Change the bootstrap administrator password: click your name -^> My Account.
 echo.

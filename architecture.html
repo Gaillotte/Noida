@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDEMIA CryptoHub Lite - Layered Architecture</title>
+    <style>
+        :root {
+            --primary: #1a5276;
+            --primary-light: #2980b9;
+            --secondary: #27ae60;
+            --accent: #e74c3c;
+            --bg-dark: #2c3e50;
+            --bg-light: #ecf0f1;
+            --text-dark: #2c3e50;
+            --text-light: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: var(--text-dark);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: var(--bg-dark);
+            color: var(--text-light);
+            padding: 30px;
+            border-radius: var(--border-radius);
+            margin-bottom: 30px;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .section {
+            background: white;
+            padding: 30px;
+            border-radius: var(--border-radius);
+            margin-bottom: 30px;
+            box-shadow: var(--shadow);
+        }
+
+        .section h2 {
+            color: var(--primary);
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            border-bottom: 3px solid var(--primary-light);
+            padding-bottom: 10px;
+        }
+
+        .section h3 {
+            color: var(--primary-light);
+            font-size: 1.3em;
+            margin: 20px 0 10px 0;
+        }
+
+        /* Architecture Diagram */
+        .architecture-diagram {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+        }
+
+        .layer {
+            width: 100%;
+            max-width: 1000px;
+            padding: 20px;
+            border-radius: var(--border-radius);
+            text-align: center;
+            box-shadow: var(--shadow);
+            position: relative;
+        }
+
+        .layer-title {
+            font-weight: bold;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+
+        .layer-subtitle {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin-bottom: 10px;
+        }
+
+        .layer-components {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .component {
+            background: rgba(255,255,255,0.3);
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+
+        /* Layer Colors */
+        .presentation-layer {
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+        }
+
+        .api-layer {
+            background: linear-gradient(135deg, #2ecc71, #27ae60);
+            color: white;
+        }
+
+        .engine-layer {
+            background: linear-gradient(135deg, #e67e22, #d35400);
+            color: white;
+        }
+
+        .data-layer {
+            background: linear-gradient(135deg, #9b59b6, #8e44ad);
+            color: white;
+        }
+
+        .hardware-layer {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            color: white;
+        }
+
+        /* Arrow between layers */
+        .arrow {
+            font-size: 2em;
+            color: var(--bg-dark);
+        }
+
+        /* Technology Stack Table */
+        .tech-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .tech-table th {
+            background: var(--primary);
+            color: white;
+            padding: 15px;
+            text-align: left;
+        }
+
+        .tech-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .tech-table tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        .tech-table tr:hover {
+            background: #e8f4f8;
+        }
+
+        .tech-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: bold;
+            color: white;
+        }
+
+        .badge-python { background: #3776ab; }
+        .badge-php { background: #777bb3; }
+        .badge-postgres { background: #336791; }
+        .badge-ssl { background: #f08c05; }
+        .badge-hsm { background: #e74c3c; }
+        .badge-js { background: #f7df1e; color: #333; }
+        .badge-bootstrap { background: #7952b3; }
+
+        /* Component Grid */
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .component-card {
+            border: 2px solid #ddd;
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .component-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 15px rgba(0,0,0,0.2);
+        }
+
+        .component-card-header {
+            padding: 15px;
+            color: white;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .component-card-body {
+            padding: 15px;
+        }
+
+        .component-card-body ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .component-card-body li {
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .component-card-body li:last-child {
+            border-bottom: none;
+        }
+
+        .component-card-body li::before {
+            content: "▸ ";
+            color: var(--primary-light);
+        }
+
+        /* Data Flow */
+        .data-flow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+
+        .flow-step {
+            background: var(--bg-light);
+            padding: 15px 20px;
+            border-radius: var(--border-radius);
+            text-align: center;
+            min-width: 150px;
+        }
+
+        .flow-arrow {
+            font-size: 1.5em;
+            color: var(--primary-light);
+        }
+
+        /* Container Info */
+        .container-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .container-card {
+            background: var(--bg-light);
+            padding: 15px;
+            border-radius: var(--border-radius);
+            border-left: 4px solid var(--primary-light);
+        }
+
+        .container-card h4 {
+            color: var(--primary);
+            margin-bottom: 5px;
+        }
+
+        .container-card p {
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        /* Port Table */
+        .port-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .port-table th {
+            background: var(--secondary);
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+
+        .port-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .port-table tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        /* Feature List */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 15px;
+            background: var(--bg-light);
+            border-radius: var(--border-radius);
+        }
+
+        .feature-icon {
+            font-size: 1.5em;
+        }
+
+        .feature-text h4 {
+            color: var(--primary);
+            margin-bottom: 5px;
+        }
+
+        .feature-text p {
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        /* Role Table */
+        .role-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .role-table th {
+            background: var(--primary);
+            color: white;
+            padding: 12px;
+        }
+
+        .role-table td {
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+        }
+
+        .role-table tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        .check { color: var(--secondary); font-weight: bold; }
+        .cross { color: #ccc; }
+
+        /* Known Limitations */
+        .limitations {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 20px;
+            border-radius: var(--border-radius);
+            margin: 20px 0;
+        }
+
+        .limitations h4 {
+            color: #856404;
+            margin-bottom: 10px;
+        }
+
+        .limitations ul {
+            padding-left: 20px;
+        }
+
+        .limitations li {
+            margin-bottom: 8px;
+            color: #856404;
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-light);
+            opacity: 0.8;
+        }
+
+        @media (max-width: 768px) {
+            header h1 { font-size: 1.8em; }
+            .layer-components { flex-direction: column; }
+            .component-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>IDEMIA CryptoHub Lite</h1>
+            <p>Layered Architecture & Technology Stack</p>
+            <p style="font-size: 0.9em; margin-top: 10px;">KMIP 2.1 Server with PKCS#11 HSM Integration</p>
+        </header>
+
+        <!-- SECTION 1: ARCHITECTURE OVERVIEW -->
+        <div class="section">
+            <h2>1. Architecture Overview</h2>
+            <p style="margin-bottom: 20px;">
+                CryptoHub Lite is a web-based cryptographic management platform built on a KMIP 2.1 server that 
+                delegates all key storage and cryptography to a PKCS#11 HSM (SoftHSM2). The system provides 
+                both a web portal and a KMIP protocol interface — two views of one system, not two separate systems.
+            </p>
+
+            <div class="architecture-diagram">
+                <!-- Presentation Layer -->
+                <div class="layer presentation-layer">
+                    <div class="layer-title">🖥️ PRESENTATION LAYER</div>
+                    <div class="layer-subtitle">PHP 8.3 • Bootstrap 5 • Chart.js</div>
+                    <div class="layer-components">
+                        <div class="component">Dashboard</div>
+                        <div class="component">Key Explorer</div>
+                        <div class="component">KMIP Explorer</div>
+                        <div class="component">PKCS#11 Explorer</div>
+                        <div class="component">Audit Viewer</div>
+                        <div class="component">Administration</div>
+                    </div>
+                </div>
+
+                <div class="arrow">▼</div>
+
+                <!-- API Layer -->
+                <div class="layer api-layer">
+                    <div class="layer-title">🔌 API LAYER</div>
+                    <div class="layer-subtitle">FastAPI (Python 3.11) • JWT Authentication • RBAC</div>
+                    <div class="layer-components">
+                        <div class="component">REST API</div>
+                        <div class="component">Authentication (JWT)</div>
+                        <div class="component">Authorization (5 Roles)</div>
+                        <div class="component">Audit Trail</div>
+                        <div class="component">Aggregation</div>
+                    </div>
+                </div>
+
+                <div class="arrow">▼</div>
+
+                <!-- Engine Layer -->
+                <div class="layer engine-layer">
+                    <div class="layer-title">⚙️ ENGINE LAYER</div>
+                    <div class="layer-subtitle">kmip_pkcs11 • KMIP 2.1 • 41 Operations</div>
+                    <div class="layer-components">
+                        <div class="component">TTLV Codec</div>
+                        <div class="component">KMIP Operations</div>
+                        <div class="component">PKCS#11 Shim</div>
+                        <div class="component">Lifecycle State Machine</div>
+                        <div class="component">Access Control</div>
+                        <div class="component">KMIP TCP Server</div>
+                    </div>
+                </div>
+
+                <div class="arrow">▼</div>
+
+                <!-- Data Layer -->
+                <div class="layer data-layer">
+                    <div class="layer-title">💾 DATA LAYER</div>
+                    <div class="layer-subtitle">PostgreSQL 16 • SQLite (dev)</div>
+                    <div class="layer-components">
+                        <div class="component">KMIP Metadata</div>
+                        <div class="component">Portal Data (Users, Audit)</div>
+                        <div class="component">Key Lifecycle Events</div>
+                    </div>
+                </div>
+
+                <div class="arrow">▼</div>
+
+                <!-- Hardware/ HSM Layer -->
+                <div class="layer hardware-layer">
+                    <div class="layer-title">🔐 HSM LAYER</div>
+                    <div class="layer-subtitle">SoftHSM2 2.7.0 • PKCS#11 Interface</div>
+                    <div class="layer-components">
+                        <div class="component">Key Storage</div>
+                        <div class="component">Cryptographic Operations</div>
+                        <div class="component">Token Management</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION 2: TECHNOLOGY STACK -->
+        <div class="section">
+            <h2>2. Technology Stack</h2>
+            
+            <h3>Backend Technologies</h3>
+            <table class="tech-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Technology</th>
+                        <th>Version</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>API Framework</strong></td>
+                        <td><span class="tech-badge badge-python">FastAPI</span></td>
+                        <td>0.109.2</td>
+                        <td>REST API server with automatic OpenAPI docs</td>
+                    </tr>
+                    <tr>
+                        <td><strong>ASGI Server</strong></td>
+                        <td><span class="tech-badge badge-python">Uvicorn</span></td>
+                        <td>0.27.1</td>
+                        <td>Production-grade ASGI server for FastAPI</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Validation</strong></td>
+                        <td><span class="tech-badge badge-python">Pydantic</span></td>
+                        <td>2.6.1</td>
+                        <td>Data validation and settings management</td>
+                    </tr>
+                    <tr>
+                        <td><strong>PKCS#11 Binding</strong></td>
+                        <td><span class="tech-badge badge-python">python-pkcs11</span></td>
+                        <td>0.9.5</td>
+                        <td>Python bindings for PKCS#11 HSM interface</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Database Driver</strong></td>
+                        <td><span class="tech-badge badge-postgres">psycopg2</span></td>
+                        <td>2.9.9</td>
+                        <td>PostgreSQL database adapter</td>
+                    </tr>
+                    <tr>
+                        <td><strong>JWT</strong></td>
+                        <td><span class="tech-badge">PyJWT</span></td>
+                        <td>2.8.0</td>
+                        <td>JSON Web Token generation and verification</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Certificate Parsing</strong></td>
+                        <td><span class="tech-badge">asn1crypto</span></td>
+                        <td>1.5.1</td>
+                        <td>ASN.1/Certificate decoding for X.509</td>
+                    </tr>
+                    <tr>
+                        <td><strong>File Upload</strong></td>
+                        <td><span class="tech-badge">python-multipart</span></td>
+                        <td>0.0.9</td>
+                        <td>Multipart form data handling</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Frontend Technologies</h3>
+            <table class="tech-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Technology</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Server-Side Language</strong></td>
+                        <td><span class="tech-badge badge-php">PHP 8.3</span></td>
+                        <td>Portal backend (routing, API client, session)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>UI Framework</strong></td>
+                        <td><span class="tech-badge badge-bootstrap">Bootstrap 5</span></td>
+                        <td>Responsive layout and UI components</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Charts</strong></td>
+                        <td><span class="tech-badge badge-js">Chart.js</span></td>
+                        <td>Dashboard visualizations and statistics</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Styling</strong></td>
+                        <td>CSS</td>
+                        <td>IDEMIA design tokens and custom themes</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Infrastructure & Data</h3>
+            <table class="tech-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Technology</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Database</strong></td>
+                        <td><span class="tech-badge badge-postgres">PostgreSQL</span></td>
+                        <td>Primary data store (KMIP metadata + portal data)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Database (Dev)</strong></td>
+                        <td><span class="tech-badge">SQLite</span></td>
+                        <td>Development-only data store</td>
+                    </tr>
+                    <tr>
+                        <td><strong>HSM</strong></td>
+                        <td><span class="tech-badge hsm">SoftHSM2</span></td>
+                        <td>Software HSM for key storage and crypto ops</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Containerization</strong></td>
+                        <td><span class="tech-badge">Docker</span></td>
+                        <td>4 containers: postgres, api, kmip, portal</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Security</strong></td>
+                        <td><span class="tech-badge ssl">TLS/SSL</span></td>
+                        <td>KMIP transport security, mTLS support</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- SECTION 3: LAYER DETAILS -->
+        <div class="section">
+            <h2>3. Layer Details</h2>
+
+            <h3>3.1 Presentation Layer (PHP Portal)</h3>
+            <div class="component-grid">
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #3498db;">Pages</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>index.php</strong> — Dashboard with statistics</li>
+                            <li><strong>keys.php</strong> — Key management</li>
+                            <li><strong>certificates.php</strong> — Certificate management</li>
+                            <li><strong>kmip.php</strong> — KMIP object explorer</li>
+                            <li><strong>pkcs11.php</strong> — PKCS#11 slot/object explorer</li>
+                            <li><strong>audit.php</strong> — Audit trail viewer</li>
+                            <li><strong>admin.php</strong> — User/role administration</li>
+                            <li><strong>login.php / logout.php</strong> — Authentication</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #2ecc71;">Support Files</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>inc/api.php</strong> — HTTP client for REST API calls</li>
+                            <li><strong>inc/layout.php</strong> — Shared layout/template engine</li>
+                            <li><strong>assets/css/idemia.css</strong> — IDEMIA design tokens</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <h3>3.2 API Layer (FastAPI)</h3>
+            <div class="component-grid">
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #27ae60;">Core Modules</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>main.py</strong> — FastAPI routes, middleware, startup</li>
+                            <li><strong>security.py</strong> — JWT auth, 5 roles, capability model</li>
+                            <li><strong>kmip_service.py</strong> — Facade over kmip_pkcs11 engine</li>
+                            <li><strong>portal_store.py</strong> — Users, audit trail persistence</li>
+                            <li><strong>kmip_identity.py</strong> — Portal identity for KMIP clients</li>
+                            <li><strong>kmip_server_main.py</strong> — KMIP server entry point</li>
+                            <li><strong>config.py</strong> — Application settings</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #e67e22;">API Endpoints</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>/api/auth/*</strong> — Login, logout, current user</li>
+                            <li><strong>/api/dashboard</strong> — System statistics</li>
+                            <li><strong>/api/kmip/objects/*</strong> — KMIP object CRUD</li>
+                            <li><strong>/api/certificates</strong> — Certificate listing</li>
+                            <li><strong>/api/keys</strong> — Key object listing</li>
+                            <li><strong>/api/pkcs11/*</strong> — PKCS#11 explorer</li>
+                            <li><strong>/api/audit</strong> — Audit trail queries</li>
+                            <li><strong>/api/admin/*</strong> — User/role management</li>
+                            <li><strong>/api/health</strong> — Liveness probe</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <h3>3.3 Engine Layer (kmip_pkcs11)</h3>
+            <div class="component-grid">
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #d35400;">Core</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>core/ttlv.py</strong> — TTLV encode/decode (KMIP wire format)</li>
+                            <li><strong>core/enums.py</strong> — KMIP tags, enums, statuses</li>
+                            <li><strong>core/exceptions.py</strong> — KMIP exception hierarchy</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #e74c3c;">Operations (41 total)</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>operations/dispatcher.py</strong> — Operation router & audit hook</li>
+                            <li><strong>operations/create.py</strong> — Create Key / Object</li>
+                            <li><strong>operations/create_keypair.py</strong> — Generate keypair</li>
+                            <li><strong>operations/encrypt.py / decrypt.py</strong> — Encryption</li>
+                            <li><strong>operations/sign.py / mac.py</strong> — Signing & MAC</li>
+                            <li><strong>operations/activate.py</strong> — Activate key</li>
+                            <li><strong>operations/revoke.py / archive.py</strong> — Lifecycle</li>
+                            <li><strong>operations/rekey.py / rekey_keypair.py</strong> — Re-keying</li>
+                            <li><strong>operations/destroy.py</strong> — Destroy key</li>
+                            <li><strong>operations/import_op.py / export_op.py</strong> — Import/Export</li>
+                            <li><strong>operations/hash_op.py / hmac_op.py</strong> — Hash operations</li>
+                            <li><strong>operations/query.py / locate.py</strong> — Discovery</li>
+                            <li><strong>...and 20+ more</strong></li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #8e44ad;">Support</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li><strong>server/server.py</strong> — KMIP TCP listener (port 5696)</li>
+                            <li><strong>pkcs11_shim/shim.py</strong> — PKCS#11 binding wrapper</li>
+                            <li><strong>metadata/store.py</strong> — KMIP metadata persistence</li>
+                            <li><strong>metadata/db.py</strong> — SQLite/PostgreSQL dialect layer</li>
+                            <li><strong>lifecycle/state_machine.py</strong> — Key lifecycle state machine</li>
+                            <li><strong>lifecycle/access_control.py</strong> — KMIP access control</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <h3>3.4 Data Layer</h3>
+            <table class="tech-table">
+                <thead>
+                    <tr>
+                        <th>Store</th>
+                        <th>Contents</th>
+                        <th>Location</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Metadata Store</strong></td>
+                        <td>KMIP object metadata, attributes, lifecycle state</td>
+                        <td>MetadataStore (db.py)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Portal Store</strong></td>
+                        <td>Users, roles, credentials, audit trail</td>
+                        <td>PortalStore (portal_store.py)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>PostgreSQL</strong></td>
+                        <td>Production database — all KMIP + portal data</td>
+                        <td>Container: chl-postgres</td>
+                    </tr>
+                    <tr>
+                        <td><strong>SQLite</strong></td>
+                        <td>Development database only</td>
+                        <td>File-based</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>3.5 HSM Layer</h3>
+            <table class="tech-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Technology</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>SoftHSM2</strong></td>
+                        <td>v2.7.0 (built from source)</td>
+                        <td>Software HSM for development</td>
+                    </tr>
+                    <tr>
+                        <td><strong>PKCS#11</strong></td>
+                        <td>PKCS#11 v3.0 API</td>
+                        <td>Standard HSM interface</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Token</strong></td>
+                        <td>SoftHSM2 token</td>
+                        <td>Key storage, cryptographic operations</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- SECTION 4: DATA FLOW -->
+        <div class="section">
+            <h2>4. Data Flow Diagrams</h2>
+
+            <h3>4.1 Web Portal Request Flow</h3>
+            <div class="data-flow">
+                <div class="flow-step">
+                    <strong>Browser</strong><br>
+                    <small>HTTP/HTTPS</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>PHP Portal</strong><br>
+                    <small>Apache/Nginx</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>REST API</strong><br>
+                    <small>FastAPI + JWT</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>kmip_pkcs11</strong><br>
+                    <small>Engine (in-process)</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>PostgreSQL</strong><br>
+                    <small>Metadata + Portal</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>SoftHSM2</strong><br>
+                    <small>PKCS#11 HSM</small>
+                </div>
+            </div>
+
+            <h3>4.2 KMIP Client Request Flow</h3>
+            <div class="data-flow">
+                <div class="flow-step">
+                    <strong>KMIP Client</strong><br>
+                    <small>TTLV over TCP</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>KMIP Server</strong><br>
+                    <small>server.py:5696</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>Dispatcher</strong><br>
+                    <small>Operation router</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>Operation Handler</strong><br>
+                    <small>create.py, encrypt.py...</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>PKCS#11 Shim</strong><br>
+                    <small>python-pkcs11</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>SoftHSM2</strong><br>
+                    <small>HSM Library</small>
+                </div>
+            </div>
+
+            <h3>4.3 Authentication Flow</h3>
+            <div class="data-flow">
+                <div class="flow-step">
+                    <strong>User Credentials</strong><br>
+                    <small>Username + Password</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>Portal / KMIP Client</strong><br>
+                    <small>Authenticates via PIN</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>PortalStore</strong><br>
+                    <small>verify_password()</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>JWT Token</strong><br>
+                    <small>Role + Capabilities</small>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>RBAC Enforcement</strong><br>
+                    <small>requires("capability")</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION 5: CONTAINER ARCHITECTURE -->
+        <div class="section">
+            <h2>5. Container Architecture</h2>
+            <p style="margin-bottom: 20px;">Four Docker containers, sharing one network and one database:</p>
+            
+            <div class="container-grid">
+                <div class="container-card">
+                    <h4>chl-postgres</h4>
+                    <p>PostgreSQL 16<br>Port: 5432<br>Credentials: cryptohub/devpass</p>
+                </div>
+                <div class="container-card">
+                    <h4>chl-api</h4>
+                    <p>FastAPI REST API<br>Port: 8000<br>Docs: /api/docs</p>
+                </div>
+                <div class="container-card">
+                    <h4>chl-kmip</h4>
+                    <p>KMIP TCP Server<br>Port: 5696<br>TLS required (dev: optional)</p>
+                </div>
+                <div class="container-card">
+                    <h4>chl-portal</h4>
+                    <p>PHP Portal + Nginx<br>Port: 8081<br>admin/admin (bootstrap)</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION 6: PORT MAPPING -->
+        <div class="section">
+            <h2>6. Port Mapping</h2>
+            <table class="port-table">
+                <thead>
+                    <tr>
+                        <th>Service</th>
+                        <th>Port</th>
+                        <th>Protocol</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Portal (Web UI)</td>
+                        <td>8081</td>
+                        <td>HTTP/HTTPS</td>
+                        <td>PHP + Nginx</td>
+                    </tr>
+                    <tr>
+                        <td>REST API</td>
+                        <td>8000</td>
+                        <td>HTTP</td>
+                        <td>FastAPI + OpenAPI docs</td>
+                    </tr>
+                    <tr>
+                        <td>KMIP Server</td>
+                        <td>5696</td>
+                        <td>TCP (TLS)</td>
+                        <td>KMIP 2.1 wire protocol</td>
+                    </tr>
+                    <tr>
+                        <td>PostgreSQL</td>
+                        <td>5432</td>
+                        <td>TCP</td>
+                        <td>Database</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- SECTION 7: RBAC MODEL -->
+        <div class="section">
+            <h2>7. Role-Based Access Control (RBAC)</h2>
+            <table class="role-table">
+                <thead>
+                    <tr>
+                        <th>Role</th>
+                        <th>read</th>
+                        <th>audit</th>
+                        <th>export</th>
+                        <th>key.create</th>
+                        <th>key.lifecycle</th>
+                        <th>key.destroy</th>
+                        <th>user.manage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Administrator</strong></td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                    </tr>
+                    <tr>
+                        <td><strong>SecurityOfficer</strong></td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="cross">✘</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Operator</strong></td>
+                        <td class="check">✔</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Auditor</strong></td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="check">✔</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                    </tr>
+                    <tr>
+                        <td><strong>ReadOnly</strong></td>
+                        <td class="check">✔</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                        <td class="cross">✘</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- SECTION 8: FEATURES -->
+        <div class="section">
+            <h2>8. Key Features</h2>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <div class="feature-icon">📊</div>
+                    <div class="feature-text">
+                        <h4>Dashboard</h4>
+                        <p>Key, certificate, KMIP and PKCS#11 object counts, HSM status, audit volume, system health</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🔑</div>
+                    <div class="feature-text">
+                        <h4>Key Explorer</h4>
+                        <p>Symmetric, RSA, ECC and certificates; search, filter, CSV export</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🌐</div>
+                    <div class="feature-text">
+                        <h4>KMIP Explorer</h4>
+                        <p>Managed objects with types, states and attributes. Create, Activate, Revoke, Re-Key, Destroy</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🔐</div>
+                    <div class="feature-text">
+                        <h4>PKCS#11 Explorer</h4>
+                        <p>Slots, tokens and objects with raw CKA_* attributes</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">📋</div>
+                    <div class="feature-text">
+                        <h4>Audit Trail</h4>
+                        <p>User, timestamp, source IP, action, object, provider and result. Export to CSV, Excel or JSON</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">⚙️</div>
+                    <div class="feature-text">
+                        <h4>Administration</h4>
+                        <p>Users, five roles, capability matrix enforced server-side</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION 9: KMIP OPERATIONS -->
+        <div class="section">
+            <h2>9. KMIP 2.1 Operations Implemented</h2>
+            <p style="margin-bottom: 15px;">41 of 53 KMIP operations implemented:</p>
+            <div class="component-grid">
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #27ae60;">Key Management</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li>Create, CreateKeyPair</li>
+                            <li>Activate, Deactivate, Revoke, Destroy</li>
+                            <li>Re-Key, Re-KeyKeyPair, ObtainLease</li>
+                            <li>DeriveKey</li>
+                            <li>Certify, Recertify</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #2980b9;">Cryptographic Operations</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li>Encrypt, Decrypt</li>
+                            <li>Sign, Verify, MAC, MACVerify</li>
+                            <li>Hash, HashDerive</li>
+                            <li>RNGRetrieve, RNGSeed</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #8e44ad;">Attribute & Object Management</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li>Register, Get, GetAttributes, Locate, Query</li>
+                            <li>ModifyAttribute, SetAttribute, AddAttribute</li>
+                            <li>DeleteAttribute, GetUsageAllocation</li>
+                            <li>Export, Import</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="component-card">
+                    <div class="component-card-header" style="background: #e67e22;">Protocol & Other</div>
+                    <div class="component-card-body">
+                        <ul>
+                            <li>DiscoverVersions</li>
+                            <li>AdjustAttribute, AdjustAttributeOfSymKey</li>
+                            <li>Check</li>
+                            <li>CreateSplitKey, JoinSplitKey</li>
+                            <li>DeleteAttribute</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION 10: KNOWN LIMITATIONS -->
+        <div class="section">
+            <h2>10. Known Limitations</h2>
+            <div class="limitations">
+                <h4>⚠️ Stated limitations (not hidden):</h4>
+                <ul>
+                    <li><strong>Concurrency is capped</strong> — All HSM work is serialised through one PKCS#11 session. A session pool was rejected due to <code>python-pkcs11</code> calling <code>C_Initialize(NULL)</code>.</li>
+                    <li><strong>No high availability</strong> — Single API process, single KMIP process, single token.</li>
+                    <li><strong>No metadata/HSM reconciliation</strong> — Divergence between the database and the token is not detected automatically.</li>
+                    <li><strong>Batch operations are not atomic</strong> — A partial batch does not roll back.</li>
+                    <li><strong>No cryptoperiod enforcement</strong> — Rotation is a manual action.</li>
+                    <li><strong>Audit trail is append-only but not tamper-evident</strong> — Direct database access can alter it.</li>
+                    <li><strong>SoftHSM2 is not FIPS 140-2/3 or Common Criteria validated</strong> — Correct for development; production needs validated hardware.</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- SECTION 11: FILE STRUCTURE -->
+        <div class="section">
+            <h2>11. Project File Structure</h2>
+            <pre style="background: #f8f9fa; padding: 20px; border-radius: 8px; overflow-x: auto; font-size: 0.85em;">
+Kmip/
+├── kmip_pkcs11/                      KMIP engine — the authoritative implementation
+│   ├── core/                         TTLV codec, enums, exceptions
+│   ├── operations/                   41 KMIP operations, one module each
+│   │   └── dispatcher.py             routes every operation; audit hook
+│   ├── pkcs11_shim/shim.py           PKCS#11 binding — one session behind one lock
+│   ├── metadata/
+│   │   ├── store.py                  KMIP metadata persistence
+│   │   └── db.py                     SQLite / PostgreSQL dialect layer
+│   ├── lifecycle/                    state machine, access control
+│   │   ├── state_machine.py
+│   │   └── access_control.py
+│   ├── server/server.py              KMIP TCP listener (port 5696)
+│   └── tests/                        624 tests
+│
+├── cryptohub_lite/                   the management platform
+│   ├── api/app/
+│   │   ├── main.py                   FastAPI routes
+│   │   ├── security.py               JWT, five roles, capability model
+│   │   ├── portal_store.py           users and audit trail
+│   │   ├── kmip_service.py           façade over the engine
+│   │   ├── kmip_identity.py          portal identity + roles for KMIP
+│   │   └── kmip_server_main.py       runnable entry for KMIP server
+│   ├── portal/
+│   │   ├── public/                   pages: dashboard, keys, certificates,
+│   │   │                         KMIP, PKCS#11, audit, administration
+│   │   ├── inc/                      API client, layout, session handling
+│   │   └── assets/css/               IDEMIA design tokens
+│   ├── docker/                       Dockerfiles + entrypoint
+│   ├── docs/                         guides
+│   ├── scripts/                      setup.sh / setup.cmd
+│   └── tools/                        SQLite → PostgreSQL migration
+│
+├── cryptohub_lite/docker-compose.yml
+├── README.md
+├── README_KMIP.md
+├── PHASE1_ASSESSMENT.md
+├── setup.py
+└── pytest.ini
+            </pre>
+        </div>
+
+        <!-- SECTION 12: QUICK START -->
+        <div class="section">
+            <h2>12. Quick Start Commands</h2>
+            <pre style="background: #2c3e50; color: #ecf0f1; padding: 20px; border-radius: 8px; overflow-x: auto; font-size: 0.9em;">
+# Prerequisite: Docker Desktop running
+
+# Clone and setup
+git clone <repo> && cd Kmip
+./cryptohub_lite/scripts/setup.sh    # Windows: cryptohub_lite\scripts\setup.cmd
+
+# Docker Compose commands
+C=cryptohub_lite/docker-compose.yml
+
+docker compose -f $C up -d --build     # start / rebuild
+docker compose -f $C ps                # status
+docker compose -f $C logs -f api       # follow logs
+docker compose -f $C down              # stop
+docker compose -f $C down -v           # stop and DESTROY all data
+
+# Run tests
+docker compose -f cryptohub_lite/docker-compose.yml exec api \
+    sh -c 'cd /app && python -m pytest kmip_pkcs11/tests -q'
+
+# Expected: 624 passed
+            </pre>
+        </div>
+
+        <footer>
+            <p>IDEMIA CryptoHub Lite — Architecture Document</p>
+            <p>KMIP 2.1 Server with PKCS#11 HSM Integration</p>
+        </footer>
+    </div>
+</body>
+</html>

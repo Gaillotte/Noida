@@ -31,6 +31,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && can('user.manage')) {
                          ['enabled' => ($_POST['enabled'] ?? '0') === '1']);
         $r['ok'] ? $notice = 'User updated.' : $error = $r['error'];
 
+    } elseif ($action === 'reset_password') {
+        $r = $api->patch('/api/admin/users/' . rawurlencode($_POST['username'] ?? ''),
+                         ['password' => $_POST['password'] ?? '']);
+        $r['ok'] ? $notice = 'Password reset. Tell the user to change it.' : $error = $r['error'];
+
     } elseif ($action === 'delete') {
         $r = $api->delete('/api/admin/users/' . rawurlencode($_POST['username'] ?? ''));
         $r['ok'] ? $notice = 'User deleted.' : $error = $r['error'];
@@ -110,6 +115,15 @@ if (!can('user.manage')) {
                                        value="<?= !empty($u['enabled']) ? '0' : '1' ?>">
                                 <button class="chl-btn chl-btn-sm" type="submit">
                                     <?= !empty($u['enabled']) ? 'Disable' : 'Enable' ?></button>
+                            </form>
+                            <form method="post" style="display:flex;gap:4px"
+                                  onsubmit="return confirm('Reset the password for <?= e($u['username']) ?>?')">
+                                <input type="hidden" name="action" value="reset_password">
+                                <input type="hidden" name="username" value="<?= e($u['username']) ?>">
+                                <input class="chl-input chl-btn-sm" name="password" type="password"
+                                       placeholder="New password" required minlength="8"
+                                       style="width:130px;padding:4px 8px;font-size:11.5px">
+                                <button class="chl-btn chl-btn-sm" type="submit">Reset</button>
                             </form>
                             <?php if ($u['username'] !== current_username()): ?>
                                 <form method="post"

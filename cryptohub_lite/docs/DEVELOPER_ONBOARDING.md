@@ -32,14 +32,14 @@ waits until the API actually answers — not merely until the container starts.
 
 | Service | URL | Credentials |
 |---|---|---|
-| Portal | http://localhost:8081 | `admin` / `admin` |
+| Portal | http://localhost:8081 | `admin` / `admin123` |
 | REST API docs | http://localhost:8000/api/docs | bearer token from `/api/auth/login` |
-| KMIP | `localhost:5697` | a portal account |
+| KMIP | `localhost:5696` | a portal account |
 | PostgreSQL | `localhost:5432` | `cryptohub` / `devpass` |
 
-**Change the bootstrap password immediately** — Administration → Users. It is
-created only when the user table is empty, so it cannot silently reappear, but
-it starts as a published default.
+**Change the bootstrap password immediately** — click your name in the
+top-right → **My Account**. The account is created only when the user table is
+empty, so it cannot silently reappear, but it starts as a published default.
 
 > The first build takes several minutes because **SoftHSM2 is compiled from
 > source**. That is deliberate, not an oversight — see
@@ -116,9 +116,9 @@ python cryptohub_lite/tools/migrate_sqlite_to_postgres.py \
 
 ## Common problems
 
-**Port already allocated (5696).** Another KMIP server is running. Lite
-publishes on **5697** by default for this reason; override with
-`KMIP_HOST_PORT`.
+**Port already allocated (5696).** Another KMIP server already holds KMIP's
+registered port. Override the host side with `KMIP_HOST_PORT=5697`; the
+container always listens on 5696 internally.
 
 **KMIP container exits immediately.** It now refuses to start without TLS
 unless plaintext is named explicitly. Compose sets `KMIP_ALLOW_PLAINTEXT=true`

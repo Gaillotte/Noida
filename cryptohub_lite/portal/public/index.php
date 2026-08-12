@@ -74,6 +74,59 @@ $hsm = $d['hsm'] ?? ['available' => false, 'error' => 'unknown'];
     </div>
 <?php endif; ?>
 
+<?php
+// A brand-new deployment has an empty store, and the charts below are all
+// zeroes — which reads as "broken" rather than "nothing created yet". These
+// are the same first steps as the README's "Initialising the UI" section,
+// shown where someone who just signed in will actually look.
+$is_first_run = ((int)($d['total_objects'] ?? 0) === 0);
+if ($is_first_run):
+?>
+    <div class="chl-card" style="margin-bottom:20px">
+        <div class="chl-card-head">
+            <div>
+                <h2 class="chl-card-title">Getting Started</h2>
+                <p class="chl-card-sub">No managed objects exist yet — these are the first steps</p>
+            </div>
+        </div>
+        <div class="chl-card-body">
+            <ol style="margin:0;padding-left:22px;font-size:13px;line-height:2">
+                <li>
+                    <a href="account.php">Change the default administrator password</a>
+                    <?php if (!using_default_password()): ?>
+                        <span class="chl-badge green" style="margin-left:6px">done</span>
+                    <?php endif; ?>
+                </li>
+                <li>
+                    Confirm the token is online —
+                    <?php if ($hsm['available'] ?? false): ?>
+                        <span class="chl-badge green">online</span>
+                        <span style="color:var(--text-muted)">
+                            (<?= e($hsm['token'] ?? '') ?>)</span>
+                    <?php else: ?>
+                        <span class="chl-badge red">offline</span>
+                        <span style="color:var(--text-muted)">
+                            see <a href="pkcs11.php">PKCS#11</a></span>
+                    <?php endif; ?>
+                </li>
+                <?php if (can('key.create')): ?>
+                    <li><a href="kmip.php">Create your first key</a> from the KMIP page
+                        (AES-256 is a sensible default)</li>
+                <?php else: ?>
+                    <li>Ask an Operator or Administrator to create the first key — your
+                        <?= e(current_role()) ?> role is read-only</li>
+                <?php endif; ?>
+                <li><a href="keys.php">Review it under Keys</a>, then
+                    <a href="audit.php">check the audit trail</a> recorded the operation</li>
+                <?php if (can('user.manage')): ?>
+                    <li><a href="admin.php">Create per-person accounts</a> so the audit trail
+                        names real users rather than a shared administrator</li>
+                <?php endif; ?>
+            </ol>
+        </div>
+    </div>
+<?php endif; ?>
+
 <div class="chl-chart-grid">
     <div class="chl-card">
         <div class="chl-card-head">

@@ -14,26 +14,168 @@ KMIP wire protocol. Both are views of one system, not two systems kept in step.
 **Prerequisite:** Docker Desktop, running. Nothing else — Python, PostgreSQL
 and SoftHSM2 are all provided by the images.
 
+Clone, then run the launcher for your shell **from the repository root**:
+
+```bat
+REM Windows (cmd.exe or PowerShell)
+setup.cmd
+```
+
 ```bash
-git clone <repo> && cd Kmip
-./cryptohub_lite/scripts/setup.sh          # Windows: cryptohub_lite\scripts\setup.cmd
+# Linux, macOS, Git Bash
+./setup.sh
 ```
 
 In VS Code, `Ctrl+Shift+B` runs the same thing.
 
+> `setup.sh` will not run in `cmd.exe` — Windows cannot execute a `.sh` file
+> and reports *"is not recognized as an internal or external command"*. Use
+> `setup.cmd` there. Both are thin launchers for the real scripts in
+> `cryptohub_lite\scripts\`.
+
 | Service | Address | Credentials |
 |---|---|---|
-| **Portal** | http://localhost:8081 | `admin` / `admin` |
+| **Portal (the UI)** | http://localhost:8081 | `admin` / `admin123` |
 | REST API | http://localhost:8000/api/docs | bearer token from `/api/auth/login` |
 | KMIP | `localhost:5696` | any portal account |
 | PostgreSQL | `localhost:5432` | `cryptohub` / `devpass` |
 
-**Change the bootstrap password first** — Administration → Users. It is created
-only when the user table is empty, so it cannot silently reappear, but it
-starts as a published default.
-
 > The first build takes several minutes: SoftHSM2 is **compiled from source**,
 > deliberately. See [SoftHSM2 setup](cryptohub_lite/docs/SOFTHSM2_SETUP.md).
+
+---
+
+## Starting the UI
+
+The portal is one of the four containers, so `setup.sh` already starts it.
+There is no separate build step, no `npm install`, and no asset pipeline — it
+is server-rendered PHP.
+
+```bash
+C=cryptohub_lite/docker-compose.yml
+
+docker compose -f $C up -d                 # starts everything, portal included
+docker compose -f $C up -d portal          # just the portal
+docker compose -f $C restart portal        # after editing a .php file
+docker compose -f $C logs -f portal        # Apache access and error log
+```
+
+Then open **http://localhost:8081**.
+
+The portal depends on the API being *healthy*, not merely started, so
+`up -d` waits for it. If the page loads but shows
+*"Cannot reach the CryptoHub API"*, the portal is fine and the API is not —
+check `docker compose -f $C ps` and `logs api`.
+
+**Changing a port.** `8081:80` in the compose file maps host to container.
+Change the left number if 8081 is taken; nothing inside the container needs
+to change.
+
+**Editing the UI.** PHP is baked into the image, so a change needs
+`docker compose -f $C up -d --build portal`. To iterate without rebuilding,
+bind-mount the source over it:
+
+```yaml
+  portal:
+    volumes:
+      - ./cryptohub_lite/portal/public:/var/www/html/public
+      - ./cryptohub_lite/portal/inc:/var/www/html/inc
+```
+
+---
+
+## Initialising the UI
+
+A first run has one administrator and no keys. Five steps take it to a working
+system.
+
+The portal prompts for the first two itself: a red banner appears on every page
+while the account still uses the default password, and the dashboard shows a
+**Getting Started** card until the first managed object exists. Both disappear
+on their own once the work is done, so you can follow the UI instead of this
+section if you prefer.
+
+### 1. Sign in and secure the administrator
+
+Sign in as `admin` / `admin123`, then click **your name in the top-right**
+→ *Change Password*.
+
+The bootstrap account is created **only when the user table is empty**, so it
+cannot silently reappear — but until you change it, the password is one that
+is published in this file.
+
+### 2. Create real accounts
+
+**Administration → Add User.** Give each person the least role that works:
+
+| Role | Give it to |
+|---|---|
+| Administrator | Platform owners; the only role that manages users |
+| SecurityOfficer | Key custodians — full lifecycle, no user management |
+| Operator | Applications and day-to-day use. **Cannot destroy keys** |
+| Auditor | Compliance — read plus audit export, no key operations |
+| ReadOnly | Dashboards and reporting |
+
+Every user can change their own password from **My Account**; only an
+Administrator can reset someone else's, from **Administration → Users →
+Reset**.
+
+### 3. Create a KMIP client account
+
+KMIP clients sign in with the *same* accounts — there is no separate client
+credential store. Create one account per client (for example
+`svc-payments`, role **Operator**) so that disabling it revokes exactly that
+client.
+
+### 4. Create your first key
+
+**KMIP → Create Symmetric Key.** Give it a name, pick AES-256, and create.
+
+Then check it landed in the hardware: **PKCS#11 → Token Objects** shows the
+same key with its raw `CKA_*` attributes, including
+`CKA_SENSITIVE=true` and `CKA_EXTRACTABLE=false` — the material cannot leave
+the HSM.
+
+### 5. Confirm the audit trail
+
+**Audit** should already show your sign-in, the user you created and the key
+you generated. If it does not, nothing else on this list is trustworthy.
+
+### Verifying the whole path
+
+To prove the portal and KMIP are one system, create a key over the wire and
+watch it appear in the UI:
+
+```bash
+docker compose -f cryptohub_lite/docker-compose.yml exec api python - <<'PY'
+from kmip_pkcs11.test_app.client import KMIPClient
+from kmip_pkcs11.core.enums import CryptographicAlgorithm
+c = KMIPClient(host="kmip", port=5696, username="admin", password="admin123")
+c.connect()
+uid = c.create(algorithm=CryptographicAlgorithm.AES, length=256, name="wire-test")
+c.close()
+print("created", uid)
+PY
+```
+
+Refresh **KMIP** in the portal — `wire-test` is there, Active, and the Audit
+page records it as `kmip.Create` by `admin`.
+
+> **Create yields an Active key.** This engine sets `State.Active` at creation
+> rather than `PreActive`, so calling `activate()` afterwards fails with
+> *"not permitted when object state is 'Active'"*. That is why the portal's
+> **Activate** button only appears for objects that are genuinely PreActive —
+> which, for keys made through Create, is none of them. Objects registered by
+> other paths can still start PreActive.
+
+### Starting from scratch
+
+```bash
+docker compose -f cryptohub_lite/docker-compose.yml down -v
+```
+
+Destroys the database **and the HSM token**, so every key is gone. The next
+`up` recreates the bootstrap administrator.
 
 ---
 
@@ -203,7 +345,7 @@ Set in `cryptohub_lite/docker-compose.yml` or the environment.
 |---|---|---|
 | `POSTGRES_PASSWORD` | `devpass` | |
 | `JWT_SECRET` | `dev-only-change-me` | **Change for production** |
-| `BOOTSTRAP_ADMIN` / `BOOTSTRAP_PASSWORD` | `admin` / `admin` | Used only when no users exist |
+| `BOOTSTRAP_ADMIN` / `BOOTSTRAP_PASSWORD` | `admin` / `admin123` | Used only when no users exist |
 | `PKCS11_TOKEN` / `PKCS11_PIN` | `CryptoHubLite` / `1234` | HSM credential only |
 | `KMIP_HOST_PORT` | `5696` | Change if another KMIP server holds the port |
 | `KMIP_ALLOW_PLAINTEXT` | `true` (dev) | **Remove for production** |

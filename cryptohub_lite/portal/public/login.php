@@ -24,6 +24,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['role']         = $result['data']['role'];
         $_SESSION['display_name'] = $result['data']['display_name'];
         $_SESSION['capabilities'] = $result['data']['capabilities'];
+        // Drives the banner on every page until the password is changed.
+        $_SESSION['default_password'] = !empty($result['data']['using_default_password']);
         header('Location: index.php');
         exit;
     }

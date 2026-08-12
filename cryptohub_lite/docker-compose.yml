@@ -42,7 +42,7 @@ services:
       PKCS11_PIN: ${PKCS11_PIN:-1234}
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
       BOOTSTRAP_ADMIN: ${BOOTSTRAP_ADMIN:-admin}
-      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-admin}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-admin123}
     volumes:
       # Shared with the KMIP service: one token, one set of keys.
       - chl_tokens:/var/lib/softhsm/tokens

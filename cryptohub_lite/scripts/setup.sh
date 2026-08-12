@@ -46,12 +46,12 @@ cat <<BANNER
 
   IDEMIA CryptoHub Lite is running.
 
-    Portal      http://localhost:8081       admin / admin
+    Portal      http://localhost:8081       admin / admin123
     REST API    http://localhost:8000/api/docs
-    KMIP        localhost:5697              (5696 inside the network)
+    KMIP        localhost:5696
     PostgreSQL  localhost:5432              cryptohub / devpass
 
   Change the bootstrap administrator password before doing anything else:
-  Administration -> Users.
+  click your name in the top-right -> My Account.
 
 BANNER
