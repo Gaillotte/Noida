@@ -33,6 +33,13 @@ def _name(enum_cls, value):
         return str(value)
 
 
+def _usage_names(mask: Optional[int]) -> List[str]:
+    """Expands a CryptographicUsageMask into the flag names it carries."""
+    if not mask:
+        return []
+    return [flag.name for flag in enums.CryptographicUsageMask if int(flag) & int(mask)]
+
+
 def _iso(timestamp: Optional[float]) -> Optional[str]:
     if not timestamp:
         return None
@@ -133,9 +140,21 @@ class KmipService:
             "destroy_date": _iso(row.get("destroy_date")),
             "compromise_date": _iso(row.get("compromise_date")),
             "revocation_reason": _name(enums.RevocationReasonCode, row.get("revocation_reason")),
+            "usage_mask": _usage_names(row.get("usage_mask")),
             "created_at": _iso(row.get("created_at")),
             "name": self._first_name(row["uuid"]),
+            "cka_id": self._cka_id(row["uuid"]),
         }
+
+    def _cka_id(self, uid: str) -> Optional[str]:
+        """The PKCS#11 CKA_ID, which the engine stores as a private attribute.
+
+        Read rather than derived: it is generated inside the shim, so this is
+        the only place the portal can learn what identifies the key on the
+        token itself.
+        """
+        values = self._store.get_attribute(uid, "_pkcs11_cka_id")
+        return str(values[0]).upper() if values else None
 
     def _first_name(self, uid: str) -> Optional[str]:
         values = self._store.get_attribute(uid, "Name")
@@ -158,8 +177,10 @@ class KmipService:
         """Supplies the PKCS#11 shim needed by write operations."""
         self._shim = shim
 
-    def create_symmetric_key(self, name: str, algorithm: str, length: int,
-                             owner: str) -> str:
+    def create_symmetric_key(self, name: str, algorithm: str, length: int, owner: str,
+                             encrypt: bool = True, decrypt: bool = True,
+                             wrap: bool = False, unwrap: bool = False,
+                             sensitive: bool = True, extractable: bool = False) -> str:
         from kmip_pkcs11.operations.create import create_symmetric_key
 
         if self._shim is None:
@@ -171,16 +192,95 @@ class KmipService:
             supported = ", ".join(a.name for a in enums.CryptographicAlgorithm)
             raise ValueError(f"Unsupported algorithm '{algorithm}'. Supported: {supported}")
 
-        usage = int(enums.CryptographicUsageMask.Encrypt | enums.CryptographicUsageMask.Decrypt)
+        # Only these four reach a PKCS#11 attribute for a secret key — the
+        # engine derives CKA_ENCRYPT/DECRYPT/WRAP/UNWRAP from the mask. Offering
+        # Sign or Verify here would set a bit the token never sees.
+        mask = enums.CryptographicUsageMask
+        usage = 0
+        if encrypt:
+            usage |= int(mask.Encrypt)
+        if decrypt:
+            usage |= int(mask.Decrypt)
+        if wrap:
+            usage |= int(mask.WrapKey)
+        if unwrap:
+            usage |= int(mask.UnwrapKey)
+        if usage == 0:
+            raise ValueError("Select at least one usage: encrypt, decrypt, wrap or unwrap")
 
         # Calls the same helper Create and ReKey share, so a key made here is
         # indistinguishable from one made over the wire.
         return create_symmetric_key(
             algorithm_value, length, usage, [name],
-            True,      # sensitive
-            False,     # extractable — the HSM keeps the material
+            sensitive, extractable,
             owner, self._store, self._shim,
         )
+
+    def create_key_pair(self, name: str, algorithm: str, length: int,
+                        curve: str, owner: str, sign: bool = True,
+                        verify: bool = True, derive: bool = False) -> Dict[str, str]:
+        """Generates an asymmetric key pair. Returns both identifiers.
+
+        The usage masks are not chosen here — they mirror what
+        ``create_keypair.handle`` defaults to for each algorithm family, so a
+        pair made from the portal carries the same attributes as one made by a
+        KMIP client sending CreateKeyPair with no explicit mask.
+        """
+        from kmip_pkcs11.operations.create_keypair import (
+            CURVE_TO_NAME, create_key_pair_objects,
+        )
+
+        if self._shim is None:
+            raise RuntimeError("The HSM is unavailable; key creation is not possible")
+
+        try:
+            algorithm_value = int(getattr(enums.CryptographicAlgorithm, algorithm.upper()))
+        except AttributeError:
+            raise ValueError(f"Unsupported algorithm '{algorithm}'. "
+                             "Supported: RSA, EC, ECDSA, ECDH, DSA, DH")
+
+        try:
+            curve_value = getattr(enums.RecommendedCurve, curve.upper())
+        except AttributeError:
+            supported = ", ".join(c.name for c in CURVE_TO_NAME)
+            raise ValueError(f"Unsupported curve '{curve}'. Supported: {supported}")
+
+        # For an EC key the curve fixes the size, and the caller's `length` is
+        # meaningless. Left alone it lands in CryptographicLength as the
+        # engine's RSA-shaped default of 2048, so the portal would list a
+        # P-384 key as "EC 2048". Supplying the curve's own bit size is what a
+        # well-behaved KMIP client would send, not a second opinion about what
+        # the key is.
+        curve_bits = {"P_192": 192, "P_224": 224, "P_256": 256,
+                      "P_384": 384, "P_521": 521, "SECP256K1": 256}
+        elliptic = (int(enums.CryptographicAlgorithm.EC),
+                    int(enums.CryptographicAlgorithm.ECDSA),
+                    int(enums.CryptographicAlgorithm.ECDH))
+        if algorithm_value in elliptic:
+            # Falls back to the caller's value for a curve this map has not
+            # heard of, leaving the engine to reject it with its own message.
+            length = curve_bits.get(curve.upper(), length)
+
+        key_agreement = algorithm_value in (int(enums.CryptographicAlgorithm.DH),
+                                            int(enums.CryptographicAlgorithm.ECDH))
+        mask = enums.CryptographicUsageMask
+        if key_agreement:
+            # The engine forces derive on for these algorithms regardless, so a
+            # sign/verify choice here would be quietly ignored.
+            pub_mask = priv_mask = int(mask.KeyAgreement)
+        else:
+            pub_mask = int(mask.Verify) if verify else 0
+            priv_mask = int(mask.Sign) if sign else 0
+            if derive:
+                priv_mask |= int(mask.KeyAgreement)
+            if pub_mask == 0 and priv_mask == 0:
+                raise ValueError("Select at least one usage: sign, verify or derive")
+
+        public_uid, private_uid = create_key_pair_objects(
+            algorithm_value, length, curve_value, pub_mask, priv_mask, [name],
+            owner, self._store, self._shim,
+        )
+        return {"public_uid": public_uid, "private_uid": private_uid}
 
     def lifecycle(self, uid: str, action: str, owner: str, **kwargs) -> str:
         """Runs Activate, Revoke, ReKey or Destroy through the engine handler."""

@@ -253,6 +253,32 @@ class CreateKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     algorithm: str = "AES"
     length: int = 256
+    # PKCS#11 attributes the engine sets on the token: CKA_ENCRYPT, CKA_DECRYPT,
+    # CKA_WRAP, CKA_UNWRAP, CKA_SENSITIVE, CKA_EXTRACTABLE. Defaults match what
+    # the API did before these were selectable, so an existing client sees no
+    # change in behaviour.
+    encrypt: bool = True
+    decrypt: bool = True
+    wrap: bool = False
+    unwrap: bool = False
+    sensitive: bool = True
+    extractable: bool = False
+
+
+class CreateKeyPairRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    algorithm: str = "RSA"
+    length: int = 2048
+    # Ignored for RSA and DSA. Kept on the same request rather than split into
+    # two endpoints because the caller is filling in one form.
+    curve: str = "P_256"
+    # CKA_SIGN on the private half, CKA_VERIFY on the public one. Sensitive and
+    # extractable are absent because the engine fixes them per half — private
+    # sensitive and non-extractable, public neither — and accepting a value it
+    # would ignore is worse than not offering it.
+    sign: bool = True
+    verify: bool = True
+    derive: bool = False
 
 
 class RevokeRequest(BaseModel):
@@ -266,8 +292,12 @@ def create_key(body: CreateKeyRequest, request: Request,
     service: KmipService = request.app.state.kmip
     portal: PortalStore = request.app.state.portal
     try:
-        uid = service.create_symmetric_key(body.name, body.algorithm, body.length,
-                                           owner=user["username"])
+        uid = service.create_symmetric_key(
+            body.name, body.algorithm, body.length, owner=user["username"],
+            encrypt=body.encrypt, decrypt=body.decrypt,
+            wrap=body.wrap, unwrap=body.unwrap,
+            sensitive=body.sensitive, extractable=body.extractable,
+        )
     except Exception as exc:                    # noqa: BLE001
         portal.audit("kmip.Create", "FAILURE", username=user["username"],
                      source_ip=client_ip(request), provider="KMIP", detail=str(exc))
@@ -277,6 +307,32 @@ def create_key(body: CreateKeyRequest, request: Request,
                  source_ip=client_ip(request), object_uid=uid, provider="KMIP",
                  detail=f"{body.algorithm}-{body.length} '{body.name}'")
     return {"uid": uid, "name": body.name}
+
+
+@app.post("/api/kmip/keypairs", status_code=status.HTTP_201_CREATED, tags=["KMIP"])
+def create_key_pair(body: CreateKeyPairRequest, request: Request,
+                    user: Dict[str, Any] = Depends(requires("key.create"))):
+    """Creates an asymmetric key pair, producing two linked managed objects."""
+    service: KmipService = request.app.state.kmip
+    portal: PortalStore = request.app.state.portal
+    try:
+        pair = service.create_key_pair(
+            body.name, body.algorithm, body.length, body.curve,
+            owner=user["username"], sign=body.sign, verify=body.verify,
+            derive=body.derive,
+        )
+    except Exception as exc:                    # noqa: BLE001
+        portal.audit("kmip.CreateKeyPair", "FAILURE", username=user["username"],
+                     source_ip=client_ip(request), provider="KMIP", detail=str(exc))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    # The private key is the one that matters for custody, so it is the object
+    # the audit record points at; the public half is named in the detail.
+    detail = f"{body.algorithm} '{body.name}', public {pair['public_uid']}"
+    portal.audit("kmip.CreateKeyPair", "SUCCESS", username=user["username"],
+                 source_ip=client_ip(request), object_uid=pair["private_uid"],
+                 provider="KMIP", detail=detail)
+    return {**pair, "name": body.name}
 
 
 @app.post("/api/kmip/objects/{uid}/activate", tags=["KMIP"])

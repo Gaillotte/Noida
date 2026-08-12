@@ -129,9 +129,27 @@ final class ApiClient
         }
 
         // FastAPI reports the reason in `detail`; surfacing it beats "HTTP 403".
-        $message = is_array($decoded) && isset($decoded['detail'])
-            ? (is_string($decoded['detail']) ? $decoded['detail'] : json_encode($decoded['detail']))
-            : ('HTTP ' . $status);
+        $message = 'HTTP ' . $status;
+        if (is_array($decoded) && isset($decoded['detail'])) {
+            $detail = $decoded['detail'];
+            if (is_string($detail)) {
+                $message = $detail;
+            } else {
+                // A 422 arrives as a list of {loc, msg} objects. Dumping that
+                // as JSON puts Pydantic's internals on screen; naming the
+                // field and the problem is what the reader needs.
+                $parts = [];
+                foreach ((array)$detail as $item) {
+                    if (!is_array($item) || !isset($item['msg'])) {
+                        $parts[] = json_encode($item);
+                        continue;
+                    }
+                    $loc = array_values(array_diff((array)($item['loc'] ?? []), ['body']));
+                    $parts[] = ($loc ? implode('.', $loc) . ': ' : '') . $item['msg'];
+                }
+                $message = $parts ? implode('; ', $parts) : json_encode($detail);
+            }
+        }
 
         return ['ok' => false, 'status' => $status, 'data' => $decoded, 'error' => $message];
     }

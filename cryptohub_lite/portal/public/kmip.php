@@ -29,42 +29,10 @@ if (!$result['ok']) {
 }
 ?>
 
-<?php if (can('key.create')): ?>
-<div class="chl-card">
-    <div class="chl-card-head">
-        <div>
-            <h2 class="chl-card-title">Create Symmetric Key</h2>
-            <p class="chl-card-sub">Generated inside the HSM; the material never leaves it</p>
-        </div>
-    </div>
-    <div class="chl-card-body">
-        <form method="post" action="kmip_action.php" class="chl-toolbar" style="align-items:flex-end">
-            <input type="hidden" name="action" value="create">
-            <input type="hidden" name="back" value="kmip.php">
-            <div>
-                <label class="chl-label">Name</label>
-                <input class="chl-input" name="name" required placeholder="payments-aes-2026">
-            </div>
-            <div>
-                <label class="chl-label">Algorithm</label>
-                <select class="chl-select" name="algorithm">
-                    <option value="AES">AES</option>
-                    <option value="TripleDES">TripleDES</option>
-                </select>
-            </div>
-            <div>
-                <label class="chl-label">Length</label>
-                <select class="chl-select" name="length">
-                    <option value="256">256</option>
-                    <option value="192">192</option>
-                    <option value="128">128</option>
-                </select>
-            </div>
-            <button class="chl-btn chl-btn-primary" type="submit">Create key</button>
-        </form>
-    </div>
-</div>
-<?php endif; ?>
+<?php
+$create_back = 'kmip.php';
+require __DIR__ . '/../inc/create_key_form.php';
+?>
 
 <?php if ($detail): ?>
     <div class="chl-card">

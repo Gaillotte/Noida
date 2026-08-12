@@ -370,3 +370,79 @@ a:hover { text-decoration: underline; }
   .chl-sidebar.open { transform: translateX(0); }
   .chl-main { margin-left: 0; }
 }
+
+/* ── key generation form ─────────────────────────────────────────────────── */
+
+/* Segmented control. A radio group by behaviour, buttons by appearance: the
+   choice is small and fixed, so showing all of it beats hiding it in a select. */
+.chl-seg {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chl-seg-btn {
+  flex: 1 1 auto;
+  min-width: 68px;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.chl-seg-btn:hover { background: var(--surface-hover); color: var(--text); }
+.chl-seg-btn.active {
+  background: var(--idemia-blue-bright);
+  border-color: var(--idemia-blue-bright);
+  color: #fff;
+}
+.chl-seg-btn:focus-visible { outline: 2px solid var(--info-cyan); outline-offset: 2px; }
+
+.chl-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 9px 18px;
+  margin-top: 4px;
+}
+.chl-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.chl-check input { accent-color: var(--idemia-blue-bright); width: 15px; height: 15px; }
+/* A disabled attribute is one the engine decides, not one you got wrong —
+   greyed rather than hidden so the reader can see it was considered. */
+.chl-check input:disabled { cursor: not-allowed; }
+.chl-check:has(input:disabled) { color: var(--text-dim); cursor: not-allowed; }
+
+.chl-hint { margin-top: 6px; font-size: 11.5px; color: var(--text-dim); line-height: 1.6; }
+.chl-hint code {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 11px;
+  color: var(--info-cyan);
+  background: rgba(41, 182, 246, .08);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.chl-hint-inline { font-size: 11px; color: var(--text-dim); }
+.chl-req { color: var(--alert-red); }
+.chl-btn-block { width: 100%; justify-content: center; padding: 11px; font-size: 14px; }
+
+/* Generator beside explorer. Collapses rather than compressing: an
+   eight-column table in half a screen is worse than two stacked cards. */
+.chl-split {
+  display: grid;
+  grid-template-columns: minmax(340px, 400px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .chl-split { grid-template-columns: minmax(0, 1fr); }
+}
