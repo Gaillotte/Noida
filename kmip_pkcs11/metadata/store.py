@@ -3,6 +3,9 @@ SQLite-backed metadata store for KMIP attributes that PKCS#11 does not hold.
 Thread-safe via connection-per-thread using threading.local.
 """
 
+import hashlib
+import hmac
+import os
 import sqlite3
 import threading
 import uuid
@@ -16,6 +19,20 @@ from ..core.enums import State, ObjectType
 log = logging.getLogger(__name__)
 
 _local = threading.local()
+
+# scrypt work factors for password hashing. n=2**14 is the standard
+# "interactive" setting — roughly 50ms per hash, which is a meaningful
+# brute-force cost without making authentication feel slow.
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_DKLEN = 2 ** 14, 8, 1, 32
+_SALT_BYTES = 16
+
+
+def _scrypt(password: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(
+        (password or "").encode("utf-8"),
+        salt=salt,
+        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_DKLEN,
+    )
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS kmip_objects (
@@ -59,6 +76,15 @@ CREATE INDEX IF NOT EXISTS idx_attr_lookup
 
 CREATE INDEX IF NOT EXISTS idx_state
     ON kmip_objects(state);
+
+CREATE TABLE IF NOT EXISTS kmip_identities (
+    identity      TEXT PRIMARY KEY,
+    password_hash BLOB NOT NULL,
+    salt          BLOB NOT NULL,
+    algorithm     TEXT NOT NULL DEFAULT 'scrypt',
+    disabled      INTEGER NOT NULL DEFAULT 0,
+    created_at    REAL NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS kmip_identity_roles (
     identity TEXT NOT NULL,
@@ -165,6 +191,81 @@ class MetadataStore:
             "SELECT owner_identity FROM kmip_objects WHERE uuid = ?", (uid,)
         ).fetchone()
         return row["owner_identity"] if row else None
+
+    # ── identities (authentication) ──────────────────────────────────────────
+    # Per-user credentials. Each identity gets its own random salt and an
+    # independently revocable password — replacing the previous model, where
+    # every caller authenticated with the single shared PKCS#11 token PIN and
+    # could therefore claim any username. Like roles and grants, this is a
+    # server-admin surface: KMIP defines no wire operation for it.
+
+    def create_identity(self, identity: str, password: str) -> None:
+        """Create (or replace the password of) an identity."""
+        salt = os.urandom(_SALT_BYTES)
+        digest = _scrypt(password, salt)
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        conn = self._conn()
+        conn.execute(
+            """INSERT INTO kmip_identities
+                 (identity, password_hash, salt, algorithm, disabled, created_at)
+               VALUES (?,?,?,'scrypt',0,?)
+               ON CONFLICT(identity) DO UPDATE SET
+                 password_hash = excluded.password_hash,
+                 salt          = excluded.salt,
+                 algorithm     = excluded.algorithm""",
+            (identity, digest, salt, now),
+        )
+        conn.commit()
+        log.info("Identity '%s' credentials set", identity)
+
+    # Password rotation is the same operation as creation; the alias exists so
+    # calling code can say what it means.
+    set_password = create_identity
+
+    def verify_identity(self, identity: str, password: str) -> bool:
+        """Constant-time password check. False for unknown or disabled
+        identities — callers must not distinguish those cases."""
+        row = self._conn().execute(
+            "SELECT password_hash, salt, disabled FROM kmip_identities WHERE identity = ?",
+            (identity,),
+        ).fetchone()
+
+        if row is None:
+            # Hash anyway against a throwaway salt so an unknown identity costs
+            # the same wall-clock time as a known one — otherwise the response
+            # latency enumerates valid usernames.
+            _scrypt(password, b"\x00" * _SALT_BYTES)
+            return False
+        if row["disabled"]:
+            _scrypt(password, bytes(row["salt"]))
+            return False
+
+        return hmac.compare_digest(bytes(row["password_hash"]), _scrypt(password, bytes(row["salt"])))
+
+    def delete_identity(self, identity: str) -> None:
+        conn = self._conn()
+        conn.execute("DELETE FROM kmip_identities WHERE identity = ?", (identity,))
+        conn.commit()
+
+    def set_identity_disabled(self, identity: str, disabled: bool = True) -> None:
+        conn = self._conn()
+        conn.execute(
+            "UPDATE kmip_identities SET disabled = ? WHERE identity = ?",
+            (int(disabled), identity),
+        )
+        conn.commit()
+
+    def identity_exists(self, identity: str) -> bool:
+        row = self._conn().execute(
+            "SELECT 1 FROM kmip_identities WHERE identity = ?", (identity,)
+        ).fetchone()
+        return row is not None
+
+    def list_identities(self) -> List[Dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT identity, disabled, created_at FROM kmip_identities ORDER BY identity"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── roles ────────────────────────────────────────────────────────────────
     # No KMIP wire operation manages these (the spec doesn't define one) —

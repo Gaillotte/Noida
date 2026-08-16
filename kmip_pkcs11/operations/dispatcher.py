@@ -91,6 +91,8 @@ class OperationDispatcher:
         uid_item = batch_item.get(Tag.UniqueBatchItemID)
 
         try:
+            if op_code is None:
+                raise OperationNotSupported("BatchItem is missing an Operation")
             handler = self._handlers.get(op_code)
             if handler is None:
                 raise OperationNotSupported(f"Operation 0x{op_code:08X} not supported")
@@ -102,9 +104,12 @@ class OperationDispatcher:
         except KMIPError as e:
             log.warning("KMIP operation 0x%08X failed: %s", op_code or 0, e)
             return self._failure_item(op_code, e.reason, str(e), uid_item)
-        except Exception as e:
+        except Exception:
+            # Internal fault — full detail to the log, generic text to the wire.
             log.exception("Unexpected error in operation 0x%08X", op_code or 0)
-            return self._failure_item(op_code, ResultReason.GeneralFailure, str(e), uid_item)
+            return self._failure_item(
+                op_code, ResultReason.GeneralFailure, "Internal server error", uid_item
+            )
 
     @staticmethod
     def _success_item(op_code, payload_bytes: bytes, uid_item) -> bytes:

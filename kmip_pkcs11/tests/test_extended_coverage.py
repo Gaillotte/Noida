@@ -1345,19 +1345,19 @@ class TestServerExtended:
         status = batch.get(Tag.ResultStatus)
         assert status.value == 0x00000001  # OperationFailed
 
-    def test_get_identity_non_ssl_returns_anonymous(self):
+    def test_get_identity_non_ssl_returns_anonymous(self, store, shim):
         from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim)
         plain_sock = MagicMock()
         plain_sock.__class__ = socket.socket  # not ssl.SSLSocket
-        identity = KMIPServer._get_identity(plain_sock)
-        assert identity == "anonymous"
+        assert srv._get_identity(plain_sock) == "anonymous"
 
-    def test_recv_message_with_empty_response(self):
+    def test_recv_message_with_empty_response(self, store, shim):
         from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim)
         sock = MagicMock()
         sock.recv.return_value = b""
-        result = KMIPServer._recv_message(sock)
-        assert result is None
+        assert srv._recv_message(sock) is None
 
     def test_process_invalid_ttlv_returns_error(self, store, shim):
         from kmip_pkcs11.server.server import KMIPServer
@@ -5581,10 +5581,13 @@ def _auth_header(username=None, password=None):
 
 class TestPhase11AuthenticateUnit:
     def _server(self, pin_matches=True):
+        """`pin_matches` now means "does this identity's own password verify" —
+        the credential is checked against the per-identity scrypt hash in the
+        store, not against the shared token PIN (Phase 0)."""
         from kmip_pkcs11.server.server import KMIPServer
-        shim = MagicMock()
-        shim.verify_pin = MagicMock(return_value=pin_matches)
-        return KMIPServer(store=MagicMock(), shim=shim)
+        store = MagicMock()
+        store.verify_identity = MagicMock(return_value=pin_matches)
+        return KMIPServer(store=store, shim=MagicMock())
 
     def test_no_header_returns_fallback(self):
         srv = self._server()
@@ -5656,7 +5659,8 @@ class TestPhase11AuthenticationLive:
     def test_correct_credential_sets_owner_identity(self, kmip_server):
         from kmip_pkcs11.test_app.client import KMIPClient
         store, port = kmip_server
-        client = KMIPClient(port=port, username="alice", password=_TEST_TOKEN_PIN)
+        store.create_identity("alice", "alice-secret")
+        client = KMIPClient(port=port, username="alice", password="alice-secret")
         client.connect()
         uid = client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="cred-live-test")
         assert store.get_object(uid)["owner_identity"] == "alice"
@@ -5665,11 +5669,35 @@ class TestPhase11AuthenticationLive:
     def test_wrong_credential_rejected(self, kmip_server):
         from kmip_pkcs11.test_app.client import KMIPClient
         from kmip_pkcs11.test_app.client import KMIPClientError
-        _, port = kmip_server
-        client = KMIPClient(port=port, username="mallory", password="wrong-pin")
+        store, port = kmip_server
+        store.create_identity("mallory", "mallory-secret")
+        client = KMIPClient(port=port, username="mallory", password="wrong-password")
         client.connect()
         with pytest.raises(KMIPClientError):
             client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="should-not-exist")
+        client.close()
+
+    def test_token_pin_is_no_longer_a_credential(self, kmip_server):
+        """The whole point of Phase 0: the shared PKCS#11 PIN must not
+        authenticate a KMIP identity any more."""
+        from kmip_pkcs11.test_app.client import KMIPClient, KMIPClientError
+        store, port = kmip_server
+        store.create_identity("alice", "alice-secret")
+        client = KMIPClient(port=port, username="alice", password=_TEST_TOKEN_PIN)
+        client.connect()
+        with pytest.raises(KMIPClientError):
+            client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="pin-should-fail")
+        client.close()
+
+    def test_unprovisioned_identity_rejected(self, kmip_server):
+        """An identity that was never created cannot authenticate, whatever
+        password it supplies — usernames are no longer self-asserted."""
+        from kmip_pkcs11.test_app.client import KMIPClient, KMIPClientError
+        _, port = kmip_server
+        client = KMIPClient(port=port, username="ghost", password="anything")
+        client.connect()
+        with pytest.raises(KMIPClientError):
+            client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="ghost-key")
         client.close()
 
     def test_no_credential_falls_back_to_anonymous(self, kmip_server):
@@ -6211,3 +6239,229 @@ class TestDelegatedGrants:
         store.revoke_access(uid, "bob")
         with pytest.raises(NotAuthorized):
             get_op.handle(_uid_payload(uid), "bob", store, shim)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 0 — the review's blocker fixes.
+#
+# Each class here corresponds to one finding from the full-project review:
+# self-asserted identity, admin ignored by Locate, unbounded request read,
+# unbounded TTLV nesting, and internal error text reaching clients.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase0PerIdentityCredentials:
+    """Identity is authenticated against a per-user scrypt hash, so knowing
+    one shared secret no longer lets a caller become an arbitrary user."""
+
+    def test_create_and_verify(self, store):
+        store.create_identity("alice", "s3cret")
+        assert store.verify_identity("alice", "s3cret") is True
+
+    def test_wrong_password_rejected(self, store):
+        store.create_identity("alice", "s3cret")
+        assert store.verify_identity("alice", "wrong") is False
+
+    def test_unknown_identity_rejected(self, store):
+        assert store.verify_identity("nobody", "anything") is False
+
+    def test_each_identity_has_a_distinct_secret(self, store):
+        """The core of the fix: alice's password must not authenticate bob."""
+        store.create_identity("alice", "alice-pw")
+        store.create_identity("bob", "bob-pw")
+        assert store.verify_identity("bob", "alice-pw") is False
+        assert store.verify_identity("alice", "bob-pw") is False
+
+    def test_salts_are_unique_so_equal_passwords_differ_on_disk(self, store):
+        store.create_identity("alice", "same-password")
+        store.create_identity("bob", "same-password")
+        rows = {r["identity"]: r for r in store._conn().execute(
+            "SELECT identity, password_hash, salt FROM kmip_identities").fetchall()}
+        assert rows["alice"]["salt"] != rows["bob"]["salt"]
+        assert rows["alice"]["password_hash"] != rows["bob"]["password_hash"]
+
+    def test_password_is_not_stored_in_cleartext(self, store):
+        store.create_identity("alice", "sup3r-s3cret-value")
+        blob = store._conn().execute(
+            "SELECT password_hash, salt FROM kmip_identities WHERE identity='alice'").fetchone()
+        assert b"sup3r-s3cret-value" not in bytes(blob["password_hash"])
+        assert b"sup3r-s3cret-value" not in bytes(blob["salt"])
+
+    def test_password_rotation_invalidates_the_old_one(self, store):
+        store.create_identity("alice", "old-pw")
+        store.set_password("alice", "new-pw")
+        assert store.verify_identity("alice", "old-pw") is False
+        assert store.verify_identity("alice", "new-pw") is True
+
+    def test_disabled_identity_cannot_authenticate(self, store):
+        store.create_identity("alice", "pw")
+        store.set_identity_disabled("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_deleted_identity_cannot_authenticate(self, store):
+        store.create_identity("alice", "pw")
+        store.delete_identity("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_list_identities_reports_without_secrets(self, store):
+        store.create_identity("alice", "pw")
+        listed = store.list_identities()
+        assert [i["identity"] for i in listed] == ["alice"]
+        assert "password_hash" not in listed[0] and "salt" not in listed[0]
+
+
+class TestPhase0AdminCanLocate:
+    """Regression for the defect introduced with RBAC: the admin role was
+    honoured by check_owner() but ignored by Locate, so an admin could read
+    an object it was unable to find."""
+
+    def test_admin_locate_sees_other_identities_objects(self, store, shim):
+        from kmip_pkcs11.operations import locate as locate_op
+        store.assign_role("root", "admin")
+        alice_uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+        bob_uid   = _create_aes_uid_owned_by(store, shim, "bob", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "root", store, shim)
+        uids = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert alice_uid in uids
+        assert bob_uid in uids
+
+    def test_admin_can_both_find_and_read_the_same_object(self, store, shim):
+        """The inconsistency the review caught: Locate returned [] while
+        GetAttributes on that very UID succeeded."""
+        from kmip_pkcs11.operations import locate as locate_op, get_attributes as ga_op
+        store.assign_role("root", "admin")
+        uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "root", store, shim)
+        found = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert uid in found, "admin must be able to find what it can read"
+        ga_op.handle(_uid_payload(uid), "root", store, shim)
+
+    def test_non_admin_locate_is_still_filtered(self, store, shim):
+        """The fix must not widen visibility for ordinary identities."""
+        from kmip_pkcs11.operations import locate as locate_op
+        alice_uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+        bob_uid   = _create_aes_uid_owned_by(store, shim, "bob", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "alice", store, shim)
+        uids = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert alice_uid in uids
+        assert bob_uid not in uids
+
+
+class TestPhase0RequestSizeCap:
+    """An oversized length prefix is refused before the body is read, since
+    this happens ahead of any authentication."""
+
+    def test_oversize_declared_length_is_rejected(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.exceptions import InvalidMessage
+        srv = KMIPServer(store, shim, max_request_size=1024)
+        sock = MagicMock()
+        # 8-byte TTLV header declaring a 4 GiB body.
+        sock.recv.return_value = b"\x42\x00\x78\x01" + struct.pack(">I", 0xFFFFFFFF)
+        with pytest.raises(InvalidMessage):
+            srv._recv_message(sock)
+
+    def test_body_is_never_read_for_an_oversize_frame(self, store, shim):
+        """Proves the refusal happens before allocation: only the 8-byte
+        header is ever pulled off the socket."""
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.exceptions import InvalidMessage
+        srv = KMIPServer(store, shim, max_request_size=1024)
+        sock = MagicMock()
+        sock.recv.return_value = b"\x42\x00\x78\x01" + struct.pack(">I", 0xFFFFFFFF)
+        with pytest.raises(InvalidMessage):
+            srv._recv_message(sock)
+        assert sum(c.args[0] for c in sock.recv.call_args_list) <= 8
+
+    def test_within_limit_is_accepted(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, max_request_size=4096)
+        body = encode_text_string(Tag.UniqueIdentifier, "ok")
+        msg = encode_structure(Tag.RequestMessage, body)
+        chunks = [msg[:8], msg[8:]]
+        sock = MagicMock()
+        sock.recv.side_effect = lambda n: chunks.pop(0) if chunks else b""
+        assert srv._recv_message(sock) == msg
+
+
+class TestPhase0TTLVNestingCap:
+    """Deeply nested Structures are rejected instead of recursing to the
+    interpreter's stack limit."""
+
+    @staticmethod
+    def _nest(depth: int) -> bytes:
+        payload = encode_text_string(Tag.UniqueIdentifier, "x")
+        for _ in range(depth):
+            payload = encode_structure(Tag.RequestPayload, payload)
+        return payload
+
+    def test_deep_nesting_raises_valueerror(self):
+        from kmip_pkcs11.core.ttlv import MAX_NESTING_DEPTH
+        with pytest.raises(ValueError, match="nesting"):
+            decode_one(self._nest(MAX_NESTING_DEPTH + 5))
+
+    def test_reasonable_nesting_still_decodes(self):
+        item = decode_one(self._nest(6))
+        assert item.tag == Tag.RequestPayload
+
+    def test_deep_nesting_over_the_wire_is_a_clean_failure(self, store, shim):
+        """End-to-end: a nesting bomb must come back as InvalidMessage, not
+        crash the connection handler."""
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.enums import ResultReason
+        srv = KMIPServer(store, shim)
+        resp = decode_one(srv._process(self._nest(500), "anonymous"))
+        item = resp.get(Tag.BatchItem)
+        assert item.get(Tag.ResultReason).value == ResultReason.InvalidMessage
+
+
+class TestPhase0ErrorMessageHygiene:
+    """Internal exception text must not be echoed to clients."""
+
+    def test_malformed_request_returns_generic_text(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim)
+        resp = decode_one(srv._process(b"\xff" * 16, "anonymous"))
+        msg = resp.get(Tag.BatchItem).get(Tag.ResultMessage).value
+        assert msg == "Malformed KMIP request"
+        for leak in ("Traceback", "kmip_pkcs11/", "struct.error", "offset"):
+            assert leak not in msg
+
+    def test_internal_fault_returns_generic_text(self, store, shim):
+        """An unexpected handler exception surfaces as a reason code only."""
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus, ResultReason
+        d = OperationDispatcher(store, shim)
+        with patch.dict(d._handlers, {Operation.Create: MagicMock(
+                side_effect=RuntimeError("/secret/path/internal.py exploded"))}):
+            inner = (encode_enumeration(Tag.Operation, Operation.Create)
+                     + encode_structure(Tag.RequestPayload, b""))
+            result = decode_one(d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "user"))
+        assert result.get(Tag.ResultStatus).value == ResultStatus.OperationFailed
+        assert result.get(Tag.ResultReason).value == ResultReason.GeneralFailure
+        msg = result.get(Tag.ResultMessage).value
+        assert msg == "Internal server error"
+        assert "/secret/path" not in msg
+
+    def test_kmip_errors_keep_their_useful_message(self, store, shim):
+        """Hygiene must not blunt our own diagnostics — ItemNotFound should
+        still say which object was missing."""
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store, shim)
+        inner = (encode_enumeration(Tag.Operation, Operation.Destroy)
+                 + encode_structure(Tag.RequestPayload,
+                                    encode_text_string(Tag.UniqueIdentifier, "no-such-uid")))
+        result = decode_one(d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "user"))
+        assert "no-such-uid" in result.get(Tag.ResultMessage).value
+
+    def test_batch_item_without_operation_fails_cleanly(self, store, shim):
+        """Previously raised TypeError formatting a None op_code."""
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import ResultStatus
+        d = OperationDispatcher(store, shim)
+        item = decode_one(encode_structure(Tag.BatchItem, encode_structure(Tag.RequestPayload, b"")))
+        result = decode_one(d.dispatch(item, "user"))
+        assert result.get(Tag.ResultStatus).value == ResultStatus.OperationFailed

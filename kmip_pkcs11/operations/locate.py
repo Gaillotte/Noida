@@ -4,6 +4,7 @@ import logging
 from ..core.enums import Tag, ObjectType, State
 from ..core.ttlv import encode_text_string, encode_structure, encode_integer
 from ..core.exceptions import MissingData
+from ..lifecycle.access_control import is_admin
 from .create import _parse_attributes
 
 log = logging.getLogger(__name__)
@@ -39,13 +40,20 @@ def handle(payload, identity: str, store, shim) -> bytes:
             names         = attrs.get("names", [])
             filter_name   = names[0] if names else None
 
+    # Non-admin callers only ever see their own objects — this is what stops a
+    # caller enumerating UIDs it has no access to. An admin skips the filter
+    # entirely: the admin role is honoured by check_owner() on every other
+    # operation, so filtering it out here left admins able to read an object
+    # they could not find, which made the role useless for its actual purpose.
+    owner_filter = None if is_admin(identity, store) else identity
+
     uids = store.locate(
         object_type=filter_obj_type,
         state=filter_state,
         name=filter_name,
         cryptographic_algorithm=filter_algo,
         cryptographic_length=filter_length,
-        owner=identity,
+        owner=owner_filter,
         max_items=max_items,
     )
 

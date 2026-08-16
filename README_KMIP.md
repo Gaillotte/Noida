@@ -49,7 +49,7 @@ operation to PKCS#11.
 - **Optional TLS + mTLS** — standard TCP, KMIP's IANA port 5696
 - **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
   JSON attribute values
-- **624 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
+- **649 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -63,7 +63,7 @@ operation to PKCS#11.
 ┌───────────────────▼────────────────────────┐
 │           KMIPServer (TCP)                 │  ← server/server.py
 │  • thread-per-client                       │
-│  • Credential auth, optional TLS 1.3/mTLS  │
+│  • per-identity auth, request caps, TLS    │
 └───────────────────┬────────────────────────┘
                     │ TTLVItem tree
 ┌───────────────────▼────────────────────────┐
@@ -85,7 +85,7 @@ operation to PKCS#11.
 │  pkcs11_shim/shim.py   │  metadata/store.py    │
 │  • single locked       │  SQLite (WAL)         │
 │    session (see        │  • objects/attrs      │
-│    Known Limitations)  │  • roles/grants        │
+│    Known Limitations)  │  • identities/roles    │
 │  • capability probe    │                        │
 │  SoftHSM2 / PKCS#11    │                        │
 └────────────────────────┴────────────────────────┘
@@ -105,7 +105,7 @@ kmip_pkcs11/
 │   ├── state_machine.py       # Key lifecycle state transitions
 │   └── access_control.py      # Owner / admin role / delegated grants
 ├── metadata/
-│   └── store.py               # SQLite metadata store (objects, attrs, roles, grants)
+│   └── store.py               # SQLite metadata store (objects, attrs, identities, roles, grants)
 ├── pkcs11_shim/
 │   └── shim.py                # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock
 ├── operations/                # One file per KMIP operation (41 files) — dispatcher.py routes
@@ -133,9 +133,9 @@ kmip_pkcs11/
     ├── test_metadata.py          #  18 metadata store unit tests
     ├── test_operations.py        #   8 operation integration tests
     ├── test_conformance.py       #  48 OASIS KMIP conformance tests
-    └── test_extended_coverage.py # 502 live tests: every operation, algorithm
-                                   #  coverage, error paths, access control,
-                                   #  session concurrency
+    └── test_extended_coverage.py # 527 live tests: every operation, algorithm
+                                   #  coverage, error paths, authentication,
+                                   #  access control, session concurrency
 ```
 
 ---
@@ -193,12 +193,13 @@ shim   = PKCS11Shim("/usr/lib/.../libsofthsm2.so", "MyToken", "userpin")
 server = KMIPServer(store, shim, host="127.0.0.1", port=5696)
 server.start_background()
 
-# Optional: grant one identity the admin role before anyone connects
-# (see Access Control — there's no wire operation for this)
+# Provision identities before anyone connects — there's no wire operation
+# for this, by design (see Access Control)
+store.create_identity("ops-team", "a-strong-password")
 store.assign_role("ops-team", "admin")
 
 # Connect a client
-with KMIPClient(port=5696) as c:
+with KMIPClient(port=5696, username="ops-team", password="a-strong-password") as c:
     uid = c.create(algorithm=CryptographicAlgorithm.AES, length=256)
     ct, iv, tag = c.encrypt(uid, b"Hello KMIP!")
     pt = c.decrypt(uid, ct, iv=iv, auth_tag=tag)
@@ -224,6 +225,33 @@ deliberate scope decision — see [Known Limitations](#known-limitations).
 
 ## Access Control
 
+### Authentication
+
+Each identity has its own credential, stored as a per-identity salted
+**scrypt** hash (`kmip_identities`). A client authenticates with a KMIP
+`UsernameAndPassword` Credential, and the password is verified against *that
+identity's* hash:
+
+```python
+store.create_identity("alice", "alice-password")   # provision
+store.set_password("alice", "new-password")        # rotate
+store.set_identity_disabled("alice")               # suspend without deleting
+store.delete_identity("alice")
+```
+
+An identity that was never provisioned cannot authenticate, whatever password
+it supplies. Requests with no Credential are accepted as the identity
+`anonymous`. The PKCS#11 token PIN authenticates the *server to the HSM* and
+is no longer a KMIP credential — previously it was the only password, which
+meant any caller holding it could claim any username, including one carrying
+the admin role.
+
+A client certificate's Common Name is used as the identity only when mTLS is
+configured *and* `require_client_cert=True`, so the subject has actually been
+verified against the CA.
+
+### Authorization
+
 Every managed object records the identity that created it. Operations against
 an *existing* object are authorized in this order (`lifecycle/access_control.py`):
 
@@ -239,20 +267,22 @@ Objects with no recorded owner (`owner_identity=None`) stay reachable by any
 identity — this only applies to objects created outside the normal Create/Register
 path, so nothing gets orphaned by adding access control on top of an existing store.
 
-**There is no KMIP wire operation for role or grant management** — the spec
-doesn't define one. Call the `MetadataStore` methods directly from an admin
-script or console:
+**There is no KMIP wire operation for identity, role or grant management** —
+the spec doesn't define one. Call the `MetadataStore` methods directly from an
+admin script or console:
 
 ```python
-store.assign_role("alice", "admin")           # alice can touch anything
-store.grant_access(uid, "bob", "read")         # bob can Get this one object
+store.create_identity("alice", "alice-password")   # authentication
+store.assign_role("alice", "admin")                # alice can touch anything
+store.grant_access(uid, "bob", "read")             # bob can Get this one object
 store.revoke_access(uid, "bob")
 store.revoke_role("alice", "admin")
 ```
 
-`Locate` results are filtered to the caller's own objects (or all objects, for
-an admin) — a non-admin identity can't enumerate objects it doesn't own or
-have a grant on.
+`Locate` results are filtered to the caller's own objects — a non-admin
+identity can't enumerate objects it doesn't own. An identity holding the admin
+role skips that filter and sees everything, so it can both find and read any
+object.
 
 ---
 
@@ -279,7 +309,7 @@ no PKCS#11 mechanism was ever standardized for them at all.
 ## Running the Tests
 
 ```bash
-# Run all 624 tests
+# Run all 649 tests
 pytest
 
 # Run with verbose output
@@ -304,8 +334,8 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | test_metadata.py        |  18 |  18 | 0 | 100 % |
 | test_operations.py      |   8 |   8 | 0 | 100 % |
 | test_conformance.py     |  48 |  48 | 0 | 100 % |
-| test_extended_coverage.py | 502 | 502 | 0 | 100 % |
-| **TOTAL**            | **624** | **624** | **0** | **100 %** |
+| test_extended_coverage.py | 527 | 527 | 0 | 100 % |
+| **TOTAL**            | **649** | **649** | **0** | **100 %** |
 
 ---
 
@@ -410,7 +440,8 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 | Limitation | Detail |
 |---|---|
 | Single, locked PKCS#11 session | `server.py` runs one thread per connection, but they share one `PKCS11Shim` session serialized by a `threading.RLock`. **This is the deliberate, permanent design, not a stopgap** — a session-pool (separate session per thread) was built and tested, and reproducibly segfaults or corrupts operations under concurrency: `python-pkcs11` 0.9.5 calls `C_Initialize(NULL)`, so the library's own internal thread safety is never enabled, and separate sessions don't work around that. A real fix needs a PKCS#11 binding that passes `CKF_OS_LOCKING_OK`, or a multi-process worker pool. |
-| RBAC has no wire protocol | Role and grant management (`assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define an operation for it. No groups, no per-role operation allowlist yet; every non-admin identity is evaluated individually against ownership and grants. |
+| Identity management has no wire protocol | Identity, role and grant management (`create_identity`, `assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define operations for it, and there is no CLI yet. No groups, no per-role operation allowlist, and no dual-control approval for destructive operations; every non-admin identity is evaluated individually against ownership and grants. |
+| Key material at rest | `SecretData`, `OpaqueObject` and every `SplitKey` share are stored as plaintext BLOBs in SQLite (`raw_key_value`) with no encryption at rest — unlike keys held on the token, a copy of the database file exposes them directly. |
 | No audit trail | Operations are logged via Python `logging` only — nothing persisted, queryable, or tamper-evident. |
 | TLS optional, not enforced | The server accepts plain TCP if no certificate is configured; cert/key load from a static path with no rotation or ACME integration. |
 | Not FIPS/CC validated | SoftHSM2 isn't a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above `pkcs11_shim/`, but that swap hasn't happened here. |

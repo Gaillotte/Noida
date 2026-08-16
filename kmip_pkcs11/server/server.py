@@ -27,6 +27,16 @@ from ..operations.dispatcher import OperationDispatcher
 
 log = logging.getLogger(__name__)
 
+# Largest request body accepted off the wire. The length prefix is
+# attacker-controlled and read before any authentication, so without a ceiling
+# a single unauthenticated client can declare a multi-gigabyte body and make
+# the server allocate toward it. 1 MiB is far above any legitimate KMIP
+# message, including Register with a large key.
+DEFAULT_MAX_REQUEST_SIZE = 1024 * 1024
+
+# Cap on how long a client may take to complete a TLS handshake.
+DEFAULT_HANDSHAKE_TIMEOUT = 10.0
+
 
 class KMIPServer:
     """
@@ -44,6 +54,8 @@ class KMIPServer:
         tls_key:  Optional[str] = None,
         tls_ca:   Optional[str] = None,
         require_client_cert: bool = False,
+        max_request_size: int = DEFAULT_MAX_REQUEST_SIZE,
+        handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
     ):
         self._store  = store
         self._shim   = shim
@@ -53,6 +65,8 @@ class KMIPServer:
         self._tls_key  = tls_key
         self._tls_ca   = tls_ca
         self._require_client_cert = require_client_cert
+        self._max_request_size = max_request_size
+        self._handshake_timeout = handshake_timeout
         self._dispatcher = OperationDispatcher(store, shim)
         self._sock: Optional[socket.socket] = None
         self._running = False
@@ -92,7 +106,11 @@ class KMIPServer:
             try:
                 conn, addr = self._sock.accept()
                 log.debug("New connection from %s", addr)
-                conn = self._wrap_tls(conn)
+                # The TLS handshake deliberately does NOT happen here. It
+                # blocks until the peer completes it, so performing it on the
+                # accept loop lets one client that connects and then stalls
+                # hold up every subsequent connection. It runs on the worker
+                # thread instead, under a timeout.
                 t = threading.Thread(
                     target=self._handle_client, args=(conn, addr), daemon=True
                 )
@@ -111,16 +129,34 @@ class KMIPServer:
             ctx.load_verify_locations(self._tls_ca)
             if self._require_client_cert:
                 ctx.verify_mode = ssl.CERT_REQUIRED
+        conn.settimeout(self._handshake_timeout)
         return ctx.wrap_socket(conn, server_side=True)
 
     # ── client handler ───────────────────────────────────────────────────────
 
     def _handle_client(self, conn: socket.socket, addr):
+        try:
+            conn = self._wrap_tls(conn)
+        except (ssl.SSLError, socket.timeout, OSError) as e:
+            log.warning("TLS handshake failed for %s: %s", addr, e)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return
+
         identity = self._get_identity(conn)
         try:
             conn.settimeout(60.0)
             while True:
-                raw = self._recv_message(conn)
+                try:
+                    raw = self._recv_message(conn)
+                except InvalidMessage as e:
+                    # Oversized frame: answer with a proper KMIP failure, then
+                    # drop the connection rather than resynchronising a stream
+                    # whose framing we no longer trust.
+                    self._send_message(conn, _error_response(ResultReason.InvalidMessage, str(e)))
+                    break
                 if raw is None:
                     break
                 response = self._process(raw, identity)
@@ -136,9 +172,13 @@ class KMIPServer:
                 pass
             log.debug("Connection closed: %s", addr)
 
-    @staticmethod
-    def _get_identity(conn) -> str:
-        if isinstance(conn, ssl.SSLSocket):
+    def _get_identity(self, conn) -> str:
+        """Derive a connection-level identity from a client certificate.
+
+        Only trusted when the certificate was actually required and verified
+        against the configured CA — otherwise the subject is just as
+        self-asserted as an unauthenticated username would be."""
+        if isinstance(conn, ssl.SSLSocket) and self._require_client_cert and self._tls_ca:
             cert = conn.getpeercert()
             if cert:
                 for rdn in cert.get("subject", []):
@@ -147,8 +187,7 @@ class KMIPServer:
                             return v
         return "anonymous"
 
-    @staticmethod
-    def _recv_message(conn: socket.socket) -> Optional[bytes]:
+    def _recv_message(self, conn: socket.socket) -> Optional[bytes]:
         """Read a length-prefixed KMIP message."""
         # KMIP uses no explicit framing in the spec, but implementations
         # commonly prefix with a 4-byte big-endian total length.
@@ -160,6 +199,17 @@ class KMIPServer:
                 return None
             # bytes 4-7 = length of the value (Structure value)
             length = struct.unpack_from('>I', header, 4)[0]
+            if length > self._max_request_size:
+                # Refuse before reading a single byte of the body — this runs
+                # ahead of authentication, so it is the only thing standing
+                # between an anonymous client and unbounded allocation.
+                log.warning(
+                    "Rejecting request declaring %d bytes (max %d)",
+                    length, self._max_request_size,
+                )
+                raise InvalidMessage(
+                    f"Request size {length} exceeds maximum {self._max_request_size}"
+                )
             padded = (length + 7) & ~7
             rest   = _recvall(conn, padded)
             if rest is None:
@@ -176,17 +226,25 @@ class KMIPServer:
         try:
             request = decode_one(raw)
         except Exception as e:
+            # The decoder raises bare ValueError/struct.error/UnicodeDecodeError
+            # whose text describes our parser internals, not the client's
+            # mistake — log it, don't ship it.
             log.warning("Failed to decode KMIP request: %s", e)
-            return _error_response(ResultReason.InvalidMessage, str(e))
+            return _error_response(ResultReason.InvalidMessage, "Malformed KMIP request")
 
         try:
             return self._build_response(request, identity)
         except KMIPError as e:
+            # KMIPError messages are authored by this codebase and are safe
+            # and useful to return ("Object 'x' not found").
             log.warning("Request processing error: %s", e)
             return _error_response(e.reason, str(e))
-        except Exception as e:
-            log.exception("Request processing error: %s", e)
-            return _error_response(ResultReason.GeneralFailure, str(e))
+        except Exception:
+            # Anything else is an unexpected internal fault. The full traceback
+            # goes to the log; the client gets a reason code and nothing that
+            # discloses paths, types, or internal state.
+            log.exception("Unhandled error processing request from identity %r", identity)
+            return _error_response(ResultReason.GeneralFailure, "Internal server error")
 
     def _build_response(self, request: TTLVItem, identity: str) -> bytes:
         # Parse request header (protocol version, batch count)
@@ -247,12 +305,21 @@ class KMIPServer:
         return response
 
     def _authenticate(self, header, fallback_identity: str) -> str:
-        """Parse an optional Authentication/Credential from the request
-        header. Only CredentialType.UsernameAndPassword is supported; the
-        password is checked against the configured PKCS#11 token PIN — the
-        one shared secret this server already trusts for HSM access, reused
-        here as the KMIP-level credential. Falls back to the connection's
-        TLS-cert identity (or "anonymous") when no Credential is present."""
+        """Parse an optional Authentication/Credential from the request header
+        and resolve it to an authenticated identity.
+
+        Only CredentialType.UsernameAndPassword is supported. The password is
+        verified against that specific identity's own scrypt-hashed credential
+        in the metadata store (MetadataStore.create_identity provisions them).
+
+        It used to be checked against the shared PKCS#11 token PIN, which meant
+        the username was an unauthenticated claim: anyone holding the PIN could
+        present themselves as any user — including one carrying the admin role —
+        and every ownership and grant decision downstream inherited that. The
+        PIN now authenticates the server to the HSM and nothing else.
+
+        Falls back to the connection identity ("anonymous", or a verified mTLS
+        subject) when no Credential is present."""
         if header is None:
             return fallback_identity
         auth_item = header.get(Tag.Authentication)
@@ -276,8 +343,11 @@ class KMIPServer:
         password_item = value_item.get(Tag.Password)
         password = password_item.value if password_item else ""
 
-        if not self._shim.verify_pin(password):
-            raise AuthenticationFailed(f"Invalid credentials for user '{username_item.value}'")
+        if not self._store.verify_identity(username_item.value, password):
+            # Deliberately does not distinguish unknown identity from wrong
+            # password, and does not echo the username back to the client.
+            log.warning("Authentication failed for identity %r", username_item.value)
+            raise AuthenticationFailed("Invalid credentials")
         return username_item.value
 
 

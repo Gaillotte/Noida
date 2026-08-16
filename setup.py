@@ -7,8 +7,11 @@ setup(
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
-        "python-pkcs11>=0.7.0",
-        "PyKCS11>=1.5.0",
+        # Pinned: the shim relies on 0.9.x call signatures (unwrap_key's
+        # positional object_class, Session.digest). 0.7.0 fails at runtime.
+        # PyKCS11 was previously listed here but is imported nowhere in the
+        # codebase — python-pkcs11 is the only PKCS#11 binding used.
+        "python-pkcs11>=0.9.5,<0.10",
     ],
     extras_require={
         "dev": ["pytest", "pytest-cov"],

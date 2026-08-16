@@ -13,6 +13,11 @@ from typing import Any, List, Tuple
 
 from .enums import Tag, Type
 
+# Maximum Structure nesting the decoder will follow. KMIP's own deepest
+# legitimate nesting (RequestMessage → BatchItem → RequestPayload →
+# TemplateAttribute → Attribute → AttributeValue) is well inside this.
+MAX_NESTING_DEPTH = 32
+
 
 # ─────────────────────────────── encoding ────────────────────────────────────
 
@@ -112,8 +117,13 @@ def _tag_name(tag: int) -> str:
         return f"0x{tag:06X}"
 
 
-def decode(data: bytes, offset: int = 0) -> Tuple['TTLVItem', int]:
+def decode(data: bytes, offset: int = 0, _depth: int = 0) -> Tuple['TTLVItem', int]:
     """Decode one TTLV item from data at offset. Returns (item, new_offset)."""
+    # Structures nest by recursion, and nesting depth is attacker-controlled:
+    # without a ceiling a small message of deeply nested Structures drives the
+    # interpreter to its stack limit. Real KMIP messages nest a handful deep.
+    if _depth > MAX_NESTING_DEPTH:
+        raise ValueError(f"TTLV nesting deeper than {MAX_NESTING_DEPTH} levels")
     if len(data) - offset < 8:
         raise ValueError(f"Truncated TTLV header at offset {offset}")
 
@@ -139,7 +149,7 @@ def decode(data: bytes, offset: int = 0) -> Tuple['TTLVItem', int]:
         raw_child_data = data[offset - padded_len: offset - padded_len + length]
         pos = 0
         while pos < length:
-            child, pos = decode(raw_child_data, pos)
+            child, pos = decode(raw_child_data, pos, _depth + 1)
             children.append(child)
         item = TTLVItem(tag, type_, None, children)
     elif type_ == Type.TextString:
