@@ -1,0 +1,54 @@
+[Unit]
+Description=KMIP 2.1 server backed by a PKCS#11 HSM
+Documentation=https://github.com/Gaillotte/Noida
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kmip
+Group=kmip
+ExecStart=/usr/local/bin/kmip-server --config /etc/kmip/config.yaml
+
+# SIGHUP re-reads the TLS certificate without dropping connections, so
+# `systemctl reload kmip-server` after a renewal costs no downtime.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# systemd can supply the token PIN instead of a file on disk: it appears at
+# $CREDENTIALS_DIRECTORY/token-pin, readable only by this unit. Point
+# hsm.pin_file at that path.
+# LoadCredential=token-pin:/etc/kmip/token-pin
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening. The server needs its database directory, the token store and its
+# configuration — nothing else on the filesystem.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+StateDirectory=kmip
+ReadWritePaths=/var/lib/kmip /var/lib/softhsm
+
+# KMIP's port is above 1024, so no privileged binding is needed. If you move
+# it below 1024, add AmbientCapabilities=CAP_NET_BIND_SERVICE rather than
+# running this as root.
+
+[Install]
+WantedBy=multi-user.target

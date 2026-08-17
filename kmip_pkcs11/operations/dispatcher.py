@@ -5,6 +5,7 @@ and return a TTLVItem (the response payload).
 """
 
 import logging
+import time
 from typing import Callable, Dict
 
 from ..core.enums import Operation, ResultStatus, ResultReason, Tag, Type
@@ -35,9 +36,10 @@ log = logging.getLogger(__name__)
 
 
 class OperationDispatcher:
-    def __init__(self, store: MetadataStore, shim: PKCS11Shim):
+    def __init__(self, store: MetadataStore, shim: PKCS11Shim, metrics=None):
         self._store = store
         self._shim  = shim
+        self._metrics = metrics
         self._handlers: Dict[int, Callable] = {
             Operation.Create:           create.handle,
             Operation.CreateKeyPair:    create_keypair.handle,
@@ -89,6 +91,7 @@ class OperationDispatcher:
 
         payload = batch_item.get(Tag.RequestPayload)
         uid_item = batch_item.get(Tag.UniqueBatchItemID)
+        started = time.monotonic()
 
         try:
             if op_code is None:
@@ -100,21 +103,34 @@ class OperationDispatcher:
             response_payload = handler(payload, identity, self._store, self._shim)
 
             self._audit(op_code, identity, client, payload, response_payload, "success")
+            self._record_metric(op_code, "success", started)
             return self._success_item(op_code, response_payload, uid_item)
 
         except KMIPError as e:
             log.warning("KMIP operation 0x%08X failed: %s", op_code or 0, e)
             self._audit(op_code, identity, client, payload, None, "failure",
                         reason=e.reason, message=str(e))
+            self._record_metric(op_code, "failure", started)
             return self._failure_item(op_code, e.reason, str(e), uid_item)
         except Exception:
             # Internal fault — full detail to the log, generic text to the wire.
             log.exception("Unexpected error in operation 0x%08X", op_code or 0)
             self._audit(op_code, identity, client, payload, None, "failure",
                         reason=ResultReason.GeneralFailure, message="Internal server error")
+            self._record_metric(op_code, "error", started)
             return self._failure_item(
                 op_code, ResultReason.GeneralFailure, "Internal server error", uid_item
             )
+
+    def _record_metric(self, op_code, result, started):
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.record_operation(
+                self._operation_name(op_code), result, time.monotonic() - started)
+        except Exception:
+            # Metrics are diagnostics; never let them affect a request.
+            log.debug("Failed to record metrics for operation %r", op_code, exc_info=True)
 
     # ── audit ────────────────────────────────────────────────────────────────
 

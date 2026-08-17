@@ -52,7 +52,7 @@ operation to PKCS#11.
   operation (see [Access Control](#access-control))
 - **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
   JSON attribute values
-- **701 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
+- **739 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -89,7 +89,7 @@ operation to PKCS#11.
 │  • single locked       │  SQLite (WAL)         │
 │    session (see        │  • objects/attrs      │
 │    Known Limitations)  │  • identities/audit    │
-│  • capability probe    │                        │
+│  • capability probe    │  • audit / migrations  │
 │  SoftHSM2 / PKCS#11    │                        │
 └────────────────────────┴────────────────────────┘
 ```
@@ -126,7 +126,12 @@ kmip_pkcs11/
 │   ├── validate.py, obtain_lease.py, rng_retrieve.py, rng_seed.py
 │   └── query.py, discover_versions.py
 ├── server/
-│   └── server.py               # TCP server (thread-per-client, Credential auth, optional TLS)
+│   └── server.py               # TCP server (thread-per-client, auth, TLS, request caps)
+├── config.py                   # YAML configuration loading and validation
+├── observability.py            # metrics, health endpoints, JSON logging
+├── cli/
+│   ├── server_cli.py           # kmip-server entry point
+│   └── admin_cli.py            # kmip-admin: identities, roles, grants, audit
 ├── test_app/
 │   ├── client.py                # Synchronous KMIP 2.1 client
 │   └── demo.py                  # End-to-end demo
@@ -137,7 +142,7 @@ kmip_pkcs11/
     ├── test_metadata.py          #  18 metadata store unit tests
     ├── test_operations.py        #   8 operation integration tests
     ├── test_conformance.py       #  48 OASIS KMIP conformance tests
-    └── test_extended_coverage.py # 579 live tests: every operation, algorithm
+    └── test_extended_coverage.py # 617 live tests: every operation, algorithm
                                    #  coverage, error paths, authentication,
                                    #  access control, audit, transport,
                                    #  session concurrency
@@ -152,6 +157,7 @@ kmip_pkcs11/
 | Dependency     | Version  | How to install                  |
 |---------------|----------|---------------------------------|
 | Python        | ≥ 3.9    | —                               |
+| PyYAML        | ≥ 5.4    | installed with the package      |
 | SoftHSM2      | ≥ 2.6    | `apt install softhsm2`          |
 | python-pkcs11 | 0.9.5    | `pip install python-pkcs11`     |
 | pytest        | ≥ 7.0    | `pip install pytest`            |
@@ -173,6 +179,31 @@ softhsm2-util --init-token --slot 0 \
 ---
 
 ## Quick Start
+
+### Run the server
+
+```bash
+kmip-server --config /etc/kmip/config.yaml --check   # validate and exit
+kmip-server --config /etc/kmip/config.yaml
+```
+
+See `deploy/config.example.yaml` for an annotated template, plus
+`deploy/Dockerfile` and `deploy/kmip-server.service`. Identities, roles,
+grants and the audit log are managed with `kmip-admin`, since KMIP defines no
+wire operation for any of them:
+
+```bash
+kmip-admin -c /etc/kmip/config.yaml identity add alice
+kmip-admin -c /etc/kmip/config.yaml role grant ops admin
+kmip-admin -c /etc/kmip/config.yaml access grant <uid> bob --permission read
+kmip-admin -c /etc/kmip/config.yaml audit verify      # exits non-zero if tampered
+kmip-admin -c /etc/kmip/config.yaml rotate-master-key
+```
+
+`GET /health`, `/ready` and `/metrics` (Prometheus format) are served on a
+separate management port — `/ready` reports not-ready until the KMIP listener
+is actually accepting, which matters because startup opens the HSM session and
+provisions the master key before it binds.
 
 ### Run the demo
 
@@ -410,7 +441,7 @@ no PKCS#11 mechanism was ever standardized for them at all.
 ## Running the Tests
 
 ```bash
-# Run all 701 tests
+# Run all 739 tests
 pytest
 
 # Run with verbose output
@@ -435,8 +466,8 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | test_metadata.py        |  18 |  18 | 0 | 100 % |
 | test_operations.py      |   8 |   8 | 0 | 100 % |
 | test_conformance.py     |  48 |  48 | 0 | 100 % |
-| test_extended_coverage.py | 579 | 579 | 0 | 100 % |
-| **TOTAL**            | **701** | **701** | **0** | **100 %** |
+| test_extended_coverage.py | 617 | 617 | 0 | 100 % |
+| **TOTAL**            | **739** | **739** | **0** | **100 %** |
 
 ---
 
@@ -546,6 +577,7 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 | Identity management has no wire protocol | Identity, role and grant management (`create_identity`, `assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define operations for it, and there is no CLI yet. No groups, no per-role operation allowlist, and no dual-control approval for destructive operations; every non-admin identity is evaluated individually against ownership and grants. |
 | Master key availability | `SecretData`/`OpaqueObject`/`SplitKey` blobs are encrypted under an HSM-resident master key, so the metadata database is useless without the token that holds it — back up and protect the two together, and note that retiring a master key before re-encrypting makes its blobs unrecoverable. |
 | Audit log is local and unsigned | Entries are hash-chained and append-only, which makes tampering detectable, but the chain is not anchored anywhere external — an attacker who rewrites the whole log consistently leaves no trace. Ship entries to an external collector for stronger guarantees. |
+| Container image and CI are unverified here | `deploy/Dockerfile` and `.github/workflows/ci.yml` are written and their inputs checked, but neither has been executed — this development sandbox blocks Docker Hub and the SoftHSM2 source mirror. Both need a real run before being relied on. |
 | No ACME / automated certificate issuance | TLS is enforced by default and `reload_tls()` picks up renewed material without dropping connections, but obtaining and renewing certificates is left to the operator — there is no ACME client. |
 | Not FIPS/CC validated | SoftHSM2 isn't a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above `pkcs11_shim/`, but that swap hasn't happened here. |
 | SoftHSM2 SENSITIVE bug | `SENSITIVE=True AND EXTRACTABLE=True` blocks `CKA_VALUE` read; the shim downgrades sensitivity automatically when extractability is explicitly requested. |

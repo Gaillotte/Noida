@@ -7,8 +7,11 @@ Organised by source module, matching the order of coverage gaps in the report.
 
 import os
 import datetime
+import json
+import logging
 import struct
 import socket
+import sys
 import threading
 import time
 import pytest
@@ -7053,3 +7056,404 @@ class TestPhase2TransportSecurity:
         conn = MagicMock(spec=_ssl.SSLSocket)
         conn.getpeercert.return_value = {"subject": [[("commonName", "alice")]]}
         assert srv._get_identity(conn) == "anonymous"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — deployability.
+#
+# Config file, CLI entry points, health/metrics endpoints and structured logs:
+# the difference between a library you write Python against and a service an
+# operator can run.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _config(tmp_path, **overrides):
+    """A minimally valid configuration, with sections overridable per test."""
+    import yaml
+    pin = tmp_path / "pin"
+    pin.write_text("9999")
+    data = {
+        "server": {"host": "127.0.0.1", "port": 5696, "allow_plaintext": True},
+        "hsm": {"library": "/usr/local/lib/softhsm/libsofthsm2.so",
+                "token_label": "KMIPTestSuite", "pin_file": str(pin)},
+        "storage": {"database": str(tmp_path / "kmip.db")},
+    }
+    for section, values in overrides.items():
+        data.setdefault(section, {})
+        if values is None:
+            data.pop(section)
+        else:
+            data[section].update(values)
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return str(path)
+
+
+class TestPhase3Config:
+    def test_valid_config_loads_with_defaults_applied(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig
+        cfg = KMIPConfig.from_file(_config(tmp_path))
+        assert cfg.get("server", "port") == 5696
+        assert cfg.get("logging", "format") == "json"      # default
+        assert cfg.get("observability", "enabled") is True  # default
+
+    def test_missing_file_is_reported_clearly(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="not found"):
+            KMIPConfig.from_file(str(tmp_path / "nope.yaml"))
+
+    def test_unknown_section_is_rejected(self, tmp_path):
+        """A typo'd section would otherwise be silently ignored, and the
+        operator would wonder why their setting did nothing."""
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="Unknown configuration section"):
+            KMIPConfig.from_dict({"serrver": {"port": 1}})
+
+    def test_plaintext_without_tls_must_be_explicit(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="allow_plaintext"):
+            KMIPConfig.from_dict({
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"},
+            })
+
+    def test_half_configured_tls_is_rejected(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="together"):
+            KMIPConfig.from_dict({
+                "tls": {"cert": "/x/c.pem"},
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"},
+            })
+
+    def test_mtls_without_a_ca_is_rejected(self):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="tls.ca"):
+            KMIPConfig.from_dict({
+                "tls": {"cert": "/c", "key": "/k", "require_client_cert": True},
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"},
+            })
+
+    def test_exactly_one_pin_source_is_required(self):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        base = {"server": {"allow_plaintext": True}, "storage": {"database": "/tmp/x.db"}}
+        with pytest.raises(ConfigError, match="pin_file"):
+            KMIPConfig.from_dict({**base, "hsm": {"library": "/x", "token_label": "t"}})
+        with pytest.raises(ConfigError, match="only one"):
+            KMIPConfig.from_dict({**base, "hsm": {"library": "/x", "token_label": "t",
+                                                  "pin": "1", "pin_env": "E"}})
+
+    def test_pin_is_read_from_a_file(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig
+        assert KMIPConfig.from_file(_config(tmp_path)).resolve_pin() == "9999"
+
+    def test_pin_is_read_from_the_environment(self, monkeypatch):
+        from kmip_pkcs11.config import KMIPConfig
+        monkeypatch.setenv("KMIP_TEST_PIN", "secret-pin")
+        cfg = KMIPConfig.from_dict({
+            "server": {"allow_plaintext": True},
+            "hsm": {"library": "/x", "token_label": "t", "pin_env": "KMIP_TEST_PIN"},
+            "storage": {"database": "/tmp/x.db"},
+        })
+        assert cfg.resolve_pin() == "secret-pin"
+
+    def test_missing_env_pin_is_reported(self, monkeypatch):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        monkeypatch.delenv("KMIP_ABSENT_PIN", raising=False)
+        cfg = KMIPConfig.from_dict({
+            "server": {"allow_plaintext": True},
+            "hsm": {"library": "/x", "token_label": "t", "pin_env": "KMIP_ABSENT_PIN"},
+            "storage": {"database": "/tmp/x.db"},
+        })
+        with pytest.raises(ConfigError, match="unset or empty"):
+            cfg.resolve_pin()
+
+    def test_dumped_config_redacts_an_inline_pin(self):
+        """The most likely reason to dump a config is to paste it somewhere."""
+        from kmip_pkcs11.config import KMIPConfig
+        cfg = KMIPConfig.from_dict({
+            "server": {"allow_plaintext": True},
+            "hsm": {"library": "/x", "token_label": "t", "pin": "super-secret"},
+            "storage": {"database": "/tmp/x.db"},
+        })
+        assert "super-secret" not in json.dumps(cfg.as_dict())
+
+
+class TestPhase3Metrics:
+    def test_operations_are_counted_by_result(self):
+        from kmip_pkcs11.observability import Metrics
+        m = Metrics()
+        m.record_operation("Create", "success", 0.01)
+        m.record_operation("Create", "success", 0.02)
+        m.record_operation("Destroy", "failure", 0.005)
+        snap = m.snapshot()
+        assert snap["operations"] == {"Create/success": 2, "Destroy/failure": 1}
+        assert snap["latency_seconds"]["Create"]["count"] == 2
+
+    def test_prometheus_exposition_is_well_formed(self):
+        from kmip_pkcs11.observability import Metrics
+        m = Metrics()
+        m.record_operation("Get", "success", 0.5)
+        m.record_auth_failure()
+        text = m.render_prometheus()
+        assert 'kmip_operations_total{operation="Get",result="success"} 1' in text
+        assert "kmip_auth_failures_total 1" in text
+        # Every metric must carry HELP and TYPE or scrapers reject it.
+        for name in ("kmip_operations_total", "kmip_auth_failures_total",
+                     "kmip_operation_duration_seconds"):
+            assert f"# HELP {name}" in text and f"# TYPE {name}" in text
+
+    def test_dispatcher_records_success_and_failure(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.observability import Metrics
+        from kmip_pkcs11.core.enums import Operation
+        m = Metrics()
+        d = OperationDispatcher(store, shim, metrics=m)
+        inner = (encode_enumeration(Tag.Operation, Operation.Destroy)
+                 + encode_structure(Tag.RequestPayload,
+                                    encode_text_string(Tag.UniqueIdentifier, "ghost")))
+        d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "alice")
+        assert m.snapshot()["operations"] == {"Destroy/failure": 1}
+
+    def test_metric_failure_never_breaks_an_operation(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        broken = MagicMock()
+        broken.record_operation.side_effect = RuntimeError("metrics down")
+        d = OperationDispatcher(store, shim, metrics=broken)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey,
+                                  state=State.PreActive, owner_identity="alice")
+        inner = (encode_enumeration(Tag.Operation, Operation.Activate)
+                 + encode_structure(Tag.RequestPayload,
+                                    encode_text_string(Tag.UniqueIdentifier, uid)))
+        raw = d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "alice")
+        assert decode_one(raw).get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+class TestPhase3HealthEndpoint:
+    def _server(self, readiness=None):
+        from kmip_pkcs11.observability import Metrics, HealthServer
+        h = HealthServer(Metrics(), readiness, host="127.0.0.1", port=0)
+        h.start()
+        return h
+
+    def _get(self, port, path):
+        import urllib.request, urllib.error
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def test_health_is_up(self):
+        h = self._server()
+        try:
+            status, body = self._get(h.port, "/health")
+            assert status == 200 and json.loads(body)["status"] == "ok"
+        finally:
+            h.stop()
+
+    def test_ready_reports_503_when_not_ready(self):
+        h = self._server(readiness=lambda: (False, {"kmip_listener": "not yet accepting"}))
+        try:
+            status, body = self._get(h.port, "/ready")
+            assert status == 503
+            assert json.loads(body)["status"] == "not-ready"
+        finally:
+            h.stop()
+
+    def test_ready_reports_200_when_ready(self):
+        h = self._server(readiness=lambda: (True, {"mechanisms": 79}))
+        try:
+            status, body = self._get(h.port, "/ready")
+            assert status == 200 and json.loads(body)["mechanisms"] == 79
+        finally:
+            h.stop()
+
+    def test_readiness_exception_is_reported_not_raised(self):
+        h = self._server(readiness=lambda: (_ for _ in ()).throw(RuntimeError("hsm gone")))
+        try:
+            status, body = self._get(h.port, "/ready")
+            assert status == 503 and "hsm gone" in body
+        finally:
+            h.stop()
+
+    def test_metrics_endpoint_serves_exposition_format(self):
+        h = self._server()
+        try:
+            status, body = self._get(h.port, "/metrics")
+            assert status == 200 and "kmip_uptime_seconds" in body
+        finally:
+            h.stop()
+
+    def test_unknown_path_is_404(self):
+        h = self._server()
+        try:
+            assert self._get(h.port, "/nope")[0] == 404
+        finally:
+            h.stop()
+
+
+class TestPhase3ReadinessTracksTheListener:
+    """Regression: the readiness probe originally checked only the HSM and the
+    database, so it reported ready while the KMIP port was still closed —
+    startup binds only after opening the HSM session and provisioning the
+    master key, which on a large token takes seconds. An orchestrator would
+    route traffic to an instance that could not answer."""
+
+    def test_not_serving_before_start(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, port=29910, allow_plaintext=True)
+        assert srv.is_serving() is False
+
+    def test_readiness_is_false_while_the_listener_is_down(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.cli.server_cli import _readiness
+        srv = KMIPServer(store, shim, port=29911, allow_plaintext=True)
+        ok, detail = _readiness(srv, shim, store)()
+        assert ok is False
+        assert "kmip_listener" in detail
+
+    def test_readiness_is_true_once_serving(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.cli.server_cli import _readiness
+        srv = KMIPServer(store, shim, port=29912, allow_plaintext=True)
+        srv._running, srv._sock = True, object()   # as start() leaves it
+        ok, detail = _readiness(srv, shim, store)()
+        assert ok is True and "mechanisms" in detail
+
+
+class TestPhase3StructuredLogging:
+    def test_records_are_json_objects(self):
+        from kmip_pkcs11.observability import JSONFormatter
+        rec = logging.LogRecord("kmip.test", logging.INFO, __file__, 1,
+                                "server started on %s", ("127.0.0.1",), None)
+        entry = json.loads(JSONFormatter().format(rec))
+        assert entry["level"] == "INFO"
+        assert entry["message"] == "server started on 127.0.0.1"
+        assert entry["logger"] == "kmip.test"
+
+    def test_exceptions_are_carried_in_a_field(self):
+        """A traceback split across lines does not survive log aggregation."""
+        from kmip_pkcs11.observability import JSONFormatter
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            rec = logging.LogRecord("kmip.test", logging.ERROR, __file__, 1,
+                                    "failed", (), sys.exc_info())
+        entry = json.loads(JSONFormatter().format(rec))
+        assert "ValueError: boom" in entry["exception"]
+        assert "\n" not in entry["message"]
+
+    def test_configure_logging_does_not_duplicate_handlers(self):
+        from kmip_pkcs11.observability import configure_logging
+        try:
+            configure_logging("INFO", "json")
+            configure_logging("INFO", "json")
+            assert len(logging.getLogger().handlers) == 1
+        finally:
+            logging.getLogger().handlers.clear()
+
+
+class TestPhase3CLI:
+    def test_server_cli_check_accepts_a_valid_config(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.server_cli import main
+        try:
+            assert main(["--config", _config(tmp_path), "--check"]) == 0
+        finally:
+            logging.getLogger().handlers.clear()
+
+    def test_server_cli_rejects_a_bad_config_with_exit_code_2(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.server_cli import main
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("server: {port: 99999}\n")
+        assert main(["--config", str(bad)]) == 2
+        assert "configuration error" in capsys.readouterr().err
+
+    def test_admin_cli_manages_identities_roles_and_grants(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.admin_cli import main
+        db = str(tmp_path / "admin.db")
+        assert main(["-d", db, "identity", "add", "alice", "--password", "pw"]) == 0
+        assert main(["-d", db, "role", "grant", "alice", "admin"]) == 0
+        assert main(["-d", db, "identity", "list"]) == 0
+        assert "alice" in capsys.readouterr().out
+
+        from kmip_pkcs11.metadata.store import MetadataStore
+        store = MetadataStore(db)
+        assert store.verify_identity("alice", "pw") is True
+        assert store.get_roles("alice") == ["admin"]
+
+    def test_admin_cli_disable_blocks_authentication(self, tmp_path):
+        from kmip_pkcs11.cli.admin_cli import main
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "admin2.db")
+        main(["-d", db, "identity", "add", "bob", "--password", "pw"])
+        main(["-d", db, "identity", "disable", "bob"])
+        assert MetadataStore(db).verify_identity("bob", "pw") is False
+
+    def test_admin_cli_audit_verify_exits_nonzero_on_a_broken_chain(self, tmp_path, capsys):
+        """So a monitoring job can alert on a tampered log."""
+        from kmip_pkcs11.cli.admin_cli import main
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "audit.db")
+        store = MetadataStore(db)
+        for i in range(3):
+            store.append_audit(identity=f"u{i}", operation_name="Get", result="success")
+        assert main(["-d", db, "audit", "verify"]) == 0
+
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_update")
+        conn.execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=2")
+        conn.commit()
+        assert main(["-d", db, "audit", "verify"]) == 1
+        assert "BROKEN" in capsys.readouterr().out
+
+    def test_admin_cli_json_output(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.admin_cli import main
+        db = str(tmp_path / "json.db")
+        main(["-d", db, "identity", "add", "alice", "--password", "pw"])
+        capsys.readouterr()          # discard the confirmation from `add`
+        main(["-d", db, "--json", "identity", "list"])
+        assert json.loads(capsys.readouterr().out)[0]["identity"] == "alice"
+
+    def test_admin_cli_requires_a_database_or_config(self, capsys):
+        from kmip_pkcs11.cli.admin_cli import build_parser
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["identity", "list"])
+
+
+class TestPhase3DeploymentArtifacts:
+    """The deployment files ship in the repository, so a broken one is a
+    broken release even though nothing imports them."""
+
+    ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
+
+    def test_example_config_is_valid(self):
+        from kmip_pkcs11.config import KMIPConfig
+        path = os.path.join(self.ROOT, "deploy", "config.example.yaml")
+        cfg = KMIPConfig.from_file(path)
+        assert cfg.get("server", "port") == 5696
+        assert cfg.get("hsm", "pin_file"), "the template must demonstrate a file-based PIN"
+        assert not cfg.get("hsm", "pin"), "the template must not ship an inline PIN"
+
+    def test_dockerfile_builds_softhsm_from_source(self):
+        """The packaged SoftHSM2 lacks the combined ECDSA-with-hash mechanisms,
+        so an image built on it would fail every EC signing test."""
+        with open(os.path.join(self.ROOT, "deploy", "Dockerfile")) as f:
+            dockerfile = f.read()
+        assert "--with-crypto-backend=openssl" in dockerfile
+        assert "USER kmip" in dockerfile, "the image must not run as root"
+        assert "HEALTHCHECK" in dockerfile
+
+    def test_systemd_unit_reloads_tls_on_sighup(self):
+        with open(os.path.join(self.ROOT, "deploy", "kmip-server.service")) as f:
+            unit = f.read()
+        assert "ExecReload=/bin/kill -HUP $MAINPID" in unit
+        assert "NoNewPrivileges=true" in unit
+
+    def test_ci_workflow_builds_the_right_softhsm(self):
+        path = os.path.join(self.ROOT, ".github", "workflows", "ci.yml")
+        with open(path) as f:
+            workflow = f.read()
+        assert "--with-crypto-backend=openssl" in workflow
+        assert "ECDSA_SHA256" in workflow, "CI must assert the mechanism set it depends on"

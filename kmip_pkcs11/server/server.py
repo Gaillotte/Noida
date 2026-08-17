@@ -59,6 +59,7 @@ class KMIPServer:
         max_request_size: int = DEFAULT_MAX_REQUEST_SIZE,
         handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
         allow_plaintext: bool = False,
+        metrics=None,
     ):
         self._store  = store
         self._shim   = shim
@@ -72,7 +73,8 @@ class KMIPServer:
         self._handshake_timeout = handshake_timeout
         self._allow_plaintext = allow_plaintext
         self._ssl_context: Optional[ssl.SSLContext] = None
-        self._dispatcher = OperationDispatcher(store, shim)
+        self._metrics = metrics
+        self._dispatcher = OperationDispatcher(store, shim, metrics=metrics)
         self._sock: Optional[socket.socket] = None
         self._running = False
 
@@ -103,6 +105,16 @@ class KMIPServer:
         converted = self._store.encrypt_existing_blobs()
         if converted:
             log.info("Converted %d cleartext key blob(s) to encrypted at rest", converted)
+
+    def is_serving(self) -> bool:
+        """True once the listening socket is bound and the accept loop is live.
+
+        Startup does real work before binding — opening the HSM session,
+        provisioning the master key, converting any cleartext blobs — and on a
+        token holding many objects that takes seconds. Readiness has to reflect
+        this, or an orchestrator routes traffic to an instance whose KMIP port
+        is not open yet."""
+        return self._running and self._sock is not None
 
     def start_background(self):
         t = threading.Thread(target=self.start, daemon=True)
@@ -419,6 +431,8 @@ class KMIPServer:
             # Deliberately does not distinguish unknown identity from wrong
             # password, and does not echo the username back to the client.
             log.warning("Authentication failed for identity %r", username_item.value)
+            if self._metrics is not None:
+                self._metrics.record_auth_failure()
             raise AuthenticationFailed("Invalid credentials")
         return username_item.value
 

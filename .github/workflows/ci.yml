@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # SoftHSM2 is built from source rather than installed from apt. The
+      # packaged build does not expose the combined ECDSA-with-hash mechanisms
+      # (CKM_ECDSA_SHA256 and friends), so every EC signing test fails against
+      # it. Confirmed by enumerating both builds' mechanism lists.
+      - name: Cache SoftHSM2 build
+        id: cache-softhsm
+        uses: actions/cache@v4
+        with:
+          path: /opt/softhsm
+          key: softhsm-2.6.1-openssl-${{ runner.os }}
+
+      - name: Build SoftHSM2 (OpenSSL backend)
+        if: steps.cache-softhsm.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential automake autoconf libtool pkg-config libssl-dev
+          curl -fsSL https://dist.opendnssec.org/source/softhsm-2.6.1.tar.gz -o /tmp/softhsm.tar.gz
+          tar -xzf /tmp/softhsm.tar.gz -C /tmp
+          cd /tmp/softhsm-2.6.1
+          ./configure --prefix=/opt/softhsm --with-crypto-backend=openssl --disable-gost
+          make -j"$(nproc)"
+          sudo make install
+
+      - name: Verify the token exposes the mechanisms the suite needs
+        run: |
+          mkdir -p /tmp/softhsm2_tests/tokens
+          cat > /tmp/softhsm2_tests/softhsm2.conf <<'EOF'
+          directories.tokendir = /tmp/softhsm2_tests/tokens
+          objectstore.backend = file
+          log.level = ERROR
+          EOF
+          export SOFTHSM2_CONF=/tmp/softhsm2_tests/softhsm2.conf
+          /opt/softhsm/bin/softhsm2-util --init-token --slot 0 \
+            --label KMIPTestSuite --pin 9999 --so-pin 8888
+          python -m pip install --upgrade pip
+          pip install "python-pkcs11>=0.9.5,<0.10"
+          python - <<'PY'
+          import pkcs11, sys
+          from pkcs11.mechanisms import Mechanism
+          lib = pkcs11.lib("/opt/softhsm/lib/softhsm/libsofthsm2.so")
+          mechs = {int(m) for m in lib.get_token(token_label="KMIPTestSuite").slot.get_mechanisms()}
+          missing = [n for n in ("ECDSA_SHA256", "AES_GCM", "AES_KEY_WRAP_PAD", "DSA_SHA256")
+                     if int(getattr(Mechanism, n)) not in mechs]
+          if missing:
+              sys.exit(f"SoftHSM2 build is missing required mechanisms: {missing}")
+          print("mechanism check passed")
+          PY
+
+      - name: Install the package
+        run: pip install -e ".[dev]"
+
+      - name: Run the test suite
+        env:
+          SOFTHSM2_CONF: /tmp/softhsm2_tests/softhsm2.conf
+          SOFTHSM2_LIB: /opt/softhsm/lib/softhsm/libsofthsm2.so
+        run: pytest -q --timeout=900
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the container image
+        run: docker build -f deploy/Dockerfile -t kmip-server:ci .
+      - name: Confirm the entry points are installed
+        run: |
+          docker run --rm --entrypoint kmip-server kmip-server:ci --help > /dev/null
+          docker run --rm --entrypoint kmip-admin  kmip-server:ci --help > /dev/null
+          echo "entry points OK"

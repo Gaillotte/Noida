@@ -1,0 +1,53 @@
+# kmip-server configuration.
+#
+#   kmip-server --config /etc/kmip/config.yaml
+#   kmip-server --config /etc/kmip/config.yaml --check   # validate and exit
+
+server:
+  host: 0.0.0.0
+  port: 5696                    # IANA-assigned KMIP port
+  max_request_size: 1048576     # ceiling on a declared request body, in bytes.
+                                # Read before authentication, so this is what
+                                # stops an anonymous client from declaring a
+                                # multi-gigabyte frame.
+  handshake_timeout: 10         # seconds a client may take over a TLS handshake
+  allow_plaintext: false        # true serves KMIP unencrypted — only for a
+                                # test rig, or behind a TLS terminator
+
+tls:
+  cert: /etc/kmip/tls/server.pem
+  key:  /etc/kmip/tls/server.key
+  # Verifying client certificates. With require_client_cert: true a verified
+  # certificate's Common Name is used as the caller's identity — but only if
+  # it names an identity that has actually been provisioned.
+  ca: /etc/kmip/tls/ca.pem
+  require_client_cert: false
+
+hsm:
+  library: /usr/lib/softhsm/libsofthsm2.so
+  token_label: KMIPToken
+
+  # The PIN unlocks the HSM. Supply exactly one source. Prefer pin_file,
+  # mounted by a secrets manager (Vault, Kubernetes secret, systemd
+  # LoadCredential); pin_env is fine where the environment is protected.
+  # An inline `pin:` works but warns at every start — it ends up in version
+  # control sooner or later.
+  pin_file: /run/secrets/kmip-token-pin
+  # pin_env: KMIP_TOKEN_PIN
+  # pin: "1234"
+
+storage:
+  # Holds KMIP metadata, identities, roles, grants and the audit log. Back it
+  # up together with the HSM token: secret blobs in here are encrypted under a
+  # master key that lives on the token, so one is useless without the other.
+  database: /var/lib/kmip/kmip.db
+
+observability:
+  enabled: true
+  host: 127.0.0.1               # keep off the public interface — /metrics and
+                                # /ready are for the operator, not KMIP clients
+  port: 9696                    # GET /health, /ready, /metrics
+
+logging:
+  level: INFO                   # DEBUG | INFO | WARNING | ERROR
+  format: json                  # json for log shippers, text for humans
