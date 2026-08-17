@@ -20,7 +20,9 @@ from ..core.ttlv import (
     TTLVItem, decode_one, encode_structure, encode_enumeration,
     encode_integer, encode_text_string
 )
-from ..core.exceptions import KMIPError, InvalidMessage, AuthenticationFailed
+from ..core.exceptions import (
+    KMIPError, InvalidMessage, AuthenticationFailed, GeneralFailure
+)
 from ..metadata.store import MetadataStore
 from ..pkcs11_shim.shim import PKCS11Shim
 from ..operations.dispatcher import OperationDispatcher
@@ -56,6 +58,7 @@ class KMIPServer:
         require_client_cert: bool = False,
         max_request_size: int = DEFAULT_MAX_REQUEST_SIZE,
         handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
+        allow_plaintext: bool = False,
     ):
         self._store  = store
         self._shim   = shim
@@ -67,6 +70,8 @@ class KMIPServer:
         self._require_client_cert = require_client_cert
         self._max_request_size = max_request_size
         self._handshake_timeout = handshake_timeout
+        self._allow_plaintext = allow_plaintext
+        self._ssl_context: Optional[ssl.SSLContext] = None
         self._dispatcher = OperationDispatcher(store, shim)
         self._sock: Optional[socket.socket] = None
         self._running = False
@@ -74,6 +79,7 @@ class KMIPServer:
     # ── public API ────────────────────────────────────────────────────────────
 
     def start(self):
+        self._require_transport_security()
         self._shim.initialize()
         self._enable_blob_encryption()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -135,17 +141,56 @@ class KMIPServer:
             except OSError:
                 break
 
-    def _wrap_tls(self, conn: socket.socket) -> socket.socket:
-        if not self._tls_cert:
-            return conn
+    def _require_transport_security(self):
+        """Refuse to serve KMIP in the clear unless somebody said so explicitly.
+
+        KMIP carries key material and credentials, so an unencrypted listener
+        should be a deliberate choice — a test rig, or a deployment that
+        terminates TLS in front of this process — never the default you get by
+        forgetting to configure a certificate."""
+        if self._tls_cert:
+            return
+        if self._allow_plaintext:
+            log.warning(
+                "KMIP server starting WITHOUT TLS on %s:%d — key material and "
+                "credentials will cross the network in the clear",
+                self._host, self._port,
+            )
+            return
+        raise GeneralFailure(
+            "Refusing to start without TLS: configure tls_cert/tls_key, or pass "
+            "allow_plaintext=True to accept an unencrypted listener deliberately"
+        )
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # TLS 1.0/1.1 are deprecated and carry known weaknesses; 1.2 is the
+        # floor and 1.3 is negotiated whenever the client supports it.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(self._tls_cert, self._tls_key)
         if self._tls_ca:
             ctx.load_verify_locations(self._tls_ca)
             if self._require_client_cert:
                 ctx.verify_mode = ssl.CERT_REQUIRED
+        return ctx
+
+    def reload_tls(self):
+        """Re-read the certificate and key from disk. Call after renewal — new
+        connections pick up the new material, established ones are untouched,
+        so certificates rotate without dropping traffic."""
+        if not self._tls_cert:
+            return
+        self._ssl_context = self._build_ssl_context()
+        log.info("Reloaded TLS certificate from %s", self._tls_cert)
+
+    def _wrap_tls(self, conn: socket.socket) -> socket.socket:
+        if not self._tls_cert:
+            return conn
+        if self._ssl_context is None:
+            # Built once and reused, rather than re-read per connection.
+            self._ssl_context = self._build_ssl_context()
         conn.settimeout(self._handshake_timeout)
-        return ctx.wrap_socket(conn, server_side=True)
+        return self._ssl_context.wrap_socket(conn, server_side=True)
 
     # ── client handler ───────────────────────────────────────────────────────
 
@@ -161,6 +206,9 @@ class KMIPServer:
             return
 
         identity = self._get_identity(conn)
+        # Recorded on every audit entry: "who did what" is far less useful
+        # without "from where".
+        client = f"{addr[0]}:{addr[1]}" if isinstance(addr, tuple) and len(addr) >= 2 else str(addr)
         try:
             conn.settimeout(60.0)
             while True:
@@ -174,7 +222,7 @@ class KMIPServer:
                     break
                 if raw is None:
                     break
-                response = self._process(raw, identity)
+                response = self._process(raw, identity, client)
                 self._send_message(conn, response)
         except (ConnectionResetError, BrokenPipeError, ssl.SSLError):
             pass
@@ -190,16 +238,25 @@ class KMIPServer:
     def _get_identity(self, conn) -> str:
         """Derive a connection-level identity from a client certificate.
 
-        Only trusted when the certificate was actually required and verified
-        against the configured CA — otherwise the subject is just as
-        self-asserted as an unauthenticated username would be."""
+        Two conditions, both required. The certificate must have been actually
+        required and verified against the configured CA — otherwise the subject
+        is as self-asserted as an unauthenticated username. And the subject must
+        map to a provisioned identity: a certificate signed by the CA still does
+        not get to invent a principal that was never granted anything, which
+        keeps the mTLS path under the same rule as password auth."""
         if isinstance(conn, ssl.SSLSocket) and self._require_client_cert and self._tls_ca:
             cert = conn.getpeercert()
             if cert:
                 for rdn in cert.get("subject", []):
                     for k, v in rdn:
-                        if k == "commonName":
+                        if k != "commonName":
+                            continue
+                        if self._store.identity_exists(v):
                             return v
+                        log.warning(
+                            "Client certificate CN %r is not a provisioned identity; "
+                            "treating the connection as anonymous", v)
+                        return "anonymous"
         return "anonymous"
 
     def _recv_message(self, conn: socket.socket) -> Optional[bytes]:
@@ -237,7 +294,7 @@ class KMIPServer:
     def _send_message(conn: socket.socket, data: bytes):
         conn.sendall(data)
 
-    def _process(self, raw: bytes, identity: str) -> bytes:
+    def _process(self, raw: bytes, identity: str, client: str = None) -> bytes:
         try:
             request = decode_one(raw)
         except Exception as e:
@@ -248,7 +305,7 @@ class KMIPServer:
             return _error_response(ResultReason.InvalidMessage, "Malformed KMIP request")
 
         try:
-            return self._build_response(request, identity)
+            return self._build_response(request, identity, client)
         except KMIPError as e:
             # KMIPError messages are authored by this codebase and are safe
             # and useful to return ("Object 'x' not found").
@@ -261,7 +318,7 @@ class KMIPServer:
             log.exception("Unhandled error processing request from identity %r", identity)
             return _error_response(ResultReason.GeneralFailure, "Internal server error")
 
-    def _build_response(self, request: TTLVItem, identity: str) -> bytes:
+    def _build_response(self, request: TTLVItem, identity: str, client: str = None) -> bytes:
         # Parse request header (protocol version, batch count)
         header = request.get(Tag.RequestHeader)
         pv     = header.get(Tag.ProtocolVersion) if header else None
@@ -290,7 +347,7 @@ class KMIPServer:
         batch_items_bytes = b""
         processed = 0
         for item in request.get_all(Tag.BatchItem):
-            item_bytes = self._dispatcher.dispatch(item, identity)
+            item_bytes = self._dispatcher.dispatch(item, identity, client)
             batch_items_bytes += item_bytes
             processed += 1
             if continuation == BatchErrorContinuationOption.Stop:

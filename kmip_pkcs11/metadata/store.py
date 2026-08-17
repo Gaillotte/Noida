@@ -102,6 +102,39 @@ CREATE TABLE IF NOT EXISTS kmip_object_grants (
 
 CREATE INDEX IF NOT EXISTS idx_grants_object
     ON kmip_object_grants(object_uuid);
+
+CREATE TABLE IF NOT EXISTS kmip_audit (
+    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp      REAL NOT NULL,
+    identity       TEXT,
+    operation      INTEGER,
+    operation_name TEXT,
+    object_uid     TEXT,
+    result         TEXT NOT NULL,
+    result_reason  INTEGER,
+    message        TEXT,
+    client         TEXT,
+    prev_hash      TEXT NOT NULL,
+    entry_hash     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_object ON kmip_audit(object_uid);
+CREATE INDEX IF NOT EXISTS idx_audit_identity ON kmip_audit(identity);
+CREATE INDEX IF NOT EXISTS idx_audit_time ON kmip_audit(timestamp);
+
+-- The audit log is append-only. These triggers block UPDATE and DELETE
+-- outright, so ordinary application bugs and casual tampering fail loudly
+-- rather than quietly rewriting history. They are not a defence against
+-- someone with direct file access, who can simply drop them — that is what
+-- the hash chain in each row is for. Retention pruning goes through
+-- MetadataStore.prune_audit(), which lifts them deliberately.
+CREATE TRIGGER IF NOT EXISTS kmip_audit_no_update
+BEFORE UPDATE ON kmip_audit
+BEGIN SELECT RAISE(ABORT, 'kmip_audit is append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS kmip_audit_no_delete
+BEFORE DELETE ON kmip_audit
+BEGIN SELECT RAISE(ABORT, 'kmip_audit is append-only'); END;
 """
 
 # ── schema migrations ────────────────────────────────────────────────────────
@@ -136,6 +169,12 @@ class MetadataStore:
         KMIPServer does this for you."""
         self._db_path = db_path
         self._cipher = blob_cipher
+        # Appending to the audit log is read-then-write (fetch the previous
+        # entry's hash, then insert linking to it). Connections are
+        # per-thread, so without this lock two concurrent requests can read the
+        # same prev_hash and produce a forked chain that verification would
+        # then report as tampering.
+        self._audit_lock = threading.Lock()
         self._init_db()
         if self._cipher is not None:
             self.encrypt_existing_blobs()
@@ -280,6 +319,174 @@ class MetadataStore:
             "SELECT owner_identity FROM kmip_objects WHERE uuid = ?", (uid,)
         ).fetchone()
         return row["owner_identity"] if row else None
+
+    # ── audit log ────────────────────────────────────────────────────────────
+    # Every entry carries the hash of the one before it, so removing or
+    # editing any row breaks every link after it. Detection, not prevention:
+    # combined with the append-only triggers it means tampering requires file
+    # access *and* leaves evidence that verify_audit_chain() will find.
+
+    @staticmethod
+    def _audit_hash(prev_hash: str, fields: Dict[str, Any]) -> str:
+        # json.dumps with sorted keys gives a canonical, unambiguous encoding —
+        # concatenating fields with a separator would let a value containing
+        # that separator forge a different record with the same hash.
+        canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256((prev_hash + canonical).encode("utf-8")).hexdigest()
+
+    GENESIS_HASH = "0" * 64
+
+    def append_audit(
+        self,
+        identity: Optional[str],
+        operation: Optional[int] = None,
+        operation_name: Optional[str] = None,
+        object_uid: Optional[str] = None,
+        result: str = "success",
+        result_reason: Optional[int] = None,
+        message: Optional[str] = None,
+        client: Optional[str] = None,
+    ) -> int:
+        """Append one tamper-evident audit record. Returns its sequence number."""
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        fields = {
+            "timestamp": round(now, 6),
+            "identity": identity,
+            "operation": operation,
+            "operation_name": operation_name,
+            "object_uid": object_uid,
+            "result": result,
+            "result_reason": result_reason,
+            "message": message,
+            "client": client,
+        }
+        with self._audit_lock:
+            conn = self._conn()
+            row = conn.execute(
+                "SELECT entry_hash FROM kmip_audit ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+            prev_hash = row["entry_hash"] if row else self.GENESIS_HASH
+            entry_hash = self._audit_hash(prev_hash, fields)
+            cur = conn.execute(
+                """INSERT INTO kmip_audit
+                     (timestamp, identity, operation, operation_name, object_uid,
+                      result, result_reason, message, client, prev_hash, entry_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (fields["timestamp"], identity, operation, operation_name, object_uid,
+                 result, result_reason, message, client, prev_hash, entry_hash),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def get_audit_entries(
+        self,
+        identity: Optional[str] = None,
+        object_uid: Optional[str] = None,
+        result: Optional[str] = None,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Query the audit log. This is the 'who did what to which object when'
+        surface — deliberately a server-admin API, not a KMIP operation."""
+        clauses, params = [], []
+        for column, value in (("identity", identity), ("object_uid", object_uid),
+                              ("result", result)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("timestamp <= ?")
+            params.append(until)
+
+        sql = "SELECT * FROM kmip_audit"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY seq ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [dict(r) for r in self._conn().execute(sql, params).fetchall()]
+
+    def verify_audit_chain(self) -> Dict[str, Any]:
+        """Recompute the chain and report the first row that doesn't match.
+
+        `ok` False means the log has been altered: a row was edited, deleted,
+        or inserted out of band. `chain_start_prev_hash` is the hash the first
+        remaining row links back to — after pruning it refers to an archived
+        entry, so an operator can confirm continuity against that archive."""
+        rows = self._conn().execute("SELECT * FROM kmip_audit ORDER BY seq ASC").fetchall()
+        if not rows:
+            return {"ok": True, "entries": 0, "broken_at": None,
+                    "chain_start_prev_hash": None}
+
+        expected_prev = rows[0]["prev_hash"]
+        for row in rows:
+            fields = {
+                "timestamp": row["timestamp"],
+                "identity": row["identity"],
+                "operation": row["operation"],
+                "operation_name": row["operation_name"],
+                "object_uid": row["object_uid"],
+                "result": row["result"],
+                "result_reason": row["result_reason"],
+                "message": row["message"],
+                "client": row["client"],
+            }
+            if row["prev_hash"] != expected_prev:
+                return {"ok": False, "entries": len(rows), "broken_at": row["seq"],
+                        "reason": "chain link does not match previous entry",
+                        "chain_start_prev_hash": rows[0]["prev_hash"]}
+            if self._audit_hash(row["prev_hash"], fields) != row["entry_hash"]:
+                return {"ok": False, "entries": len(rows), "broken_at": row["seq"],
+                        "reason": "entry contents do not match their hash",
+                        "chain_start_prev_hash": rows[0]["prev_hash"]}
+            expected_prev = row["entry_hash"]
+
+        return {"ok": True, "entries": len(rows), "broken_at": None,
+                "chain_start_prev_hash": rows[0]["prev_hash"]}
+
+    def prune_audit(self, before_timestamp: float) -> Dict[str, Any]:
+        """Retention: drop entries older than a cutoff, returning them so the
+        caller can archive them first.
+
+        This is the one sanctioned way past the append-only triggers, and it
+        refuses to run on a log that already fails verification — pruning a
+        tampered log would destroy the evidence. Entries after the cutoff keep
+        their links, so the chain stays verifiable from the cut point; the
+        returned rows carry the hashes needed to prove continuity with what
+        came before."""
+        report = self.verify_audit_chain()
+        if not report["ok"]:
+            raise CryptographicFailure(
+                f"Refusing to prune: audit chain is broken at seq {report['broken_at']}"
+            )
+
+        with self._audit_lock:
+            conn = self._conn()
+            doomed = [dict(r) for r in conn.execute(
+                "SELECT * FROM kmip_audit WHERE timestamp < ? ORDER BY seq ASC",
+                (before_timestamp,)).fetchall()]
+            if not doomed:
+                return {"pruned": 0, "entries": []}
+
+            conn.execute("DROP TRIGGER IF EXISTS kmip_audit_no_delete")
+            try:
+                conn.execute("DELETE FROM kmip_audit WHERE timestamp < ?", (before_timestamp,))
+                conn.commit()
+            finally:
+                conn.execute(
+                    "CREATE TRIGGER IF NOT EXISTS kmip_audit_no_delete "
+                    "BEFORE DELETE ON kmip_audit "
+                    "BEGIN SELECT RAISE(ABORT, 'kmip_audit is append-only'); END"
+                )
+                conn.commit()
+
+        log.info("Pruned %d audit entries older than %s", len(doomed), before_timestamp)
+        return {"pruned": len(doomed), "entries": doomed}
 
     # ── master-key operations ────────────────────────────────────────────────
 

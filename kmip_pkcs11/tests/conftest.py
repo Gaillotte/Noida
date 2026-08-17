@@ -64,7 +64,7 @@ def server_client(tmp_path, shim):
 
     port   = next(_port_counter)
     store  = MetadataStore(str(tmp_path / "srv.db"))
-    srv    = KMIPServer(store, shim, port=port)
+    srv    = KMIPServer(store, shim, port=port, allow_plaintext=True)
     srv.start_background()
 
     # Wait for server to be ready
@@ -101,7 +101,7 @@ def kmip_server(tmp_path, shim):
 
     port  = next(_port_counter)
     store = MetadataStore(str(tmp_path / "srv2.db"))
-    srv   = KMIPServer(store, shim, port=port)
+    srv   = KMIPServer(store, shim, port=port, allow_plaintext=True)
     srv.start_background()
 
     deadline = time.time() + 5

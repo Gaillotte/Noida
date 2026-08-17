@@ -46,10 +46,13 @@ operation to PKCS#11.
 - **Access control** — every object records its creator; operations against an
   existing object require ownership, the admin role, or an explicit delegated
   grant (see [Access Control](#access-control))
-- **Optional TLS + mTLS** — standard TCP, KMIP's IANA port 5696
+- **TLS enforced by default** — refuses to start in the clear without an explicit
+  opt-out; TLS 1.2 floor, hot certificate reload, optional mTLS-derived identity
+- **Tamper-evident audit log** — append-only, hash-chained record of every
+  operation (see [Access Control](#access-control))
 - **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
   JSON attribute values
-- **649 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
+- **701 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -85,7 +88,7 @@ operation to PKCS#11.
 │  pkcs11_shim/shim.py   │  metadata/store.py    │
 │  • single locked       │  SQLite (WAL)         │
 │    session (see        │  • objects/attrs      │
-│    Known Limitations)  │  • identities/roles    │
+│    Known Limitations)  │  • identities/audit    │
 │  • capability probe    │                        │
 │  SoftHSM2 / PKCS#11    │                        │
 └────────────────────────┴────────────────────────┘
@@ -105,7 +108,7 @@ kmip_pkcs11/
 │   ├── state_machine.py       # Key lifecycle state transitions
 │   └── access_control.py      # Owner / admin role / delegated grants
 ├── metadata/
-│   ├── store.py               # SQLite metadata store + versioned schema migrations
+│   ├── store.py               # SQLite store, migrations, audit log
 │   └── blob_cipher.py         # AES-GCM envelope encryption under an HSM master key
 ├── pkcs11_shim/
 │   └── shim.py                # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock
@@ -134,9 +137,10 @@ kmip_pkcs11/
     ├── test_metadata.py          #  18 metadata store unit tests
     ├── test_operations.py        #   8 operation integration tests
     ├── test_conformance.py       #  48 OASIS KMIP conformance tests
-    └── test_extended_coverage.py # 527 live tests: every operation, algorithm
+    └── test_extended_coverage.py # 579 live tests: every operation, algorithm
                                    #  coverage, error paths, authentication,
-                                   #  access control, session concurrency
+                                   #  access control, audit, transport,
+                                   #  session concurrency
 ```
 
 ---
@@ -191,7 +195,8 @@ from kmip_pkcs11.core.enums import CryptographicAlgorithm
 # Start the server
 store  = MetadataStore("/var/kmip/kmip.db")
 shim   = PKCS11Shim("/usr/lib/.../libsofthsm2.so", "MyToken", "userpin")
-server = KMIPServer(store, shim, host="127.0.0.1", port=5696)
+server = KMIPServer(store, shim, host="127.0.0.1", port=5696,
+                    tls_cert="server.pem", tls_key="server.key")
 server.start_background()
 
 # Provision identities before anyone connects — there's no wire operation
@@ -299,6 +304,53 @@ re-running finishes the job. Pass `retire_previous=False` to verify before
 destroying anything; once a key is retired, blobs still under it are
 unrecoverable by design.
 
+### Audit log
+
+Every operation except `Query` and `DiscoverVersions` — reads included, since
+"who exported this key" is the question an audit log most needs to answer —
+writes a record to `kmip_audit`: identity, operation, object UID, result and
+reason, client address, timestamp.
+
+The log is append-only, enforced two ways. SQLite triggers block `UPDATE` and
+`DELETE` outright, so application bugs and casual tampering fail loudly. And
+each row carries the SHA-256 of the previous one, so an attacker with direct
+file access who drops the triggers still leaves a broken chain behind:
+
+```python
+store.get_audit_entries(identity="alice", object_uid=uid, result="failure")
+store.verify_audit_chain()   # {'ok': False, 'broken_at': 42, 'reason': ...}
+store.prune_audit(before_timestamp)   # retention; returns entries to archive
+```
+
+`prune_audit()` is the one sanctioned way past the triggers, and it refuses to
+run on a log that already fails verification — pruning a tampered log would
+destroy the evidence. It returns the removed entries so they can be archived
+first, and the remaining rows stay verifiable from the cut point.
+
+An audit write that fails never fails the KMIP operation, but it is logged as
+an exception — a silently unrecorded operation is exactly what an attacker
+would want.
+
+### Transport security
+
+The server **refuses to start without TLS** unless told otherwise:
+
+```python
+KMIPServer(store, shim, tls_cert="server.pem", tls_key="server.key")
+KMIPServer(store, shim, allow_plaintext=True)   # deliberate, e.g. behind a TLS terminator
+```
+
+Starting in plaintext logs a warning naming the address. TLS 1.2 is the
+minimum version. `reload_tls()` re-reads the certificate and key after
+renewal — new connections use the new material, established ones are
+untouched, so certificates rotate without dropping traffic.
+
+With `require_client_cert=True` and a configured `tls_ca`, a verified
+certificate's Common Name is used as the identity — but only if it names a
+**provisioned** identity. A CA-signed certificate does not get to invent a
+principal that was never granted anything, which keeps mTLS under the same
+rule as password authentication.
+
 ### Authorization
 
 Every managed object records the identity that created it. Operations against
@@ -358,7 +410,7 @@ no PKCS#11 mechanism was ever standardized for them at all.
 ## Running the Tests
 
 ```bash
-# Run all 649 tests
+# Run all 701 tests
 pytest
 
 # Run with verbose output
@@ -383,8 +435,8 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | test_metadata.py        |  18 |  18 | 0 | 100 % |
 | test_operations.py      |   8 |   8 | 0 | 100 % |
 | test_conformance.py     |  48 |  48 | 0 | 100 % |
-| test_extended_coverage.py | 527 | 527 | 0 | 100 % |
-| **TOTAL**            | **649** | **649** | **0** | **100 %** |
+| test_extended_coverage.py | 579 | 579 | 0 | 100 % |
+| **TOTAL**            | **701** | **701** | **0** | **100 %** |
 
 ---
 
@@ -432,10 +484,12 @@ KMIPServer(
     shim,
     host="127.0.0.1",      # bind address
     port=5696,              # IANA KMIP port
-    tls_cert="server.pem", # optional: path to server certificate
-    tls_key="server.key",  # optional: server private key
+    tls_cert="server.pem", # required unless allow_plaintext=True
+    tls_key="server.key",  # required unless allow_plaintext=True
     tls_ca="ca.pem",       # optional: CA for client cert verification
-    require_client_cert=False,  # True = enforce mTLS
+    require_client_cert=False,  # True = enforce mTLS and map a verified CN to an identity
+    allow_plaintext=False,      # True = serve without TLS, deliberately
+    max_request_size=1048576,   # ceiling on a declared request body
 )
 ```
 
@@ -491,8 +545,8 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 | Single, locked PKCS#11 session | `server.py` runs one thread per connection, but they share one `PKCS11Shim` session serialized by a `threading.RLock`. **This is the deliberate, permanent design, not a stopgap** — a session-pool (separate session per thread) was built and tested, and reproducibly segfaults or corrupts operations under concurrency: `python-pkcs11` 0.9.5 calls `C_Initialize(NULL)`, so the library's own internal thread safety is never enabled, and separate sessions don't work around that. A real fix needs a PKCS#11 binding that passes `CKF_OS_LOCKING_OK`, or a multi-process worker pool. |
 | Identity management has no wire protocol | Identity, role and grant management (`create_identity`, `assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define operations for it, and there is no CLI yet. No groups, no per-role operation allowlist, and no dual-control approval for destructive operations; every non-admin identity is evaluated individually against ownership and grants. |
 | Master key availability | `SecretData`/`OpaqueObject`/`SplitKey` blobs are encrypted under an HSM-resident master key, so the metadata database is useless without the token that holds it — back up and protect the two together, and note that retiring a master key before re-encrypting makes its blobs unrecoverable. |
-| No audit trail | Operations are logged via Python `logging` only — nothing persisted, queryable, or tamper-evident. |
-| TLS optional, not enforced | The server accepts plain TCP if no certificate is configured; cert/key load from a static path with no rotation or ACME integration. |
+| Audit log is local and unsigned | Entries are hash-chained and append-only, which makes tampering detectable, but the chain is not anchored anywhere external — an attacker who rewrites the whole log consistently leaves no trace. Ship entries to an external collector for stronger guarantees. |
+| No ACME / automated certificate issuance | TLS is enforced by default and `reload_tls()` picks up renewed material without dropping connections, but obtaining and renewing certificates is left to the operator — there is no ACME client. |
 | Not FIPS/CC validated | SoftHSM2 isn't a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above `pkcs11_shim/`, but that swap hasn't happened here. |
 | SoftHSM2 SENSITIVE bug | `SENSITIVE=True AND EXTRACTABLE=True` blocks `CKA_VALUE` read; the shim downgrades sensitivity automatically when extractability is explicitly requested. |
 | No batch atomicity | Failure in one `BatchItem` does not roll back previous items in the same batch. |

@@ -10,7 +10,7 @@ from typing import Callable, Dict
 from ..core.enums import Operation, ResultStatus, ResultReason, Tag, Type
 from ..core.ttlv import (
     TTLVItem, encode_structure, encode_enumeration, encode_text_string,
-    encode_byte_string, encode_integer, decode_one
+    encode_byte_string, encode_integer, decode_one, decode_all
 )
 from ..core.exceptions import KMIPError, OperationNotSupported
 from ..metadata.store import MetadataStore
@@ -82,7 +82,7 @@ class OperationDispatcher:
             Operation.JoinSplitKey:     join_split_key.handle,
         }
 
-    def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:
+    def dispatch(self, batch_item: TTLVItem, identity: str, client: str = None) -> bytes:
         """Process one Batch Item. Returns encoded response BatchItem bytes."""
         op_item = batch_item.get(Tag.Operation)
         op_code = op_item.value if op_item else None
@@ -99,17 +99,76 @@ class OperationDispatcher:
 
             response_payload = handler(payload, identity, self._store, self._shim)
 
+            self._audit(op_code, identity, client, payload, response_payload, "success")
             return self._success_item(op_code, response_payload, uid_item)
 
         except KMIPError as e:
             log.warning("KMIP operation 0x%08X failed: %s", op_code or 0, e)
+            self._audit(op_code, identity, client, payload, None, "failure",
+                        reason=e.reason, message=str(e))
             return self._failure_item(op_code, e.reason, str(e), uid_item)
         except Exception:
             # Internal fault — full detail to the log, generic text to the wire.
             log.exception("Unexpected error in operation 0x%08X", op_code or 0)
+            self._audit(op_code, identity, client, payload, None, "failure",
+                        reason=ResultReason.GeneralFailure, message="Internal server error")
             return self._failure_item(
                 op_code, ResultReason.GeneralFailure, "Internal server error", uid_item
             )
+
+    # ── audit ────────────────────────────────────────────────────────────────
+
+    # Query and DiscoverVersions touch no managed object and carry no
+    # authorization decision — they are capability discovery. Auditing them
+    # would bury the records that matter in handshake noise. Everything else is
+    # recorded, reads included: "who exported this key" is the question an
+    # audit log most needs to answer, and it is a read.
+    _UNAUDITED = frozenset({Operation.Query, Operation.DiscoverVersions})
+
+    def _audit(self, op_code, identity, client, request_payload,
+               response_payload, result, reason=None, message=None):
+        if op_code in self._UNAUDITED:
+            return
+        try:
+            self._store.append_audit(
+                identity=identity,
+                operation=op_code,
+                operation_name=self._operation_name(op_code),
+                object_uid=self._object_uid(request_payload, response_payload),
+                result=result,
+                result_reason=reason,
+                message=message,
+                client=client,
+            )
+        except Exception:
+            # An audit failure must never turn a successful operation into a
+            # failed one, but it is serious enough to log loudly — a silently
+            # unrecorded operation is exactly what an attacker would want.
+            log.exception("Failed to write audit record for operation %r", op_code)
+
+    @staticmethod
+    def _operation_name(op_code) -> str:
+        try:
+            return Operation(op_code).name
+        except (ValueError, TypeError):
+            return f"0x{op_code:08X}" if isinstance(op_code, int) else "unknown"
+
+    @staticmethod
+    def _object_uid(request_payload, response_payload):
+        """The object an operation acted on. Usually named in the request, but
+        Create/CreateKeyPair/Register only learn it from the response."""
+        if request_payload is not None:
+            item = request_payload.get(Tag.UniqueIdentifier)
+            if item is not None:
+                return item.value
+        if response_payload:
+            try:
+                for item in decode_all(response_payload):
+                    if item.tag == Tag.UniqueIdentifier:
+                        return item.value
+            except Exception:
+                return None
+        return None
 
     @staticmethod
     def _success_item(op_code, payload_bytes: bytes, uid_item) -> bytes:

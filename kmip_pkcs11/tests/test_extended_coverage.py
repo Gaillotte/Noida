@@ -1370,7 +1370,7 @@ class TestServerExtended:
         from kmip_pkcs11.metadata.store import MetadataStore
         from kmip_pkcs11.server.server import KMIPServer
         store2 = MetadataStore(str(tmp_path / "stop_test.db"))
-        srv    = KMIPServer(store2, shim, port=29998)
+        srv    = KMIPServer(store2, shim, port=29998, allow_plaintext=True)
         srv.start_background()
         # Wait for it to bind
         deadline = time.time() + 3
@@ -6744,3 +6744,312 @@ class TestPhase1MasterKeyOnToken:
         material = decode_one(encode_structure(Tag.ResponsePayload, resp)) \
             .get(Tag.SecretData).get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
         assert material == secret
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 — audit trail and transport security.
+#
+# A tamper-evident, append-only record of who did what to which object when,
+# and a listener that refuses to serve KMIP in the clear by accident.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _self_signed(tmp_path):
+    """Generate a throwaway certificate/key pair for TLS configuration tests."""
+    import subprocess
+    cert, key = str(tmp_path / "c.pem"), str(tmp_path / "k.pem")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key,
+         "-out", cert, "-days", "1", "-nodes", "-subj", "/CN=localhost"],
+        check=True, capture_output=True,
+    )
+    return cert, key
+
+
+def _dispatch(store, shim, operation, payload_bytes=b"", identity="alice", client=None):
+    from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+    inner = (encode_enumeration(Tag.Operation, operation)
+             + encode_structure(Tag.RequestPayload, payload_bytes))
+    item = decode_one(encode_structure(Tag.BatchItem, inner))
+    return OperationDispatcher(store, shim).dispatch(item, identity, client)
+
+
+class TestPhase2AuditRecording:
+    def test_successful_operation_is_recorded(self, store, shim):
+        from kmip_pkcs11.core.enums import Operation
+        uid = store.create_object(object_type=ObjectType.SymmetricKey,
+                                  state=State.PreActive, owner_identity="alice")
+        _dispatch(store, shim, Operation.Activate,
+                  encode_text_string(Tag.UniqueIdentifier, uid), identity="alice")
+        entries = store.get_audit_entries(object_uid=uid)
+        assert [e["operation_name"] for e in entries] == ["Activate"]
+        assert entries[0]["identity"] == "alice"
+        assert entries[0]["result"] == "success"
+        assert store.get_object(uid)["state"] == State.Active
+
+    def test_failed_operation_is_recorded_with_its_reason(self, store, shim):
+        from kmip_pkcs11.core.enums import Operation, ResultReason
+        _dispatch(store, shim, Operation.Destroy,
+                  encode_text_string(Tag.UniqueIdentifier, "no-such-uid"))
+        entry = store.get_audit_entries(object_uid="no-such-uid")[0]
+        assert entry["result"] == "failure"
+        assert entry["result_reason"] == ResultReason.ItemNotFound
+
+    def test_denied_access_is_recorded(self, store, shim):
+        """The audit question that matters most: someone tried to reach an
+        object they had no right to."""
+        from kmip_pkcs11.core.enums import Operation, ResultReason
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        _dispatch(store, shim, Operation.Destroy,
+                  encode_text_string(Tag.UniqueIdentifier, uid), identity="mallory")
+        entry = store.get_audit_entries(identity="mallory")[0]
+        assert entry["result"] == "failure"
+        assert entry["result_reason"] == ResultReason.PermissionDenied
+        assert store.get_object(uid)["state"] != State.Destroyed
+
+    def test_reads_are_audited_not_just_mutations(self, store, shim):
+        """'Who exported this key' is a read, and is exactly what an audit log
+        is for."""
+        from kmip_pkcs11.core.enums import Operation
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        _dispatch(store, shim, Operation.Get,
+                  encode_text_string(Tag.UniqueIdentifier, uid), identity="alice")
+        assert [e["operation_name"] for e in store.get_audit_entries(object_uid=uid)] == ["Get"]
+
+    def test_created_object_uid_comes_from_the_response(self, store, shim):
+        """Create names no UID in its request — the audit record has to take it
+        from the response, or the entry is useless."""
+        from kmip_pkcs11.core.enums import Operation
+        attrs = (
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128))
+            + _attr("Cryptographic Usage Mask",
+                    encode_integer(Tag.AttributeValue, CryptographicUsageMask.Encrypt))
+        )
+        payload = (encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+                   + encode_structure(Tag.TemplateAttribute, attrs))
+        raw = _dispatch(store, shim, Operation.Create, payload, identity="alice")
+        uid = decode_one(raw).get(Tag.ResponsePayload).get(Tag.UniqueIdentifier).value
+
+        entries = store.get_audit_entries(object_uid=uid)
+        assert entries and entries[0]["operation_name"] == "Create"
+        assert entries[0]["identity"] == "alice"
+
+    def test_capability_discovery_is_not_audited(self, store, shim):
+        """Query/DiscoverVersions touch no object; recording them would bury
+        the entries that matter in handshake noise."""
+        from kmip_pkcs11.core.enums import Operation
+        _dispatch(store, shim, Operation.Query)
+        _dispatch(store, shim, Operation.DiscoverVersions)
+        assert store.get_audit_entries() == []
+
+    def test_client_address_is_recorded(self, store, shim):
+        from kmip_pkcs11.core.enums import Operation
+        _dispatch(store, shim, Operation.Destroy,
+                  encode_text_string(Tag.UniqueIdentifier, "x"), client="10.0.0.9:5555")
+        assert store.get_audit_entries()[0]["client"] == "10.0.0.9:5555"
+
+    def test_audit_failure_does_not_fail_the_operation(self, store, shim):
+        """A broken audit backend must not take the KMIP service down with it —
+        but it must be loud, which is why it logs an exception."""
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        uid = store.create_object(object_type=ObjectType.SymmetricKey,
+                                  state=State.PreActive, owner_identity="alice")
+        with patch.object(store, "append_audit", side_effect=RuntimeError("audit down")):
+            raw = _dispatch(store, shim, Operation.Activate,
+                            encode_text_string(Tag.UniqueIdentifier, uid), identity="alice")
+        assert decode_one(raw).get(Tag.ResultStatus).value == ResultStatus.Success
+        assert store.get_object(uid)["state"] == State.Active
+
+
+class TestPhase2AuditTamperEvidence:
+    def _seed(self, store, n=4):
+        for i in range(n):
+            store.append_audit(identity=f"user{i}", operation_name="Get",
+                               object_uid=f"uid-{i}", result="success")
+
+    def test_clean_chain_verifies(self, store):
+        self._seed(store)
+        report = store.verify_audit_chain()
+        assert report["ok"] is True and report["entries"] == 4
+
+    def test_empty_log_verifies(self, store):
+        assert store.verify_audit_chain()["ok"] is True
+
+    def test_update_is_blocked_by_the_append_only_trigger(self, store):
+        import sqlite3
+        self._seed(store, 1)
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn().execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=1")
+
+    def test_delete_is_blocked_by_the_append_only_trigger(self, store):
+        import sqlite3
+        self._seed(store, 1)
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn().execute("DELETE FROM kmip_audit WHERE seq=1")
+
+    def test_edited_entry_breaks_the_chain(self, store):
+        """Someone with file access can drop the triggers — the hash chain is
+        what makes the edit detectable afterwards."""
+        self._seed(store)
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_update")
+        conn.execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=2")
+        conn.commit()
+        report = store.verify_audit_chain()
+        assert report["ok"] is False
+        assert report["broken_at"] == 2
+        assert "hash" in report["reason"]
+
+    def test_deleted_entry_breaks_the_chain(self, store):
+        self._seed(store)
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_delete")
+        conn.execute("DELETE FROM kmip_audit WHERE seq=2")
+        conn.commit()
+        report = store.verify_audit_chain()
+        assert report["ok"] is False and report["broken_at"] == 3
+
+    def test_concurrent_appends_produce_an_intact_chain(self, store):
+        """The chain is read-then-write, so without a lock two threads can link
+        to the same predecessor and fork the history."""
+        import concurrent.futures
+        def append(i):
+            store.append_audit(identity=f"t{i}", operation_name="Get",
+                               object_uid=f"uid-{i}", result="success")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(append, range(40)))
+        report = store.verify_audit_chain()
+        assert report["ok"] is True, f"chain broken at {report.get('broken_at')}"
+        assert report["entries"] == 40
+
+
+class TestPhase2AuditQueryAndRetention:
+    def _seed(self, store):
+        for i in range(5):
+            store.append_audit(identity="alice" if i % 2 == 0 else "bob",
+                               operation_name="Get", object_uid=f"uid-{i}",
+                               result="success" if i < 3 else "failure")
+
+    def test_filter_by_identity(self, store):
+        self._seed(store)
+        assert {e["identity"] for e in store.get_audit_entries(identity="bob")} == {"bob"}
+
+    def test_filter_by_result(self, store):
+        self._seed(store)
+        assert all(e["result"] == "failure"
+                   for e in store.get_audit_entries(result="failure"))
+
+    def test_limit_applies(self, store):
+        self._seed(store)
+        assert len(store.get_audit_entries(limit=2)) == 2
+
+    def test_prune_returns_entries_for_archival_and_keeps_the_rest(self, store):
+        import time as _t
+        store.append_audit(identity="old", operation_name="Get", result="success")
+        cutoff = _t.time() + 0.01
+        _t.sleep(0.02)
+        store.append_audit(identity="new", operation_name="Get", result="success")
+
+        result = store.prune_audit(cutoff)
+        assert result["pruned"] == 1
+        assert result["entries"][0]["identity"] == "old"
+        assert [e["identity"] for e in store.get_audit_entries()] == ["new"]
+
+    def test_chain_still_verifies_after_pruning(self, store):
+        import time as _t
+        for i in range(3):
+            store.append_audit(identity=f"old{i}", operation_name="Get", result="success")
+        cutoff = _t.time() + 0.01
+        _t.sleep(0.02)
+        for i in range(3):
+            store.append_audit(identity=f"new{i}", operation_name="Get", result="success")
+        store.prune_audit(cutoff)
+        assert store.verify_audit_chain()["ok"] is True
+
+    def test_append_only_trigger_is_restored_after_pruning(self, store):
+        import sqlite3, time as _t
+        store.append_audit(identity="old", operation_name="Get", result="success")
+        store.prune_audit(_t.time() + 0.01)
+        store.append_audit(identity="new", operation_name="Get", result="success")
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn().execute("DELETE FROM kmip_audit")
+
+    def test_refuses_to_prune_a_tampered_log(self, store):
+        """Pruning a broken chain would destroy the evidence of tampering."""
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        import time as _t
+        for i in range(3):
+            store.append_audit(identity=f"u{i}", operation_name="Get", result="success")
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_update")
+        conn.execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=2")
+        conn.commit()
+        with pytest.raises(CryptographicFailure):
+            store.prune_audit(_t.time() + 1)
+
+
+class TestPhase2TransportSecurity:
+    def test_refuses_to_start_without_tls(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.exceptions import GeneralFailure
+        srv = KMIPServer(store, shim, port=29901)
+        with pytest.raises(GeneralFailure, match="TLS"):
+            srv._require_transport_security()
+
+    def test_plaintext_requires_an_explicit_opt_out(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, port=29902, allow_plaintext=True)
+        srv._require_transport_security()          # must not raise
+
+    def test_tls_configured_server_starts(self, store, shim, tmp_path):
+        from kmip_pkcs11.server.server import KMIPServer
+        cert, key = _self_signed(tmp_path)
+        srv = KMIPServer(store, shim, port=29903, tls_cert=cert, tls_key=key)
+        srv._require_transport_security()          # must not raise
+
+    def test_tls_floor_is_1_2(self, store, shim, tmp_path):
+        import ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        cert, key = _self_signed(tmp_path)
+        srv = KMIPServer(store, shim, port=29904, tls_cert=cert, tls_key=key)
+        assert srv._build_ssl_context().minimum_version == ssl.TLSVersion.TLSv1_2
+
+    def test_reload_tls_rebuilds_the_context(self, store, shim, tmp_path):
+        from kmip_pkcs11.server.server import KMIPServer
+        cert, key = _self_signed(tmp_path)
+        srv = KMIPServer(store, shim, port=29905, tls_cert=cert, tls_key=key)
+        first = srv._build_ssl_context()
+        srv._ssl_context = first
+        srv.reload_tls()
+        assert srv._ssl_context is not first, "renewed certificate must be picked up"
+
+    def test_unprovisioned_certificate_cn_does_not_become_an_identity(self, store, shim):
+        """A CA-signed certificate still doesn't get to invent a principal that
+        was never granted anything."""
+        import ssl as _ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, tls_ca="/x/ca.pem", require_client_cert=True)
+        conn = MagicMock(spec=_ssl.SSLSocket)
+        conn.getpeercert.return_value = {"subject": [[("commonName", "ghost")]]}
+        assert srv._get_identity(conn) == "anonymous"
+
+    def test_provisioned_certificate_cn_becomes_the_identity(self, store, shim):
+        import ssl as _ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        store.create_identity("alice", "pw")
+        srv = KMIPServer(store, shim, tls_ca="/x/ca.pem", require_client_cert=True)
+        conn = MagicMock(spec=_ssl.SSLSocket)
+        conn.getpeercert.return_value = {"subject": [[("commonName", "alice")]]}
+        assert srv._get_identity(conn) == "alice"
+
+    def test_unverified_client_cert_is_ignored(self, store, shim):
+        """Without require_client_cert the subject was never checked against
+        the CA, so it must not be trusted even if it names a real identity."""
+        import ssl as _ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        store.create_identity("alice", "pw")
+        srv = KMIPServer(store, shim, tls_ca="/x/ca.pem", require_client_cert=False)
+        conn = MagicMock(spec=_ssl.SSLSocket)
+        conn.getpeercert.return_value = {"subject": [[("commonName", "alice")]]}
+        assert srv._get_identity(conn) == "anonymous"

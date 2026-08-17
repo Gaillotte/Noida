@@ -80,7 +80,11 @@ def run_demo():
 
     store  = MetadataStore(DB_PATH)
     shim   = PKCS11Shim(SOFTHSM_LIB, TOKEN_LABEL, USER_PIN)
-    server = KMIPServer(store, shim, port=SERVER_PORT)
+    # allow_plaintext: this is a loopback demo with a throwaway token, so
+    # there is no certificate to configure. A real deployment omits this and
+    # supplies tls_cert/tls_key — the server refuses to start in the clear
+    # unless the operator says so explicitly.
+    server = KMIPServer(store, shim, port=SERVER_PORT, allow_plaintext=True)
     server.start_background()
     time.sleep(0.5)
 
