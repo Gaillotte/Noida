@@ -7457,3 +7457,264 @@ class TestPhase3DeploymentArtifacts:
             workflow = f.read()
         assert "--with-crypto-backend=openssl" in workflow
         assert "ECDSA_SHA256" in workflow, "CI must assert the mechanism set it depends on"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4 — surviving production.
+#
+# Backup and restore that provably recover working keys, credential
+# verification that does not cost 40ms per request, and the cross-process
+# safety the multi-process worker model depends on.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase4BackupRestore:
+    def _seeded(self, tmp_path, shim, name="src.db"):
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        store = MetadataStore(str(tmp_path / name), blob_cipher=BlobCipher(shim))
+        store.create_identity("alice", "pw")
+        store.assign_role("alice", "admin")
+        uid = store.create_object(object_type=ObjectType.SecretData,
+                                  raw_key_value=b"THE-SECRET", owner_identity="alice")
+        store.append_audit(identity="alice", operation_name="Create",
+                           object_uid=uid, result="success")
+        return store, uid
+
+    def test_backup_manifest_records_what_it_contains(self, tmp_path, shim):
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        manifest = backup.create_backup(store, str(tmp_path / "bk"),
+                                        token_label="KMIPTestSuite", note="nightly")
+        assert manifest["object_count"] == 1
+        assert manifest["identity_count"] == 1
+        assert manifest["audit_chain_ok"] is True
+        assert manifest["token_label"] == "KMIPTestSuite"
+        assert manifest["note"] == "nightly"
+
+    def test_restore_recovers_working_keys(self, tmp_path, shim):
+        """The gate: a node is lost and comes back able to read its keys."""
+        from kmip_pkcs11.metadata import backup
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        store, uid = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"), token_label="KMIPTestSuite")
+
+        target = str(tmp_path / "restored.db")
+        report = backup.restore_backup(str(tmp_path / "bk"), target, shim=shim,
+                                       token_label="KMIPTestSuite")
+        assert report["verification"]["ok"] is True
+        assert report["verification"]["decryption_verified"] is True
+
+        restored = MetadataStore(target, blob_cipher=BlobCipher(shim))
+        assert restored.get_object(uid)["raw_key_value"] == b"THE-SECRET"
+        assert restored.verify_identity("alice", "pw") is True
+        assert restored.get_roles("alice") == ["admin"]
+        assert restored.verify_audit_chain()["ok"] is True
+
+    def test_restore_refuses_a_different_token(self, tmp_path, shim):
+        """A database restored beside the wrong HSM is not degraded, it is
+        unreadable — so this must fail before it looks like it worked."""
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"), token_label="TokenA")
+        with pytest.raises(backup.BackupError, match="TokenA"):
+            backup.restore_backup(str(tmp_path / "bk"), str(tmp_path / "r.db"),
+                                  token_label="TokenB")
+
+    def test_restore_will_not_silently_overwrite(self, tmp_path, shim):
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"))
+        target = tmp_path / "exists.db"
+        target.write_bytes(b"")
+        with pytest.raises(backup.BackupError, match="already exists"):
+            backup.restore_backup(str(tmp_path / "bk"), str(target))
+
+    def test_backup_of_a_live_store_is_consistent(self, tmp_path, shim):
+        """Uses SQLite's online backup API — a plain file copy of a live WAL
+        database can capture a torn state."""
+        from kmip_pkcs11.metadata import backup
+        from kmip_pkcs11.metadata.store import MetadataStore
+        store, _ = self._seeded(tmp_path, shim)
+        for i in range(50):
+            store.append_audit(identity="alice", operation_name="Get",
+                               object_uid=f"u{i}", result="success")
+        backup.create_backup(store, str(tmp_path / "bk"))
+        restored = MetadataStore(str(tmp_path / "bk" / "kmip.db"))
+        assert restored.verify_audit_chain()["ok"] is True
+
+    def test_inspect_reports_without_restoring(self, tmp_path, shim):
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"))
+        info = backup.inspect_backup(str(tmp_path / "bk"))
+        assert info["object_count"] == 1 and info["database_bytes"] > 0
+
+    def test_inspect_rejects_a_directory_that_is_not_a_backup(self, tmp_path):
+        from kmip_pkcs11.metadata import backup
+        with pytest.raises(backup.BackupError, match="not a backup"):
+            backup.inspect_backup(str(tmp_path))
+
+
+class TestPhase4CredentialVerificationCost:
+    """KMIP sends the Credential on every request. scrypt costs ~40ms by
+    design, so verifying per request capped a connection at ~25 requests/second
+    and let an unauthenticated client burn 40ms of CPU per packet."""
+
+    def test_repeat_verification_is_cached(self, store):
+        store.create_identity("alice", "pw")
+        t0 = time.monotonic(); store.verify_identity("alice", "pw")
+        first = time.monotonic() - t0
+        t0 = time.monotonic()
+        for _ in range(50):
+            assert store.verify_identity("alice", "pw") is True
+        cached = (time.monotonic() - t0) / 50
+        assert cached < first / 20, f"cached {cached*1000:.2f}ms vs first {first*1000:.2f}ms"
+
+    def test_wrong_password_is_never_cached(self, store):
+        """Otherwise a cache would weaken brute-force resistance — guessing
+        must keep paying the full derivation cost."""
+        store.create_identity("alice", "pw")
+        for _ in range(3):
+            t0 = time.monotonic()
+            assert store.verify_identity("alice", "wrong") is False
+            assert time.monotonic() - t0 > 0.005, "a rejected guess must stay expensive"
+
+    def test_password_change_invalidates_the_cache(self, store):
+        store.create_identity("alice", "old")
+        assert store.verify_identity("alice", "old") is True    # populates cache
+        store.set_password("alice", "new")
+        assert store.verify_identity("alice", "old") is False
+        assert store.verify_identity("alice", "new") is True
+
+    def test_disable_invalidates_the_cache(self, store):
+        store.create_identity("alice", "pw")
+        assert store.verify_identity("alice", "pw") is True
+        store.set_identity_disabled("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_delete_invalidates_the_cache(self, store):
+        store.create_identity("alice", "pw")
+        assert store.verify_identity("alice", "pw") is True
+        store.delete_identity("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_cache_key_does_not_contain_the_password(self, store):
+        store.create_identity("alice", "sup3r-secret")
+        store.verify_identity("alice", "sup3r-secret")
+        blob = b"".join(store._verify_cache.keys())
+        assert b"sup3r-secret" not in blob
+
+    def test_cache_is_bounded(self, store):
+        store.VERIFY_CACHE_MAX = 8
+        for i in range(20):
+            store.create_identity(f"u{i}", "pw")
+            store.verify_identity(f"u{i}", "pw")
+        assert len(store._verify_cache) <= 8
+
+    def test_one_identitys_cache_entry_does_not_authenticate_another(self, store):
+        store.create_identity("alice", "shared-password")
+        store.create_identity("bob", "shared-password")
+        assert store.verify_identity("alice", "shared-password") is True
+        store.set_identity_disabled("bob")
+        # alice's cached entry must not let a disabled bob through, even though
+        # they happen to share a password.
+        assert store.verify_identity("bob", "shared-password") is False
+
+
+class TestPhase4CrossProcessSafety:
+    """Multi-process workers share one database, so anything that previously
+    relied on an in-process lock had to become cross-process safe."""
+
+    def test_audit_append_takes_a_write_lock_before_reading(self, store):
+        """BEGIN IMMEDIATE is what makes read-then-write atomic across
+        processes; a plain transaction locks only at the INSERT, leaving room
+        for two processes to link to the same predecessor."""
+        import inspect
+        source = inspect.getsource(type(store).append_audit)
+        assert "BEGIN IMMEDIATE" in source
+
+    def test_concurrent_appends_from_processes_keep_one_chain(self, tmp_path):
+        from multiprocessing import Process
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "mp.db")
+        MetadataStore(db)          # create the schema up front
+
+        def append(n):
+            s = MetadataStore(db)
+            for i in range(n):
+                s.append_audit(identity="p", operation_name="Get",
+                               object_uid=str(i), result="success")
+
+        procs = [Process(target=append, args=(15,)) for _ in range(4)]
+        for p in procs: p.start()
+        for p in procs: p.join()
+
+        report = MetadataStore(db).verify_audit_chain()
+        assert report["ok"] is True, f"chain broke at {report.get('broken_at')}"
+        assert report["entries"] == 60
+
+    def test_busy_timeout_is_configured(self, store):
+        timeout = store._conn().execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout >= 1000, "concurrent writers must wait rather than fail"
+
+    def test_master_key_provisioning_is_serialised(self):
+        """Workers start simultaneously; without a cross-process lock each
+        would mint its own master key on a fresh token."""
+        import inspect
+        from kmip_pkcs11.metadata import blob_cipher
+        assert "flock" in inspect.getsource(blob_cipher._provisioning_lock)
+        assert "_provisioning_lock" in inspect.getsource(blob_cipher.BlobCipher._load_keys)
+
+
+class TestPhase4WorkerPool:
+    def test_default_worker_count_is_sane(self):
+        from kmip_pkcs11.server.workers import default_worker_count
+        n = default_worker_count()
+        assert 1 <= n <= 8
+
+    def test_pool_forks_and_stops_workers(self):
+        from kmip_pkcs11.server.workers import WorkerPool
+        served = []
+
+        def serve(sock, index):
+            # Child: just sleep so the parent can observe and reap it.
+            time.sleep(30)
+
+        pool = WorkerPool("127.0.0.1", 0, workers=2, serve=serve)
+        pool.bind()
+        pool.start()
+        try:
+            assert len(pool.children) == 2
+            for pid in pool.children:
+                os.kill(pid, 0)          # raises if the process is absent
+        finally:
+            pool.stop(timeout=5)
+        assert pool.children == []
+
+    def test_pool_binds_before_forking(self):
+        """PKCS#11 must not be initialized before the fork, so the socket has
+        to be bound by the parent and inherited."""
+        import inspect
+        from kmip_pkcs11.server.workers import WorkerPool
+        assert "fork" in inspect.getsource(WorkerPool._spawn)
+        assert "bind" in inspect.getsource(WorkerPool.bind)
+
+    def test_server_accepts_a_preexisting_socket(self, store, shim):
+        """How workers share one listener."""
+        import inspect
+        from kmip_pkcs11.server.server import KMIPServer
+        sig = inspect.signature(KMIPServer.start)
+        assert "sock" in sig.parameters
+
+    def test_worker_config_is_validated(self):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        base = {"server": {"allow_plaintext": True},
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"}}
+        with pytest.raises(ConfigError, match="workers"):
+            KMIPConfig.from_dict({**base, "server": {**base["server"], "workers": 0}})
+        # null means one per CPU
+        assert KMIPConfig.from_dict(
+            {**base, "server": {**base["server"], "workers": None}}
+        ).get("server", "workers") is None

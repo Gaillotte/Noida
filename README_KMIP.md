@@ -52,7 +52,7 @@ operation to PKCS#11.
   operation (see [Access Control](#access-control))
 - **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
   JSON attribute values
-- **739 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
+- **763 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -109,6 +109,7 @@ kmip_pkcs11/
 │   └── access_control.py      # Owner / admin role / delegated grants
 ├── metadata/
 │   ├── store.py               # SQLite store, migrations, audit log
+│   └── backup.py              # online backup / restore with token pairing checks
 │   └── blob_cipher.py         # AES-GCM envelope encryption under an HSM master key
 ├── pkcs11_shim/
 │   └── shim.py                # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock
@@ -126,7 +127,8 @@ kmip_pkcs11/
 │   ├── validate.py, obtain_lease.py, rng_retrieve.py, rng_seed.py
 │   └── query.py, discover_versions.py
 ├── server/
-│   └── server.py               # TCP server (thread-per-client, auth, TLS, request caps)
+│   ├── server.py               # TCP server (thread-per-client, auth, TLS, request caps)
+│   └── workers.py              # pre-fork multi-process worker pool
 ├── config.py                   # YAML configuration loading and validation
 ├── observability.py            # metrics, health endpoints, JSON logging
 ├── cli/
@@ -142,7 +144,7 @@ kmip_pkcs11/
     ├── test_metadata.py          #  18 metadata store unit tests
     ├── test_operations.py        #   8 operation integration tests
     ├── test_conformance.py       #  48 OASIS KMIP conformance tests
-    └── test_extended_coverage.py # 617 live tests: every operation, algorithm
+    └── test_extended_coverage.py # 641 live tests: every operation, algorithm
                                    #  coverage, error paths, authentication,
                                    #  access control, audit, transport,
                                    #  session concurrency
@@ -362,6 +364,46 @@ An audit write that fails never fails the KMIP operation, but it is logged as
 an exception — a silently unrecorded operation is exactly what an attacker
 would want.
 
+### Backup and restore
+
+**The metadata database and the HSM token are one unit.** Objects reference
+keys by `CKA_ID`, and secret blobs are encrypted under a master key that lives
+on the token. A database restored beside a *different* token is not a degraded
+backup — it is unreadable. Back the two up together.
+
+```bash
+kmip-admin -c /etc/kmip/config.yaml backup create /backups/kmip-$(date +%F)
+kmip-admin -c /etc/kmip/config.yaml backup inspect /backups/kmip-2026-08-17
+kmip-admin -c /etc/kmip/config.yaml backup restore /backups/kmip-2026-08-17
+kmip-admin -c /etc/kmip/config.yaml backup verify      # is this database usable here?
+```
+
+The snapshot uses SQLite's online backup API, so it is safe to run against a
+live server — a `cp` of a WAL database can capture a torn state. The manifest
+records the token label, and restore refuses to proceed against a different
+one unless `--force`. When the HSM is reachable, restore then *proves* the
+result: master key present, audit chain intact, and a stored secret actually
+decrypts. Restores that fail verification exit non-zero even under `--force`.
+
+### Scaling
+
+`server.workers` forks that many processes, each with its own PKCS#11 session,
+which is the only way past the single-session ceiling (a session pool is
+unsafe with this binding — see Known Limitations). The parent binds the socket
+and forks *before* any PKCS#11 call, because a child inheriting an initialized
+PKCS#11 library is undefined behaviour.
+
+Measured here on 4 cores, AES encrypt through the full stack:
+
+| | 1 worker | 4 workers |
+|---|---|---|
+| 4 clients | 605 ops/sec | 887 ops/sec |
+| 8 clients | 546 ops/sec | 829 ops/sec |
+
+About 1.5×, not 4×. The limit is the audit log: a hash chain is inherently
+serial, so every audited operation serialises on one database write lock.
+That is the cost of the tamper-evidence, and it is a deliberate trade.
+
 ### Transport security
 
 The server **refuses to start without TLS** unless told otherwise:
@@ -441,7 +483,7 @@ no PKCS#11 mechanism was ever standardized for them at all.
 ## Running the Tests
 
 ```bash
-# Run all 739 tests
+# Run all 763 tests
 pytest
 
 # Run with verbose output
@@ -466,8 +508,8 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | test_metadata.py        |  18 |  18 | 0 | 100 % |
 | test_operations.py      |   8 |   8 | 0 | 100 % |
 | test_conformance.py     |  48 |  48 | 0 | 100 % |
-| test_extended_coverage.py | 617 | 617 | 0 | 100 % |
-| **TOTAL**            | **739** | **739** | **0** | **100 %** |
+| test_extended_coverage.py | 641 | 641 | 0 | 100 % |
+| **TOTAL**            | **763** | **763** | **0** | **100 %** |
 
 ---
 
@@ -578,6 +620,8 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 | Master key availability | `SecretData`/`OpaqueObject`/`SplitKey` blobs are encrypted under an HSM-resident master key, so the metadata database is useless without the token that holds it — back up and protect the two together, and note that retiring a master key before re-encrypting makes its blobs unrecoverable. |
 | Audit log is local and unsigned | Entries are hash-chained and append-only, which makes tampering detectable, but the chain is not anchored anywhere external — an attacker who rewrites the whole log consistently leaves no trace. Ship entries to an external collector for stronger guarantees. |
 | Container image and CI are unverified here | `deploy/Dockerfile` and `.github/workflows/ci.yml` are written and their inputs checked, but neither has been executed — this development sandbox blocks Docker Hub and the SoftHSM2 source mirror. Both need a real run before being relied on. |
+| Worker scaling is ~1.5x, not linear | `server.workers` genuinely exceeds one core, but the hash-chained audit log serialises every audited operation on a single database write lock. Higher scaling would need a fundamentally different audit design (per-shard chains, or an external append-only service). |
+| No PostgreSQL backend or HSM failover | Both were scoped for this phase and deliberately not built. The store is heavily SQLite-specific (PRAGMA user_version, json_extract, RAISE(ABORT) triggers), so a second backend is a substantial rewrite that cannot be tested without a Postgres instance; HSM failover needs a second token to verify against. Shipping either untested would be worse than not shipping it. |
 | No ACME / automated certificate issuance | TLS is enforced by default and `reload_tls()` picks up renewed material without dropping connections, but obtaining and renewing certificates is left to the operator — there is no ACME client. |
 | Not FIPS/CC validated | SoftHSM2 isn't a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above `pkcs11_shim/`, but that swap hasn't happened here. |
 | SoftHSM2 SENSITIVE bug | `SENSITIVE=True AND EXTRACTABLE=True` blocks `CKA_VALUE` read; the shim downgrades sensitivity automatically when extractability is explicitly requested. |

@@ -7,6 +7,7 @@ This matches the KMIP spec transport binding (port 5696).
 """
 
 import logging
+import os
 import socket
 import ssl
 import struct
@@ -80,16 +81,26 @@ class KMIPServer:
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def start(self):
+    def start(self, sock: Optional[socket.socket] = None):
+        """Serve KMIP. Pass `sock` to accept on a socket somebody else bound —
+        that is how the worker pool shares one listener across processes.
+
+        Note the ordering: PKCS#11 is initialized here, inside the process that
+        will use it. A worker must fork *before* this runs, because a child
+        that inherits an initialized PKCS#11 library is undefined behaviour."""
         self._require_transport_security()
         self._shim.initialize()
         self._enable_blob_encryption()
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind((self._host, self._port))
-        self._sock.listen(16)
+        if sock is not None:
+            self._sock = sock
+        else:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._sock.bind((self._host, self._port))
+            self._sock.listen(16)
         self._running = True
-        log.info("KMIP server listening on %s:%d", self._host, self._port)
+        log.info("KMIP server listening on %s:%d (pid %d)",
+                 self._host, self._port, os.getpid())
         self._accept_loop()
 
     def _enable_blob_encryption(self):
@@ -138,6 +149,12 @@ class KMIPServer:
         while self._running:
             try:
                 conn, addr = self._sock.accept()
+                # KMIP is strict request/response with small messages, which is
+                # the exact shape Nagle's algorithm penalises: the response is
+                # held back waiting for an ACK that the peer's delayed-ACK timer
+                # sits on, adding ~40ms to every request. Measured here at 41ms
+                # per request before this, well under 1ms after.
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 log.debug("New connection from %s", addr)
                 # The TLS handshake deliberately does NOT happen here. It
                 # blocks until the peer completes it, so performing it on the

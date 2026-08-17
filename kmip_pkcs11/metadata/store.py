@@ -8,6 +8,7 @@ import hmac
 import os
 import sqlite3
 import threading
+import time
 import uuid
 import datetime
 import json
@@ -175,6 +176,16 @@ class MetadataStore:
         # same prev_hash and produce a forked chain that verification would
         # then report as tampering.
         self._audit_lock = threading.Lock()
+        # Short-lived cache of *successful* credential verifications. KMIP
+        # carries the Credential in every request header, and scrypt costs
+        # ~40ms by design, so verifying per request pinned throughput at ~25
+        # requests/second per connection and handed any unauthenticated client
+        # a way to burn 40ms of CPU per packet. Keyed by a peppered hash of the
+        # password, never the password itself; failures are never cached, so
+        # guessing still pays the full derivation cost every attempt.
+        self._verify_cache = {}
+        self._verify_cache_lock = threading.Lock()
+        self._verify_pepper = os.urandom(32)
         self._init_db()
         if self._cipher is not None:
             self.encrypt_existing_blobs()
@@ -185,6 +196,10 @@ class MetadataStore:
             _local.conn.row_factory = sqlite3.Row
             _local.conn.execute("PRAGMA journal_mode=WAL")
             _local.conn.execute("PRAGMA foreign_keys=ON")
+            # WAL allows one writer at a time. With several worker processes
+            # on one database, a writer that arrives mid-write must wait for
+            # the lock rather than fail immediately with SQLITE_BUSY.
+            _local.conn.execute("PRAGMA busy_timeout=10000")
             _local.db_path = self._db_path
         return _local.conn
 
@@ -360,23 +375,37 @@ class MetadataStore:
             "message": message,
             "client": client,
         }
+        # The thread lock keeps same-process contention cheap; BEGIN IMMEDIATE
+        # is what actually makes this correct. Appending is read-then-write
+        # (fetch the previous hash, insert linking to it), and a plain
+        # transaction takes its write lock only at the INSERT — leaving room
+        # for two *processes* to read the same predecessor and fork the chain.
+        # IMMEDIATE takes the write lock up front, so the read and the write
+        # are one atomic step across every process on the database.
         with self._audit_lock:
             conn = self._conn()
-            row = conn.execute(
-                "SELECT entry_hash FROM kmip_audit ORDER BY seq DESC LIMIT 1"
-            ).fetchone()
-            prev_hash = row["entry_hash"] if row else self.GENESIS_HASH
-            entry_hash = self._audit_hash(prev_hash, fields)
-            cur = conn.execute(
-                """INSERT INTO kmip_audit
-                     (timestamp, identity, operation, operation_name, object_uid,
-                      result, result_reason, message, client, prev_hash, entry_hash)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (fields["timestamp"], identity, operation, operation_name, object_uid,
-                 result, result_reason, message, client, prev_hash, entry_hash),
-            )
-            conn.commit()
-            return cur.lastrowid
+            if conn.in_transaction:
+                conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT entry_hash FROM kmip_audit ORDER BY seq DESC LIMIT 1"
+                ).fetchone()
+                prev_hash = row["entry_hash"] if row else self.GENESIS_HASH
+                entry_hash = self._audit_hash(prev_hash, fields)
+                cur = conn.execute(
+                    """INSERT INTO kmip_audit
+                         (timestamp, identity, operation, operation_name, object_uid,
+                          result, result_reason, message, client, prev_hash, entry_hash)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (fields["timestamp"], identity, operation, operation_name, object_uid,
+                     result, result_reason, message, client, prev_hash, entry_hash),
+                )
+                conn.commit()
+                return cur.lastrowid
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_audit_entries(
         self,
@@ -608,15 +637,59 @@ class MetadataStore:
             (identity, digest, salt, now),
         )
         conn.commit()
+        self._invalidate_verify_cache(identity)
         log.info("Identity '%s' credentials set", identity)
 
     # Password rotation is the same operation as creation; the alias exists so
     # calling code can say what it means.
     set_password = create_identity
 
+    VERIFY_CACHE_TTL = 30.0        # seconds a successful verification is reused
+    VERIFY_CACHE_MAX = 1024        # bound, so this cannot grow without limit
+
+    def _verify_cache_key(self, identity: str, password: str) -> bytes:
+        return hmac.new(self._verify_pepper,
+                        f"{identity}\x00{password}".encode("utf-8"),
+                        hashlib.sha256).digest()
+
+    def _invalidate_verify_cache(self, identity: str = None):
+        """Drop cached verifications so a password change, disable or delete
+        takes effect immediately rather than after the TTL."""
+        with self._verify_cache_lock:
+            if identity is None:
+                self._verify_cache.clear()
+            else:
+                for key in [k for k, v in self._verify_cache.items() if v[1] == identity]:
+                    del self._verify_cache[key]
+
     def verify_identity(self, identity: str, password: str) -> bool:
         """Constant-time password check. False for unknown or disabled
         identities — callers must not distinguish those cases."""
+        now = time.monotonic()
+        cache_key = self._verify_cache_key(identity, password)
+        with self._verify_cache_lock:
+            hit = self._verify_cache.get(cache_key)
+            if hit and hit[0] > now:
+                return True
+            if hit:
+                del self._verify_cache[cache_key]
+
+        ok = self._verify_identity_uncached(identity, password)
+        if ok:
+            with self._verify_cache_lock:
+                if len(self._verify_cache) >= self.VERIFY_CACHE_MAX:
+                    # Evict anything already expired; failing that, the entry
+                    # closest to expiry.
+                    expired = [k for k, v in self._verify_cache.items() if v[0] <= now]
+                    for k in expired:
+                        del self._verify_cache[k]
+                    if len(self._verify_cache) >= self.VERIFY_CACHE_MAX:
+                        oldest = min(self._verify_cache, key=lambda k: self._verify_cache[k][0])
+                        del self._verify_cache[oldest]
+                self._verify_cache[cache_key] = (now + self.VERIFY_CACHE_TTL, identity)
+        return ok
+
+    def _verify_identity_uncached(self, identity: str, password: str) -> bool:
         row = self._conn().execute(
             "SELECT password_hash, salt, disabled FROM kmip_identities WHERE identity = ?",
             (identity,),
@@ -638,6 +711,7 @@ class MetadataStore:
         conn = self._conn()
         conn.execute("DELETE FROM kmip_identities WHERE identity = ?", (identity,))
         conn.commit()
+        self._invalidate_verify_cache(identity)
 
     def set_identity_disabled(self, identity: str, disabled: bool = True) -> None:
         conn = self._conn()
@@ -646,6 +720,7 @@ class MetadataStore:
             (int(disabled), identity),
         )
         conn.commit()
+        self._invalidate_verify_cache(identity)
 
     def identity_exists(self, identity: str) -> bool:
         row = self._conn().execute(

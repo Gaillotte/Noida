@@ -15,6 +15,7 @@ from ..metadata.store import MetadataStore
 from ..observability import Metrics, HealthServer, configure_logging
 from ..pkcs11_shim.shim import PKCS11Shim
 from ..server.server import KMIPServer
+from ..server.workers import WorkerPool, default_worker_count
 
 log = logging.getLogger("kmip.server")
 
@@ -56,6 +57,75 @@ def _readiness(server: KMIPServer, shim: PKCS11Shim, store: MetadataStore):
     return check
 
 
+def _run_workers(config, pin: str, workers: int) -> int:
+    """Pre-fork worker pool.
+
+    The parent binds the socket and forks before any PKCS#11 call, because a
+    child that inherits an initialized PKCS#11 library is undefined behaviour
+    per the specification. Each child then builds its own store, shim and
+    server, so nothing crosses the fork except the listening socket."""
+    pool = WorkerPool(
+        host=config.get("server", "host"),
+        port=config.get("server", "port"),
+        workers=workers,
+        serve=lambda sock, index: _serve_in_worker(config, pin, sock, index),
+    )
+
+    stopping = threading.Event()
+
+    def shutdown(signum, _frame):
+        log.info("Received signal %s, stopping workers", signum)
+        stopping.set()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    pool.bind()
+    pool.start()
+    log.info("kmip-server ready with %d worker(s)", workers)
+
+    supervisor = threading.Thread(target=pool.supervise, daemon=True)
+    supervisor.start()
+    try:
+        while not stopping.wait(0.5):
+            pass
+    finally:
+        pool.stop()
+    return 0
+
+
+def _serve_in_worker(config, pin: str, sock, index: int):
+    """Runs inside a forked child: everything PKCS#11-touching starts here."""
+    metrics = Metrics()
+    store = MetadataStore(config.get("storage", "database"))
+    shim = PKCS11Shim(config.get("hsm", "library"),
+                      config.get("hsm", "token_label"), pin)
+    server = KMIPServer(
+        store, shim,
+        host=config.get("server", "host"),
+        port=config.get("server", "port"),
+        tls_cert=config.get("tls", "cert"),
+        tls_key=config.get("tls", "key"),
+        tls_ca=config.get("tls", "ca"),
+        require_client_cert=config.get("tls", "require_client_cert"),
+        max_request_size=config.get("server", "max_request_size"),
+        handshake_timeout=config.get("server", "handshake_timeout"),
+        allow_plaintext=config.get("server", "allow_plaintext"),
+        metrics=metrics,
+    )
+
+    # Only worker 0 serves health and metrics: they bind a single port, so
+    # every worker trying would leave all but one failing to start. This means
+    # the metrics reflect one worker's share of traffic — noted in the docs,
+    # and the reason aggregate counters belong in an external collector.
+    if index == 0 and config.get("observability", "enabled"):
+        HealthServer(metrics, _readiness(server, shim, store),
+                     host=config.get("observability", "host"),
+                     port=config.get("observability", "port")).start()
+
+    server.start(sock=sock)
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -78,6 +148,12 @@ def main(argv=None) -> int:
     if args.check:
         log.info("Configuration at %s is valid", args.config)
         return 0
+
+    workers = config.get("server", "workers")
+    if workers is None:
+        workers = default_worker_count()
+    if workers > 1:
+        return _run_workers(config, pin, workers)
 
     metrics = Metrics()
     store = MetadataStore(config.get("storage", "database"))

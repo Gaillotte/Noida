@@ -80,6 +80,25 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--archive", metavar="PATH",
                     help="write the removed entries here as JSON before deleting")
 
+    bk = sub.add_parser("backup", help="write a consistent snapshot").add_subparsers(
+        dest="subcommand", required=True)
+    bc = bk.add_parser("create", help="back up the metadata database")
+    bc.add_argument("destination", help="directory to write the backup into")
+    bc.add_argument("--note", help="free-text note stored in the manifest")
+    bi = bk.add_parser("inspect", help="show what a backup contains")
+    bi.add_argument("source")
+    br = bk.add_parser("restore", help="restore a backup")
+    br.add_argument("source")
+    br.add_argument("--to", metavar="PATH",
+                    help="target database (defaults to the configured one)")
+    br.add_argument("--overwrite", action="store_true",
+                    help="replace the target database if it exists")
+    br.add_argument("--force", action="store_true",
+                    help="proceed even if the backup does not match this token "
+                         "(the restored data will be unreadable)")
+    bv = bk.add_parser("verify", help="check a database is usable with this token")
+    bv.add_argument("--database", metavar="PATH")
+
     mk = sub.add_parser("rotate-master-key",
                         help="re-encrypt stored secrets under a new HSM master key")
     mk.add_argument("--keep-previous-key", action="store_true",
@@ -110,13 +129,20 @@ def _emit(args, rows, columns):
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    try:
-        store = _open_store(args)
-    except ConfigError as e:
-        print(f"kmip-admin: {e}", file=sys.stderr)
-        return 2
-
     cmd, sub = args.command, getattr(args, "subcommand", None)
+
+    # Opening a MetadataStore creates the database if it is absent, so commands
+    # that operate on a database that should NOT exist yet — restore, chiefly —
+    # must not open one first, or restore would always report its own freshly
+    # created target as "already exists".
+    needs_store = not (cmd == "backup" and sub in ("restore", "inspect"))
+    store = None
+    if needs_store:
+        try:
+            store = _open_store(args)
+        except ConfigError as e:
+            print(f"kmip-admin: {e}", file=sys.stderr)
+            return 2
 
     if cmd == "identity":
         if sub == "add":
@@ -192,6 +218,91 @@ def main(argv=None) -> int:
                     json.dump(result["entries"], f, indent=2, default=str)
                 print(f"archived {result['pruned']} entries to {args.archive}")
             print(f"pruned {result['pruned']} entries older than {args.older_than_days} days")
+
+    elif cmd == "backup":
+        from ..metadata import backup as backup_mod
+
+        def _shim_if_possible():
+            """Backup/restore verification needs the token. Available only
+            with --config, since that is what carries the HSM settings."""
+            if not args.config:
+                return None, None
+            cfg = KMIPConfig.from_file(args.config)
+            from ..pkcs11_shim.shim import PKCS11Shim
+            s = PKCS11Shim(cfg.get("hsm", "library"),
+                           cfg.get("hsm", "token_label"), cfg.resolve_pin())
+            s.initialize()
+            return s, cfg
+
+        if sub == "create":
+            shim, cfg = _shim_if_possible()
+            if shim is not None:
+                from ..metadata.blob_cipher import BlobCipher
+                store._cipher = BlobCipher(shim)
+            manifest = backup_mod.create_backup(
+                store, args.destination,
+                token_label=cfg.get("hsm", "token_label") if cfg else None,
+                note=args.note)
+            if args.json:
+                print(json.dumps(manifest, indent=2))
+            else:
+                print(f"backup written to {args.destination}: "
+                      f"{manifest['object_count']} objects, "
+                      f"{manifest['audit_entries']} audit entries, "
+                      f"audit chain {'OK' if manifest['audit_chain_ok'] else 'BROKEN'}")
+                if not manifest["audit_chain_ok"]:
+                    return 1
+
+        elif sub == "inspect":
+            info = backup_mod.inspect_backup(args.source)
+            if args.json:
+                print(json.dumps(info, indent=2))
+            else:
+                for key in ("created_at", "schema_version", "token_label",
+                            "object_count", "identity_count", "audit_entries",
+                            "audit_chain_ok", "note"):
+                    print(f"  {key:16s} {info.get(key)}")
+
+        elif sub == "restore":
+            shim, cfg = _shim_if_possible()
+            target = args.to or (cfg.get("storage", "database") if cfg else None)
+            if not target:
+                print("kmip-admin: --to is required without --config", file=sys.stderr)
+                return 2
+            try:
+                report = backup_mod.restore_backup(
+                    args.source, target, shim=shim,
+                    token_label=cfg.get("hsm", "token_label") if cfg else None,
+                    force=args.force, overwrite=args.overwrite)
+            except backup_mod.BackupError as e:
+                print(f"kmip-admin: restore failed: {e}", file=sys.stderr)
+                return 1
+            print(f"restored {args.source} -> {target}")
+            v = report.get("verification")
+            if v:
+                print(f"  verification: {'OK' if v['ok'] else 'FAILED'} "
+                      f"({v.get('objects', '?')} objects, "
+                      f"decryption verified: {v.get('decryption_verified')})")
+                if not v["ok"]:
+                    # Reached only with --force, which waives the refusal but
+                    # must not turn a broken restore into a success exit code —
+                    # a script driving this needs to notice.
+                    print(f"  reason: {v['reason']}", file=sys.stderr)
+                    return 1
+
+        elif sub == "verify":
+            shim, cfg = _shim_if_possible()
+            if shim is None:
+                print("kmip-admin: backup verify needs --config (it must reach the HSM)",
+                      file=sys.stderr)
+                return 2
+            db = args.database or cfg.get("storage", "database")
+            report = backup_mod.verify_restore(db, shim)
+            if args.json:
+                print(json.dumps(report, indent=2))
+            else:
+                print(f"{db}: {'OK' if report['ok'] else 'FAILED — ' + report['reason']}")
+            return 0 if report["ok"] else 1
 
     elif cmd == "rotate-master-key":
         # The only command that needs the HSM: re-encrypting means decrypting

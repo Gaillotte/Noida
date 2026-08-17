@@ -25,9 +25,12 @@ the old and new key, and each row still says which one it needs. The old key is
 destroyed only as a separate, explicit step once re-encryption has completed.
 """
 
+import contextlib
+import fcntl
 import logging
 import os
 import struct
+import tempfile
 
 from ..core.enums import BlockCipherMode, CryptographicAlgorithm, CryptographicUsageMask
 from ..core.exceptions import CryptographicFailure
@@ -58,6 +61,31 @@ def _generation(label: str) -> int:
         return 0
 
 
+@contextlib.contextmanager
+def _provisioning_lock():
+    """Serialise master-key provisioning across processes.
+
+    Worker processes start simultaneously and each looks for a master key. On
+    a fresh token none exists, so without this every worker would generate its
+    own and each would encrypt rows under a different key. The envelopes carry
+    a key id so nothing would be *lost*, but the token would accumulate one
+    redundant master key per worker on every first start — and "which key is
+    the active one" would depend on the order the workers happened to finish.
+
+    A filesystem lock rather than a thread lock, because the racers are
+    separate processes. Held only for the discover-or-create step."""
+    path = os.path.join(tempfile.gettempdir(), "kmip-master-key.lock")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 class BlobCipher:
     """Encrypts/decrypts metadata BLOBs under an HSM-resident master key.
 
@@ -77,6 +105,10 @@ class BlobCipher:
     # ── master key lifecycle ────────────────────────────────────────────────
 
     def _load_keys(self, auto_provision: bool):
+        with _provisioning_lock():
+            self._load_keys_locked(auto_provision)
+
+    def _load_keys_locked(self, auto_provision: bool):
         # Master-key labels are a dense sequence (kmip-master-1, -2, …), so
         # probing successive generations by exact label is far cheaper than
         # enumerating every secret key on the token and filtering — tokens in

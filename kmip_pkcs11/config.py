@@ -24,6 +24,10 @@ DEFAULTS: Dict[str, Any] = {
         "max_request_size": 1024 * 1024,
         "handshake_timeout": 10.0,
         "allow_plaintext": False,
+        # 1 keeps everything in one process. Higher forks that many workers,
+        # each with its own PKCS#11 session, which is the only way past the
+        # single-session throughput ceiling. null means one per CPU.
+        "workers": 1,
     },
     "tls": {
         "cert": None,
@@ -153,6 +157,12 @@ class KMIPConfig:
             raise ConfigError(
                 f"Set only one of hsm.pin_file, hsm.pin_env, hsm.pin — found {', '.join(sources)}"
             )
+
+        workers = self.get("server", "workers")
+        if workers is not None and (not isinstance(workers, int) or workers < 1):
+            raise ConfigError(
+                f"server.workers must be a positive integer or null (one per CPU), "
+                f"got {workers!r}")
 
         fmt = self.get("logging", "format")
         if fmt not in ("json", "text"):
