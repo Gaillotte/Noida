@@ -625,6 +625,21 @@ class PKCS11Shim:
         raise ItemNotFound(f"PKCS#11 object with CKA_ID not found")
 
     @_synchronized
+    def find_secret_key_by_label(self, label: str) -> Optional[bytes]:
+        """Return the CKA_ID of the SecretKey with exactly this CKA_LABEL, or
+        None. The lookup is pushed into the token's own search template rather
+        than enumerating every key and filtering in Python — a busy token holds
+        thousands of keys, and a full scan per lookup is needlessly slow."""
+        try:
+            for obj in self._sess().get_objects(
+                {Attr.CLASS: ObjClass.SECRET_KEY, Attr.LABEL: label}
+            ):
+                return bytes(obj[Attr.ID])
+            return None
+        except pkcs11_exc.PKCS11Error as e:
+            raise CryptographicFailure(f"Key search failed: {e}") from e
+
+    @_synchronized
     def get_key_value(self, cka_id: bytes) -> bytes:
         """Export key material (only if extractable)."""
         try:

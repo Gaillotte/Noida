@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.enums import State, ObjectType
+from ..core.exceptions import CryptographicFailure
 
 log = logging.getLogger(__name__)
 
@@ -103,11 +104,41 @@ CREATE INDEX IF NOT EXISTS idx_grants_object
     ON kmip_object_grants(object_uuid);
 """
 
+# ── schema migrations ────────────────────────────────────────────────────────
+# SCHEMA above is the *baseline* and is only ever additive (CREATE ... IF NOT
+# EXISTS), so it can be replayed safely against any database. Anything that
+# changes an existing table — a new column, an index on it, a backfill — has to
+# go here instead, because CREATE TABLE IF NOT EXISTS silently does nothing on
+# a database that already has the table, and the change would never land.
+#
+# Applied in order, gated on PRAGMA user_version. A fresh database runs the
+# baseline and then every migration, so both paths converge on the same shape.
+_MIGRATIONS = [
+    (
+        1,
+        "add raw_key_encrypted flag",
+        [
+            "ALTER TABLE kmip_objects "
+            "ADD COLUMN raw_key_encrypted INTEGER NOT NULL DEFAULT 0",
+        ],
+    ),
+]
+
+SCHEMA_VERSION = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
+
 
 class MetadataStore:
-    def __init__(self, db_path: str = ":memory:"):
+    def __init__(self, db_path: str = ":memory:", blob_cipher=None):
+        """`blob_cipher` (a metadata.blob_cipher.BlobCipher) encrypts the
+        `raw_key_value` payloads of object types that have no PKCS#11 object
+        behind them. Without one the store still works, but those payloads are
+        written in the clear — so production wiring should always pass it.
+        KMIPServer does this for you."""
         self._db_path = db_path
+        self._cipher = blob_cipher
         self._init_db()
+        if self._cipher is not None:
+            self.encrypt_existing_blobs()
 
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(_local, 'conn') or _local.db_path != self._db_path:
@@ -120,9 +151,32 @@ class MetadataStore:
 
     def _init_db(self):
         conn = sqlite3.connect(self._db_path)
-        conn.executescript(SCHEMA)
-        conn.commit()
-        conn.close()
+        try:
+            conn.executescript(SCHEMA)
+            self._apply_migrations(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _apply_migrations(conn: sqlite3.Connection):
+        """Bring the database up to SCHEMA_VERSION, running only the
+        migrations it hasn't seen. Each one commits with its version bump so an
+        interrupted upgrade resumes rather than half-applying."""
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        for version, description, statements in _MIGRATIONS:
+            if version <= current:
+                continue
+            log.info("Applying schema migration %d (%s)", version, description)
+            for sql in statements:
+                conn.execute(sql)
+            # PRAGMA doesn't accept bound parameters; version is an int literal
+            # from our own migration table, never external input.
+            conn.execute(f"PRAGMA user_version = {int(version)}")
+            conn.commit()
+
+    def schema_version(self) -> int:
+        return self._conn().execute("PRAGMA user_version").fetchone()[0]
 
     # ── create ────────────────────────────────────────────────────────────────
 
@@ -152,18 +206,22 @@ class MetadataStore:
         if activation_date and activation_date <= datetime.datetime.now(datetime.timezone.utc):
             initial_state = State.Active
 
+        stored_blob, encrypted = self._encrypt_blob(object_type, raw_key_value)
+
         conn = self._conn()
         conn.execute(
             """INSERT INTO kmip_objects
                (uuid, object_type, pkcs11_handle, pkcs11_slot, state,
                 cryptographic_algorithm, cryptographic_length, usage_mask,
                 initial_date, activation_date, sensitive, extractable,
-                owner_identity, key_format_type, raw_key_value, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                owner_identity, key_format_type, raw_key_value,
+                raw_key_encrypted, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, object_type, pkcs11_handle, pkcs11_slot, initial_state,
              cryptographic_algorithm, cryptographic_length, usage_mask,
              now, act_ts, int(sensitive), int(extractable),
-             owner_identity, key_format_type, raw_key_value, now)
+             owner_identity, key_format_type, stored_blob,
+             int(encrypted), now)
         )
         if names:
             for i, name in enumerate(names):
@@ -175,13 +233,44 @@ class MetadataStore:
         log.debug("Created object %s type=%d state=%d", uid, object_type, initial_state)
         return uid
 
+    # ── blob encryption ──────────────────────────────────────────────────────
+    # Certificates are public by definition and stay readable in the clear so
+    # they remain greppable and usable without the HSM. Every other object type
+    # that puts bytes in raw_key_value is holding a secret — SecretData,
+    # OpaqueObject payloads, SplitKey shares — and gets enveloped. Denylisting
+    # certificates rather than allowlisting the secret types means a new object
+    # type added later is encrypted by default.
+
+    def _should_encrypt(self, object_type: int) -> bool:
+        return self._cipher is not None and object_type != ObjectType.Certificate
+
+    def _encrypt_blob(self, object_type: int, raw: Optional[bytes]):
+        """Returns (bytes_to_store, was_encrypted)."""
+        if raw is None or not self._should_encrypt(object_type):
+            return raw, False
+        return self._cipher.encrypt(bytes(raw)), True
+
+    def _decrypt_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Transparently unwrap raw_key_value so callers never handle
+        ciphertext. A row flagged encrypted with no cipher configured is an
+        error, not something to paper over by returning the envelope bytes."""
+        if not row.get("raw_key_encrypted") or row.get("raw_key_value") is None:
+            return row
+        if self._cipher is None:
+            raise CryptographicFailure(
+                f"Object '{row.get('uuid')}' has encrypted key material but the "
+                f"metadata store was opened without a master key"
+            )
+        row["raw_key_value"] = self._cipher.decrypt(row["raw_key_value"])
+        return row
+
     # ── read ─────────────────────────────────────────────────────────────────
 
     def get_object(self, uid: str) -> Optional[Dict[str, Any]]:
         row = self._conn().execute(
             "SELECT * FROM kmip_objects WHERE uuid = ?", (uid,)
         ).fetchone()
-        return dict(row) if row else None
+        return self._decrypt_row(dict(row)) if row else None
 
     def get_owner(self, uid: str) -> Optional[str]:
         """Lightweight existence + ownership lookup, for handlers (attribute
@@ -191,6 +280,102 @@ class MetadataStore:
             "SELECT owner_identity FROM kmip_objects WHERE uuid = ?", (uid,)
         ).fetchone()
         return row["owner_identity"] if row else None
+
+    # ── master-key operations ────────────────────────────────────────────────
+
+    def encrypt_existing_blobs(self) -> int:
+        """Envelope any secret blob still stored in the clear. Runs at startup
+        whenever a cipher is configured, so upgrading an existing deployment
+        converts its data without an operator step. Returns rows converted."""
+        if self._cipher is None:
+            return 0
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT uuid, object_type, raw_key_value FROM kmip_objects "
+            "WHERE raw_key_encrypted = 0 AND raw_key_value IS NOT NULL"
+        ).fetchall()
+
+        converted = 0
+        for row in rows:
+            if not self._should_encrypt(row["object_type"]):
+                continue
+            conn.execute(
+                "UPDATE kmip_objects SET raw_key_value = ?, raw_key_encrypted = 1 WHERE uuid = ?",
+                (self._cipher.encrypt(bytes(row["raw_key_value"])), row["uuid"]),
+            )
+            converted += 1
+        if converted:
+            conn.commit()
+            self._scrub_freed_pages(conn)
+            log.info("Encrypted %d previously-cleartext key blob(s)", converted)
+        return converted
+
+    @staticmethod
+    def _scrub_freed_pages(conn: sqlite3.Connection):
+        """Remove superseded cleartext from the database files after a backfill.
+
+        Encrypting a row with UPDATE does not erase what was there before: in
+        WAL mode the original plaintext INSERT stays in the -wal sidecar, and
+        after a checkpoint it can linger in pages the main file has freed but
+        not overwritten. Without this, upgrading a deployment leaves the very
+        secrets we just encrypted sitting in the clear next to the ciphertext —
+        verified by grepping the sidecar after a backfill.
+
+        Checkpointing with TRUNCATE resets the WAL; VACUUM rebuilds the main
+        file so freed pages are dropped rather than merely unreferenced.
+
+        This scrubs the *database files*. It cannot reach copies that already
+        left them — filesystem snapshots, prior backups, or blocks retained by
+        a wear-levelling SSD — so a store that ever held cleartext secrets
+        should be treated as exposed until those are rotated too.
+        """
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("VACUUM")   # cannot run inside a transaction
+            conn.commit()
+        except sqlite3.Error as e:
+            # Never fail the upgrade over this — the data is encrypted either
+            # way; loudly flag that the old plaintext may still be recoverable.
+            log.warning(
+                "Could not scrub superseded cleartext from the database files "
+                "(%s); previously-stored secrets may remain recoverable from "
+                "the -wal sidecar or freed pages", e
+            )
+
+    def rotate_master_key(self, retire_previous: bool = True) -> Dict[str, int]:
+        """Re-encrypt every enveloped blob under a freshly generated master key.
+
+        Rows are converted and committed one at a time. That is deliberate: the
+        envelope records which key encrypted it, so an interrupted rotation
+        leaves a mix of old and new that is still entirely readable, and simply
+        re-running this finishes the job. The old key is destroyed only after
+        every row has moved off it — and only if `retire_previous`."""
+        if self._cipher is None:
+            raise CryptographicFailure("Cannot rotate: no master key configured")
+
+        previous_key_id = self._cipher.begin_rotation()
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT uuid, raw_key_value FROM kmip_objects WHERE raw_key_encrypted = 1"
+        ).fetchall()
+
+        rotated = 0
+        for row in rows:
+            plaintext = self._cipher.decrypt(row["raw_key_value"])
+            conn.execute(
+                "UPDATE kmip_objects SET raw_key_value = ? WHERE uuid = ?",
+                (self._cipher.encrypt(plaintext), row["uuid"]),
+            )
+            conn.commit()
+            rotated += 1
+
+        retired = 0
+        if retire_previous and previous_key_id != self._cipher.active_key_id:
+            self._cipher.retire_key(previous_key_id)
+            retired = 1
+
+        log.info("Master key rotation complete: %d blob(s) re-encrypted", rotated)
+        return {"rotated": rotated, "retired_keys": retired}
 
     # ── identities (authentication) ──────────────────────────────────────────
     # Per-user credentials. Each identity gets its own random salt and an

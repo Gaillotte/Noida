@@ -75,6 +75,7 @@ class KMIPServer:
 
     def start(self):
         self._shim.initialize()
+        self._enable_blob_encryption()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self._host, self._port))
@@ -82,6 +83,20 @@ class KMIPServer:
         self._running = True
         log.info("KMIP server listening on %s:%d", self._host, self._port)
         self._accept_loop()
+
+    def _enable_blob_encryption(self):
+        """Attach an HSM-backed master key to the metadata store, so secret
+        payloads with no PKCS#11 object behind them (SecretData, OpaqueObject,
+        SplitKey shares) are enveloped at rest rather than written in the
+        clear. Provisions the master key on first start and converts any
+        pre-existing cleartext rows."""
+        if getattr(self._store, "_cipher", None) is not None:
+            return
+        from ..metadata.blob_cipher import BlobCipher
+        self._store._cipher = BlobCipher(self._shim)
+        converted = self._store.encrypt_existing_blobs()
+        if converted:
+            log.info("Converted %d cleartext key blob(s) to encrypted at rest", converted)
 
     def start_background(self):
         t = threading.Thread(target=self.start, daemon=True)

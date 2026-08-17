@@ -105,7 +105,8 @@ kmip_pkcs11/
 │   ├── state_machine.py       # Key lifecycle state transitions
 │   └── access_control.py      # Owner / admin role / delegated grants
 ├── metadata/
-│   └── store.py               # SQLite metadata store (objects, attrs, identities, roles, grants)
+│   ├── store.py               # SQLite metadata store + versioned schema migrations
+│   └── blob_cipher.py         # AES-GCM envelope encryption under an HSM master key
 ├── pkcs11_shim/
 │   └── shim.py                # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock
 ├── operations/                # One file per KMIP operation (41 files) — dispatcher.py routes
@@ -249,6 +250,54 @@ the admin role.
 A client certificate's Common Name is used as the identity only when mTLS is
 configured *and* `require_client_cert=True`, so the subject has actually been
 verified against the CA.
+
+### Key material at rest
+
+Most object types keep their secret bytes on the HSM and the metadata store
+holds only a `_pkcs11_cka_id` reference. Three do not — `SecretData`,
+`OpaqueObject` and `SplitKey` shares are raw payloads with no PKCS#11 object
+behind them, so their bytes go in `kmip_objects.raw_key_value`.
+
+Those blobs are encrypted with **AES-256-GCM** under a master key that is
+generated on, and never leaves, the HSM (label `kmip-master-N`,
+non-extractable). A copy of the database file yields ciphertext only.
+Certificates are deliberately left in the clear — they're public, and
+encrypting them would make them unreadable without the HSM for no benefit.
+
+`KMIPServer.start()` provisions the master key and converts any pre-existing
+cleartext rows automatically, so upgrading an existing deployment needs no
+operator step. The conversion also scrubs the superseded plaintext: encrypting
+a row with `UPDATE` does not erase what was there before — in WAL mode the
+original cleartext write stays in the `-wal` sidecar — so the backfill
+follows up with `wal_checkpoint(TRUNCATE)` and `VACUUM`.
+
+> **That scrub reaches the database files only.** Copies that already left them
+> — filesystem snapshots, backups taken before the upgrade, or blocks retained
+> by a wear-levelling SSD — are out of its reach. Treat any store that once
+> held cleartext secrets as exposed, and rotate those secrets rather than
+> relying on the upgrade alone.
+
+To use the store directly:
+
+```python
+from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+store = MetadataStore("/var/kmip/kmip.db", blob_cipher=BlobCipher(shim))
+```
+
+Each envelope records which master key wrote it, so rotation is safe to
+interrupt:
+
+```python
+store.rotate_master_key()                      # re-encrypt under a new key
+store.rotate_master_key(retire_previous=False) # keep the old key readable
+```
+
+Rotation generates the next master key, re-encrypts every enveloped blob one
+row at a time (committing as it goes), then destroys the superseded key. If it
+is interrupted, the table holds a mix of both keys and stays fully readable —
+re-running finishes the job. Pass `retire_previous=False` to verify before
+destroying anything; once a key is retired, blobs still under it are
+unrecoverable by design.
 
 ### Authorization
 
@@ -441,7 +490,7 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 |---|---|
 | Single, locked PKCS#11 session | `server.py` runs one thread per connection, but they share one `PKCS11Shim` session serialized by a `threading.RLock`. **This is the deliberate, permanent design, not a stopgap** — a session-pool (separate session per thread) was built and tested, and reproducibly segfaults or corrupts operations under concurrency: `python-pkcs11` 0.9.5 calls `C_Initialize(NULL)`, so the library's own internal thread safety is never enabled, and separate sessions don't work around that. A real fix needs a PKCS#11 binding that passes `CKF_OS_LOCKING_OK`, or a multi-process worker pool. |
 | Identity management has no wire protocol | Identity, role and grant management (`create_identity`, `assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define operations for it, and there is no CLI yet. No groups, no per-role operation allowlist, and no dual-control approval for destructive operations; every non-admin identity is evaluated individually against ownership and grants. |
-| Key material at rest | `SecretData`, `OpaqueObject` and every `SplitKey` share are stored as plaintext BLOBs in SQLite (`raw_key_value`) with no encryption at rest — unlike keys held on the token, a copy of the database file exposes them directly. |
+| Master key availability | `SecretData`/`OpaqueObject`/`SplitKey` blobs are encrypted under an HSM-resident master key, so the metadata database is useless without the token that holds it — back up and protect the two together, and note that retiring a master key before re-encrypting makes its blobs unrecoverable. |
 | No audit trail | Operations are logged via Python `logging` only — nothing persisted, queryable, or tamper-evident. |
 | TLS optional, not enforced | The server accepts plain TCP if no certificate is configured; cert/key load from a static path with no rotation or ACME integration. |
 | Not FIPS/CC validated | SoftHSM2 isn't a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above `pkcs11_shim/`, but that swap hasn't happened here. |

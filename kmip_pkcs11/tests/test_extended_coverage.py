@@ -6465,3 +6465,282 @@ class TestPhase0ErrorMessageHygiene:
         item = decode_one(encode_structure(Tag.BatchItem, encode_structure(Tag.RequestPayload, b"")))
         result = decode_one(d.dispatch(item, "user"))
         assert result.get(Tag.ResultStatus).value == ResultStatus.OperationFailed
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 1 — secrets at rest.
+#
+# SecretData, OpaqueObject and SplitKey shares have no PKCS#11 object behind
+# them, so their bytes live in kmip_objects.raw_key_value. They are now
+# enveloped under an AES-256 master key that is generated on, and never leaves,
+# the HSM — plus the versioned migration machinery needed to roll that out.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def enc_store(tmp_path, shim):
+    """A metadata store with blob encryption enabled, as the server wires it."""
+    from kmip_pkcs11.metadata.store import MetadataStore
+    from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+    return MetadataStore(str(tmp_path / "enc.db"), blob_cipher=BlobCipher(shim))
+
+
+def _raw_column(store, uid):
+    """Read raw_key_value straight from SQLite, bypassing decryption — this is
+    what someone who stole the database file would see."""
+    row = store._conn().execute(
+        "SELECT raw_key_value, raw_key_encrypted FROM kmip_objects WHERE uuid = ?", (uid,)
+    ).fetchone()
+    return bytes(row["raw_key_value"]), row["raw_key_encrypted"]
+
+
+class TestPhase1SchemaMigrations:
+    def test_fresh_database_is_at_current_version(self, store):
+        from kmip_pkcs11.metadata.store import SCHEMA_VERSION
+        assert store.schema_version() == SCHEMA_VERSION
+
+    def test_migration_adds_the_column_to_a_preexisting_database(self, tmp_path):
+        """The exact scenario the review flagged: CREATE TABLE IF NOT EXISTS
+        cannot add a column, so an existing deployment would silently miss it."""
+        import sqlite3
+        from kmip_pkcs11.metadata.store import MetadataStore, SCHEMA
+
+        db = str(tmp_path / "legacy.db")
+        legacy = sqlite3.connect(db)
+        legacy.executescript(SCHEMA)          # baseline only, user_version stays 0
+        legacy.commit()
+        cols = {r[1] for r in legacy.execute("PRAGMA table_info(kmip_objects)")}
+        assert "raw_key_encrypted" not in cols, "precondition: legacy schema lacks the column"
+        assert legacy.execute("PRAGMA user_version").fetchone()[0] == 0
+        legacy.close()
+
+        store = MetadataStore(db)             # opening applies the migration
+        cols = {r[1] for r in store._conn().execute("PRAGMA table_info(kmip_objects)")}
+        assert "raw_key_encrypted" in cols
+        assert store.schema_version() == 1
+
+    def test_migrations_are_idempotent(self, tmp_path):
+        from kmip_pkcs11.metadata.store import MetadataStore, SCHEMA_VERSION
+        db = str(tmp_path / "twice.db")
+        MetadataStore(db)
+        again = MetadataStore(db)             # must not re-run ALTER TABLE
+        assert again.schema_version() == SCHEMA_VERSION
+
+    def test_existing_rows_survive_migration(self, tmp_path):
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "data.db")
+        first = MetadataStore(db)
+        uid = first.create_object(object_type=ObjectType.SecretData,
+                                  raw_key_value=b"pre-existing", owner_identity="alice")
+        reopened = MetadataStore(db)
+        assert reopened.get_object(uid)["raw_key_value"] == b"pre-existing"
+
+
+class TestPhase1BlobsEncryptedAtRest:
+    def test_secret_data_is_ciphertext_on_disk(self, enc_store):
+        secret = b"correct-horse-battery-staple"
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=secret, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 1
+        assert secret not in stored, "plaintext secret must not be present in the database"
+
+    def test_roundtrip_is_transparent_to_callers(self, enc_store):
+        secret = b"correct-horse-battery-staple"
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=secret, owner_identity="alice")
+        assert enc_store.get_object(uid)["raw_key_value"] == secret
+
+    def test_split_key_shares_are_encrypted(self, enc_store):
+        share = bytes(range(32))
+        uid = enc_store.create_object(object_type=ObjectType.SplitKey,
+                                      raw_key_value=share, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 1 and share not in stored
+        assert enc_store.get_object(uid)["raw_key_value"] == share
+
+    def test_opaque_object_is_encrypted(self, enc_store):
+        payload = b"opaque-payload-value"
+        uid = enc_store.create_object(object_type=ObjectType.OpaqueObject,
+                                      raw_key_value=payload, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 1 and payload not in stored
+
+    def test_certificates_stay_readable_in_the_clear(self, enc_store):
+        """Certificates are public — encrypting them buys nothing and makes
+        them unusable without the HSM."""
+        der = b"\x30\x82fake-certificate-DER"
+        uid = enc_store.create_object(object_type=ObjectType.Certificate,
+                                      raw_key_value=der, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 0 and stored == der
+
+    def test_each_blob_uses_a_fresh_nonce(self, enc_store):
+        """Identical plaintexts must not produce identical ciphertexts."""
+        a = enc_store.create_object(object_type=ObjectType.SecretData,
+                                    raw_key_value=b"same", owner_identity="alice")
+        b = enc_store.create_object(object_type=ObjectType.SecretData,
+                                    raw_key_value=b"same", owner_identity="alice")
+        assert _raw_column(enc_store, a)[0] != _raw_column(enc_store, b)[0]
+
+    def test_tampered_ciphertext_is_rejected(self, enc_store):
+        """GCM authentication means a modified row fails loudly rather than
+        yielding attacker-chosen bytes."""
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=b"tamper-me", owner_identity="alice")
+        stored, _ = _raw_column(enc_store, uid)
+        corrupted = bytearray(stored)
+        corrupted[-1] ^= 0xFF
+        enc_store._conn().execute(
+            "UPDATE kmip_objects SET raw_key_value = ? WHERE uuid = ?", (bytes(corrupted), uid))
+        enc_store._conn().commit()
+        with pytest.raises(CryptographicFailure):
+            enc_store.get_object(uid)
+
+    def test_encrypted_row_without_a_cipher_raises(self, tmp_path, shim):
+        """Opening an encrypted store without the master key must fail loudly,
+        not hand back envelope bytes as if they were the secret."""
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        db = str(tmp_path / "noc.db")
+        enc = MetadataStore(db, blob_cipher=BlobCipher(shim))
+        uid = enc.create_object(object_type=ObjectType.SecretData,
+                                raw_key_value=b"secret", owner_identity="alice")
+        plain = MetadataStore(db)             # no cipher
+        with pytest.raises(CryptographicFailure):
+            plain.get_object(uid)
+
+
+class TestPhase1BackfillAndRotation:
+    def test_preexisting_cleartext_is_converted(self, tmp_path, shim):
+        """Upgrading a deployment that already holds cleartext secrets."""
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        db = str(tmp_path / "upgrade.db")
+
+        legacy = MetadataStore(db)            # no cipher — writes in the clear
+        uid = legacy.create_object(object_type=ObjectType.SecretData,
+                                   raw_key_value=b"legacy-secret", owner_identity="alice")
+        assert _raw_column(legacy, uid) == (b"legacy-secret", 0)
+
+        upgraded = MetadataStore(db, blob_cipher=BlobCipher(shim))
+        stored, flagged = _raw_column(upgraded, uid)
+        assert flagged == 1
+        assert b"legacy-secret" not in stored
+        assert upgraded.get_object(uid)["raw_key_value"] == b"legacy-secret"
+
+    def test_backfill_scrubs_plaintext_from_the_database_files(self, tmp_path, shim):
+        """Encrypting a row with UPDATE does not erase what was there before —
+        in WAL mode the original cleartext INSERT stays in the -wal sidecar.
+        Without the post-backfill scrub, an upgraded deployment leaves the
+        secrets it just encrypted sitting in the clear beside the ciphertext."""
+        import glob
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+
+        db = str(tmp_path / "scrub.db")
+        secret = b"PLAINTEXT-THAT-MUST-NOT-SURVIVE"
+
+        legacy = MetadataStore(db)
+        uid = legacy.create_object(object_type=ObjectType.SecretData,
+                                   raw_key_value=secret, owner_identity="alice")
+        present = [f for f in glob.glob(db + "*") if secret in open(f, "rb").read()]
+        assert present, "precondition: cleartext really is on disk before the upgrade"
+
+        upgraded = MetadataStore(db, blob_cipher=BlobCipher(shim))
+        leaked = [f for f in glob.glob(db + "*") if secret in open(f, "rb").read()]
+        assert leaked == [], f"plaintext still recoverable from {leaked}"
+        assert upgraded.get_object(uid)["raw_key_value"] == secret
+
+    def test_rotation_re_encrypts_and_preserves_plaintext(self, enc_store):
+        uids = [enc_store.create_object(object_type=ObjectType.SecretData,
+                                        raw_key_value=f"secret-{i}".encode(),
+                                        owner_identity="alice") for i in range(3)]
+        before = [_raw_column(enc_store, u)[0] for u in uids]
+
+        result = enc_store.rotate_master_key()
+        assert result["rotated"] == 3
+
+        for i, u in enumerate(uids):
+            assert _raw_column(enc_store, u)[0] != before[i], "ciphertext must change"
+            assert enc_store.get_object(u)["raw_key_value"] == f"secret-{i}".encode()
+
+    def test_rotation_changes_the_active_key(self, enc_store):
+        before = enc_store._cipher.active_key_id
+        enc_store.rotate_master_key(retire_previous=False)
+        assert enc_store._cipher.active_key_id != before
+
+    def test_partially_rotated_store_stays_readable(self, enc_store):
+        """The reason the envelope carries a key id: re-encrypting a large
+        store is not atomic, so a half-finished rotation must still read."""
+        uid_old = enc_store.create_object(object_type=ObjectType.SecretData,
+                                          raw_key_value=b"under-old-key", owner_identity="alice")
+        enc_store._cipher.begin_rotation()     # new key active, old row untouched
+        uid_new = enc_store.create_object(object_type=ObjectType.SecretData,
+                                          raw_key_value=b"under-new-key", owner_identity="alice")
+
+        assert enc_store.get_object(uid_old)["raw_key_value"] == b"under-old-key"
+        assert enc_store.get_object(uid_new)["raw_key_value"] == b"under-new-key"
+
+    def test_retired_key_makes_its_blobs_unreadable(self, enc_store):
+        """Confirms retirement really destroys the key — the blob is
+        cryptographically gone, not merely flagged."""
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=b"doomed", owner_identity="alice")
+        old_key = enc_store._cipher.active_key_id
+        enc_store._cipher.begin_rotation()
+        enc_store._cipher.retire_key(old_key)   # retire WITHOUT re-encrypting first
+        with pytest.raises(CryptographicFailure):
+            enc_store.get_object(uid)
+
+    def test_cannot_retire_the_active_key(self, enc_store):
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        with pytest.raises(CryptographicFailure):
+            enc_store._cipher.retire_key(enc_store._cipher.active_key_id)
+
+
+class TestPhase1MasterKeyOnToken:
+    def test_master_key_is_reused_across_restarts(self, tmp_path, shim):
+        """A second BlobCipher must find the existing key, not mint a new one —
+        otherwise every restart would orphan the previous data."""
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        first = BlobCipher(shim)
+        second = BlobCipher(shim)
+        assert second.active_key_id == first.active_key_id
+
+    def test_master_key_is_not_extractable(self, shim):
+        """The master key exists to protect the database; if it could be read
+        off the token, a database thief with shim access would gain nothing."""
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        from kmip_pkcs11.core.exceptions import NotExtractable, CryptographicFailure
+        cipher = BlobCipher(shim)
+        cka_id = cipher._active_cka_id
+        with pytest.raises((NotExtractable, CryptographicFailure)):
+            shim.get_key_value(cka_id)
+
+    def test_secret_data_roundtrip_through_operations(self, tmp_path, shim):
+        """End-to-end through the KMIP handlers, not just the store API."""
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        from kmip_pkcs11.operations import register as reg_op, get as get_op
+
+        store = MetadataStore(str(tmp_path / "ops.db"), blob_cipher=BlobCipher(shim))
+        secret = b"my-application-password"
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.Opaque)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, secret)))
+        payload = decode_one(encode_structure(
+            Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SecretData) + key_block))
+        uid = decode_one(encode_structure(
+            Tag.ResponsePayload, reg_op.handle(payload, "alice", store, shim)
+        )).get(Tag.UniqueIdentifier).value
+
+        assert secret not in _raw_column(store, uid)[0], "must be ciphertext at rest"
+        resp = get_op.handle(_uid_payload(uid), "alice", store, shim)
+        material = decode_one(encode_structure(Tag.ResponsePayload, resp)) \
+            .get(Tag.SecretData).get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
+        assert material == secret
