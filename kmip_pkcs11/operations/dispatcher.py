@@ -14,6 +14,8 @@ from ..core.ttlv import (
     encode_byte_string, encode_integer, decode_one, decode_all
 )
 from ..core.exceptions import KMIPError, OperationNotSupported
+from ..lifecycle.access_control import check_operation_allowed
+from ..lifecycle.dual_control import enforce as dual_control_enforce
 from ..metadata.store import MetadataStore
 from ..pkcs11_shim.shim import PKCS11Shim
 
@@ -36,10 +38,12 @@ log = logging.getLogger(__name__)
 
 
 class OperationDispatcher:
-    def __init__(self, store: MetadataStore, shim: PKCS11Shim, metrics=None):
+    def __init__(self, store: MetadataStore, shim: PKCS11Shim, metrics=None,
+                 dual_control=None):
         self._store = store
         self._shim  = shim
         self._metrics = metrics
+        self._dual_control = dual_control
         self._handlers: Dict[int, Callable] = {
             Operation.Create:           create.handle,
             Operation.CreateKeyPair:    create_keypair.handle,
@@ -99,6 +103,15 @@ class OperationDispatcher:
             handler = self._handlers.get(op_code)
             if handler is None:
                 raise OperationNotSupported(f"Operation 0x{op_code:08X} not supported")
+
+            operation_name = self._operation_name(op_code)
+            # Both checks run before the handler, so an operation that is
+            # blocked has no effect at all — the point of dual control is that
+            # the destructive step never happens without the second signature.
+            check_operation_allowed(identity, operation_name, self._store)
+            if self._dual_control is not None:
+                dual_control_enforce(self._dual_control, self._store, operation_name,
+                                     identity, self._object_uid(payload, None))
 
             response_payload = handler(payload, identity, self._store, self._shim)
 

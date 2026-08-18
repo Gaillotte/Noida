@@ -16,6 +16,8 @@ from ..observability import Metrics, HealthServer, configure_logging
 from ..pkcs11_shim.shim import PKCS11Shim
 from ..server.server import KMIPServer
 from ..server.workers import WorkerPool, default_worker_count
+from ..lifecycle.dual_control import DualControlPolicy
+from ..lifecycle.governance import KeyLifecycleScheduler
 
 log = logging.getLogger("kmip.server")
 
@@ -55,6 +57,18 @@ def _readiness(server: KMIPServer, shim: PKCS11Shim, store: MetadataStore):
             return False, {"database": f"unavailable: {e}"}
         return True, detail
     return check
+
+
+def _build_scheduler(config, store, shim, metrics):
+    if not config.get("governance", "enabled"):
+        return None
+    return KeyLifecycleScheduler(
+        store, shim,
+        warn_days=config.get("governance", "warn_days"),
+        auto_rotate=config.get("governance", "auto_rotate"),
+        interval_seconds=config.get("governance", "scan_interval_seconds"),
+        metrics=metrics,
+    )
 
 
 def _run_workers(config, pin: str, workers: int) -> int:
@@ -112,7 +126,16 @@ def _serve_in_worker(config, pin: str, sock, index: int):
         handshake_timeout=config.get("server", "handshake_timeout"),
         allow_plaintext=config.get("server", "allow_plaintext"),
         metrics=metrics,
+        dual_control=DualControlPolicy.from_config(config),
     )
+
+    # Only worker 0 runs the lifecycle scheduler. Cryptoperiod enforcement is
+    # a whole-deployment job, not a per-connection one, so running it in every
+    # worker would just have them race to deactivate the same keys.
+    if index == 0:
+        scheduler = _build_scheduler(config, store, shim, metrics)
+        if scheduler:
+            scheduler.start()
 
     # Only worker 0 serves health and metrics: they bind a single port, so
     # every worker trying would leave all but one failing to start. This means
@@ -172,7 +195,12 @@ def main(argv=None) -> int:
         handshake_timeout=config.get("server", "handshake_timeout"),
         allow_plaintext=config.get("server", "allow_plaintext"),
         metrics=metrics,
+        dual_control=DualControlPolicy.from_config(config),
     )
+
+    scheduler = _build_scheduler(config, store, shim, metrics)
+    if scheduler:
+        scheduler.start()
 
     health = None
     if config.get("observability", "enabled"):
@@ -213,6 +241,8 @@ def main(argv=None) -> int:
         while not stopping.wait(0.5):
             pass
     finally:
+        if scheduler:
+            scheduler.stop()
         if health:
             health.stop()
         server.stop()

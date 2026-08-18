@@ -18,13 +18,14 @@ operation to PKCS#11.
 5. [Quick Start](#quick-start)
 6. [Supported Operations](#supported-operations)
 7. [Access Control](#access-control)
-8. [Algorithm Coverage](#algorithm-coverage)
-9. [Running the Tests](#running-the-tests)
-10. [Test Specification](#test-specification)
-11. [Configuration](#configuration)
-12. [Key Lifecycle States](#key-lifecycle-states)
-13. [Known Limitations](#known-limitations)
-14. [References](#references)
+8. [Governance](#governance)
+9. [Algorithm Coverage](#algorithm-coverage)
+10. [Running the Tests](#running-the-tests)
+11. [Test Specification](#test-specification)
+12. [Configuration](#configuration)
+13. [Key Lifecycle States](#key-lifecycle-states)
+14. [Known Limitations](#known-limitations)
+15. [References](#references)
 
 ---
 
@@ -48,11 +49,15 @@ operation to PKCS#11.
   grant (see [Access Control](#access-control))
 - **TLS enforced by default** — refuses to start in the clear without an explicit
   opt-out; TLS 1.2 floor, hot certificate reload, optional mTLS-derived identity
+- **Governance** — cryptoperiod enforcement (keys deactivate and optionally
+  rotate on schedule, with no client involved), dual control for destructive
+  operations, group grants and per-role operation allowlists
+  (see [Governance](#governance))
 - **Tamper-evident audit log** — append-only, hash-chained record of every
   operation (see [Access Control](#access-control))
 - **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
   JSON attribute values
-- **763 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
+- **811 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -106,7 +111,9 @@ kmip_pkcs11/
 │   └── exceptions.py          # KMIP exception hierarchy
 ├── lifecycle/
 │   ├── state_machine.py       # Key lifecycle state transitions
-│   └── access_control.py      # Owner / admin role / delegated grants
+│   ├── access_control.py      # Owner / admin / grants / groups / role allowlists
+│   ├── dual_control.py        # M-of-N approval for destructive operations
+│   └── governance.py          # Cryptoperiod scan, scheduled deactivation and rotation
 ├── metadata/
 │   ├── store.py               # SQLite store, migrations, audit log
 │   └── backup.py              # online backup / restore with token pairing checks
@@ -144,6 +151,8 @@ kmip_pkcs11/
     ├── test_metadata.py          #  18 metadata store unit tests
     ├── test_operations.py        #   8 operation integration tests
     ├── test_conformance.py       #  48 OASIS KMIP conformance tests
+    ├── test_governance.py        #  48 governance tests: cryptoperiod, dual
+    │                             #   control, groups, role allowlists
     └── test_extended_coverage.py # 641 live tests: every operation, algorithm
                                    #  coverage, error paths, authentication,
                                    #  access control, audit, transport,
@@ -436,6 +445,16 @@ an *existing* object are authorized in this order (`lifecycle/access_control.py`
    lets a specific identity reach a specific object without owning it.
    `"read"` covers Get/GetAttributes/GetAttributeList/Check/Export/ObtainLease;
    everything else (Encrypt, Destroy, ReKey, …) needs `"full"`.
+4. **Group grant** — a grantee named `group:<name>` reaches every member of
+   that group, so access follows team membership instead of being re-granted
+   per person. Leaving the group withdraws the access.
+
+Separately, and *before* any of the above, a role may carry an operation
+allowlist: if any role an identity holds names a set of permitted operations,
+the identity can perform only the union of those sets. This is opt-in — an
+identity whose roles define no allowlist is unrestricted at this layer, so
+introducing roles never silently locks anyone out. It narrows what an identity
+may do; it never widens it. Admin is exempt.
 
 Objects with no recorded owner (`owner_identity=None`) stay reachable by any
 identity — this only applies to objects created outside the normal Create/Register
@@ -449,14 +468,102 @@ admin script or console:
 store.create_identity("alice", "alice-password")   # authentication
 store.assign_role("alice", "admin")                # alice can touch anything
 store.grant_access(uid, "bob", "read")             # bob can Get this one object
+store.add_to_group("bob", "crypto-team")           # membership
+store.grant_access(uid, "group:crypto-team", "read")   # …grant to the team
+store.allow_role_operation("auditor", "Get")       # role allowlist
 store.revoke_access(uid, "bob")
 store.revoke_role("alice", "admin")
+```
+
+or through `kmip-admin`, which is the supported operator surface:
+
+```bash
+kmip-admin -c /etc/kmip/config.yaml identity add alice
+kmip-admin -c /etc/kmip/config.yaml role grant alice admin
+kmip-admin -c /etc/kmip/config.yaml group add bob crypto-team
+kmip-admin -c /etc/kmip/config.yaml access grant <uid> group:crypto-team --permission read
+kmip-admin -c /etc/kmip/config.yaml permission allow auditor Get
 ```
 
 `Locate` results are filtered to the caller's own objects — a non-admin
 identity can't enumerate objects it doesn't own. An identity holding the admin
 role skips that filter and sees everything, so it can both find and read any
 object.
+
+---
+
+## Governance
+
+Everything above is reactive: a key becomes Deactivated because a client asked,
+and a Destroy runs because one identity was authorized to ask for it. Governance
+is the part that acts without being asked, and the part that stops one person
+acting alone. Both are off by default and enabled in the `governance:` section
+of the configuration file.
+
+### Cryptoperiods
+
+KMIP has no separate cryptoperiod attribute — the Deactivation Date *is* the
+end of the period — so a cryptoperiod here is just that standard attribute plus
+something that acts on it. Without the scheduler, a key with a two-year
+cryptoperiod stays Active into year five unless somebody remembers.
+
+```bash
+kmip-admin -c config.yaml cryptoperiod set <uid> --days 365
+kmip-admin -c config.yaml cryptoperiod expiring --within-days 30
+kmip-admin -c config.yaml cryptoperiod scan     # one scan now, no HSM needed
+```
+
+With `governance.enabled: true` the server runs a background scan every
+`scan_interval_seconds` that:
+
+- **deactivates** keys whose Deactivation Date has passed,
+- **warns** (`warn_days` ahead) as keys approach it, so rotation is planned
+  rather than discovered,
+- **rotates** them first when `auto_rotate: true` — creating a replacement
+  symmetric key cross-linked to the old one with `Link_ReplacementKey` /
+  `Link_ReplacedKey`, exactly the lineage a client-driven ReKey produces.
+  Rotation runs *before* deactivation so a replacement exists before the old
+  key stops being usable; if it fails the key is deactivated anyway, because an
+  expired key left Active is the worse outcome.
+
+Every action is written to the audit log under the identity
+`system:scheduler`, so an automated deactivation is as attributable as a human
+one. In a multi-worker deployment only worker 0 runs the scheduler — otherwise
+workers would race to deactivate the same keys.
+
+### Dual control
+
+Destroy zeroizes key material; Export hands out key bytes. Under dual control
+those do not execute on request:
+
+1. The first attempt is **refused** and records an approval request. The
+   handler never runs, so nothing has happened to the key.
+2. Enough *other* identities approve it out of band.
+3. The requester retries, and it goes through.
+
+```bash
+kmip-admin -c config.yaml approval list
+kmip-admin -c config.yaml approval approve <request-id> --as bob
+```
+
+The rules that make this dual control rather than paperwork:
+
+- **The requester can never approve their own request** — enforced in the
+  store, so it holds however approvals are submitted.
+- **An approval authorises exactly one attempt on one object by one identity.**
+  It is consumed on use rather than becoming a standing permission, and it is
+  consumed *before* the handler runs, so a handler that fails partway does not
+  leave a reusable approval behind.
+- **Approvals expire** (`approval_ttl_seconds`).
+- **A retry reuses the open request** rather than opening another, so a client
+  in a retry loop cannot fill the table with requests nobody will approve.
+- **`approvals_required` must be at least 2** when dual control is on; the
+  configuration is rejected otherwise.
+
+KMIP defines no wire operation for a pending, out-of-band-approved request, so
+approvals are granted through `kmip-admin` and the client simply retries. The
+refusal reaches the client as `OperationFailed / PermissionDenied` with the
+request id in the message.
 
 ---
 
@@ -483,7 +590,7 @@ no PKCS#11 mechanism was ever standardized for them at all.
 ## Running the Tests
 
 ```bash
-# Run all 763 tests
+# Run all 811 tests
 pytest
 
 # Run with verbose output
@@ -508,8 +615,9 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | test_metadata.py        |  18 |  18 | 0 | 100 % |
 | test_operations.py      |   8 |   8 | 0 | 100 % |
 | test_conformance.py     |  48 |  48 | 0 | 100 % |
+| test_governance.py      |  48 |  48 | 0 | 100 % |
 | test_extended_coverage.py | 641 | 641 | 0 | 100 % |
-| **TOTAL**            | **763** | **763** | **0** | **100 %** |
+| **TOTAL**            | **811** | **811** | **0** | **100 %** |
 
 ---
 
@@ -579,6 +687,22 @@ No environment variable or server constructor argument — assign the first
 admin identity directly against the store before starting the server (see
 the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 
+### Governance options
+
+Set in the `governance:` section of the YAML configuration file; see
+`deploy/config.example.yaml` for the annotated version.
+
+| Key                       | Default              | Purpose |
+|---------------------------|----------------------|---------|
+| `enabled`                 | `false`              | run the cryptoperiod scheduler |
+| `scan_interval_seconds`   | `300`                | how often it scans |
+| `warn_days`               | `7`                  | how far ahead expiry is announced |
+| `auto_rotate`             | `false`              | create a cross-linked replacement key on expiry |
+| `dual_control`            | `false`              | require M-of-N approval for the operations below |
+| `dual_control_operations` | `[Destroy, Export]`  | which operations need approval |
+| `approvals_required`      | `2`                  | how many *other* identities must approve |
+| `approval_ttl_seconds`    | `3600`               | how long an unused approval stays valid |
+
 ---
 
 ## Key Lifecycle States
@@ -616,7 +740,7 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 | Limitation | Detail |
 |---|---|
 | Single, locked PKCS#11 session | `server.py` runs one thread per connection, but they share one `PKCS11Shim` session serialized by a `threading.RLock`. **This is the deliberate, permanent design, not a stopgap** — a session-pool (separate session per thread) was built and tested, and reproducibly segfaults or corrupts operations under concurrency: `python-pkcs11` 0.9.5 calls `C_Initialize(NULL)`, so the library's own internal thread safety is never enabled, and separate sessions don't work around that. A real fix needs a PKCS#11 binding that passes `CKF_OS_LOCKING_OK`, or a multi-process worker pool. |
-| Identity management has no wire protocol | Identity, role and grant management (`create_identity`, `assign_role`, `grant_access`, …) is a `MetadataStore` admin surface only — KMIP itself doesn't define operations for it, and there is no CLI yet. No groups, no per-role operation allowlist, and no dual-control approval for destructive operations; every non-admin identity is evaluated individually against ownership and grants. |
+| Identity and governance management has no wire protocol | Identities, roles, groups, grants, operation allowlists, cryptoperiods and dual-control approvals are all managed through `kmip-admin` (or the `MetadataStore` directly), never over KMIP — the specification defines no operations for any of it. A client under dual control therefore learns only that its operation was refused and which request id to have approved; the approval itself happens out of band. |
 | Master key availability | `SecretData`/`OpaqueObject`/`SplitKey` blobs are encrypted under an HSM-resident master key, so the metadata database is useless without the token that holds it — back up and protect the two together, and note that retiring a master key before re-encrypting makes its blobs unrecoverable. |
 | Audit log is local and unsigned | Entries are hash-chained and append-only, which makes tampering detectable, but the chain is not anchored anywhere external — an attacker who rewrites the whole log consistently leaves no trace. Ship entries to an external collector for stronger guarantees. |
 | Container image and CI are unverified here | `deploy/Dockerfile` and `.github/workflows/ci.yml` are written and their inputs checked, but neither has been executed — this development sandbox blocks Docker Hub and the SoftHSM2 source mirror. Both need a real run before being relied on. |
@@ -627,7 +751,8 @@ the [Access Control](#access-control) and [Quick Start](#quick-start) sections).
 | SoftHSM2 SENSITIVE bug | `SENSITIVE=True AND EXTRACTABLE=True` blocks `CKA_VALUE` read; the shim downgrades sensitivity automatically when extractability is explicitly requested. |
 | No batch atomicity | Failure in one `BatchItem` does not roll back previous items in the same batch. |
 | Algorithm coverage | 15 of 40 `CryptographicAlgorithm` values work against this token — see [Algorithm Coverage](#algorithm-coverage). |
-| No HA / backup tooling | Single process, single SQLite file, single HSM token; no clustering, replication, or coordinated backup/restore. |
+| No multi-tenancy | Groups and role allowlists partition *access*, but not the namespace: object names, `Locate` queries and quotas are global, and there is no tenant boundary that would let two unrelated customers share one deployment without seeing each other's name collisions. Isolation today means one deployment per tenant. |
+| No HA | Single SQLite file, single HSM token; no clustering or replication. Backup and restore *are* tooled (`kmip-admin backup create/inspect/restore/verify`, online backup API, token-pairing checks), but they are point-in-time, not continuous. |
 
 ---
 

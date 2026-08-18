@@ -61,6 +61,7 @@ class KMIPServer:
         handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
         allow_plaintext: bool = False,
         metrics=None,
+        dual_control=None,
     ):
         self._store  = store
         self._shim   = shim
@@ -75,7 +76,8 @@ class KMIPServer:
         self._allow_plaintext = allow_plaintext
         self._ssl_context: Optional[ssl.SSLContext] = None
         self._metrics = metrics
-        self._dispatcher = OperationDispatcher(store, shim, metrics=metrics)
+        self._dispatcher = OperationDispatcher(store, shim, metrics=metrics,
+                                               dual_control=dual_control)
         self._sock: Optional[socket.socket] = None
         self._running = False
 

@@ -50,6 +50,20 @@ DEFAULTS: Dict[str, Any] = {
         "host": "127.0.0.1",
         "port": 9696,
     },
+    "governance": {
+        # Cryptoperiod enforcement. The scheduler deactivates keys whose
+        # Deactivation Date has passed and warns as they approach it.
+        "enabled": False,
+        "scan_interval_seconds": 300,
+        "warn_days": 7,
+        # Replace an expiring symmetric key automatically, cross-linked to it.
+        "auto_rotate": False,
+        # Dual control for destructive operations.
+        "dual_control": False,
+        "dual_control_operations": ["Destroy", "Export"],
+        "approvals_required": 2,
+        "approval_ttl_seconds": 3600,
+    },
     "logging": {
         "level": "INFO",
         "format": "json",
@@ -163,6 +177,18 @@ class KMIPConfig:
             raise ConfigError(
                 f"server.workers must be a positive integer or null (one per CPU), "
                 f"got {workers!r}")
+
+        approvals = self.get("governance", "approvals_required")
+        if not isinstance(approvals, int) or approvals < 1:
+            raise ConfigError(
+                f"governance.approvals_required must be a positive integer, got {approvals!r}")
+        if self.get("governance", "dual_control") and approvals < 2:
+            # One approval that the requester cannot give is still a second
+            # person, but "dual control" with a single signature is almost
+            # always a misconfiguration rather than an intent.
+            raise ConfigError(
+                "governance.dual_control with approvals_required < 2 is not dual control; "
+                "raise approvals_required or disable dual_control")
 
         fmt = self.get("logging", "format")
         if fmt not in ("json", "text"):

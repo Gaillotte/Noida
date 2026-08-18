@@ -17,6 +17,7 @@ import json
 import sys
 
 from ..config import KMIPConfig, ConfigError
+from ..core.exceptions import KMIPError
 from ..metadata.store import MetadataStore
 
 
@@ -80,6 +81,49 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--archive", metavar="PATH",
                     help="write the removed entries here as JSON before deleting")
 
+    grp = sub.add_parser("group", help="manage groups").add_subparsers(
+        dest="subcommand", required=True)
+    for name, helptext in (("add", "add an identity to a group"),
+                           ("remove", "remove an identity from a group")):
+        sp = grp.add_parser(name, help=helptext)
+        sp.add_argument("identity")
+        sp.add_argument("group")
+    gs = grp.add_parser("show", help="list an identity's groups")
+    gs.add_argument("identity")
+    gm = grp.add_parser("members", help="list a group's members")
+    gm.add_argument("group")
+
+    perm = sub.add_parser("permission",
+                          help="manage per-role operation allowlists").add_subparsers(
+        dest="subcommand", required=True)
+    for name in ("allow", "disallow"):
+        sp = perm.add_parser(name, help=f"{name} an operation for a role")
+        sp.add_argument("role")
+        sp.add_argument("operation")
+    ps = perm.add_parser("show", help="show a role's allowed operations")
+    ps.add_argument("role")
+
+    appr = sub.add_parser("approval",
+                          help="dual control for destructive operations").add_subparsers(
+        dest="subcommand", required=True)
+    al2 = appr.add_parser("list", help="list approval requests")
+    al2.add_argument("--all", action="store_true", help="include consumed requests")
+    aa = appr.add_parser("approve", help="approve a pending request")
+    aa.add_argument("request_id")
+    aa.add_argument("--as", dest="approver", required=True,
+                    help="the approving identity (may not be the requester)")
+    ash = appr.add_parser("show", help="show one request")
+    ash.add_argument("request_id")
+
+    cp = sub.add_parser("cryptoperiod", help="manage key cryptoperiods").add_subparsers(
+        dest="subcommand", required=True)
+    cset = cp.add_parser("set", help="set a key's cryptoperiod in days")
+    cset.add_argument("uid")
+    cset.add_argument("--days", type=float, required=True)
+    cexp = cp.add_parser("expiring", help="list keys at or near expiry")
+    cexp.add_argument("--within-days", type=float, default=30.0)
+    cp.add_parser("scan", help="run one lifecycle scan now (deactivate/warn)")
+
     bk = sub.add_parser("backup", help="write a consistent snapshot").add_subparsers(
         dest="subcommand", required=True)
     bc = bk.add_parser("create", help="back up the metadata database")
@@ -127,7 +171,7 @@ def _emit(args, rows, columns):
         print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in columns))
 
 
-def main(argv=None) -> int:
+def _dispatch(argv=None) -> int:
     args = build_parser().parse_args(argv)
     cmd, sub = args.command, getattr(args, "subcommand", None)
 
@@ -218,6 +262,79 @@ def main(argv=None) -> int:
                     json.dump(result["entries"], f, indent=2, default=str)
                 print(f"archived {result['pruned']} entries to {args.archive}")
             print(f"pruned {result['pruned']} entries older than {args.older_than_days} days")
+
+    elif cmd == "group":
+        if sub == "add":
+            store.add_to_group(args.identity, args.group)
+            print(f"added '{args.identity}' to group '{args.group}'")
+        elif sub == "remove":
+            store.remove_from_group(args.identity, args.group)
+            print(f"removed '{args.identity}' from group '{args.group}'")
+        elif sub == "show":
+            _emit(args, [{"identity": args.identity, "group": g}
+                         for g in store.get_groups(args.identity)], ["identity", "group"])
+        elif sub == "members":
+            _emit(args, [{"group": args.group, "identity": i}
+                         for i in store.list_group_members(args.group)], ["group", "identity"])
+
+    elif cmd == "permission":
+        if sub == "allow":
+            store.allow_role_operation(args.role, args.operation)
+            print(f"role '{args.role}' may now perform '{args.operation}'")
+        elif sub == "disallow":
+            store.disallow_role_operation(args.role, args.operation)
+            print(f"role '{args.role}' may no longer perform '{args.operation}'")
+        elif sub == "show":
+            ops = store.get_role_operations(args.role)
+            if not ops:
+                print(f"role '{args.role}' has no allowlist — it places no "
+                      f"operation restriction on its holders")
+            _emit(args, [{"role": args.role, "operation": o} for o in ops],
+                  ["role", "operation"])
+
+    elif cmd == "approval":
+        if sub == "list":
+            rows = store.list_approval_requests(pending_only=not args.all)
+            for r in rows:
+                r["approvers"] = ",".join(r["approvers"]) or "-"
+                r["created_at"] = datetime.datetime.fromtimestamp(
+                    r["created_at"]).isoformat(timespec="seconds")
+            _emit(args, rows, ["request_id", "operation_name", "object_uid",
+                               "requester", "approvers", "required", "satisfied",
+                               "created_at"])
+        elif sub == "approve":
+            result = store.approve_request(args.request_id, args.approver)
+            state = "satisfied — the requester may now retry" if result["satisfied"] \
+                else f"{len(result['approvers'])}/{result['required']} approvals"
+            print(f"approved by '{args.approver}': {state}")
+        elif sub == "show":
+            req = store.get_approval_request(args.request_id)
+            if req is None:
+                print(f"kmip-admin: no request '{args.request_id}'", file=sys.stderr)
+                return 1
+            print(json.dumps(req, indent=2, default=str))
+
+    elif cmd == "cryptoperiod":
+        from ..lifecycle.governance import KeyLifecycleScheduler, set_cryptoperiod
+        if sub == "set":
+            deadline = set_cryptoperiod(store, args.uid, args.days)
+            print(f"{args.uid} deactivates at "
+                  f"{datetime.datetime.fromtimestamp(deadline).isoformat(timespec='seconds')}")
+        elif sub == "expiring":
+            sched = KeyLifecycleScheduler(store)
+            rows = []
+            for o in sched.expiring_objects(args.within_days):
+                rows.append({"uuid": o["uuid"], "owner": o["owner_identity"],
+                             "deactivates": datetime.datetime.fromtimestamp(
+                                 o["deactivation_date"]).isoformat(timespec="seconds")})
+            _emit(args, rows, ["uuid", "owner", "deactivates"])
+        elif sub == "scan":
+            # Deliberately no HSM here: a manual scan deactivates and warns but
+            # will not auto-rotate, which needs a token and belongs to the
+            # running server's scheduler.
+            result = KeyLifecycleScheduler(store).run_once()
+            print(f"deactivated {result['deactivated']}, warned {result['warned']}, "
+                  f"failed {result['failed']}")
 
     elif cmd == "backup":
         from ..metadata import backup as backup_mod
@@ -323,6 +440,18 @@ def main(argv=None) -> int:
               f"retired {result['retired_keys']} old key(s)")
 
     return 0
+
+
+def main(argv=None) -> int:
+    """Thin wrapper around the dispatch table so an expected failure — a
+    mistyped identifier, a refused self-approval — prints one line instead of
+    a traceback. Anything that is not a KMIPError still propagates, because
+    those are bugs and the stack is the useful part."""
+    try:
+        return _dispatch(argv)
+    except KMIPError as e:
+        print(f"kmip-admin: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover

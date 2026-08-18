@@ -16,7 +16,9 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.enums import State, ObjectType
-from ..core.exceptions import CryptographicFailure
+from ..core.exceptions import (
+    CryptographicFailure, ItemNotFound, IllegalOperation, NotAuthorized
+)
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +105,45 @@ CREATE TABLE IF NOT EXISTS kmip_object_grants (
 
 CREATE INDEX IF NOT EXISTS idx_grants_object
     ON kmip_object_grants(object_uuid);
+
+CREATE TABLE IF NOT EXISTS kmip_identity_groups (
+    identity TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    PRIMARY KEY (identity, group_name)
+);
+
+-- An allowlist of operations for a role. A role with no rows here places no
+-- operation restriction on its holders; a role with rows restricts them to
+-- exactly those operations. Identities holding several roles get the union.
+CREATE TABLE IF NOT EXISTS kmip_role_permissions (
+    role TEXT NOT NULL,
+    operation_name TEXT NOT NULL,
+    PRIMARY KEY (role, operation_name)
+);
+
+-- Dual control. A destructive operation under policy does not execute on
+-- first request: it records a request here and fails, and only runs once
+-- enough *other* identities have approved it.
+CREATE TABLE IF NOT EXISTS kmip_approval_requests (
+    request_id     TEXT PRIMARY KEY,
+    operation_name TEXT NOT NULL,
+    object_uid     TEXT,
+    requester      TEXT NOT NULL,
+    required       INTEGER NOT NULL,
+    created_at     REAL NOT NULL,
+    expires_at     REAL NOT NULL,
+    consumed_at    REAL
+);
+
+CREATE TABLE IF NOT EXISTS kmip_approvals (
+    request_id  TEXT NOT NULL REFERENCES kmip_approval_requests(request_id) ON DELETE CASCADE,
+    approver    TEXT NOT NULL,
+    approved_at REAL NOT NULL,
+    PRIMARY KEY (request_id, approver)
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_lookup
+    ON kmip_approval_requests(operation_name, object_uid, requester, consumed_at);
 
 CREATE TABLE IF NOT EXISTS kmip_audit (
     seq            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -757,6 +798,172 @@ class MetadataStore:
             "SELECT role FROM kmip_identity_roles WHERE identity = ?", (identity,)
         ).fetchall()
         return [r["role"] for r in rows]
+
+    # ── groups ───────────────────────────────────────────────────────────────
+    # A grant can name a group instead of an identity, so access follows team
+    # membership rather than being re-granted per person.
+
+    def add_to_group(self, identity: str, group_name: str) -> None:
+        self._conn().execute(
+            "INSERT OR IGNORE INTO kmip_identity_groups (identity, group_name) VALUES (?,?)",
+            (identity, group_name))
+        self._conn().commit()
+
+    def remove_from_group(self, identity: str, group_name: str) -> None:
+        self._conn().execute(
+            "DELETE FROM kmip_identity_groups WHERE identity = ? AND group_name = ?",
+            (identity, group_name))
+        self._conn().commit()
+
+    def get_groups(self, identity: str) -> List[str]:
+        rows = self._conn().execute(
+            "SELECT group_name FROM kmip_identity_groups WHERE identity = ? ORDER BY group_name",
+            (identity,)).fetchall()
+        return [r["group_name"] for r in rows]
+
+    def list_group_members(self, group_name: str) -> List[str]:
+        rows = self._conn().execute(
+            "SELECT identity FROM kmip_identity_groups WHERE group_name = ? ORDER BY identity",
+            (group_name,)).fetchall()
+        return [r["identity"] for r in rows]
+
+    # ── per-role operation allowlists ────────────────────────────────────────
+
+    def allow_role_operation(self, role: str, operation_name: str) -> None:
+        self._conn().execute(
+            "INSERT OR IGNORE INTO kmip_role_permissions (role, operation_name) VALUES (?,?)",
+            (role, operation_name))
+        self._conn().commit()
+
+    def disallow_role_operation(self, role: str, operation_name: str) -> None:
+        self._conn().execute(
+            "DELETE FROM kmip_role_permissions WHERE role = ? AND operation_name = ?",
+            (role, operation_name))
+        self._conn().commit()
+
+    def get_role_operations(self, role: str) -> List[str]:
+        rows = self._conn().execute(
+            "SELECT operation_name FROM kmip_role_permissions WHERE role = ? ORDER BY operation_name",
+            (role,)).fetchall()
+        return [r["operation_name"] for r in rows]
+
+    def allowed_operations_for(self, identity: str) -> Optional[set]:
+        """The union of allowlists across the identity's roles, or None when no
+        role it holds defines one — None meaning "no operation-level
+        restriction", so adding roles never silently locks anyone out."""
+        roles = self.get_roles(identity)
+        if not roles:
+            return None
+        allowed, restricted = set(), False
+        for role in roles:
+            ops = self.get_role_operations(role)
+            if ops:
+                restricted = True
+                allowed.update(ops)
+        return allowed if restricted else None
+
+    # ── dual control ─────────────────────────────────────────────────────────
+
+    def create_approval_request(self, operation_name: str, object_uid: Optional[str],
+                                requester: str, required: int, ttl_seconds: float) -> str:
+        request_id = str(uuid.uuid4())
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        self._conn().execute(
+            """INSERT INTO kmip_approval_requests
+                 (request_id, operation_name, object_uid, requester, required,
+                  created_at, expires_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (request_id, operation_name, object_uid, requester, required,
+             now, now + ttl_seconds))
+        self._conn().commit()
+        return request_id
+
+    def approve_request(self, request_id: str, approver: str) -> Dict[str, Any]:
+        """Record one approval. An approver may not be the requester — a
+        request one person can raise and satisfy alone is not dual control."""
+        row = self._conn().execute(
+            "SELECT * FROM kmip_approval_requests WHERE request_id = ?", (request_id,)
+        ).fetchone()
+        if row is None:
+            raise ItemNotFound(f"No approval request '{request_id}'")
+        if row["consumed_at"] is not None:
+            raise IllegalOperation("That approval request has already been used")
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        if row["expires_at"] < now:
+            raise IllegalOperation("That approval request has expired")
+        if approver == row["requester"]:
+            raise NotAuthorized("The requester cannot approve their own request")
+
+        self._conn().execute(
+            "INSERT OR IGNORE INTO kmip_approvals (request_id, approver, approved_at) "
+            "VALUES (?,?,?)", (request_id, approver, now))
+        self._conn().commit()
+        return self.get_approval_request(request_id)
+
+    def get_approval_request(self, request_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn().execute(
+            "SELECT * FROM kmip_approval_requests WHERE request_id = ?", (request_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        entry = dict(row)
+        entry["approvers"] = [
+            r["approver"] for r in self._conn().execute(
+                "SELECT approver FROM kmip_approvals WHERE request_id = ? ORDER BY approved_at",
+                (request_id,)).fetchall()]
+        entry["satisfied"] = len(entry["approvers"]) >= entry["required"]
+        return entry
+
+    def _open_approval_requests(self, operation_name: str, object_uid: Optional[str],
+                                requester: str) -> List[Dict[str, Any]]:
+        """Every unconsumed, unexpired request matching this operation, oldest
+        first."""
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        rows = self._conn().execute(
+            """SELECT request_id FROM kmip_approval_requests
+               WHERE operation_name = ? AND requester = ? AND consumed_at IS NULL
+                 AND expires_at >= ? AND (object_uid IS ? OR object_uid = ?)
+               ORDER BY created_at ASC""",
+            (operation_name, requester, now, object_uid, object_uid)).fetchall()
+        entries = [self.get_approval_request(r["request_id"]) for r in rows]
+        return [e for e in entries if e is not None]
+
+    def find_satisfied_request(self, operation_name: str, object_uid: Optional[str],
+                               requester: str) -> Optional[Dict[str, Any]]:
+        """An unconsumed, unexpired, fully approved request matching this
+        operation — what lets the requester's retry go through."""
+        for entry in self._open_approval_requests(operation_name, object_uid, requester):
+            if entry["satisfied"]:
+                return entry
+        return None
+
+    def find_pending_request(self, operation_name: str, object_uid: Optional[str],
+                             requester: str) -> Optional[Dict[str, Any]]:
+        """An open request still short of approvals. Lets a retry point at the
+        request already awaiting signatures instead of opening another one —
+        without this a client retrying in a loop fills the table with requests
+        nobody will ever approve."""
+        for entry in self._open_approval_requests(operation_name, object_uid, requester):
+            if not entry["satisfied"]:
+                return entry
+        return None
+
+    def consume_approval_request(self, request_id: str) -> None:
+        """Mark a request used, so one round of approvals authorises exactly
+        one operation rather than becoming a standing permission."""
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        self._conn().execute(
+            "UPDATE kmip_approval_requests SET consumed_at = ? WHERE request_id = ?",
+            (now, request_id))
+        self._conn().commit()
+
+    def list_approval_requests(self, pending_only: bool = True) -> List[Dict[str, Any]]:
+        sql = "SELECT request_id FROM kmip_approval_requests"
+        if pending_only:
+            sql += " WHERE consumed_at IS NULL"
+        sql += " ORDER BY created_at DESC"
+        return [self.get_approval_request(r["request_id"])
+                for r in self._conn().execute(sql).fetchall()]
 
     # ── delegated object grants ─────────────────────────────────────────────
     # Also admin-surface-only; see lifecycle/access_control.py for how these
