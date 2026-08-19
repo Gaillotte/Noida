@@ -7,8 +7,11 @@ Organised by source module, matching the order of coverage gaps in the report.
 
 import os
 import datetime
+import json
+import logging
 import struct
 import socket
+import sys
 import threading
 import time
 import pytest
@@ -1345,19 +1348,19 @@ class TestServerExtended:
         status = batch.get(Tag.ResultStatus)
         assert status.value == 0x00000001  # OperationFailed
 
-    def test_get_identity_non_ssl_returns_anonymous(self):
+    def test_get_identity_non_ssl_returns_anonymous(self, store, shim):
         from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim)
         plain_sock = MagicMock()
         plain_sock.__class__ = socket.socket  # not ssl.SSLSocket
-        identity = KMIPServer._get_identity(plain_sock)
-        assert identity == "anonymous"
+        assert srv._get_identity(plain_sock) == "anonymous"
 
-    def test_recv_message_with_empty_response(self):
+    def test_recv_message_with_empty_response(self, store, shim):
         from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim)
         sock = MagicMock()
         sock.recv.return_value = b""
-        result = KMIPServer._recv_message(sock)
-        assert result is None
+        assert srv._recv_message(sock) is None
 
     def test_process_invalid_ttlv_returns_error(self, store, shim):
         from kmip_pkcs11.server.server import KMIPServer
@@ -1370,7 +1373,7 @@ class TestServerExtended:
         from kmip_pkcs11.metadata.store import MetadataStore
         from kmip_pkcs11.server.server import KMIPServer
         store2 = MetadataStore(str(tmp_path / "stop_test.db"))
-        srv    = KMIPServer(store2, shim, port=29998)
+        srv    = KMIPServer(store2, shim, port=29998, allow_plaintext=True)
         srv.start_background()
         # Wait for it to bind
         deadline = time.time() + 3
@@ -5581,10 +5584,13 @@ def _auth_header(username=None, password=None):
 
 class TestPhase11AuthenticateUnit:
     def _server(self, pin_matches=True):
+        """`pin_matches` now means "does this identity's own password verify" —
+        the credential is checked against the per-identity scrypt hash in the
+        store, not against the shared token PIN (Phase 0)."""
         from kmip_pkcs11.server.server import KMIPServer
-        shim = MagicMock()
-        shim.verify_pin = MagicMock(return_value=pin_matches)
-        return KMIPServer(store=MagicMock(), shim=shim)
+        store = MagicMock()
+        store.verify_identity = MagicMock(return_value=pin_matches)
+        return KMIPServer(store=store, shim=MagicMock())
 
     def test_no_header_returns_fallback(self):
         srv = self._server()
@@ -5656,7 +5662,8 @@ class TestPhase11AuthenticationLive:
     def test_correct_credential_sets_owner_identity(self, kmip_server):
         from kmip_pkcs11.test_app.client import KMIPClient
         store, port = kmip_server
-        client = KMIPClient(port=port, username="alice", password=_TEST_TOKEN_PIN)
+        store.create_identity("alice", "alice-secret")
+        client = KMIPClient(port=port, username="alice", password="alice-secret")
         client.connect()
         uid = client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="cred-live-test")
         assert store.get_object(uid)["owner_identity"] == "alice"
@@ -5665,11 +5672,35 @@ class TestPhase11AuthenticationLive:
     def test_wrong_credential_rejected(self, kmip_server):
         from kmip_pkcs11.test_app.client import KMIPClient
         from kmip_pkcs11.test_app.client import KMIPClientError
-        _, port = kmip_server
-        client = KMIPClient(port=port, username="mallory", password="wrong-pin")
+        store, port = kmip_server
+        store.create_identity("mallory", "mallory-secret")
+        client = KMIPClient(port=port, username="mallory", password="wrong-password")
         client.connect()
         with pytest.raises(KMIPClientError):
             client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="should-not-exist")
+        client.close()
+
+    def test_token_pin_is_no_longer_a_credential(self, kmip_server):
+        """The whole point of Phase 0: the shared PKCS#11 PIN must not
+        authenticate a KMIP identity any more."""
+        from kmip_pkcs11.test_app.client import KMIPClient, KMIPClientError
+        store, port = kmip_server
+        store.create_identity("alice", "alice-secret")
+        client = KMIPClient(port=port, username="alice", password=_TEST_TOKEN_PIN)
+        client.connect()
+        with pytest.raises(KMIPClientError):
+            client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="pin-should-fail")
+        client.close()
+
+    def test_unprovisioned_identity_rejected(self, kmip_server):
+        """An identity that was never created cannot authenticate, whatever
+        password it supplies — usernames are no longer self-asserted."""
+        from kmip_pkcs11.test_app.client import KMIPClient, KMIPClientError
+        _, port = kmip_server
+        client = KMIPClient(port=port, username="ghost", password="anything")
+        client.connect()
+        with pytest.raises(KMIPClientError):
+            client.create(algorithm=CryptographicAlgorithm.AES, length=128, name="ghost-key")
         client.close()
 
     def test_no_credential_falls_back_to_anonymous(self, kmip_server):
@@ -6211,3 +6242,1479 @@ class TestDelegatedGrants:
         store.revoke_access(uid, "bob")
         with pytest.raises(NotAuthorized):
             get_op.handle(_uid_payload(uid), "bob", store, shim)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 0 — the review's blocker fixes.
+#
+# Each class here corresponds to one finding from the full-project review:
+# self-asserted identity, admin ignored by Locate, unbounded request read,
+# unbounded TTLV nesting, and internal error text reaching clients.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase0PerIdentityCredentials:
+    """Identity is authenticated against a per-user scrypt hash, so knowing
+    one shared secret no longer lets a caller become an arbitrary user."""
+
+    def test_create_and_verify(self, store):
+        store.create_identity("alice", "s3cret")
+        assert store.verify_identity("alice", "s3cret") is True
+
+    def test_wrong_password_rejected(self, store):
+        store.create_identity("alice", "s3cret")
+        assert store.verify_identity("alice", "wrong") is False
+
+    def test_unknown_identity_rejected(self, store):
+        assert store.verify_identity("nobody", "anything") is False
+
+    def test_each_identity_has_a_distinct_secret(self, store):
+        """The core of the fix: alice's password must not authenticate bob."""
+        store.create_identity("alice", "alice-pw")
+        store.create_identity("bob", "bob-pw")
+        assert store.verify_identity("bob", "alice-pw") is False
+        assert store.verify_identity("alice", "bob-pw") is False
+
+    def test_salts_are_unique_so_equal_passwords_differ_on_disk(self, store):
+        store.create_identity("alice", "same-password")
+        store.create_identity("bob", "same-password")
+        rows = {r["identity"]: r for r in store._conn().execute(
+            "SELECT identity, password_hash, salt FROM kmip_identities").fetchall()}
+        assert rows["alice"]["salt"] != rows["bob"]["salt"]
+        assert rows["alice"]["password_hash"] != rows["bob"]["password_hash"]
+
+    def test_password_is_not_stored_in_cleartext(self, store):
+        store.create_identity("alice", "sup3r-s3cret-value")
+        blob = store._conn().execute(
+            "SELECT password_hash, salt FROM kmip_identities WHERE identity='alice'").fetchone()
+        assert b"sup3r-s3cret-value" not in bytes(blob["password_hash"])
+        assert b"sup3r-s3cret-value" not in bytes(blob["salt"])
+
+    def test_password_rotation_invalidates_the_old_one(self, store):
+        store.create_identity("alice", "old-pw")
+        store.set_password("alice", "new-pw")
+        assert store.verify_identity("alice", "old-pw") is False
+        assert store.verify_identity("alice", "new-pw") is True
+
+    def test_disabled_identity_cannot_authenticate(self, store):
+        store.create_identity("alice", "pw")
+        store.set_identity_disabled("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_deleted_identity_cannot_authenticate(self, store):
+        store.create_identity("alice", "pw")
+        store.delete_identity("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_list_identities_reports_without_secrets(self, store):
+        store.create_identity("alice", "pw")
+        listed = store.list_identities()
+        assert [i["identity"] for i in listed] == ["alice"]
+        assert "password_hash" not in listed[0] and "salt" not in listed[0]
+
+
+class TestPhase0AdminCanLocate:
+    """Regression for the defect introduced with RBAC: the admin role was
+    honoured by check_owner() but ignored by Locate, so an admin could read
+    an object it was unable to find."""
+
+    def test_admin_locate_sees_other_identities_objects(self, store, shim):
+        from kmip_pkcs11.operations import locate as locate_op
+        store.assign_role("root", "admin")
+        alice_uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+        bob_uid   = _create_aes_uid_owned_by(store, shim, "bob", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "root", store, shim)
+        uids = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert alice_uid in uids
+        assert bob_uid in uids
+
+    def test_admin_can_both_find_and_read_the_same_object(self, store, shim):
+        """The inconsistency the review caught: Locate returned [] while
+        GetAttributes on that very UID succeeded."""
+        from kmip_pkcs11.operations import locate as locate_op, get_attributes as ga_op
+        store.assign_role("root", "admin")
+        uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "root", store, shim)
+        found = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert uid in found, "admin must be able to find what it can read"
+        ga_op.handle(_uid_payload(uid), "root", store, shim)
+
+    def test_non_admin_locate_is_still_filtered(self, store, shim):
+        """The fix must not widen visibility for ordinary identities."""
+        from kmip_pkcs11.operations import locate as locate_op
+        alice_uid = _create_aes_uid_owned_by(store, shim, "alice", extractable=False)
+        bob_uid   = _create_aes_uid_owned_by(store, shim, "bob", extractable=False)
+
+        resp = locate_op.handle(_make_payload(), "alice", store, shim)
+        uids = [i.value for i in decode_all(resp) if i.tag == Tag.UniqueIdentifier]
+        assert alice_uid in uids
+        assert bob_uid not in uids
+
+
+class TestPhase0RequestSizeCap:
+    """An oversized length prefix is refused before the body is read, since
+    this happens ahead of any authentication."""
+
+    def test_oversize_declared_length_is_rejected(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.exceptions import InvalidMessage
+        srv = KMIPServer(store, shim, max_request_size=1024)
+        sock = MagicMock()
+        # 8-byte TTLV header declaring a 4 GiB body.
+        sock.recv.return_value = b"\x42\x00\x78\x01" + struct.pack(">I", 0xFFFFFFFF)
+        with pytest.raises(InvalidMessage):
+            srv._recv_message(sock)
+
+    def test_body_is_never_read_for_an_oversize_frame(self, store, shim):
+        """Proves the refusal happens before allocation: only the 8-byte
+        header is ever pulled off the socket."""
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.exceptions import InvalidMessage
+        srv = KMIPServer(store, shim, max_request_size=1024)
+        sock = MagicMock()
+        sock.recv.return_value = b"\x42\x00\x78\x01" + struct.pack(">I", 0xFFFFFFFF)
+        with pytest.raises(InvalidMessage):
+            srv._recv_message(sock)
+        assert sum(c.args[0] for c in sock.recv.call_args_list) <= 8
+
+    def test_within_limit_is_accepted(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, max_request_size=4096)
+        body = encode_text_string(Tag.UniqueIdentifier, "ok")
+        msg = encode_structure(Tag.RequestMessage, body)
+        chunks = [msg[:8], msg[8:]]
+        sock = MagicMock()
+        sock.recv.side_effect = lambda n: chunks.pop(0) if chunks else b""
+        assert srv._recv_message(sock) == msg
+
+
+class TestPhase0TTLVNestingCap:
+    """Deeply nested Structures are rejected instead of recursing to the
+    interpreter's stack limit."""
+
+    @staticmethod
+    def _nest(depth: int) -> bytes:
+        payload = encode_text_string(Tag.UniqueIdentifier, "x")
+        for _ in range(depth):
+            payload = encode_structure(Tag.RequestPayload, payload)
+        return payload
+
+    def test_deep_nesting_raises_valueerror(self):
+        from kmip_pkcs11.core.ttlv import MAX_NESTING_DEPTH
+        with pytest.raises(ValueError, match="nesting"):
+            decode_one(self._nest(MAX_NESTING_DEPTH + 5))
+
+    def test_reasonable_nesting_still_decodes(self):
+        item = decode_one(self._nest(6))
+        assert item.tag == Tag.RequestPayload
+
+    def test_deep_nesting_over_the_wire_is_a_clean_failure(self, store, shim):
+        """End-to-end: a nesting bomb must come back as InvalidMessage, not
+        crash the connection handler."""
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.enums import ResultReason
+        srv = KMIPServer(store, shim)
+        resp = decode_one(srv._process(self._nest(500), "anonymous"))
+        item = resp.get(Tag.BatchItem)
+        assert item.get(Tag.ResultReason).value == ResultReason.InvalidMessage
+
+
+class TestPhase0ErrorMessageHygiene:
+    """Internal exception text must not be echoed to clients."""
+
+    def test_malformed_request_returns_generic_text(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim)
+        resp = decode_one(srv._process(b"\xff" * 16, "anonymous"))
+        msg = resp.get(Tag.BatchItem).get(Tag.ResultMessage).value
+        assert msg == "Malformed KMIP request"
+        for leak in ("Traceback", "kmip_pkcs11/", "struct.error", "offset"):
+            assert leak not in msg
+
+    def test_internal_fault_returns_generic_text(self, store, shim):
+        """An unexpected handler exception surfaces as a reason code only."""
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus, ResultReason
+        d = OperationDispatcher(store, shim)
+        with patch.dict(d._handlers, {Operation.Create: MagicMock(
+                side_effect=RuntimeError("/secret/path/internal.py exploded"))}):
+            inner = (encode_enumeration(Tag.Operation, Operation.Create)
+                     + encode_structure(Tag.RequestPayload, b""))
+            result = decode_one(d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "user"))
+        assert result.get(Tag.ResultStatus).value == ResultStatus.OperationFailed
+        assert result.get(Tag.ResultReason).value == ResultReason.GeneralFailure
+        msg = result.get(Tag.ResultMessage).value
+        assert msg == "Internal server error"
+        assert "/secret/path" not in msg
+
+    def test_kmip_errors_keep_their_useful_message(self, store, shim):
+        """Hygiene must not blunt our own diagnostics — ItemNotFound should
+        still say which object was missing."""
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation
+        d = OperationDispatcher(store, shim)
+        inner = (encode_enumeration(Tag.Operation, Operation.Destroy)
+                 + encode_structure(Tag.RequestPayload,
+                                    encode_text_string(Tag.UniqueIdentifier, "no-such-uid")))
+        result = decode_one(d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "user"))
+        assert "no-such-uid" in result.get(Tag.ResultMessage).value
+
+    def test_batch_item_without_operation_fails_cleanly(self, store, shim):
+        """Previously raised TypeError formatting a None op_code."""
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import ResultStatus
+        d = OperationDispatcher(store, shim)
+        item = decode_one(encode_structure(Tag.BatchItem, encode_structure(Tag.RequestPayload, b"")))
+        result = decode_one(d.dispatch(item, "user"))
+        assert result.get(Tag.ResultStatus).value == ResultStatus.OperationFailed
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 1 — secrets at rest.
+#
+# SecretData, OpaqueObject and SplitKey shares have no PKCS#11 object behind
+# them, so their bytes live in kmip_objects.raw_key_value. They are now
+# enveloped under an AES-256 master key that is generated on, and never leaves,
+# the HSM — plus the versioned migration machinery needed to roll that out.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def enc_store(tmp_path, shim):
+    """A metadata store with blob encryption enabled, as the server wires it."""
+    from kmip_pkcs11.metadata.store import MetadataStore
+    from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+    return MetadataStore(str(tmp_path / "enc.db"), blob_cipher=BlobCipher(shim))
+
+
+def _raw_column(store, uid):
+    """Read raw_key_value straight from SQLite, bypassing decryption — this is
+    what someone who stole the database file would see."""
+    row = store._conn().execute(
+        "SELECT raw_key_value, raw_key_encrypted FROM kmip_objects WHERE uuid = ?", (uid,)
+    ).fetchone()
+    return bytes(row["raw_key_value"]), row["raw_key_encrypted"]
+
+
+class TestPhase1SchemaMigrations:
+    def test_fresh_database_is_at_current_version(self, store):
+        from kmip_pkcs11.metadata.store import SCHEMA_VERSION
+        assert store.schema_version() == SCHEMA_VERSION
+
+    def test_migration_adds_the_column_to_a_preexisting_database(self, tmp_path):
+        """The exact scenario the review flagged: CREATE TABLE IF NOT EXISTS
+        cannot add a column, so an existing deployment would silently miss it."""
+        import sqlite3
+        from kmip_pkcs11.metadata.store import MetadataStore, SCHEMA
+
+        db = str(tmp_path / "legacy.db")
+        legacy = sqlite3.connect(db)
+        legacy.executescript(SCHEMA)          # baseline only, user_version stays 0
+        legacy.commit()
+        cols = {r[1] for r in legacy.execute("PRAGMA table_info(kmip_objects)")}
+        assert "raw_key_encrypted" not in cols, "precondition: legacy schema lacks the column"
+        assert legacy.execute("PRAGMA user_version").fetchone()[0] == 0
+        legacy.close()
+
+        store = MetadataStore(db)             # opening applies the migration
+        cols = {r[1] for r in store._conn().execute("PRAGMA table_info(kmip_objects)")}
+        assert "raw_key_encrypted" in cols
+        assert store.schema_version() == 1
+
+    def test_migrations_are_idempotent(self, tmp_path):
+        from kmip_pkcs11.metadata.store import MetadataStore, SCHEMA_VERSION
+        db = str(tmp_path / "twice.db")
+        MetadataStore(db)
+        again = MetadataStore(db)             # must not re-run ALTER TABLE
+        assert again.schema_version() == SCHEMA_VERSION
+
+    def test_existing_rows_survive_migration(self, tmp_path):
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "data.db")
+        first = MetadataStore(db)
+        uid = first.create_object(object_type=ObjectType.SecretData,
+                                  raw_key_value=b"pre-existing", owner_identity="alice")
+        reopened = MetadataStore(db)
+        assert reopened.get_object(uid)["raw_key_value"] == b"pre-existing"
+
+
+class TestPhase1BlobsEncryptedAtRest:
+    def test_secret_data_is_ciphertext_on_disk(self, enc_store):
+        secret = b"correct-horse-battery-staple"
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=secret, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 1
+        assert secret not in stored, "plaintext secret must not be present in the database"
+
+    def test_roundtrip_is_transparent_to_callers(self, enc_store):
+        secret = b"correct-horse-battery-staple"
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=secret, owner_identity="alice")
+        assert enc_store.get_object(uid)["raw_key_value"] == secret
+
+    def test_split_key_shares_are_encrypted(self, enc_store):
+        share = bytes(range(32))
+        uid = enc_store.create_object(object_type=ObjectType.SplitKey,
+                                      raw_key_value=share, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 1 and share not in stored
+        assert enc_store.get_object(uid)["raw_key_value"] == share
+
+    def test_opaque_object_is_encrypted(self, enc_store):
+        payload = b"opaque-payload-value"
+        uid = enc_store.create_object(object_type=ObjectType.OpaqueObject,
+                                      raw_key_value=payload, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 1 and payload not in stored
+
+    def test_certificates_stay_readable_in_the_clear(self, enc_store):
+        """Certificates are public — encrypting them buys nothing and makes
+        them unusable without the HSM."""
+        der = b"\x30\x82fake-certificate-DER"
+        uid = enc_store.create_object(object_type=ObjectType.Certificate,
+                                      raw_key_value=der, owner_identity="alice")
+        stored, flagged = _raw_column(enc_store, uid)
+        assert flagged == 0 and stored == der
+
+    def test_each_blob_uses_a_fresh_nonce(self, enc_store):
+        """Identical plaintexts must not produce identical ciphertexts."""
+        a = enc_store.create_object(object_type=ObjectType.SecretData,
+                                    raw_key_value=b"same", owner_identity="alice")
+        b = enc_store.create_object(object_type=ObjectType.SecretData,
+                                    raw_key_value=b"same", owner_identity="alice")
+        assert _raw_column(enc_store, a)[0] != _raw_column(enc_store, b)[0]
+
+    def test_tampered_ciphertext_is_rejected(self, enc_store):
+        """GCM authentication means a modified row fails loudly rather than
+        yielding attacker-chosen bytes."""
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=b"tamper-me", owner_identity="alice")
+        stored, _ = _raw_column(enc_store, uid)
+        corrupted = bytearray(stored)
+        corrupted[-1] ^= 0xFF
+        enc_store._conn().execute(
+            "UPDATE kmip_objects SET raw_key_value = ? WHERE uuid = ?", (bytes(corrupted), uid))
+        enc_store._conn().commit()
+        with pytest.raises(CryptographicFailure):
+            enc_store.get_object(uid)
+
+    def test_encrypted_row_without_a_cipher_raises(self, tmp_path, shim):
+        """Opening an encrypted store without the master key must fail loudly,
+        not hand back envelope bytes as if they were the secret."""
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        db = str(tmp_path / "noc.db")
+        enc = MetadataStore(db, blob_cipher=BlobCipher(shim))
+        uid = enc.create_object(object_type=ObjectType.SecretData,
+                                raw_key_value=b"secret", owner_identity="alice")
+        plain = MetadataStore(db)             # no cipher
+        with pytest.raises(CryptographicFailure):
+            plain.get_object(uid)
+
+
+class TestPhase1BackfillAndRotation:
+    def test_preexisting_cleartext_is_converted(self, tmp_path, shim):
+        """Upgrading a deployment that already holds cleartext secrets."""
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        db = str(tmp_path / "upgrade.db")
+
+        legacy = MetadataStore(db)            # no cipher — writes in the clear
+        uid = legacy.create_object(object_type=ObjectType.SecretData,
+                                   raw_key_value=b"legacy-secret", owner_identity="alice")
+        assert _raw_column(legacy, uid) == (b"legacy-secret", 0)
+
+        upgraded = MetadataStore(db, blob_cipher=BlobCipher(shim))
+        stored, flagged = _raw_column(upgraded, uid)
+        assert flagged == 1
+        assert b"legacy-secret" not in stored
+        assert upgraded.get_object(uid)["raw_key_value"] == b"legacy-secret"
+
+    def test_backfill_scrubs_plaintext_from_the_database_files(self, tmp_path, shim):
+        """Encrypting a row with UPDATE does not erase what was there before —
+        in WAL mode the original cleartext INSERT stays in the -wal sidecar.
+        Without the post-backfill scrub, an upgraded deployment leaves the
+        secrets it just encrypted sitting in the clear beside the ciphertext."""
+        import glob
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+
+        db = str(tmp_path / "scrub.db")
+        secret = b"PLAINTEXT-THAT-MUST-NOT-SURVIVE"
+
+        legacy = MetadataStore(db)
+        uid = legacy.create_object(object_type=ObjectType.SecretData,
+                                   raw_key_value=secret, owner_identity="alice")
+        present = [f for f in glob.glob(db + "*") if secret in open(f, "rb").read()]
+        assert present, "precondition: cleartext really is on disk before the upgrade"
+
+        upgraded = MetadataStore(db, blob_cipher=BlobCipher(shim))
+        leaked = [f for f in glob.glob(db + "*") if secret in open(f, "rb").read()]
+        assert leaked == [], f"plaintext still recoverable from {leaked}"
+        assert upgraded.get_object(uid)["raw_key_value"] == secret
+
+    def test_rotation_re_encrypts_and_preserves_plaintext(self, enc_store):
+        uids = [enc_store.create_object(object_type=ObjectType.SecretData,
+                                        raw_key_value=f"secret-{i}".encode(),
+                                        owner_identity="alice") for i in range(3)]
+        before = [_raw_column(enc_store, u)[0] for u in uids]
+
+        result = enc_store.rotate_master_key()
+        assert result["rotated"] == 3
+
+        for i, u in enumerate(uids):
+            assert _raw_column(enc_store, u)[0] != before[i], "ciphertext must change"
+            assert enc_store.get_object(u)["raw_key_value"] == f"secret-{i}".encode()
+
+    def test_rotation_changes_the_active_key(self, enc_store):
+        before = enc_store._cipher.active_key_id
+        enc_store.rotate_master_key(retire_previous=False)
+        assert enc_store._cipher.active_key_id != before
+
+    def test_partially_rotated_store_stays_readable(self, enc_store):
+        """The reason the envelope carries a key id: re-encrypting a large
+        store is not atomic, so a half-finished rotation must still read."""
+        uid_old = enc_store.create_object(object_type=ObjectType.SecretData,
+                                          raw_key_value=b"under-old-key", owner_identity="alice")
+        enc_store._cipher.begin_rotation()     # new key active, old row untouched
+        uid_new = enc_store.create_object(object_type=ObjectType.SecretData,
+                                          raw_key_value=b"under-new-key", owner_identity="alice")
+
+        assert enc_store.get_object(uid_old)["raw_key_value"] == b"under-old-key"
+        assert enc_store.get_object(uid_new)["raw_key_value"] == b"under-new-key"
+
+    def test_retired_key_makes_its_blobs_unreadable(self, enc_store):
+        """Confirms retirement really destroys the key — the blob is
+        cryptographically gone, not merely flagged."""
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        uid = enc_store.create_object(object_type=ObjectType.SecretData,
+                                      raw_key_value=b"doomed", owner_identity="alice")
+        old_key = enc_store._cipher.active_key_id
+        enc_store._cipher.begin_rotation()
+        enc_store._cipher.retire_key(old_key)   # retire WITHOUT re-encrypting first
+        with pytest.raises(CryptographicFailure):
+            enc_store.get_object(uid)
+
+    def test_cannot_retire_the_active_key(self, enc_store):
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        with pytest.raises(CryptographicFailure):
+            enc_store._cipher.retire_key(enc_store._cipher.active_key_id)
+
+
+class TestPhase1MasterKeyOnToken:
+    def test_master_key_is_reused_across_restarts(self, tmp_path, shim):
+        """A second BlobCipher must find the existing key, not mint a new one —
+        otherwise every restart would orphan the previous data."""
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        first = BlobCipher(shim)
+        second = BlobCipher(shim)
+        assert second.active_key_id == first.active_key_id
+
+    def test_master_key_is_not_extractable(self, shim):
+        """The master key exists to protect the database; if it could be read
+        off the token, a database thief with shim access would gain nothing."""
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        from kmip_pkcs11.core.exceptions import NotExtractable, CryptographicFailure
+        cipher = BlobCipher(shim)
+        cka_id = cipher._active_cka_id
+        with pytest.raises((NotExtractable, CryptographicFailure)):
+            shim.get_key_value(cka_id)
+
+    def test_secret_data_roundtrip_through_operations(self, tmp_path, shim):
+        """End-to-end through the KMIP handlers, not just the store API."""
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        from kmip_pkcs11.operations import register as reg_op, get as get_op
+
+        store = MetadataStore(str(tmp_path / "ops.db"), blob_cipher=BlobCipher(shim))
+        secret = b"my-application-password"
+        key_block = encode_structure(
+            Tag.KeyBlock,
+            encode_enumeration(Tag.KeyFormatType, KeyFormatType.Opaque)
+            + encode_structure(Tag.KeyValue, encode_byte_string(Tag.KeyMaterial, secret)))
+        payload = decode_one(encode_structure(
+            Tag.RequestPayload,
+            encode_enumeration(Tag.ObjectType, ObjectType.SecretData) + key_block))
+        uid = decode_one(encode_structure(
+            Tag.ResponsePayload, reg_op.handle(payload, "alice", store, shim)
+        )).get(Tag.UniqueIdentifier).value
+
+        assert secret not in _raw_column(store, uid)[0], "must be ciphertext at rest"
+        resp = get_op.handle(_uid_payload(uid), "alice", store, shim)
+        material = decode_one(encode_structure(Tag.ResponsePayload, resp)) \
+            .get(Tag.SecretData).get(Tag.KeyBlock).get(Tag.KeyValue).get(Tag.KeyMaterial).value
+        assert material == secret
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 — audit trail and transport security.
+#
+# A tamper-evident, append-only record of who did what to which object when,
+# and a listener that refuses to serve KMIP in the clear by accident.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _self_signed(tmp_path):
+    """Generate a throwaway certificate/key pair for TLS configuration tests."""
+    import subprocess
+    cert, key = str(tmp_path / "c.pem"), str(tmp_path / "k.pem")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key,
+         "-out", cert, "-days", "1", "-nodes", "-subj", "/CN=localhost"],
+        check=True, capture_output=True,
+    )
+    return cert, key
+
+
+def _dispatch(store, shim, operation, payload_bytes=b"", identity="alice", client=None):
+    from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+    inner = (encode_enumeration(Tag.Operation, operation)
+             + encode_structure(Tag.RequestPayload, payload_bytes))
+    item = decode_one(encode_structure(Tag.BatchItem, inner))
+    return OperationDispatcher(store, shim).dispatch(item, identity, client)
+
+
+class TestPhase2AuditRecording:
+    def test_successful_operation_is_recorded(self, store, shim):
+        from kmip_pkcs11.core.enums import Operation
+        uid = store.create_object(object_type=ObjectType.SymmetricKey,
+                                  state=State.PreActive, owner_identity="alice")
+        _dispatch(store, shim, Operation.Activate,
+                  encode_text_string(Tag.UniqueIdentifier, uid), identity="alice")
+        entries = store.get_audit_entries(object_uid=uid)
+        assert [e["operation_name"] for e in entries] == ["Activate"]
+        assert entries[0]["identity"] == "alice"
+        assert entries[0]["result"] == "success"
+        assert store.get_object(uid)["state"] == State.Active
+
+    def test_failed_operation_is_recorded_with_its_reason(self, store, shim):
+        from kmip_pkcs11.core.enums import Operation, ResultReason
+        _dispatch(store, shim, Operation.Destroy,
+                  encode_text_string(Tag.UniqueIdentifier, "no-such-uid"))
+        entry = store.get_audit_entries(object_uid="no-such-uid")[0]
+        assert entry["result"] == "failure"
+        assert entry["result_reason"] == ResultReason.ItemNotFound
+
+    def test_denied_access_is_recorded(self, store, shim):
+        """The audit question that matters most: someone tried to reach an
+        object they had no right to."""
+        from kmip_pkcs11.core.enums import Operation, ResultReason
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        _dispatch(store, shim, Operation.Destroy,
+                  encode_text_string(Tag.UniqueIdentifier, uid), identity="mallory")
+        entry = store.get_audit_entries(identity="mallory")[0]
+        assert entry["result"] == "failure"
+        assert entry["result_reason"] == ResultReason.PermissionDenied
+        assert store.get_object(uid)["state"] != State.Destroyed
+
+    def test_reads_are_audited_not_just_mutations(self, store, shim):
+        """'Who exported this key' is a read, and is exactly what an audit log
+        is for."""
+        from kmip_pkcs11.core.enums import Operation
+        uid = _create_aes_uid_owned_by(store, shim, "alice")
+        _dispatch(store, shim, Operation.Get,
+                  encode_text_string(Tag.UniqueIdentifier, uid), identity="alice")
+        assert [e["operation_name"] for e in store.get_audit_entries(object_uid=uid)] == ["Get"]
+
+    def test_created_object_uid_comes_from_the_response(self, store, shim):
+        """Create names no UID in its request — the audit record has to take it
+        from the response, or the entry is useless."""
+        from kmip_pkcs11.core.enums import Operation
+        attrs = (
+            _attr("Cryptographic Algorithm",
+                  encode_enumeration(Tag.AttributeValue, CryptographicAlgorithm.AES))
+            + _attr("Cryptographic Length", encode_integer(Tag.AttributeValue, 128))
+            + _attr("Cryptographic Usage Mask",
+                    encode_integer(Tag.AttributeValue, CryptographicUsageMask.Encrypt))
+        )
+        payload = (encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
+                   + encode_structure(Tag.TemplateAttribute, attrs))
+        raw = _dispatch(store, shim, Operation.Create, payload, identity="alice")
+        uid = decode_one(raw).get(Tag.ResponsePayload).get(Tag.UniqueIdentifier).value
+
+        entries = store.get_audit_entries(object_uid=uid)
+        assert entries and entries[0]["operation_name"] == "Create"
+        assert entries[0]["identity"] == "alice"
+
+    def test_capability_discovery_is_not_audited(self, store, shim):
+        """Query/DiscoverVersions touch no object; recording them would bury
+        the entries that matter in handshake noise."""
+        from kmip_pkcs11.core.enums import Operation
+        _dispatch(store, shim, Operation.Query)
+        _dispatch(store, shim, Operation.DiscoverVersions)
+        assert store.get_audit_entries() == []
+
+    def test_client_address_is_recorded(self, store, shim):
+        from kmip_pkcs11.core.enums import Operation
+        _dispatch(store, shim, Operation.Destroy,
+                  encode_text_string(Tag.UniqueIdentifier, "x"), client="10.0.0.9:5555")
+        assert store.get_audit_entries()[0]["client"] == "10.0.0.9:5555"
+
+    def test_audit_failure_does_not_fail_the_operation(self, store, shim):
+        """A broken audit backend must not take the KMIP service down with it —
+        but it must be loud, which is why it logs an exception."""
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        uid = store.create_object(object_type=ObjectType.SymmetricKey,
+                                  state=State.PreActive, owner_identity="alice")
+        with patch.object(store, "append_audit", side_effect=RuntimeError("audit down")):
+            raw = _dispatch(store, shim, Operation.Activate,
+                            encode_text_string(Tag.UniqueIdentifier, uid), identity="alice")
+        assert decode_one(raw).get(Tag.ResultStatus).value == ResultStatus.Success
+        assert store.get_object(uid)["state"] == State.Active
+
+
+class TestPhase2AuditTamperEvidence:
+    def _seed(self, store, n=4):
+        for i in range(n):
+            store.append_audit(identity=f"user{i}", operation_name="Get",
+                               object_uid=f"uid-{i}", result="success")
+
+    def test_clean_chain_verifies(self, store):
+        self._seed(store)
+        report = store.verify_audit_chain()
+        assert report["ok"] is True and report["entries"] == 4
+
+    def test_empty_log_verifies(self, store):
+        assert store.verify_audit_chain()["ok"] is True
+
+    def test_update_is_blocked_by_the_append_only_trigger(self, store):
+        import sqlite3
+        self._seed(store, 1)
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn().execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=1")
+
+    def test_delete_is_blocked_by_the_append_only_trigger(self, store):
+        import sqlite3
+        self._seed(store, 1)
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn().execute("DELETE FROM kmip_audit WHERE seq=1")
+
+    def test_edited_entry_breaks_the_chain(self, store):
+        """Someone with file access can drop the triggers — the hash chain is
+        what makes the edit detectable afterwards."""
+        self._seed(store)
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_update")
+        conn.execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=2")
+        conn.commit()
+        report = store.verify_audit_chain()
+        assert report["ok"] is False
+        assert report["broken_at"] == 2
+        assert "hash" in report["reason"]
+
+    def test_deleted_entry_breaks_the_chain(self, store):
+        self._seed(store)
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_delete")
+        conn.execute("DELETE FROM kmip_audit WHERE seq=2")
+        conn.commit()
+        report = store.verify_audit_chain()
+        assert report["ok"] is False and report["broken_at"] == 3
+
+    def test_concurrent_appends_produce_an_intact_chain(self, store):
+        """The chain is read-then-write, so without a lock two threads can link
+        to the same predecessor and fork the history."""
+        import concurrent.futures
+        def append(i):
+            store.append_audit(identity=f"t{i}", operation_name="Get",
+                               object_uid=f"uid-{i}", result="success")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(append, range(40)))
+        report = store.verify_audit_chain()
+        assert report["ok"] is True, f"chain broken at {report.get('broken_at')}"
+        assert report["entries"] == 40
+
+
+class TestPhase2AuditQueryAndRetention:
+    def _seed(self, store):
+        for i in range(5):
+            store.append_audit(identity="alice" if i % 2 == 0 else "bob",
+                               operation_name="Get", object_uid=f"uid-{i}",
+                               result="success" if i < 3 else "failure")
+
+    def test_filter_by_identity(self, store):
+        self._seed(store)
+        assert {e["identity"] for e in store.get_audit_entries(identity="bob")} == {"bob"}
+
+    def test_filter_by_result(self, store):
+        self._seed(store)
+        assert all(e["result"] == "failure"
+                   for e in store.get_audit_entries(result="failure"))
+
+    def test_limit_applies(self, store):
+        self._seed(store)
+        assert len(store.get_audit_entries(limit=2)) == 2
+
+    def test_prune_returns_entries_for_archival_and_keeps_the_rest(self, store):
+        import time as _t
+        store.append_audit(identity="old", operation_name="Get", result="success")
+        cutoff = _t.time() + 0.01
+        _t.sleep(0.02)
+        store.append_audit(identity="new", operation_name="Get", result="success")
+
+        result = store.prune_audit(cutoff)
+        assert result["pruned"] == 1
+        assert result["entries"][0]["identity"] == "old"
+        assert [e["identity"] for e in store.get_audit_entries()] == ["new"]
+
+    def test_chain_still_verifies_after_pruning(self, store):
+        import time as _t
+        for i in range(3):
+            store.append_audit(identity=f"old{i}", operation_name="Get", result="success")
+        cutoff = _t.time() + 0.01
+        _t.sleep(0.02)
+        for i in range(3):
+            store.append_audit(identity=f"new{i}", operation_name="Get", result="success")
+        store.prune_audit(cutoff)
+        assert store.verify_audit_chain()["ok"] is True
+
+    def test_append_only_trigger_is_restored_after_pruning(self, store):
+        import sqlite3, time as _t
+        store.append_audit(identity="old", operation_name="Get", result="success")
+        store.prune_audit(_t.time() + 0.01)
+        store.append_audit(identity="new", operation_name="Get", result="success")
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn().execute("DELETE FROM kmip_audit")
+
+    def test_refuses_to_prune_a_tampered_log(self, store):
+        """Pruning a broken chain would destroy the evidence of tampering."""
+        from kmip_pkcs11.core.exceptions import CryptographicFailure
+        import time as _t
+        for i in range(3):
+            store.append_audit(identity=f"u{i}", operation_name="Get", result="success")
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_update")
+        conn.execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=2")
+        conn.commit()
+        with pytest.raises(CryptographicFailure):
+            store.prune_audit(_t.time() + 1)
+
+
+class TestPhase2TransportSecurity:
+    def test_refuses_to_start_without_tls(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.core.exceptions import GeneralFailure
+        srv = KMIPServer(store, shim, port=29901)
+        with pytest.raises(GeneralFailure, match="TLS"):
+            srv._require_transport_security()
+
+    def test_plaintext_requires_an_explicit_opt_out(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, port=29902, allow_plaintext=True)
+        srv._require_transport_security()          # must not raise
+
+    def test_tls_configured_server_starts(self, store, shim, tmp_path):
+        from kmip_pkcs11.server.server import KMIPServer
+        cert, key = _self_signed(tmp_path)
+        srv = KMIPServer(store, shim, port=29903, tls_cert=cert, tls_key=key)
+        srv._require_transport_security()          # must not raise
+
+    def test_tls_floor_is_1_2(self, store, shim, tmp_path):
+        import ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        cert, key = _self_signed(tmp_path)
+        srv = KMIPServer(store, shim, port=29904, tls_cert=cert, tls_key=key)
+        assert srv._build_ssl_context().minimum_version == ssl.TLSVersion.TLSv1_2
+
+    def test_reload_tls_rebuilds_the_context(self, store, shim, tmp_path):
+        from kmip_pkcs11.server.server import KMIPServer
+        cert, key = _self_signed(tmp_path)
+        srv = KMIPServer(store, shim, port=29905, tls_cert=cert, tls_key=key)
+        first = srv._build_ssl_context()
+        srv._ssl_context = first
+        srv.reload_tls()
+        assert srv._ssl_context is not first, "renewed certificate must be picked up"
+
+    def test_unprovisioned_certificate_cn_does_not_become_an_identity(self, store, shim):
+        """A CA-signed certificate still doesn't get to invent a principal that
+        was never granted anything."""
+        import ssl as _ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, tls_ca="/x/ca.pem", require_client_cert=True)
+        conn = MagicMock(spec=_ssl.SSLSocket)
+        conn.getpeercert.return_value = {"subject": [[("commonName", "ghost")]]}
+        assert srv._get_identity(conn) == "anonymous"
+
+    def test_provisioned_certificate_cn_becomes_the_identity(self, store, shim):
+        import ssl as _ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        store.create_identity("alice", "pw")
+        srv = KMIPServer(store, shim, tls_ca="/x/ca.pem", require_client_cert=True)
+        conn = MagicMock(spec=_ssl.SSLSocket)
+        conn.getpeercert.return_value = {"subject": [[("commonName", "alice")]]}
+        assert srv._get_identity(conn) == "alice"
+
+    def test_unverified_client_cert_is_ignored(self, store, shim):
+        """Without require_client_cert the subject was never checked against
+        the CA, so it must not be trusted even if it names a real identity."""
+        import ssl as _ssl
+        from kmip_pkcs11.server.server import KMIPServer
+        store.create_identity("alice", "pw")
+        srv = KMIPServer(store, shim, tls_ca="/x/ca.pem", require_client_cert=False)
+        conn = MagicMock(spec=_ssl.SSLSocket)
+        conn.getpeercert.return_value = {"subject": [[("commonName", "alice")]]}
+        assert srv._get_identity(conn) == "anonymous"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — deployability.
+#
+# Config file, CLI entry points, health/metrics endpoints and structured logs:
+# the difference between a library you write Python against and a service an
+# operator can run.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _config(tmp_path, **overrides):
+    """A minimally valid configuration, with sections overridable per test."""
+    import yaml
+    pin = tmp_path / "pin"
+    pin.write_text("9999")
+    data = {
+        "server": {"host": "127.0.0.1", "port": 5696, "allow_plaintext": True},
+        "hsm": {"library": "/usr/local/lib/softhsm/libsofthsm2.so",
+                "token_label": "KMIPTestSuite", "pin_file": str(pin)},
+        "storage": {"database": str(tmp_path / "kmip.db")},
+    }
+    for section, values in overrides.items():
+        data.setdefault(section, {})
+        if values is None:
+            data.pop(section)
+        else:
+            data[section].update(values)
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return str(path)
+
+
+class TestPhase3Config:
+    def test_valid_config_loads_with_defaults_applied(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig
+        cfg = KMIPConfig.from_file(_config(tmp_path))
+        assert cfg.get("server", "port") == 5696
+        assert cfg.get("logging", "format") == "json"      # default
+        assert cfg.get("observability", "enabled") is True  # default
+
+    def test_missing_file_is_reported_clearly(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="not found"):
+            KMIPConfig.from_file(str(tmp_path / "nope.yaml"))
+
+    def test_unknown_section_is_rejected(self, tmp_path):
+        """A typo'd section would otherwise be silently ignored, and the
+        operator would wonder why their setting did nothing."""
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="Unknown configuration section"):
+            KMIPConfig.from_dict({"serrver": {"port": 1}})
+
+    def test_plaintext_without_tls_must_be_explicit(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="allow_plaintext"):
+            KMIPConfig.from_dict({
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"},
+            })
+
+    def test_half_configured_tls_is_rejected(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="together"):
+            KMIPConfig.from_dict({
+                "tls": {"cert": "/x/c.pem"},
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"},
+            })
+
+    def test_mtls_without_a_ca_is_rejected(self):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        with pytest.raises(ConfigError, match="tls.ca"):
+            KMIPConfig.from_dict({
+                "tls": {"cert": "/c", "key": "/k", "require_client_cert": True},
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"},
+            })
+
+    def test_exactly_one_pin_source_is_required(self):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        base = {"server": {"allow_plaintext": True}, "storage": {"database": "/tmp/x.db"}}
+        with pytest.raises(ConfigError, match="pin_file"):
+            KMIPConfig.from_dict({**base, "hsm": {"library": "/x", "token_label": "t"}})
+        with pytest.raises(ConfigError, match="only one"):
+            KMIPConfig.from_dict({**base, "hsm": {"library": "/x", "token_label": "t",
+                                                  "pin": "1", "pin_env": "E"}})
+
+    def test_pin_is_read_from_a_file(self, tmp_path):
+        from kmip_pkcs11.config import KMIPConfig
+        assert KMIPConfig.from_file(_config(tmp_path)).resolve_pin() == "9999"
+
+    def test_pin_is_read_from_the_environment(self, monkeypatch):
+        from kmip_pkcs11.config import KMIPConfig
+        monkeypatch.setenv("KMIP_TEST_PIN", "secret-pin")
+        cfg = KMIPConfig.from_dict({
+            "server": {"allow_plaintext": True},
+            "hsm": {"library": "/x", "token_label": "t", "pin_env": "KMIP_TEST_PIN"},
+            "storage": {"database": "/tmp/x.db"},
+        })
+        assert cfg.resolve_pin() == "secret-pin"
+
+    def test_missing_env_pin_is_reported(self, monkeypatch):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        monkeypatch.delenv("KMIP_ABSENT_PIN", raising=False)
+        cfg = KMIPConfig.from_dict({
+            "server": {"allow_plaintext": True},
+            "hsm": {"library": "/x", "token_label": "t", "pin_env": "KMIP_ABSENT_PIN"},
+            "storage": {"database": "/tmp/x.db"},
+        })
+        with pytest.raises(ConfigError, match="unset or empty"):
+            cfg.resolve_pin()
+
+    def test_dumped_config_redacts_an_inline_pin(self):
+        """The most likely reason to dump a config is to paste it somewhere."""
+        from kmip_pkcs11.config import KMIPConfig
+        cfg = KMIPConfig.from_dict({
+            "server": {"allow_plaintext": True},
+            "hsm": {"library": "/x", "token_label": "t", "pin": "super-secret"},
+            "storage": {"database": "/tmp/x.db"},
+        })
+        assert "super-secret" not in json.dumps(cfg.as_dict())
+
+
+class TestPhase3Metrics:
+    def test_operations_are_counted_by_result(self):
+        from kmip_pkcs11.observability import Metrics
+        m = Metrics()
+        m.record_operation("Create", "success", 0.01)
+        m.record_operation("Create", "success", 0.02)
+        m.record_operation("Destroy", "failure", 0.005)
+        snap = m.snapshot()
+        assert snap["operations"] == {"Create/success": 2, "Destroy/failure": 1}
+        assert snap["latency_seconds"]["Create"]["count"] == 2
+
+    def test_prometheus_exposition_is_well_formed(self):
+        from kmip_pkcs11.observability import Metrics
+        m = Metrics()
+        m.record_operation("Get", "success", 0.5)
+        m.record_auth_failure()
+        text = m.render_prometheus()
+        assert 'kmip_operations_total{operation="Get",result="success"} 1' in text
+        assert "kmip_auth_failures_total 1" in text
+        # Every metric must carry HELP and TYPE or scrapers reject it.
+        for name in ("kmip_operations_total", "kmip_auth_failures_total",
+                     "kmip_operation_duration_seconds"):
+            assert f"# HELP {name}" in text and f"# TYPE {name}" in text
+
+    def test_dispatcher_records_success_and_failure(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.observability import Metrics
+        from kmip_pkcs11.core.enums import Operation
+        m = Metrics()
+        d = OperationDispatcher(store, shim, metrics=m)
+        inner = (encode_enumeration(Tag.Operation, Operation.Destroy)
+                 + encode_structure(Tag.RequestPayload,
+                                    encode_text_string(Tag.UniqueIdentifier, "ghost")))
+        d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "alice")
+        assert m.snapshot()["operations"] == {"Destroy/failure": 1}
+
+    def test_metric_failure_never_breaks_an_operation(self, store, shim):
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+        from kmip_pkcs11.core.enums import Operation, ResultStatus
+        broken = MagicMock()
+        broken.record_operation.side_effect = RuntimeError("metrics down")
+        d = OperationDispatcher(store, shim, metrics=broken)
+        uid = store.create_object(object_type=ObjectType.SymmetricKey,
+                                  state=State.PreActive, owner_identity="alice")
+        inner = (encode_enumeration(Tag.Operation, Operation.Activate)
+                 + encode_structure(Tag.RequestPayload,
+                                    encode_text_string(Tag.UniqueIdentifier, uid)))
+        raw = d.dispatch(decode_one(encode_structure(Tag.BatchItem, inner)), "alice")
+        assert decode_one(raw).get(Tag.ResultStatus).value == ResultStatus.Success
+
+
+class TestPhase3HealthEndpoint:
+    def _server(self, readiness=None):
+        from kmip_pkcs11.observability import Metrics, HealthServer
+        h = HealthServer(Metrics(), readiness, host="127.0.0.1", port=0)
+        h.start()
+        return h
+
+    def _get(self, port, path):
+        import urllib.request, urllib.error
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def test_health_is_up(self):
+        h = self._server()
+        try:
+            status, body = self._get(h.port, "/health")
+            assert status == 200 and json.loads(body)["status"] == "ok"
+        finally:
+            h.stop()
+
+    def test_ready_reports_503_when_not_ready(self):
+        h = self._server(readiness=lambda: (False, {"kmip_listener": "not yet accepting"}))
+        try:
+            status, body = self._get(h.port, "/ready")
+            assert status == 503
+            assert json.loads(body)["status"] == "not-ready"
+        finally:
+            h.stop()
+
+    def test_ready_reports_200_when_ready(self):
+        h = self._server(readiness=lambda: (True, {"mechanisms": 79}))
+        try:
+            status, body = self._get(h.port, "/ready")
+            assert status == 200 and json.loads(body)["mechanisms"] == 79
+        finally:
+            h.stop()
+
+    def test_readiness_exception_is_reported_not_raised(self):
+        h = self._server(readiness=lambda: (_ for _ in ()).throw(RuntimeError("hsm gone")))
+        try:
+            status, body = self._get(h.port, "/ready")
+            assert status == 503 and "hsm gone" in body
+        finally:
+            h.stop()
+
+    def test_metrics_endpoint_serves_exposition_format(self):
+        h = self._server()
+        try:
+            status, body = self._get(h.port, "/metrics")
+            assert status == 200 and "kmip_uptime_seconds" in body
+        finally:
+            h.stop()
+
+    def test_unknown_path_is_404(self):
+        h = self._server()
+        try:
+            assert self._get(h.port, "/nope")[0] == 404
+        finally:
+            h.stop()
+
+
+class TestPhase3ReadinessTracksTheListener:
+    """Regression: the readiness probe originally checked only the HSM and the
+    database, so it reported ready while the KMIP port was still closed —
+    startup binds only after opening the HSM session and provisioning the
+    master key, which on a large token takes seconds. An orchestrator would
+    route traffic to an instance that could not answer."""
+
+    def test_not_serving_before_start(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        srv = KMIPServer(store, shim, port=29910, allow_plaintext=True)
+        assert srv.is_serving() is False
+
+    def test_readiness_is_false_while_the_listener_is_down(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.cli.server_cli import _readiness
+        srv = KMIPServer(store, shim, port=29911, allow_plaintext=True)
+        ok, detail = _readiness(srv, shim, store)()
+        assert ok is False
+        assert "kmip_listener" in detail
+
+    def test_readiness_is_true_once_serving(self, store, shim):
+        from kmip_pkcs11.server.server import KMIPServer
+        from kmip_pkcs11.cli.server_cli import _readiness
+        srv = KMIPServer(store, shim, port=29912, allow_plaintext=True)
+        srv._running, srv._sock = True, object()   # as start() leaves it
+        ok, detail = _readiness(srv, shim, store)()
+        assert ok is True and "mechanisms" in detail
+
+
+class TestPhase3StructuredLogging:
+    def test_records_are_json_objects(self):
+        from kmip_pkcs11.observability import JSONFormatter
+        rec = logging.LogRecord("kmip.test", logging.INFO, __file__, 1,
+                                "server started on %s", ("127.0.0.1",), None)
+        entry = json.loads(JSONFormatter().format(rec))
+        assert entry["level"] == "INFO"
+        assert entry["message"] == "server started on 127.0.0.1"
+        assert entry["logger"] == "kmip.test"
+
+    def test_exceptions_are_carried_in_a_field(self):
+        """A traceback split across lines does not survive log aggregation."""
+        from kmip_pkcs11.observability import JSONFormatter
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            rec = logging.LogRecord("kmip.test", logging.ERROR, __file__, 1,
+                                    "failed", (), sys.exc_info())
+        entry = json.loads(JSONFormatter().format(rec))
+        assert "ValueError: boom" in entry["exception"]
+        assert "\n" not in entry["message"]
+
+    def test_configure_logging_does_not_duplicate_handlers(self):
+        from kmip_pkcs11.observability import configure_logging
+        try:
+            configure_logging("INFO", "json")
+            configure_logging("INFO", "json")
+            assert len(logging.getLogger().handlers) == 1
+        finally:
+            logging.getLogger().handlers.clear()
+
+
+class TestPhase3CLI:
+    def test_server_cli_check_accepts_a_valid_config(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.server_cli import main
+        try:
+            assert main(["--config", _config(tmp_path), "--check"]) == 0
+        finally:
+            logging.getLogger().handlers.clear()
+
+    def test_server_cli_rejects_a_bad_config_with_exit_code_2(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.server_cli import main
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("server: {port: 99999}\n")
+        assert main(["--config", str(bad)]) == 2
+        assert "configuration error" in capsys.readouterr().err
+
+    def test_admin_cli_manages_identities_roles_and_grants(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.admin_cli import main
+        db = str(tmp_path / "admin.db")
+        assert main(["-d", db, "identity", "add", "alice", "--password", "pw"]) == 0
+        assert main(["-d", db, "role", "grant", "alice", "admin"]) == 0
+        assert main(["-d", db, "identity", "list"]) == 0
+        assert "alice" in capsys.readouterr().out
+
+        from kmip_pkcs11.metadata.store import MetadataStore
+        store = MetadataStore(db)
+        assert store.verify_identity("alice", "pw") is True
+        assert store.get_roles("alice") == ["admin"]
+
+    def test_admin_cli_disable_blocks_authentication(self, tmp_path):
+        from kmip_pkcs11.cli.admin_cli import main
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "admin2.db")
+        main(["-d", db, "identity", "add", "bob", "--password", "pw"])
+        main(["-d", db, "identity", "disable", "bob"])
+        assert MetadataStore(db).verify_identity("bob", "pw") is False
+
+    def test_admin_cli_audit_verify_exits_nonzero_on_a_broken_chain(self, tmp_path, capsys):
+        """So a monitoring job can alert on a tampered log."""
+        from kmip_pkcs11.cli.admin_cli import main
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "audit.db")
+        store = MetadataStore(db)
+        for i in range(3):
+            store.append_audit(identity=f"u{i}", operation_name="Get", result="success")
+        assert main(["-d", db, "audit", "verify"]) == 0
+
+        conn = store._conn()
+        conn.execute("DROP TRIGGER kmip_audit_no_update")
+        conn.execute("UPDATE kmip_audit SET identity='mallory' WHERE seq=2")
+        conn.commit()
+        assert main(["-d", db, "audit", "verify"]) == 1
+        assert "BROKEN" in capsys.readouterr().out
+
+    def test_admin_cli_json_output(self, tmp_path, capsys):
+        from kmip_pkcs11.cli.admin_cli import main
+        db = str(tmp_path / "json.db")
+        main(["-d", db, "identity", "add", "alice", "--password", "pw"])
+        capsys.readouterr()          # discard the confirmation from `add`
+        main(["-d", db, "--json", "identity", "list"])
+        assert json.loads(capsys.readouterr().out)[0]["identity"] == "alice"
+
+    def test_admin_cli_requires_a_database_or_config(self, capsys):
+        from kmip_pkcs11.cli.admin_cli import build_parser
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["identity", "list"])
+
+
+class TestPhase3DeploymentArtifacts:
+    """The deployment files ship in the repository, so a broken one is a
+    broken release even though nothing imports them."""
+
+    ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
+
+    def test_example_config_is_valid(self):
+        from kmip_pkcs11.config import KMIPConfig
+        path = os.path.join(self.ROOT, "deploy", "config.example.yaml")
+        cfg = KMIPConfig.from_file(path)
+        assert cfg.get("server", "port") == 5696
+        assert cfg.get("hsm", "pin_file"), "the template must demonstrate a file-based PIN"
+        assert not cfg.get("hsm", "pin"), "the template must not ship an inline PIN"
+
+    def test_dockerfile_builds_softhsm_from_source(self):
+        """The packaged SoftHSM2 lacks the combined ECDSA-with-hash mechanisms,
+        so an image built on it would fail every EC signing test."""
+        with open(os.path.join(self.ROOT, "deploy", "Dockerfile")) as f:
+            dockerfile = f.read()
+        assert "--with-crypto-backend=openssl" in dockerfile
+        assert "USER kmip" in dockerfile, "the image must not run as root"
+        assert "HEALTHCHECK" in dockerfile
+
+    def test_systemd_unit_reloads_tls_on_sighup(self):
+        with open(os.path.join(self.ROOT, "deploy", "kmip-server.service")) as f:
+            unit = f.read()
+        assert "ExecReload=/bin/kill -HUP $MAINPID" in unit
+        assert "NoNewPrivileges=true" in unit
+
+    def test_ci_workflow_builds_the_right_softhsm(self):
+        path = os.path.join(self.ROOT, ".github", "workflows", "ci.yml")
+        with open(path) as f:
+            workflow = f.read()
+        assert "--with-crypto-backend=openssl" in workflow
+        assert "ECDSA_SHA256" in workflow, "CI must assert the mechanism set it depends on"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4 — surviving production.
+#
+# Backup and restore that provably recover working keys, credential
+# verification that does not cost 40ms per request, and the cross-process
+# safety the multi-process worker model depends on.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase4BackupRestore:
+    def _seeded(self, tmp_path, shim, name="src.db"):
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        store = MetadataStore(str(tmp_path / name), blob_cipher=BlobCipher(shim))
+        store.create_identity("alice", "pw")
+        store.assign_role("alice", "admin")
+        uid = store.create_object(object_type=ObjectType.SecretData,
+                                  raw_key_value=b"THE-SECRET", owner_identity="alice")
+        store.append_audit(identity="alice", operation_name="Create",
+                           object_uid=uid, result="success")
+        return store, uid
+
+    def test_backup_manifest_records_what_it_contains(self, tmp_path, shim):
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        manifest = backup.create_backup(store, str(tmp_path / "bk"),
+                                        token_label="KMIPTestSuite", note="nightly")
+        assert manifest["object_count"] == 1
+        assert manifest["identity_count"] == 1
+        assert manifest["audit_chain_ok"] is True
+        assert manifest["token_label"] == "KMIPTestSuite"
+        assert manifest["note"] == "nightly"
+
+    def test_restore_recovers_working_keys(self, tmp_path, shim):
+        """The gate: a node is lost and comes back able to read its keys."""
+        from kmip_pkcs11.metadata import backup
+        from kmip_pkcs11.metadata.store import MetadataStore
+        from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+        store, uid = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"), token_label="KMIPTestSuite")
+
+        target = str(tmp_path / "restored.db")
+        report = backup.restore_backup(str(tmp_path / "bk"), target, shim=shim,
+                                       token_label="KMIPTestSuite")
+        assert report["verification"]["ok"] is True
+        assert report["verification"]["decryption_verified"] is True
+
+        restored = MetadataStore(target, blob_cipher=BlobCipher(shim))
+        assert restored.get_object(uid)["raw_key_value"] == b"THE-SECRET"
+        assert restored.verify_identity("alice", "pw") is True
+        assert restored.get_roles("alice") == ["admin"]
+        assert restored.verify_audit_chain()["ok"] is True
+
+    def test_restore_refuses_a_different_token(self, tmp_path, shim):
+        """A database restored beside the wrong HSM is not degraded, it is
+        unreadable — so this must fail before it looks like it worked."""
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"), token_label="TokenA")
+        with pytest.raises(backup.BackupError, match="TokenA"):
+            backup.restore_backup(str(tmp_path / "bk"), str(tmp_path / "r.db"),
+                                  token_label="TokenB")
+
+    def test_restore_will_not_silently_overwrite(self, tmp_path, shim):
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"))
+        target = tmp_path / "exists.db"
+        target.write_bytes(b"")
+        with pytest.raises(backup.BackupError, match="already exists"):
+            backup.restore_backup(str(tmp_path / "bk"), str(target))
+
+    def test_backup_of_a_live_store_is_consistent(self, tmp_path, shim):
+        """Uses SQLite's online backup API — a plain file copy of a live WAL
+        database can capture a torn state."""
+        from kmip_pkcs11.metadata import backup
+        from kmip_pkcs11.metadata.store import MetadataStore
+        store, _ = self._seeded(tmp_path, shim)
+        for i in range(50):
+            store.append_audit(identity="alice", operation_name="Get",
+                               object_uid=f"u{i}", result="success")
+        backup.create_backup(store, str(tmp_path / "bk"))
+        restored = MetadataStore(str(tmp_path / "bk" / "kmip.db"))
+        assert restored.verify_audit_chain()["ok"] is True
+
+    def test_inspect_reports_without_restoring(self, tmp_path, shim):
+        from kmip_pkcs11.metadata import backup
+        store, _ = self._seeded(tmp_path, shim)
+        backup.create_backup(store, str(tmp_path / "bk"))
+        info = backup.inspect_backup(str(tmp_path / "bk"))
+        assert info["object_count"] == 1 and info["database_bytes"] > 0
+
+    def test_inspect_rejects_a_directory_that_is_not_a_backup(self, tmp_path):
+        from kmip_pkcs11.metadata import backup
+        with pytest.raises(backup.BackupError, match="not a backup"):
+            backup.inspect_backup(str(tmp_path))
+
+
+class TestPhase4CredentialVerificationCost:
+    """KMIP sends the Credential on every request. scrypt costs ~40ms by
+    design, so verifying per request capped a connection at ~25 requests/second
+    and let an unauthenticated client burn 40ms of CPU per packet."""
+
+    def test_repeat_verification_is_cached(self, store):
+        store.create_identity("alice", "pw")
+        t0 = time.monotonic(); store.verify_identity("alice", "pw")
+        first = time.monotonic() - t0
+        t0 = time.monotonic()
+        for _ in range(50):
+            assert store.verify_identity("alice", "pw") is True
+        cached = (time.monotonic() - t0) / 50
+        assert cached < first / 20, f"cached {cached*1000:.2f}ms vs first {first*1000:.2f}ms"
+
+    def test_wrong_password_is_never_cached(self, store):
+        """Otherwise a cache would weaken brute-force resistance — guessing
+        must keep paying the full derivation cost."""
+        store.create_identity("alice", "pw")
+        for _ in range(3):
+            t0 = time.monotonic()
+            assert store.verify_identity("alice", "wrong") is False
+            assert time.monotonic() - t0 > 0.005, "a rejected guess must stay expensive"
+
+    def test_password_change_invalidates_the_cache(self, store):
+        store.create_identity("alice", "old")
+        assert store.verify_identity("alice", "old") is True    # populates cache
+        store.set_password("alice", "new")
+        assert store.verify_identity("alice", "old") is False
+        assert store.verify_identity("alice", "new") is True
+
+    def test_disable_invalidates_the_cache(self, store):
+        store.create_identity("alice", "pw")
+        assert store.verify_identity("alice", "pw") is True
+        store.set_identity_disabled("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_delete_invalidates_the_cache(self, store):
+        store.create_identity("alice", "pw")
+        assert store.verify_identity("alice", "pw") is True
+        store.delete_identity("alice")
+        assert store.verify_identity("alice", "pw") is False
+
+    def test_cache_key_does_not_contain_the_password(self, store):
+        store.create_identity("alice", "sup3r-secret")
+        store.verify_identity("alice", "sup3r-secret")
+        blob = b"".join(store._verify_cache.keys())
+        assert b"sup3r-secret" not in blob
+
+    def test_cache_is_bounded(self, store):
+        store.VERIFY_CACHE_MAX = 8
+        for i in range(20):
+            store.create_identity(f"u{i}", "pw")
+            store.verify_identity(f"u{i}", "pw")
+        assert len(store._verify_cache) <= 8
+
+    def test_one_identitys_cache_entry_does_not_authenticate_another(self, store):
+        store.create_identity("alice", "shared-password")
+        store.create_identity("bob", "shared-password")
+        assert store.verify_identity("alice", "shared-password") is True
+        store.set_identity_disabled("bob")
+        # alice's cached entry must not let a disabled bob through, even though
+        # they happen to share a password.
+        assert store.verify_identity("bob", "shared-password") is False
+
+
+class TestPhase4CrossProcessSafety:
+    """Multi-process workers share one database, so anything that previously
+    relied on an in-process lock had to become cross-process safe."""
+
+    def test_audit_append_takes_a_write_lock_before_reading(self, store):
+        """BEGIN IMMEDIATE is what makes read-then-write atomic across
+        processes; a plain transaction locks only at the INSERT, leaving room
+        for two processes to link to the same predecessor."""
+        import inspect
+        source = inspect.getsource(type(store).append_audit)
+        assert "BEGIN IMMEDIATE" in source
+
+    def test_concurrent_appends_from_processes_keep_one_chain(self, tmp_path):
+        from multiprocessing import Process
+        from kmip_pkcs11.metadata.store import MetadataStore
+        db = str(tmp_path / "mp.db")
+        MetadataStore(db)          # create the schema up front
+
+        def append(n):
+            s = MetadataStore(db)
+            for i in range(n):
+                s.append_audit(identity="p", operation_name="Get",
+                               object_uid=str(i), result="success")
+
+        procs = [Process(target=append, args=(15,)) for _ in range(4)]
+        for p in procs: p.start()
+        for p in procs: p.join()
+
+        report = MetadataStore(db).verify_audit_chain()
+        assert report["ok"] is True, f"chain broke at {report.get('broken_at')}"
+        assert report["entries"] == 60
+
+    def test_busy_timeout_is_configured(self, store):
+        timeout = store._conn().execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout >= 1000, "concurrent writers must wait rather than fail"
+
+    def test_master_key_provisioning_is_serialised(self):
+        """Workers start simultaneously; without a cross-process lock each
+        would mint its own master key on a fresh token."""
+        import inspect
+        from kmip_pkcs11.metadata import blob_cipher
+        assert "flock" in inspect.getsource(blob_cipher._provisioning_lock)
+        assert "_provisioning_lock" in inspect.getsource(blob_cipher.BlobCipher._load_keys)
+
+
+class TestPhase4WorkerPool:
+    def test_default_worker_count_is_sane(self):
+        from kmip_pkcs11.server.workers import default_worker_count
+        n = default_worker_count()
+        assert 1 <= n <= 8
+
+    def test_pool_forks_and_stops_workers(self):
+        from kmip_pkcs11.server.workers import WorkerPool
+        served = []
+
+        def serve(sock, index):
+            # Child: just sleep so the parent can observe and reap it.
+            time.sleep(30)
+
+        pool = WorkerPool("127.0.0.1", 0, workers=2, serve=serve)
+        pool.bind()
+        pool.start()
+        try:
+            assert len(pool.children) == 2
+            for pid in pool.children:
+                os.kill(pid, 0)          # raises if the process is absent
+        finally:
+            pool.stop(timeout=5)
+        assert pool.children == []
+
+    def test_pool_binds_before_forking(self):
+        """PKCS#11 must not be initialized before the fork, so the socket has
+        to be bound by the parent and inherited."""
+        import inspect
+        from kmip_pkcs11.server.workers import WorkerPool
+        assert "fork" in inspect.getsource(WorkerPool._spawn)
+        assert "bind" in inspect.getsource(WorkerPool.bind)
+
+    def test_server_accepts_a_preexisting_socket(self, store, shim):
+        """How workers share one listener."""
+        import inspect
+        from kmip_pkcs11.server.server import KMIPServer
+        sig = inspect.signature(KMIPServer.start)
+        assert "sock" in sig.parameters
+
+    def test_worker_config_is_validated(self):
+        from kmip_pkcs11.config import KMIPConfig, ConfigError
+        base = {"server": {"allow_plaintext": True},
+                "hsm": {"library": "/x", "token_label": "t", "pin": "1"},
+                "storage": {"database": "/tmp/x.db"}}
+        with pytest.raises(ConfigError, match="workers"):
+            KMIPConfig.from_dict({**base, "server": {**base["server"], "workers": 0}})
+        # null means one per CPU
+        assert KMIPConfig.from_dict(
+            {**base, "server": {**base["server"], "workers": None}}
+        ).get("server", "workers") is None

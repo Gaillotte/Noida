@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 
 from kmip_pkcs11.metadata.store import MetadataStore
 
+from . import audit_view
 from .config import settings
+from .kmip_identity import KmipIdentityMirror
 from .kmip_service import KmipService, Pkcs11Service
 from .portal_store import ROLE_DESCRIPTIONS, ROLES, PortalStore
 from .security import client_ip, create_token, current_user, requires
@@ -48,6 +50,11 @@ app.add_middleware(
 def startup() -> None:
     app.state.metadata = MetadataStore(settings.database_url)
     app.state.portal = PortalStore(settings.database_url)
+    # Keeps the engine's own identity and role tables in step with portal
+    # administration. The engine authenticates KMIP clients against those
+    # tables itself, so a portal account that is never projected cannot use a
+    # KMIP client at all.
+    app.state.identities = KmipIdentityMirror(app.state.portal, app.state.metadata)
     app.state.kmip = KmipService(app.state.metadata)
     app.state.pkcs11 = Pkcs11Service(
         settings.pkcs11_library, settings.pkcs11_token, settings.pkcs11_pin
@@ -64,10 +71,19 @@ def startup() -> None:
             settings.bootstrap_admin, settings.bootstrap_password,
             role="Administrator", display_name="Bootstrap Administrator",
         )
+        app.state.identities.on_password_set(
+            settings.bootstrap_admin, settings.bootstrap_password, "Administrator",
+        )
         log.warning(
             "Created bootstrap administrator '%s'. Change this password immediately.",
             settings.bootstrap_admin,
         )
+
+    # Heals role drift and reports portal users the engine has no credential
+    # for. Cheap, and it means an upgrade from a build that predates the engine's
+    # own identity table says so at startup rather than at a client's first
+    # rejected connection.
+    app.state.identities.reconcile()
 
     log.info("CryptoHub Lite API ready (store=%s)",
              "postgresql" if app.state.metadata.is_postgres else "sqlite")
@@ -126,6 +142,13 @@ def login(body: LoginRequest, request: Request):
     portal.audit("auth.login", "SUCCESS", username=user["username"],
                  source_ip=client_ip(request))
 
+    # The engine hashes credentials separately (scrypt, against its own
+    # kmip_identities table) and cannot derive one from the stored portal hash,
+    # so a successful login is one of only three moments the cleartext exists.
+    # For an account that already has an engine credential this is a cheap
+    # existence check, not a re-derivation.
+    request.app.state.identities.on_login(user["username"], body.password, user["role"])
+
     # Compared in constant time, and only against the known default — this
     # reveals nothing an attacker does not already have, since they just
     # supplied the password themselves.
@@ -182,6 +205,10 @@ def change_own_password(body: PasswordChange, request: Request,
                             "The new password must differ from the current one")
 
     portal.set_password(user["username"], body.new_password)
+    # Rotate the engine credential in the same breath. Skipping it would leave
+    # the user's KMIP client authenticating with the old password after the
+    # portal stopped accepting it.
+    request.app.state.identities.on_password_set(user["username"], body.new_password)
     portal.audit("auth.password_change", "SUCCESS", username=user["username"],
                  source_ip=client_ip(request))
     return {"detail": "Password changed"}
@@ -425,24 +452,43 @@ def audit(request: Request,
           limit: int = Query(200, le=1000), offset: int = 0,
           username: Optional[str] = None, action: Optional[str] = None,
           result: Optional[str] = None):
-    portal: PortalStore = request.app.state.portal
-    return {
-        "total": portal.count_audit(),
-        "events": portal.list_audit(limit=limit, offset=offset, username=username,
-                                    action=action, result=result),
-    }
+    """The audit trail: portal actions and KMIP operations in one list.
+
+    They are two logs — the portal's own table, and the engine's hash-chained
+    ``kmip_audit`` — merged on read. See :mod:`app.audit_view` for why they are
+    not merged on write.
+    """
+    return audit_view.list_events(
+        request.app.state.portal, request.app.state.metadata,
+        limit=limit, offset=offset, username=username, action=action, result=result,
+    )
+
+
+@app.get("/api/audit/verify", tags=["Audit"])
+def audit_verify(request: Request, user: Dict[str, Any] = Depends(requires("audit"))):
+    """Whether the KMIP audit log's hash chain is intact.
+
+    Only the engine's log is chained; the portal's own table is not, so this
+    reports on the KMIP half and says so.
+    """
+    return audit_view.verify(request.app.state.metadata)
 
 
 @app.get("/api/audit/export", tags=["Audit"])
 def audit_export(request: Request, fmt: str = Query("csv", pattern="^(csv|json|excel)$"),
                  user: Dict[str, Any] = Depends(requires("audit.export"))):
     portal: PortalStore = request.app.state.portal
-    payload, media_type, filename = portal.export_audit(fmt)
+    limit = 100_000
+    (payload, media_type, filename), total = audit_view.export(
+        portal, request.app.state.metadata, fmt, limit=limit)
 
     # Exporting the audit trail is itself auditable — otherwise the one action
-    # that copies the whole record out of the system leaves no trace.
+    # that copies the whole record out of the system leaves no trace. The record
+    # names the bound when one applied, so a truncated export is not mistaken
+    # for a complete one later.
+    truncated = f", truncated to {limit} of {total} events" if total > limit else ""
     portal.audit("audit.export", "SUCCESS", username=user["username"],
-                 source_ip=client_ip(request), detail=f"format={fmt}")
+                 source_ip=client_ip(request), detail=f"format={fmt}{truncated}")
 
     return Response(content=payload, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -477,6 +523,11 @@ def create_user(body: UserCreate, request: Request,
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
+    # Provision the engine credential now, while the cleartext is in hand. This
+    # is the only moment it can be done for a user who never signs in to the
+    # portal and only ever uses a KMIP client.
+    request.app.state.identities.on_password_set(body.username, body.password, body.role)
+
     portal.audit("user.create", "SUCCESS", username=user["username"],
                  source_ip=client_ip(request),
                  detail=f"created {body.username} as {body.role}")
@@ -490,12 +541,19 @@ def update_user(username: str, body: UserUpdate, request: Request,
     if not portal.get_user(username):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user")
 
+    # Each change is mirrored into the engine's own tables as it is made. The
+    # engine decides KMIP access from those, so a change applied only to the
+    # portal would leave the user's KMIP client on the old role, the old
+    # password, or still working after the account was disabled.
+    identities: KmipIdentityMirror = request.app.state.identities
+
     changes = []
     if body.role is not None:
         try:
             portal.set_role(username, body.role)
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+        identities.on_role_changed(username, body.role)
         changes.append(f"role={body.role}")
     if body.enabled is not None:
         # Locking yourself out is easy to do and tedious to undo, so the one
@@ -504,9 +562,11 @@ def update_user(username: str, body: UserUpdate, request: Request,
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 "You cannot disable your own account")
         portal.set_enabled(username, body.enabled)
+        identities.on_enabled_changed(username, body.enabled)
         changes.append(f"enabled={body.enabled}")
     if body.password is not None:
         portal.set_password(username, body.password)
+        identities.on_password_set(username, body.password)
         changes.append("password reset")
 
     portal.audit("user.update", "SUCCESS", username=user["username"],
@@ -524,6 +584,9 @@ def delete_user(username: str, request: Request,
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user")
 
     portal.delete_user(username)
+    # Otherwise the engine credential outlives the account it belonged to, and
+    # the deleted user's KMIP client keeps authenticating.
+    request.app.state.identities.on_deleted(username)
     portal.audit("user.delete", "SUCCESS", username=user["username"],
                  source_ip=client_ip(request), detail=f"deleted {username}")
     return {"detail": f"Deleted {username}"}

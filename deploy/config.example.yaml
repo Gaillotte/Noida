@@ -1,0 +1,93 @@
+# kmip-server configuration.
+#
+#   kmip-server --config /etc/kmip/config.yaml
+#   kmip-server --config /etc/kmip/config.yaml --check   # validate and exit
+
+server:
+  host: 0.0.0.0
+  port: 5696                    # IANA-assigned KMIP port
+  max_request_size: 1048576     # ceiling on a declared request body, in bytes.
+                                # Read before authentication, so this is what
+                                # stops an anonymous client from declaring a
+                                # multi-gigabyte frame.
+  handshake_timeout: 10         # seconds a client may take over a TLS handshake
+  allow_plaintext: false        # true serves KMIP unencrypted — only for a
+                                # test rig, or behind a TLS terminator
+  workers: 1                    # 1 keeps everything in one process. Higher
+                                # pre-forks that many workers, each with its own
+                                # PKCS#11 session — the only way past the
+                                # single-session throughput ceiling. Leave unset
+                                # (null) for one worker per CPU.
+
+tls:
+  cert: /etc/kmip/tls/server.pem
+  key:  /etc/kmip/tls/server.key
+  # Verifying client certificates. With require_client_cert: true a verified
+  # certificate's Common Name is used as the caller's identity — but only if
+  # it names an identity that has actually been provisioned.
+  ca: /etc/kmip/tls/ca.pem
+  require_client_cert: false
+
+hsm:
+  library: /usr/lib/softhsm/libsofthsm2.so
+  token_label: KMIPToken
+
+  # The PIN unlocks the HSM. Supply exactly one source. Prefer pin_file,
+  # mounted by a secrets manager (Vault, Kubernetes secret, systemd
+  # LoadCredential); pin_env is fine where the environment is protected.
+  # An inline `pin:` works but warns at every start — it ends up in version
+  # control sooner or later.
+  pin_file: /run/secrets/kmip-token-pin
+  # pin_env: KMIP_TOKEN_PIN
+  # pin: "1234"
+
+storage:
+  # Holds KMIP metadata, identities, roles, grants and the audit log. Back it
+  # up together with the HSM token: secret blobs in here are encrypted under a
+  # master key that lives on the token, so one is useless without the other.
+  database: /var/lib/kmip/kmip.db
+
+observability:
+  enabled: true
+  host: 127.0.0.1               # keep off the public interface — /metrics and
+                                # /ready are for the operator, not KMIP clients
+  port: 9696                    # GET /health, /ready, /metrics
+
+governance:
+  # Cryptoperiod enforcement. Without this a key's Deactivation Date is a note
+  # in the database that nothing acts on: the key stays Active past the end of
+  # its cryptoperiod until a client happens to revoke it. With it, a background
+  # scan deactivates expired keys and warns as they approach expiry. Every
+  # action is audited under the identity "system:scheduler".
+  #
+  # Set a key's cryptoperiod with:  kmip-admin cryptoperiod set <uid> --days 365
+  enabled: false
+  scan_interval_seconds: 300
+  warn_days: 7                  # how far ahead expiry is announced
+
+  # Create a replacement symmetric key when one expires, cross-linked to it
+  # exactly as a client-driven ReKey would be (Link_ReplacementKey /
+  # Link_ReplacedKey). Rotation happens before deactivation, so a replacement
+  # exists before the old key stops being usable. Only symmetric keys —
+  # anything else is logged as a failure and simply deactivated.
+  auto_rotate: false
+
+  # Dual control. Operations named here do not execute on request: the first
+  # attempt is refused and records an approval request, and the operation runs
+  # only once enough OTHER identities have signed off:
+  #
+  #   kmip-admin approval list
+  #   kmip-admin approval approve <request-id> --as bob
+  #
+  # The requester can never approve their own request, and an approval
+  # authorises exactly one attempt on one object before it is consumed.
+  # KMIP has no wire operation for this, so approvals are granted through
+  # kmip-admin and the client simply retries.
+  dual_control: false
+  dual_control_operations: [Destroy, Export]
+  approvals_required: 2         # must be >= 2 when dual_control is on
+  approval_ttl_seconds: 3600    # how long an unused approval stays valid
+
+logging:
+  level: INFO                   # DEBUG | INFO | WARNING | ERROR
+  format: json                  # json for log shippers, text for humans

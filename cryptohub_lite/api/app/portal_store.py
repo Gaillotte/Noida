@@ -96,6 +96,36 @@ CREATE INDEX IF NOT EXISTS idx_audit_user ON portal_audit(username);
 """
 
 
+AUDIT_EXPORT_COLUMNS = ["occurred_at_iso", "username", "source_ip", "action",
+                        "object_uid", "provider", "result", "detail"]
+
+
+def serialise_audit(records: List[Dict[str, Any]], fmt: str) -> tuple:
+    """Renders audit records for download.
+
+    Returns ``(bytes, media_type, filename)``. CSV is emitted for the 'excel'
+    format too: a real .xlsx would pull in openpyxl for a file Excel opens
+    either way, and being honest about the extension is better than shipping a
+    CSV named .xlsx.
+
+    Module-level rather than a method because the audit trail comes from two
+    tables — this one and the engine's KMIP log — and both are exported through
+    the same columns. Two copies of that list would drift.
+    """
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+    if fmt == "json":
+        payload = json.dumps(records, indent=2, default=str).encode()
+        return payload, "application/json", f"audit-{stamp}.json"
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=AUDIT_EXPORT_COLUMNS,
+                            extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(records)
+    return buffer.getvalue().encode(), "text/csv", f"audit-{stamp}.csv"
+
+
 def _now() -> float:
     return datetime.datetime.now(datetime.timezone.utc).timestamp()
 
@@ -285,24 +315,11 @@ class PortalStore:
         return row
 
     def export_audit(self, fmt: str, **filters) -> tuple:
-        """Exports the audit trail.
+        """Exports this table's audit records.
 
-        Returns ``(bytes, media_type, filename)``. CSV is emitted for the
-        'excel' format too: a real .xlsx would pull in openpyxl for a file
-        Excel opens either way, and being honest about the extension is
-        better than shipping a CSV named .xlsx.
+        Callers wanting the trail the audit page shows want
+        :func:`app.audit_view.export` instead, which also covers the engine's
+        KMIP log.
         """
         records = self.list_audit(limit=filters.pop("limit", 100000), **filters)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-
-        if fmt == "json":
-            payload = json.dumps(records, indent=2, default=str).encode()
-            return payload, "application/json", f"audit-{stamp}.json"
-
-        columns = ["occurred_at_iso", "username", "source_ip", "action",
-                   "object_uid", "provider", "result", "detail"]
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(records)
-        return buffer.getvalue().encode(), "text/csv", f"audit-{stamp}.csv"
+        return serialise_audit(records, fmt)

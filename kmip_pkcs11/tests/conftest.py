@@ -5,6 +5,7 @@ live KMIPServer+KMIPClient pair.
 
 import itertools
 import os
+import shutil
 import socket
 import time
 import pytest
@@ -20,7 +21,16 @@ _port_counter = itertools.count(15700)
 
 
 def _init_softhsm():
+    """Start every session from an empty token.
+
+    Each full run leaves several thousand keys behind, and nothing removes
+    them — after enough runs the token held ~28k objects and startup's
+    token-wide search for the master key took longer than the fixtures were
+    willing to wait for the listener, so the suite began failing for reasons
+    that had nothing to do with the code under test. Wiping is safe: this
+    token exists only for the tests."""
     conf_dir = "/tmp/softhsm2_tests"
+    shutil.rmtree(f"{conf_dir}/tokens", ignore_errors=True)
     os.makedirs(f"{conf_dir}/tokens", exist_ok=True)
     conf_path = f"{conf_dir}/softhsm2.conf"
     with open(conf_path, "w") as f:
@@ -32,6 +42,24 @@ def _init_softhsm():
         f"softhsm2-util --init-token --slot 0 --label {TOKEN_LABEL} "
         f"--pin {USER_PIN} --so-pin {SO_PIN} 2>/dev/null"
     )
+
+
+def _await_listener(srv, port, timeout=30.0):
+    """Wait until the server is actually accepting connections.
+
+    Startup opens the HSM session and provisions the master key before it
+    binds, so a fixed short delay races it — and the failure looks like
+    ConnectionRefusedError in an unrelated test."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if srv.is_serving():
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+                return
+            except OSError:
+                pass
+        time.sleep(0.05)
+    raise RuntimeError(f"KMIP server did not start listening on port {port}")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -64,17 +92,10 @@ def server_client(tmp_path, shim):
 
     port   = next(_port_counter)
     store  = MetadataStore(str(tmp_path / "srv.db"))
-    srv    = KMIPServer(store, shim, port=port)
+    srv    = KMIPServer(store, shim, port=port, allow_plaintext=True)
     srv.start_background()
 
-    # Wait for server to be ready
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            break
-        except OSError:
-            time.sleep(0.05)
+    _await_listener(srv, port)
 
     client = KMIPClient(port=port)
     client.connect()
@@ -101,16 +122,10 @@ def kmip_server(tmp_path, shim):
 
     port  = next(_port_counter)
     store = MetadataStore(str(tmp_path / "srv2.db"))
-    srv   = KMIPServer(store, shim, port=port)
+    srv   = KMIPServer(store, shim, port=port, allow_plaintext=True)
     srv.start_background()
 
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            break
-        except OSError:
-            time.sleep(0.05)
+    _await_listener(srv, port)
 
     yield store, port
 

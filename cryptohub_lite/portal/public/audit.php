@@ -16,6 +16,16 @@ $result = $api->get('/api/audit', $filters);
 $events = $result['ok'] ? ($result['data']['events'] ?? []) : [];
 $total  = $result['ok'] ? ($result['data']['total'] ?? 0) : 0;
 
+// KMIP entries are hash-chained by the engine, so the trail can be checked
+// rather than merely read. Fetched separately: a verification problem must not
+// stop the events themselves from being shown, which is exactly when an auditor
+// most needs to see them.
+$chain = null;
+if ($result['ok']) {
+    $verify = $api->get('/api/audit/verify');
+    if ($verify['ok']) { $chain = $verify['data'] ?? null; }
+}
+
 render_head('Audit');
 
 // A 403 here is a role decision, not a fault; say which role is in effect so
@@ -36,7 +46,8 @@ if (!$result['ok']) {
         <div>
             <h2 class="chl-card-title">Audit Trail</h2>
             <p class="chl-card-sub"><?= (int)$total ?> event(s) recorded ·
-                showing <?= count($events) ?></p>
+                showing <?= count($events) ?> · portal actions and KMIP
+                operations combined</p>
         </div>
         <div class="chl-toolbar">
             <?php if (can('audit.export')): ?>
@@ -46,6 +57,27 @@ if (!$result['ok']) {
             <?php endif; ?>
         </div>
     </div>
+
+    <?php if ($chain !== null): ?>
+        <?php if (($chain['ok'] ?? null) === true): ?>
+            <div class="chl-card-body" style="border-bottom:1px solid var(--border);
+                        color:var(--text-muted)">
+                Integrity verified — <?= e((string)($chain['detail'] ?? '')) ?>.
+                Each KMIP entry links to the one before it, so an altered or
+                removed entry is detectable.
+            </div>
+        <?php else: ?>
+            <div class="chl-card-body" style="border-bottom:1px solid var(--border)">
+                <div class="chl-alert warn" style="margin:0">
+                    <strong>KMIP audit chain verification failed.</strong>
+                    <?= e((string)($chain['detail'] ?? 'The chain does not verify.')) ?>
+                    The entries below are shown as recorded, but at least one has
+                    been altered or removed since it was written — treat this as
+                    an incident, not a display problem.
+                </div>
+            </div>
+        <?php endif; ?>
+    <?php endif; ?>
 
     <div class="chl-card-body" style="border-bottom:1px solid var(--border)">
         <form class="chl-toolbar" method="get">

@@ -7,16 +7,25 @@ setup(
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
-        # Floor raised from >=0.7.0 to the version the code is actually tested
-        # against. The shim depends on 0.9.x behaviour, and a lower floor lets
-        # a fresh install resolve to something that has never been exercised.
-        "python-pkcs11>=0.9.5",
-        # PyKCS11 was listed here but is imported by no module in the package —
-        # everything uses python-pkcs11 (`import pkcs11`). Keeping it forced a
-        # C toolchain into every deployment image to build an extension that is
-        # never loaded.
+        # Pinned: the shim relies on 0.9.x call signatures (unwrap_key's
+        # positional object_class, Session.digest). 0.7.0 fails at runtime.
+        # PyKCS11 was previously listed here but is imported nowhere in the
+        # codebase — python-pkcs11 is the only PKCS#11 binding used.
+        "python-pkcs11>=0.9.5,<0.10",
+        # Configuration files. Only the safe loader is used.
+        "PyYAML>=5.4",
+        # asn1crypto builds and parses X.509 for Certify/ReCertify/Validate and
+        # encodes RSA key material — the `cryptography` package is deliberately
+        # not a dependency, since all actual crypto happens on the HSM.
+        "asn1crypto>=1.4",
     ],
     extras_require={
-        "dev": ["pytest", "pytest-cov"],
+        "dev": ["pytest", "pytest-cov", "pytest-timeout"],
+    },
+    entry_points={
+        "console_scripts": [
+            "kmip-server=kmip_pkcs11.cli.server_cli:main",
+            "kmip-admin=kmip_pkcs11.cli.admin_cli:main",
+        ],
     },
 )

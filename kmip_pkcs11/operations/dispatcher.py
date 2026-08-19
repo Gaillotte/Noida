@@ -5,14 +5,17 @@ and return a TTLVItem (the response payload).
 """
 
 import logging
+import time
 from typing import Callable, Dict
 
 from ..core.enums import Operation, ResultStatus, ResultReason, Tag, Type
 from ..core.ttlv import (
     TTLVItem, encode_structure, encode_enumeration, encode_text_string,
-    encode_byte_string, encode_integer, decode_one
+    encode_byte_string, encode_integer, decode_one, decode_all
 )
 from ..core.exceptions import KMIPError, OperationNotSupported
+from ..lifecycle.access_control import check_operation_allowed
+from ..lifecycle.dual_control import enforce as dual_control_enforce
 from ..metadata.store import MetadataStore
 from ..pkcs11_shim.shim import PKCS11Shim
 
@@ -34,64 +37,13 @@ from . import (
 log = logging.getLogger(__name__)
 
 
-def _operation_name(op_code) -> str:
-    """Symbolic operation name for the audit trail.
-
-    An audit row reading "kmip.Destroy" is answerable; one reading
-    "kmip.0x00000014" sends the reader to a specification table first.
-    """
-    if op_code is None:
-        return "Unknown"
-    try:
-        return Operation(op_code).name
-    except (ValueError, KeyError):
-        return f"0x{op_code:08X}"
-
-
-def _extract_uid(payload) -> "str | None":
-    """Reads the Unique Identifier from a request payload, if it carries one."""
-    if payload is None:
-        return None
-    try:
-        item = payload.get(Tag.UniqueIdentifier)
-        return item.value if item is not None else None
-    except Exception:                          # noqa: BLE001
-        return None
-
-
-def _extract_uid_from_bytes(payload_bytes: bytes) -> "str | None":
-    """Reads the Unique Identifier out of an encoded response payload.
-
-    Used for Create and its relatives, where the identifier the operation
-    produced only exists in the response. Decoding failure is not propagated:
-    a malformed-looking payload here must not fail an operation that already
-    succeeded, so the record simply carries no UID.
-    """
-    if not payload_bytes:
-        return None
-    try:
-        item, _ = decode_one(encode_structure(Tag.ResponsePayload, payload_bytes), 0)
-        uid = item.get(Tag.UniqueIdentifier)
-        return uid.value if uid is not None else None
-    except Exception:                          # noqa: BLE001 - see docstring
-        return None
-
-
 class OperationDispatcher:
-    def __init__(self, store: MetadataStore, shim: PKCS11Shim, audit_sink=None):
-        """
-        :param audit_sink: optional ``callable(record: dict)`` invoked once per
-            operation, successful or not.
-
-            Placed here rather than in each of the 41 handlers deliberately.
-            This is the single point every KMIP operation passes through, so a
-            new operation is audited the moment it is routed — there is no
-            handler to forget to instrument, which is exactly how audit
-            coverage decays.
-        """
+    def __init__(self, store: MetadataStore, shim: PKCS11Shim, metrics=None,
+                 dual_control=None):
         self._store = store
         self._shim  = shim
-        self._audit_sink = audit_sink
+        self._metrics = metrics
+        self._dual_control = dual_control
         self._handlers: Dict[int, Callable] = {
             Operation.Create:           create.handle,
             Operation.CreateKeyPair:    create_keypair.handle,
@@ -136,62 +88,116 @@ class OperationDispatcher:
             Operation.JoinSplitKey:     join_split_key.handle,
         }
 
-    def dispatch(self, batch_item: TTLVItem, identity: str) -> bytes:
+    def dispatch(self, batch_item: TTLVItem, identity: str, client: str = None) -> bytes:
         """Process one Batch Item. Returns encoded response BatchItem bytes."""
         op_item = batch_item.get(Tag.Operation)
         op_code = op_item.value if op_item else None
 
         payload = batch_item.get(Tag.RequestPayload)
         uid_item = batch_item.get(Tag.UniqueBatchItemID)
-
-        operation_name = _operation_name(op_code)
-        object_uid = _extract_uid(payload)
+        started = time.monotonic()
 
         try:
+            if op_code is None:
+                raise OperationNotSupported("BatchItem is missing an Operation")
             handler = self._handlers.get(op_code)
             if handler is None:
                 raise OperationNotSupported(f"Operation 0x{op_code:08X} not supported")
 
+            operation_name = self._operation_name(op_code)
+            # Both checks run before the handler, so an operation that is
+            # blocked has no effect at all — the point of dual control is that
+            # the destructive step never happens without the second signature.
+            check_operation_allowed(identity, operation_name, self._store)
+            if self._dual_control is not None:
+                dual_control_enforce(self._dual_control, self._store, operation_name,
+                                     identity, self._object_uid(payload, None))
+
             response_payload = handler(payload, identity, self._store, self._shim)
 
-            # Created objects have no UID in the request, only the response —
-            # so a Create audit record would otherwise never name what it made.
-            if object_uid is None and response_payload:
-                object_uid = _extract_uid_from_bytes(response_payload)
-
-            self._audit(operation_name, identity, object_uid, "SUCCESS", None)
+            self._audit(op_code, identity, client, payload, response_payload, "success")
+            self._record_metric(op_code, "success", started)
             return self._success_item(op_code, response_payload, uid_item)
 
         except KMIPError as e:
             log.warning("KMIP operation 0x%08X failed: %s", op_code or 0, e)
-            self._audit(operation_name, identity, object_uid, "FAILURE", str(e))
+            self._audit(op_code, identity, client, payload, None, "failure",
+                        reason=e.reason, message=str(e))
+            self._record_metric(op_code, "failure", started)
             return self._failure_item(op_code, e.reason, str(e), uid_item)
-        except Exception as e:
+        except Exception:
+            # Internal fault — full detail to the log, generic text to the wire.
             log.exception("Unexpected error in operation 0x%08X", op_code or 0)
-            self._audit(operation_name, identity, object_uid, "FAILURE", str(e))
-            return self._failure_item(op_code, ResultReason.GeneralFailure, str(e), uid_item)
+            self._audit(op_code, identity, client, payload, None, "failure",
+                        reason=ResultReason.GeneralFailure, message="Internal server error")
+            self._record_metric(op_code, "error", started)
+            return self._failure_item(
+                op_code, ResultReason.GeneralFailure, "Internal server error", uid_item
+            )
 
-    def _audit(self, operation: str, identity: str, uid, result: str, detail):
-        """Emits one audit record.
-
-        Never raises. An audit backend that is down must not turn a completed
-        key operation into a client-visible error — that would make the system
-        less reliable the more closely it is watched. Failures degrade to a log
-        line, which is the one place a fallback is acceptable.
-        """
-        if self._audit_sink is None:
+    def _record_metric(self, op_code, result, started):
+        if self._metrics is None:
             return
         try:
-            self._audit_sink({
-                "action": f"kmip.{operation}",
-                "username": identity,
-                "object_uid": uid,
-                "result": result,
-                "detail": detail,
-                "provider": "KMIP",
-            })
-        except Exception:                      # noqa: BLE001 - see docstring
-            log.exception("Audit sink failed for %s by %s", operation, identity)
+            self._metrics.record_operation(
+                self._operation_name(op_code), result, time.monotonic() - started)
+        except Exception:
+            # Metrics are diagnostics; never let them affect a request.
+            log.debug("Failed to record metrics for operation %r", op_code, exc_info=True)
+
+    # ── audit ────────────────────────────────────────────────────────────────
+
+    # Query and DiscoverVersions touch no managed object and carry no
+    # authorization decision — they are capability discovery. Auditing them
+    # would bury the records that matter in handshake noise. Everything else is
+    # recorded, reads included: "who exported this key" is the question an
+    # audit log most needs to answer, and it is a read.
+    _UNAUDITED = frozenset({Operation.Query, Operation.DiscoverVersions})
+
+    def _audit(self, op_code, identity, client, request_payload,
+               response_payload, result, reason=None, message=None):
+        if op_code in self._UNAUDITED:
+            return
+        try:
+            self._store.append_audit(
+                identity=identity,
+                operation=op_code,
+                operation_name=self._operation_name(op_code),
+                object_uid=self._object_uid(request_payload, response_payload),
+                result=result,
+                result_reason=reason,
+                message=message,
+                client=client,
+            )
+        except Exception:
+            # An audit failure must never turn a successful operation into a
+            # failed one, but it is serious enough to log loudly — a silently
+            # unrecorded operation is exactly what an attacker would want.
+            log.exception("Failed to write audit record for operation %r", op_code)
+
+    @staticmethod
+    def _operation_name(op_code) -> str:
+        try:
+            return Operation(op_code).name
+        except (ValueError, TypeError):
+            return f"0x{op_code:08X}" if isinstance(op_code, int) else "unknown"
+
+    @staticmethod
+    def _object_uid(request_payload, response_payload):
+        """The object an operation acted on. Usually named in the request, but
+        Create/CreateKeyPair/Register only learn it from the response."""
+        if request_payload is not None:
+            item = request_payload.get(Tag.UniqueIdentifier)
+            if item is not None:
+                return item.value
+        if response_payload:
+            try:
+                for item in decode_all(response_payload):
+                    if item.tag == Tag.UniqueIdentifier:
+                        return item.value
+            except Exception:
+                return None
+        return None
 
     @staticmethod
     def _success_item(op_code, payload_bytes: bytes, uid_item) -> bytes:

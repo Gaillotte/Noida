@@ -79,9 +79,11 @@ services:
       KMIP_TLS_CERT: ${KMIP_TLS_CERT:-}
       KMIP_TLS_KEY: ${KMIP_TLS_KEY:-}
       KMIP_REQUIRE_CLIENT_CERT: ${KMIP_REQUIRE_CLIENT_CERT:-false}
-      # Off: KMIP clients authenticate against portal accounts. Turn on only
-      # while migrating clients that still use the shared PIN.
-      KMIP_ALLOW_PIN_FALLBACK: ${KMIP_ALLOW_PIN_FALLBACK:-false}
+      # KMIP_ALLOW_PIN_FALLBACK is gone. It let a client authenticate with the
+      # shared token PIN while the username beside it was simply believed. The
+      # engine now verifies a per-identity credential and offers no way round
+      # it, so there is no setting to turn off — a client without an account
+      # is refused rather than downgraded.
     volumes:
       - chl_tokens:/var/lib/softhsm/tokens
     ports:

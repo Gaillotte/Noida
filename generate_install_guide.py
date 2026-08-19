@@ -268,7 +268,7 @@ def build():
     body(doc,
         "This document describes how to install all dependencies, build the "
         "kmip_pkcs11 Python package, initialise a SoftHSM2 token, and execute "
-        "the automated test suite (624 tests, 100 % pass rate). The server "
+        "the automated test suite (811 tests, 100 % pass rate). The server "
         "implements 41 of the 53 KMIP 2.1 operations (see Known Limitations "
         "in README_KMIP.md for the 12 deliberately deferred). All steps have "
         "been validated on Ubuntu 22.04 LTS / Debian 12 with Python 3.11.")
@@ -448,7 +448,7 @@ def build():
         "# Or explicitly point pytest at the test directory",
         "pytest kmip_pkcs11/tests/",
     ], title="Shell")
-    tip(doc, "All 624 tests should pass, at a 100 % pass rate, run live against a real SoftHSM2 token.")
+    tip(doc, "All 811 tests should pass, at a 100 % pass rate, run live against a real SoftHSM2 token.")
 
     h2(doc, "5.2  Verbose Output")
     code_block(doc, [
@@ -540,7 +540,7 @@ def build():
     ], title="Shell — HTML report")
 
     h2(doc, "6.3  Current Coverage Summary")
-    body(doc, "Results from the current test run (624 tests, run live against a real SoftHSM2 token):")
+    body(doc, "Results from the current test run (811 tests, run live against a real SoftHSM2 token):")
     make_table(doc,
         ["Test Module", "Tests", "Pass Rate", "Notes"],
         [
@@ -549,8 +549,9 @@ def build():
             ["test_metadata.py",           "18",  "100 %", "SQLite store — no HSM needed"],
             ["test_operations.py",          "8",  "100 %", "Operation integration"],
             ["test_conformance.py",        "48",  "100 %", "KMIP 2.1 conformance (OASIS TC mapping)"],
-            ["test_extended_coverage.py", "502",  "100 %", "Every operation, algorithm/mode coverage, error paths, access control, session concurrency"],
-            ["TOTAL",                     "624",  "100 %", "All modules run live against a real SoftHSM2 token"],
+            ["test_governance.py",         "48",  "100 %", "Cryptoperiod enforcement, dual control, group grants, per-role operation allowlists"],
+            ["test_extended_coverage.py", "641",  "100 %", "Every operation, algorithm/mode coverage, error paths, access control, session concurrency"],
+            ["TOTAL",                     "811",  "100 %", "All modules run live against a real SoftHSM2 token"],
         ],
         col_widths=[6, 2.5, 3, 6.5]
     )
@@ -594,8 +595,16 @@ def build():
              "Get, GetAttributes, Locate, Lifecycle, Encrypt/Decrypt, "
              "Attributes, ErrorHandling.",
              "Yes"],
+            ["test_governance.py",
+             "48 tests covering the governance layer: cryptoperiod enforcement (scheduled "
+             "deactivation, expiry warnings, auto-rotation cross-linked to the expiring key), "
+             "dual control (first attempt refused, the requester barred from approving their "
+             "own request, an approval consumed after exactly one use, expiry, retry reusing "
+             "the open request), group grants, and per-role operation allowlists. Includes "
+             "one end-to-end test over the wire that a refused Destroy leaves the key intact.",
+             "Yes"],
             ["test_extended_coverage.py",
-             "502 live tests — by far the largest module. Exercises every one of the "
+             "641 live tests — by far the largest module. Exercises every one of the "
              "41 implemented KMIP operations end-to-end against the live SoftHSM2 token; "
              "full algorithm and block-cipher-mode coverage (GCM/CTR/CFB/OFB/CCM, RSA, "
              "EC/ECDSA/ECDH, DSA, DH, HMAC, MAC, hashing, split-key, derive-key, wrap/"
@@ -709,14 +718,42 @@ def build():
          "The calling identity is neither the owner of the object nor holds the "
          "admin role nor has a delegated grant for it. Access control "
          "(lifecycle/access_control.py) checks, in order: admin role, "
-         "ownership (set at Create/Register/etc. time), then a delegated "
-         "'read' or 'full' grant. See the Access Control section of "
+         "ownership (set at Create/Register/etc. time), a delegated "
+         "'read' or 'full' grant, then a grant to a group the identity belongs to. "
+         "A role's operation allowlist is checked before all of these, and can refuse "
+         "an operation outright. See the Access Control section of "
          "README_KMIP.md for the full authorization model.",
          ["# Grant an identity the admin role (unconditional access to every object):",
-          "store.assign_role(\"alice\", \"admin\")",
+          "kmip-admin -c config.yaml role grant alice admin",
           "",
           "# Or delegate access to one specific object without transferring ownership:",
-          "store.grant_access(uid, \"bob\", \"read\")   # or \"full\" for mutating ops"]),
+          "kmip-admin -c config.yaml access grant <uid> bob --permission read",
+          "",
+          "# Or grant the whole team, by group:",
+          "kmip-admin -c config.yaml group add bob crypto-team",
+          "kmip-admin -c config.yaml access grant <uid> group:crypto-team --permission read",
+          "",
+          "# Check whether a role allowlist is what is refusing the operation:",
+          "kmip-admin -c config.yaml permission show <role>"]),
+        ("OperationFailed / PermissionDenied saying an operation \"requires N approval(s)\"",
+         "Dual control is enabled (governance.dual_control) and this operation is on the "
+         "protected list. The operation did not run — the handler is never reached. Have "
+         "the required number of OTHER identities approve the request named in the error "
+         "message, then retry. The requester can never approve their own request, and an "
+         "approval is consumed by a single attempt.",
+         ["kmip-admin -c config.yaml approval list",
+          "kmip-admin -c config.yaml approval approve <request-id> --as bob",
+          "kmip-admin -c config.yaml approval approve <request-id> --as carol",
+          "# then the original client retries the operation"]),
+        ("A key became Deactivated with nothing in the client logs asking for it",
+         "The cryptoperiod scheduler (governance.enabled) deactivated it because its "
+         "Deactivation Date had passed. This is recorded in the audit log under the "
+         "identity system:scheduler, so it is attributable like any other action.",
+         ["kmip-admin -c config.yaml audit list --object-uid <uid>",
+          "kmip-admin -c config.yaml cryptoperiod expiring --within-days 30",
+          "",
+          "# Give a key a new cryptoperiod (or push the existing one out):",
+          "kmip-admin -c config.yaml cryptoperiod set <uid> --days 365"]),
     ]
 
     for title, desc, cmds in problems:
@@ -743,9 +780,14 @@ def build():
         "    │   └── exceptions.py       # KMIP exception hierarchy",
         "    ├── lifecycle/",
         "    │   ├── state_machine.py    # Key lifecycle state transitions",
-        "    │   └── access_control.py   # Owner / admin role / delegated grants",
+        "    │   ├── access_control.py   # Owner / admin / grants / groups / role allowlists",
+        "    │   ├── dual_control.py     # M-of-N approval for destructive operations",
+        "    │   └── governance.py       # Cryptoperiod scan, scheduled deactivation/rotation",
         "    ├── metadata/",
-        "    │   └── store.py            # SQLite metadata store (objects, attrs, roles, grants)",
+        "    │   ├── store.py            # SQLite store (objects, attrs, identities, roles,",
+        "    │   │                       #   groups, grants, approvals, audit chain)",
+        "    │   ├── backup.py           # Online backup / restore with token pairing checks",
+        "    │   └── blob_cipher.py      # AES-GCM envelope encryption under an HSM master key",
         "    ├── pkcs11_shim/",
         "    │   └── shim.py             # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock",
         "    ├── operations/             # One file per KMIP operation (41 files total) — dispatcher.py routes",
@@ -762,7 +804,15 @@ def build():
         "    │   ├── validate.py, obtain_lease.py, rng_retrieve.py, rng_seed.py",
         "    │   └── query.py, discover_versions.py",
         "    ├── server/",
-        "    │   └── server.py           # TCP server (thread-per-client, Credential auth, optional TLS)",
+        "    │   ├── server.py           # TCP server (thread-per-client, auth, TLS, request caps)",
+        "    │   └── workers.py          # Pre-fork multi-process worker pool",
+        "    ├── config.py               # YAML configuration loading and validation",
+        "    ├── observability.py        # Metrics, health endpoints, JSON logging",
+        "    ├── cli/",
+        "    │   ├── server_cli.py       # kmip-server entry point",
+        "    │   └── admin_cli.py        # kmip-admin: identities, roles, groups, grants,",
+        "    │                           #   permissions, approvals, cryptoperiods, audit,",
+        "    │                           #   backup, master-key rotation",
         "    ├── test_app/",
         "    │   ├── client.py           # Synchronous KMIP 2.1 client",
         "    │   └── demo.py             # End-to-end demo",
@@ -773,7 +823,9 @@ def build():
         "        ├── test_metadata.py          #  18 metadata store unit tests",
         "        ├── test_operations.py        #   8 operation integration tests",
         "        ├── test_conformance.py       #  48 OASIS KMIP conformance tests",
-        "        └── test_extended_coverage.py # 502 live tests: every operation, algorithm",
+        "        ├── test_governance.py        #  48 governance tests: cryptoperiod, dual",
+        "        │                             #   control, groups, role allowlists",
+        "        └── test_extended_coverage.py # 641 live tests: every operation, algorithm",
         "                                      #  coverage, error paths, access control,",
         "                                      #  session concurrency",
     ], title="Repository layout")

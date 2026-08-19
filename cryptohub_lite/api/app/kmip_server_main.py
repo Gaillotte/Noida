@@ -22,7 +22,7 @@ from kmip_pkcs11.pkcs11_shim.shim import PKCS11Shim
 from kmip_pkcs11.server.server import KMIPServer
 
 from .config import settings
-from .kmip_identity import PortalAuthenticator, make_audit_sink
+from .kmip_identity import KmipIdentityMirror
 from .portal_store import PortalStore
 
 logging.basicConfig(
@@ -40,43 +40,26 @@ def main() -> int:
     log.info("Loading PKCS#11 module %s (token '%s')",
              settings.pkcs11_library, settings.pkcs11_token)
     shim = PKCS11Shim(settings.pkcs11_library, settings.pkcs11_token, settings.pkcs11_pin)
-    shim.initialize()
+    # Deliberately not initialized here. KMIPServer.start() does it, inside the
+    # process that will actually use the token — a child that inherits an
+    # already-initialized PKCS#11 library is undefined behaviour, so opening it
+    # before a worker forks is exactly the wrong place.
 
-    # Identity: portal accounts, not the shared PIN.
+    # Identity: the engine authenticates against its own kmip_identities table,
+    # which portal administration projects into. Reconciling at startup fixes
+    # role drift and reports any portal user who has no KMIP credential yet —
+    # see KmipIdentityMirror for why that cannot be fixed automatically.
     portal = PortalStore(settings.database_url)
-    authenticator = PortalAuthenticator(
-        portal=portal,
-        metadata=store,
-        # Off by default. Enable only while migrating existing KMIP clients;
-        # every use logs a warning naming it as the weak path.
-        allow_pin_fallback=os.getenv("KMIP_ALLOW_PIN_FALLBACK", "false").lower() == "true",
-        shim=shim,
-    )
+    KmipIdentityMirror(portal, store).reconcile()
 
     tls_cert = os.getenv("KMIP_TLS_CERT") or None
     tls_key = os.getenv("KMIP_TLS_KEY") or None
 
-    # TLS is required unless explicitly waived.
-    #
-    # Inverted from the engine's original default, where TLS was simply
-    # absent unless configured. The specification requires it, and key
-    # management traffic in the clear is not a reasonable default — so a
-    # plaintext listener now takes a deliberate, named act rather than an
-    # omission nobody notices.
+    # TLS is required unless explicitly waived. The engine enforces this itself
+    # now — the same policy, and the same reasoning, that this module used to
+    # apply before calling it. Passing the flag through and letting start() be
+    # the one place that decides avoids two checks that can disagree.
     allow_plaintext = os.getenv("KMIP_ALLOW_PLAINTEXT", "false").lower() == "true"
-    if not tls_cert:
-        if not allow_plaintext:
-            log.error(
-                "KMIP TLS is not configured. Set KMIP_TLS_CERT and KMIP_TLS_KEY, or "
-                "set KMIP_ALLOW_PLAINTEXT=true to accept plaintext deliberately. "
-                "Refusing to start a plaintext key-management listener by default."
-            )
-            return 2
-        log.warning(
-            "KMIP is listening in PLAINTEXT on port %s because KMIP_ALLOW_PLAINTEXT=true. "
-            "Credentials and key metadata cross the network unprotected.",
-            os.getenv("KMIP_PORT", "5696"),
-        )
 
     server = KMIPServer(
         store=store,
@@ -87,8 +70,7 @@ def main() -> int:
         tls_key=tls_key,
         tls_ca=os.getenv("KMIP_TLS_CA") or None,
         require_client_cert=os.getenv("KMIP_REQUIRE_CLIENT_CERT", "false").lower() == "true",
-        authenticator=authenticator,
-        audit_sink=make_audit_sink(portal),
+        allow_plaintext=allow_plaintext,
     )
 
     def shutdown(signum, _frame):
@@ -104,8 +86,9 @@ def main() -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    log.info("KMIP server listening on %s:%s",
-             os.getenv("KMIP_BIND", "0.0.0.0"), os.getenv("KMIP_PORT", "5696"))
+    # start() logs the listener itself, once it is actually bound. Announcing it
+    # here as well claimed the server was up before the TLS check that can
+    # refuse to start it.
     server.start()          # blocks
     return 0
 

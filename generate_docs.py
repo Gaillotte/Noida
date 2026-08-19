@@ -201,10 +201,14 @@ def build():
         "Capability-probed algorithms: the shim queries the token's real mechanism list "
         "at startup and rejects unsupported algorithm/mode combinations cleanly "
         "(OperationNotSupported) instead of leaking a raw PKCS#11 error",
-        "Transport: TCP with optional TLS 1.3 + mutual TLS (mTLS) client authentication",
-        "Persistent metadata: SQLite store for KMIP attributes, roles, and grants "
-        "(name, state, dates, tags, owner, role assignments, delegated access)",
-        "41 of 53 KMIP operations implemented; 624 automated tests; 100 % pass rate",
+        "Transport: TLS enforced by default (TLS 1.2 floor, hot certificate reload, "
+        "optional mTLS-derived identity); plain TCP requires an explicit opt-out",
+        "Persistent metadata: SQLite store (WAL mode, versioned migrations) for KMIP "
+        "attributes, identities, roles, groups, grants, approvals and a hash-chained "
+        "audit log; secret blobs enveloped under an HSM-resident master key",
+        "Governance: cryptoperiod enforcement with scheduled deactivation and optional "
+        "auto-rotation, and dual control (M-of-N approval) for destructive operations",
+        "41 of 53 KMIP operations implemented; 811 automated tests; 100 % pass rate",
     ]
     for b in bullets:
         add_bullet(doc, b)
@@ -223,9 +227,14 @@ def build():
         "│   └── exceptions.py           # KMIP exception hierarchy",
         "├── lifecycle/",
         "│   ├── state_machine.py        # Key lifecycle state transitions",
-        "│   └── access_control.py       # Owner / admin role / delegated grants",
+        "│   ├── access_control.py       # Owner / admin / grants / groups / role allowlists",
+        "│   ├── dual_control.py         # M-of-N approval for destructive operations",
+        "│   └── governance.py           # Cryptoperiod scan, scheduled deactivation/rotation",
         "├── metadata/",
-        "│   └── store.py                # SQLite metadata store (objects, attrs, roles, grants)",
+        "│   ├── store.py                # SQLite store (objects, attrs, identities, roles,",
+        "│   │                           #   groups, grants, approvals, audit chain)",
+        "│   ├── backup.py               # Online backup / restore with token pairing checks",
+        "│   └── blob_cipher.py          # AES-GCM envelope encryption under an HSM master key",
         "├── pkcs11_shim/",
         "│   └── shim.py                 # PKCS#11 / SoftHSM2 wrapper, capability probe, session lock",
         "├── operations/                 # One file per KMIP operation (41 files) — dispatcher.py routes",
@@ -249,7 +258,15 @@ def build():
         "│   ├── rng_retrieve.py          rng_seed.py",
         "│   └── query.py                 discover_versions.py",
         "├── server/",
-        "│   └── server.py               # TCP server (thread-per-client, Credential auth, optional TLS)",
+        "│   ├── server.py               # TCP server (thread-per-client, auth, TLS, request caps)",
+        "│   └── workers.py              # Pre-fork multi-process worker pool",
+        "├── config.py                   # YAML configuration loading and validation",
+        "├── observability.py            # Metrics, health endpoints, JSON logging",
+        "├── cli/",
+        "│   ├── server_cli.py           # kmip-server entry point",
+        "│   └── admin_cli.py            # kmip-admin: identities, roles, groups, grants,",
+        "│                               #   permissions, approvals, cryptoperiods, audit,",
+        "│                               #   backup, master-key rotation",
         "├── test_app/",
         "│   ├── client.py               # Synchronous KMIP 2.1 client",
         "│   └── demo.py                 # End-to-end demo application",
@@ -551,7 +568,7 @@ def build():
     add_heading(doc, "4.4b lifecycle/access_control.py — Access Control", 2, MID_BLUE)
     add_para(doc,
         "Every managed object records the identity that created it. Operations against "
-        "an existing object are authorized by a three-tier check, evaluated in this "
+        "an existing object are authorized by a four-tier check, evaluated in this "
         "order for every operation:"
     )
     section_break(doc)
@@ -565,6 +582,11 @@ def build():
          "\"read\" covers Get, GetAttributes, GetAttributeList, Check, Export, "
          "ObtainLease; every other operation (Encrypt, Destroy, ReKey, …) requires "
          "\"full\"."),
+        ("4. Group grant", "store.grant_access(uid, \"group:<name>\", …) plus "
+                           "store.add_to_group(identity, \"<name>\")",
+         "A grantee named group:<name> reaches every member of that group, so access "
+         "follows team membership instead of being re-granted per person. Leaving the "
+         "group withdraws the access."),
     ]
     tbl = doc.add_table(rows=1, cols=3)
     tbl.style = 'Table Grid'
@@ -590,19 +612,108 @@ def build():
         "grant on."
     )
     section_break(doc)
-    add_para(doc, "There is NO KMIP wire operation for role or grant management", bold=True)
+    add_para(doc, "Per-role operation allowlists", bold=True)
     add_para(doc,
-        "The KMIP spec does not define an operation for it. Role and grant assignment is "
-        "purely a MetadataStore admin surface, called directly from an admin script or "
-        "console — never over the KMIP wire protocol:"
+        "Separately, and before any of the four tiers above, check_operation_allowed() "
+        "enforces a role's operation allowlist: if any role an identity holds names a "
+        "set of permitted operations, the identity may perform only the union of those "
+        "sets. This is deliberately opt-in — an identity whose roles define no allowlist "
+        "is unrestricted at this layer, so introducing roles never silently locks anyone "
+        "out of operations they could previously perform. It narrows what an identity "
+        "may do; it never widens it. The admin role is exempt. Holding an unrestricted "
+        "role alongside a restricted one does not dissolve the restriction, or roles "
+        "would be additive in the wrong direction."
+    )
+    section_break(doc)
+    add_para(doc, "There is NO KMIP wire operation for role, group or grant management",
+             bold=True)
+    add_para(doc,
+        "The KMIP spec does not define an operation for it. Identity, role, group, grant "
+        "and permission management is purely an admin surface — the kmip-admin CLI, or "
+        "the MetadataStore called directly — never over the KMIP wire protocol:"
     )
     for line in [
-        "store.assign_role(\"alice\", \"admin\")     # alice can touch anything",
-        "store.grant_access(uid, \"bob\", \"read\")   # bob can Get this one object",
+        "store.assign_role(\"alice\", \"admin\")            # alice can touch anything",
+        "store.grant_access(uid, \"bob\", \"read\")          # bob can Get this one object",
+        "store.add_to_group(\"bob\", \"crypto-team\")       # membership",
+        "store.grant_access(uid, \"group:crypto-team\", \"read\")",
+        "store.allow_role_operation(\"auditor\", \"Get\")   # role allowlist",
         "store.revoke_access(uid, \"bob\")",
         "store.revoke_role(\"alice\", \"admin\")",
     ]:
         add_code(doc, line)
+    section_break(doc)
+    add_para(doc, "or, equivalently, through the operator CLI:")
+    for line in [
+        "kmip-admin -c config.yaml identity add alice",
+        "kmip-admin -c config.yaml role grant alice admin",
+        "kmip-admin -c config.yaml group add bob crypto-team",
+        "kmip-admin -c config.yaml access grant <uid> group:crypto-team --permission read",
+        "kmip-admin -c config.yaml permission allow auditor Get",
+    ]:
+        add_code(doc, line)
+
+    section_break(doc)
+
+    # ── 4.4c governance ──────────────────────────────────────────────────
+    add_heading(doc, "4.4c lifecycle/governance.py and lifecycle/dual_control.py",
+                2, MID_BLUE)
+    add_para(doc,
+        "Access control decides who may ask. Governance is the part that acts without "
+        "being asked, and the part that stops one person acting alone. Both are off by "
+        "default and enabled in the governance: section of the configuration file."
+    )
+    section_break(doc)
+    add_para(doc, "Cryptoperiod enforcement", bold=True)
+    add_para(doc,
+        "KMIP defines no separate cryptoperiod attribute — the Deactivation Date is the "
+        "end of the period — so a cryptoperiod here is that standard attribute plus "
+        "something that acts on it. Without the scheduler, a key with a two-year "
+        "cryptoperiod stays Active into year five unless somebody remembers. "
+        "KeyLifecycleScheduler runs a background scan every scan_interval_seconds that "
+        "deactivates keys whose Deactivation Date has passed, warns warn_days ahead as "
+        "keys approach it, and — with auto_rotate — first creates a replacement "
+        "symmetric key cross-linked to the old one via Link_ReplacementKey / "
+        "Link_ReplacedKey, exactly the lineage a client-driven ReKey produces. Rotation "
+        "runs before deactivation so a replacement exists before the old key stops being "
+        "usable; if rotation fails the key is deactivated anyway, because an expired key "
+        "left Active is the worse outcome. Every action is audited under the identity "
+        "system:scheduler, so an automated deactivation is as attributable as a human "
+        "one. In a multi-worker deployment only worker 0 runs the scheduler — otherwise "
+        "workers would race to deactivate the same keys."
+    )
+    section_break(doc)
+    add_para(doc, "Dual control (M-of-N approval)", bold=True)
+    add_para(doc,
+        "Destroy zeroizes key material; Export hands out key bytes. Under dual control "
+        "those do not execute on request: the first attempt is refused and records an "
+        "approval request, enough other identities approve it out of band through "
+        "kmip-admin, and the requester retries. The check runs before the handler, so a "
+        "blocked operation has no effect at all — the point is that the destructive step "
+        "never happens without the second signature."
+    )
+    section_break(doc)
+    for rule in [
+        "The requester can never approve their own request — enforced in the store, so "
+        "it holds however approvals are submitted.",
+        "An approval authorises exactly one attempt, on one object, by one identity. It "
+        "is consumed on use rather than becoming a standing permission, and consumed "
+        "before the handler runs, so a handler that fails partway leaves no reusable "
+        "approval behind.",
+        "Approvals expire (approval_ttl_seconds).",
+        "A retry reuses the open request rather than opening another, so a client in a "
+        "retry loop cannot fill the table with requests nobody will approve.",
+        "approvals_required must be at least 2 when dual control is on; the "
+        "configuration is rejected otherwise.",
+    ]:
+        add_bullet(doc, rule)
+    section_break(doc)
+    add_para(doc,
+        "KMIP has no wire operation for a pending, out-of-band-approved request, so the "
+        "refusal reaches the client as OperationFailed / PermissionDenied carrying the "
+        "request id, and approval happens through kmip-admin approval approve.",
+        italic=True
+    )
 
     section_break(doc)
 
@@ -610,8 +721,10 @@ def build():
     add_heading(doc, "4.5 metadata/store.py — MetadataStore", 2, MID_BLUE)
     add_para(doc,
         "SQLite-backed store for all KMIP attributes that PKCS#11 cannot hold, plus the "
-        "access-control tables (identity roles, delegated object grants). "
-        "Uses WAL journal mode and a connection-per-thread pattern for concurrent access."
+        "access-control tables (identities, roles, groups, delegated object grants, "
+        "per-role operation allowlists), the dual-control approval tables, and the "
+        "hash-chained audit log. Uses WAL journal mode, a connection-per-thread pattern "
+        "for concurrent access, and PRAGMA user_version migrations."
     )
     section_break(doc)
     add_para(doc, "Database schema:", bold=True)
@@ -648,10 +761,33 @@ def build():
         "  identity TEXT              — PK (identity, role)",
         "  role     TEXT              — e.g. \"admin\"",
         "",
-        "TABLE kmip_object_grants           — new: delegated per-object access",
+        "TABLE kmip_object_grants           — delegated per-object access",
         "  object_uuid TEXT FK → kmip_objects.uuid  — PK (object_uuid, grantee)",
-        "  grantee     TEXT",
+        "  grantee     TEXT                  — an identity, or \"group:<name>\"",
         "  permission  TEXT DEFAULT 'full'   — \"read\" or \"full\"",
+        "",
+        "TABLE kmip_identity_groups         — group membership",
+        "  identity   TEXT                   — PK (identity, group_name)",
+        "  group_name TEXT",
+        "",
+        "TABLE kmip_role_permissions        — per-role operation allowlist",
+        "  role           TEXT               — PK (role, operation_name)",
+        "  operation_name TEXT               — e.g. \"Get\", \"Destroy\"",
+        "",
+        "TABLE kmip_approval_requests       — dual control",
+        "  request_id     TEXT PK",
+        "  operation_name TEXT",
+        "  object_uid     TEXT",
+        "  requester      TEXT",
+        "  required       INTEGER            — how many other identities must approve",
+        "  created_at     REAL",
+        "  expires_at     REAL",
+        "  consumed_at    REAL               — NULL until the approval is spent",
+        "",
+        "TABLE kmip_approvals",
+        "  request_id  TEXT FK → kmip_approval_requests  — PK (request_id, approver)",
+        "  approver    TEXT               — never equal to the request's requester",
+        "  approved_at REAL",
     ]:
         add_code(doc, line)
 
@@ -675,6 +811,16 @@ def build():
         ("grant_access(uid, grantee, permission='full')", "Upserts a kmip_object_grants row (\"read\" or \"full\")."),
         ("revoke_access(uid, grantee)", "Deletes the matching kmip_object_grants row."),
         ("get_grant(uid, grantee) → str|None", "Returns the grantee's permission level for one object, or None."),
+        ("add_to_group(identity, group) / remove_from_group(…)", "Group membership; a grant to \"group:<name>\" then reaches every member."),
+        ("get_groups(identity) → list[str]", "The identity's groups, consulted by check_owner() when resolving grants."),
+        ("list_group_members(group) → list[str]", "The reverse lookup, for the kmip-admin group members command."),
+        ("allow_role_operation(role, op) / disallow_role_operation(…)", "Maintains a role's operation allowlist."),
+        ("allowed_operations_for(identity) → set|None", "Union of allowlists across the identity's roles; None means no restriction, so adding a role never silently locks anyone out."),
+        ("create_approval_request(…) → str", "Opens a dual-control request and returns its id."),
+        ("approve_request(request_id, approver) → dict", "Records one approval. Refuses the requester, an expired request, and an already-consumed one."),
+        ("find_satisfied_request(op, uid, requester) → dict|None", "The unconsumed, unexpired, fully approved request that lets a retry through."),
+        ("find_pending_request(op, uid, requester) → dict|None", "An open request still short of approvals, so a retry points at it instead of opening another."),
+        ("consume_approval_request(request_id)", "Marks a request used, so one round of approvals authorises exactly one operation."),
         ("list_grants(uid) → list[dict]", "Returns all {grantee, permission} grants for one object."),
     ]
     tbl = doc.add_table(rows=1, cols=2)
@@ -1104,7 +1250,7 @@ def build():
     add_heading(doc, "7. Test Specification", 1, DARK_BLUE)
 
     add_para(doc,
-        "The test suite comprises 624 tests organised into six modules, all passing "
+        "The test suite comprises 811 tests organised into seven modules, all passing "
         "(100 % pass rate). All tests are executed with pytest. The test suite requires "
         "a running SoftHSM2 token (initialised automatically by the conftest.py session "
         "fixture). The original five modules' test classes map to OASIS KMIP TC (Test "
@@ -1122,10 +1268,12 @@ def build():
         ("test_metadata.py",    "MetadataStore unit tests",             "18",  "SQLite only (no HSM)"),
         ("test_operations.py",  "Operation integration tests",          "8",   "Requires SoftHSM2"),
         ("test_conformance.py", "KMIP conformance tests (end-to-end)",  "48",  "Requires SoftHSM2"),
+        ("test_governance.py",  "Cryptoperiod enforcement, dual control, groups, "
+                                "per-role operation allowlists",        "48",  "Requires SoftHSM2"),
         ("test_extended_coverage.py", "All 41 operations, algorithm/mode coverage, "
                                       "error paths, access control, session concurrency",
-                                      "502", "Requires SoftHSM2"),
-        ("TOTAL",               "",                                     "624", ""),
+                                      "641", "Requires SoftHSM2"),
+        ("TOTAL",               "",                                     "811", ""),
     ]
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = 'Table Grid'
@@ -1146,7 +1294,7 @@ def build():
     # ── 7.2 Running the tests ─────────────────────────────────────────────
     add_heading(doc, "7.2 Running the Test Suite", 2, MID_BLUE)
     for line in [
-        "# Run all 624 tests",
+        "# Run all 811 tests",
         "pytest",
         "",
         "# Run a specific module",
@@ -1505,8 +1653,8 @@ def build():
     add_heading(doc, "8. Test Results Summary", 1, DARK_BLUE)
 
     add_para(doc,
-        "All 624 tests pass on a standard Ubuntu 22.04 installation with "
-        "SoftHSM2 2.6.1 and Python 3.11."
+        "All 811 tests pass on a Debian installation with a SoftHSM2 2.7.0 build "
+        "against OpenSSL 3.0.13 and Python 3.11."
     )
     section_break(doc)
 
@@ -1516,8 +1664,9 @@ def build():
         ("test_metadata.py",         "18",  "18",  "0",  "100 %"),
         ("test_operations.py",       "8",   "8",   "0",  "100 %"),
         ("test_conformance.py",      "48",  "48",  "0",  "100 %"),
-        ("test_extended_coverage.py","502", "502", "0",  "100 %"),
-        ("TOTAL",                    "624", "624", "0",  "100 %"),
+        ("test_governance.py",       "48",  "48",  "0",  "100 %"),
+        ("test_extended_coverage.py","641", "641", "0",  "100 %"),
+        ("TOTAL",                    "811", "811", "0",  "100 %"),
     ]
 
     tbl = doc.add_table(rows=1, cols=5)
@@ -1551,16 +1700,24 @@ def build():
          "enabled, and separate sessions don't work around that. A real fix needs a "
          "PKCS#11 binding that passes CKF_OS_LOCKING_OK, or a multi-process worker pool. "
          "See Section 3.3."),
-        ("RBAC has no wire protocol", "Role and grant management (assign_role, "
-         "grant_access, …) is a MetadataStore admin surface only — KMIP itself doesn't "
-         "define an operation for it. No groups, no per-role operation allowlist yet; "
-         "every non-admin identity is evaluated individually against ownership and "
-         "grants. See Section 4.4b."),
-        ("No audit trail", "Operations are logged via Python logging only — nothing "
-         "persisted, queryable, or tamper-evident."),
-        ("TLS optional, not enforced", "The server accepts plain TCP if no certificate "
-         "is configured; cert/key load from a static path with no rotation or ACME "
-         "integration."),
+        ("RBAC and governance have no wire protocol", "Identities, roles, groups, "
+         "grants, per-role operation allowlists, cryptoperiods and dual-control "
+         "approvals are all managed through kmip-admin (or the MetadataStore "
+         "directly), never over KMIP — the specification defines no operations for any "
+         "of it. A client under dual control learns only that its operation was "
+         "refused and which request id to have approved; the approval happens out of "
+         "band. See Section 4.4b."),
+        ("Audit log is local and unsigned", "Entries are hash-chained and append-only, "
+         "which makes tampering detectable, but the chain is not anchored anywhere "
+         "external — an attacker who rewrites the whole log consistently leaves no "
+         "trace. Ship entries to an external collector for stronger guarantees."),
+        ("No ACME / automated certificate issuance", "TLS is enforced by default and "
+         "reload_tls() picks up renewed material without dropping connections, but "
+         "obtaining and renewing certificates is left to the operator."),
+        ("No multi-tenancy", "Groups and role allowlists partition access, but not the "
+         "namespace: object names, Locate queries and quotas are global, and there is "
+         "no tenant boundary that would let two unrelated customers share one "
+         "deployment. Isolation today means one deployment per tenant."),
         ("Not FIPS/CC validated", "SoftHSM2 isn't a validated HSM. The PKCS#11 boundary "
          "means a validated token can be swapped in with no code change above "
          "pkcs11_shim/, but that swap hasn't happened here."),
@@ -1573,8 +1730,19 @@ def build():
         ("Algorithm coverage", "15 of 40 CryptographicAlgorithm values work against "
          "this token, capability-probed at startup; the rest are cleanly rejected with "
          "OperationNotSupported rather than a raw PKCS#11 error. See Section 4.6."),
-        ("No HA / backup tooling", "Single process, single SQLite file, single HSM "
-         "token; no clustering, replication, or coordinated backup/restore."),
+        ("Worker scaling is ~1.5x, not linear", "server.workers genuinely exceeds one "
+         "core, but the hash-chained audit log serialises every audited operation on a "
+         "single database write lock. Higher scaling would need a fundamentally "
+         "different audit design (per-shard chains, or an external append-only "
+         "service)."),
+        ("No PostgreSQL backend or HSM failover", "The store is heavily SQLite-specific "
+         "(PRAGMA user_version, json_extract, RAISE(ABORT) triggers), so a second "
+         "backend is a substantial rewrite; HSM failover needs a second token to "
+         "verify against. Neither was built rather than shipped untested."),
+        ("No HA", "Single SQLite file, single HSM token; no clustering or replication. "
+         "Backup and restore are tooled (kmip-admin backup create/inspect/restore/"
+         "verify, online backup API, token-pairing checks), but point-in-time rather "
+         "than continuous."),
     ]
     tbl = doc.add_table(rows=1, cols=2)
     tbl.style = 'Table Grid'
@@ -1588,15 +1756,20 @@ def build():
         "A PKCS#11 binding that passes CKF_OS_LOCKING_OK at C_Initialize, or a "
         "multi-process worker pool — the two real fixes for the single-session lock "
         "(a same-process session pool is not viable; see Section 3.3)",
-        "RBAC groups and a per-role operation allowlist, beyond the current "
-        "admin / owner / delegated-grant model",
-        "Persistent, queryable audit trail (beyond Python logging)",
-        "Enforced TLS by default, with certificate rotation / ACME integration",
+        "Multi-tenancy: a namespace boundary and per-tenant quotas, so unrelated "
+        "customers can share one deployment",
+        "ACME integration, so certificate renewal is automatic rather than an operator "
+        "task on top of the existing hot reload",
+        "An external anchor for the audit chain (shipping entries to an append-only "
+        "collector), so a wholesale rewrite of the local log is still detectable",
         "FIPS/CC-validated HSM backend swap-in and validation",
         "KMIP Batch Item atomicity (rollback on error)",
         "Additional PKCS#11-backed mechanisms (SHA-3 HMAC/hash, Blowfish, Twofish) once "
         "a capable token/backend is available — no code change needed above the shim",
-        "HA / clustering / coordinated backup and restore tooling",
+        "A second storage backend (PostgreSQL) and HSM failover, both of which need "
+        "infrastructure this project has not been able to test against",
+        "HA / clustering, beyond the point-in-time backup and restore tooling that "
+        "exists today",
     ]
     for r in roadmap:
         add_bullet(doc, r)

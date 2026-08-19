@@ -41,6 +41,26 @@ def is_admin(identity: str, store) -> bool:
     return ADMIN_ROLE in store.get_roles(identity)
 
 
+def check_operation_allowed(identity: str, operation_name: str, store):
+    """Enforce a role's operation allowlist, if any of the identity's roles
+    defines one.
+
+    Deliberately opt-in: an identity whose roles define no allowlist is
+    unrestricted at this layer, so introducing roles never silently locks
+    people out of operations they could previously perform. Ownership and
+    grants still apply on top — this narrows what an identity may do, it never
+    widens it."""
+    if is_admin(identity, store):
+        return
+    allowed = store.allowed_operations_for(identity)
+    if allowed is None:
+        return
+    if operation_name not in allowed:
+        raise NotAuthorized(
+            f"Identity '{identity}' holds no role permitting '{operation_name}'"
+        )
+
+
 def _required_permission(operation_name: str) -> str:
     return "read" if operation_name in _READ_OPERATIONS else "full"
 
@@ -70,10 +90,15 @@ def check_owner(
         if is_admin(identity, store):
             return
         if uid is not None:
-            granted = store.get_grant(uid, identity)
-            if granted is not None:
-                required = _required_permission(operation_name)
-                if _PERMISSION_RANK.get(granted, -1) >= _PERMISSION_RANK[required]:
+            required = _required_permission(operation_name)
+            # A grant may name the identity directly, or a group it belongs to,
+            # so access can follow team membership instead of being re-granted
+            # per person. The strongest applicable grant wins.
+            grantees = [identity] + [f"group:{g}" for g in store.get_groups(identity)]
+            for grantee in grantees:
+                granted = store.get_grant(uid, grantee)
+                if granted is not None and \
+                        _PERMISSION_RANK.get(granted, -1) >= _PERMISSION_RANK[required]:
                     return
 
     raise NotAuthorized(
