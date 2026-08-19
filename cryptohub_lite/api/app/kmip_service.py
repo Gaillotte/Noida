@@ -95,6 +95,45 @@ class KmipService:
 
     # ── capability ───────────────────────────────────────────────────────────
 
+    # What each KMIP operation is *for*. A flat list of 41 names says nothing
+    # about why the set is so broad, and the fourth group is the one that
+    # explains this architecture: since KMIP 1.2 the protocol does not only
+    # administer keys, it will use them on the client's behalf, which is what
+    # lets the key stay inside the HSM.
+    #
+    # Unlike the implemented/deferred split, this grouping is editorial — the
+    # specification does not tag operations this way — so it is a static map.
+    # Anything absent from it still appears, under OPERATION_GROUP_OTHER; see
+    # supported_operations().
+    OPERATION_GROUPS = (
+        ("Object lifecycle",
+         "Bring an object into existence, move it through its states, and end it.",
+         ("Create", "CreateKeyPair", "Register", "DeriveKey", "ReKey", "ReKeyKeyPair",
+          "Certify", "ReCertify", "CreateSplitKey", "JoinSplitKey", "Import", "Export",
+          "Activate", "Revoke", "Destroy", "Archive", "Recover", "Check", "ObtainLease")),
+        ("Retrieval and discovery",
+         "Find objects, and ask the server what it supports.",
+         ("Get", "GetAttributes", "GetAttributeList", "Locate", "Query",
+          "DiscoverVersions", "GetUsageAllocation")),
+        ("Attribute management",
+         "The metadata KMIP keeps about an object, rather than the key itself.",
+         ("AddAttribute", "ModifyAttribute", "DeleteAttribute", "SetAttribute",
+          "AdjustAttribute")),
+        ("Cryptographic services",
+         "The server performs the operation and returns the result, so the key "
+         "never leaves the HSM.",
+         ("Encrypt", "Decrypt", "Sign", "SignatureVerify", "MAC", "MACVerify",
+          "Hash", "RNGRetrieve", "RNGSeed", "Validate")),
+    )
+
+    OPERATION_GROUP_OTHER = "Other"
+
+    DEFERRED_REASON = (
+        "Session, asynchronous and vendor operations, which do not fit a "
+        "synchronous server that authenticates every request. A client calling "
+        "one receives OperationNotSupported rather than a silent failure."
+    )
+
     @staticmethod
     def supported_operations() -> Dict[str, Any]:
         """Which KMIP operations the engine implements, read from the engine.
@@ -107,6 +146,11 @@ class KmipService:
 
         The portal used to hardcode the badge list, and it had drifted: the card
         said 41 operations while displaying 28 of them.
+
+        Returns the flat lists as well as the grouped view. The flat
+        ``implemented`` list stays the authoritative count; the groups are a
+        presentation of it and are asserted to hold exactly the same names, so a
+        grouping mistake cannot quietly change what the card claims.
         """
         from kmip_pkcs11.operations.dispatcher import OperationDispatcher
 
@@ -122,11 +166,40 @@ class KmipService:
             (implemented if operation.value in implemented_codes
              else deferred).append(operation.name)
 
+        remaining = set(implemented)
+        groups = []
+        for title, description, names in KmipService.OPERATION_GROUPS:
+            present = [n for n in names if n in remaining]
+            remaining.difference_update(present)
+            if present:
+                groups.append({"title": title, "description": description,
+                               "operations": present})
+
+        # An operation the engine gained upstream that nobody has categorised
+        # here. Shown rather than dropped: a card that silently omits an
+        # implemented operation is worse than one with an untidy last group.
+        if remaining:
+            log.info("KMIP operations not in any documented group: %s",
+                     ", ".join(sorted(remaining)))
+            groups.append({
+                "title": KmipService.OPERATION_GROUP_OTHER,
+                "description": "Implemented, but not yet described in a group here.",
+                "operations": sorted(remaining),
+            })
+
+        grouped_total = sum(len(g["operations"]) for g in groups)
+        assert grouped_total == len(implemented), (
+            f"grouping lost operations: {grouped_total} grouped vs "
+            f"{len(implemented)} implemented"
+        )
+
         return {
             "implemented": sorted(implemented),
             "deferred": sorted(deferred),
             "implemented_count": len(implemented),
             "total": len(implemented) + len(deferred),
+            "groups": groups,
+            "deferred_reason": KmipService.DEFERRED_REASON,
         }
 
     # ── objects ──────────────────────────────────────────────────────────────

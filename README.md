@@ -351,17 +351,33 @@ Create one account per client and give it the least role that works — usually
 
 ### Supported operations
 
-**41 of 53** KMIP 2.1 operations. The remaining 12 are a deliberate scope
-decision: they are session, async and vendor operations that do not fit a
-synchronous, per-request-authenticated server.
+**41 of 53** KMIP 2.1 operations. The count is not a claim — it is the size of
+the dispatcher's handler table, which is also what decides whether an operation
+runs, so `GET /api/kmip/operations` reports it and the **KMIP page** displays
+exactly this grouping from that endpoint.
 
-| Category | Operations |
-|---|---|
-| **Object lifecycle** | Create, CreateKeyPair, Register, ReKey, ReKeyKeyPair, DeriveKey, Certify, ReCertify, CreateSplitKey, JoinSplitKey, Import, Export, Activate, Revoke, Destroy, Archive, Recover, Check |
-| **Retrieval & discovery** | Get, GetAttributes, GetAttributeList, Locate, Query, DiscoverVersions, ObtainLease, GetUsageAllocation |
-| **Attributes** | AddAttribute, ModifyAttribute, DeleteAttribute, SetAttribute, AdjustAttribute |
-| **Cryptographic** | Encrypt, Decrypt, Sign, SignatureVerify, MAC, MACVerify, Hash, RNGRetrieve, RNGSeed, Validate |
-| **Not implemented** (12) | Cancel, Poll, Notify, Put, Log, Login, Logout, DelegatedLogin, SetEndpointRole, PKCS11, Interop, ReProvision |
+| Category | | Operations |
+|---|--:|---|
+| **Object lifecycle**<br><sub>bring an object into existence, move it through its states, end it</sub> | 19 | Create, CreateKeyPair, Register, DeriveKey, ReKey, ReKeyKeyPair, Certify, ReCertify, CreateSplitKey, JoinSplitKey, Import, Export, Activate, Revoke, Destroy, Archive, Recover, Check, ObtainLease |
+| **Retrieval and discovery**<br><sub>find objects, ask what the server supports</sub> | 7 | Get, GetAttributes, GetAttributeList, Locate, Query, DiscoverVersions, GetUsageAllocation |
+| **Attribute management**<br><sub>the metadata KMIP keeps, rather than the key</sub> | 5 | AddAttribute, ModifyAttribute, DeleteAttribute, SetAttribute, AdjustAttribute |
+| **Cryptographic services**<br><sub>the server does the work, so the key never leaves</sub> | 10 | Encrypt, Decrypt, Sign, SignatureVerify, MAC, MACVerify, Hash, RNGRetrieve, RNGSeed, Validate |
+| **Not implemented** | 12 | Cancel, Poll, Notify, Put, Log, Login, Logout, DelegatedLogin, SetEndpointRole, PKCS11, Interop, ReProvision |
+
+The fourth group is the one that explains this architecture. KMIP is usually
+described as key *management*, and groups 1 to 3 are that. But since KMIP 1.2 the
+protocol also lets a client ask the **server** to encrypt, sign or MAC on its
+behalf: the client sends data and a key identifier and gets the result back,
+and the key itself is never transmitted. Without those operations a client would
+have to `Get` the key material and do the work itself, which would defeat the
+point of holding keys in an HSM.
+
+The 12 that are not implemented fit none of those jobs — `Login`/`Logout`/
+`DelegatedLogin`/`SetEndpointRole` assume a session model this server does not
+use, since it authenticates every request; `Poll`/`Cancel` are for asynchronous
+operations; `Notify`/`Put` are server-to-client push; and the rest are
+specialised extensions. A client calling one gets `OperationNotSupported`
+rather than a silent failure.
 
 The wire protocol itself is complete: full TTLV binary encoding and decoding,
 batching, `BatchErrorContinuationOption` and `MaximumResponseSize`.

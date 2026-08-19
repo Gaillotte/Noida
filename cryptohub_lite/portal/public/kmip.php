@@ -245,29 +245,44 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
         </div>
     </div>
     <div class="chl-card-body">
-        <div style="display:flex;flex-wrap:wrap;gap:7px">
-            <?php foreach ($ops['implemented'] as $op): ?>
-                <span class="chl-badge grey"><?= e($op) ?></span>
-            <?php endforeach; ?>
-        </div>
+        <?php
+        // Grouped by what each operation is for. A flat run of 41 badges gave no
+        // sense of why the set is so broad — in particular that the protocol
+        // does not only administer keys, it will use them on the caller's
+        // behalf, which is the whole reason the key can stay in the HSM.
+        // The groups come from the API so this page holds no operation list.
+        ?>
+        <?php foreach ($ops['groups'] as $group): ?>
+            <div style="margin-bottom:20px">
+                <div class="chl-stat-label" style="margin-bottom:4px">
+                    <?= e($group['title']) ?>
+                    (<?= count($group['operations']) ?>)
+                </div>
+                <p style="margin:0 0 8px;color:var(--text-muted);font-size:12px">
+                    <?= e($group['description']) ?></p>
+                <div style="display:flex;flex-wrap:wrap;gap:7px">
+                    <?php foreach ($group['operations'] as $op): ?>
+                        <span class="chl-badge grey"><?= e($op) ?></span>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
 
         <?php if (!empty($ops['deferred'])): ?>
-            <div class="chl-stat-label" style="margin:22px 0 8px">
-                Not implemented (<?= count($ops['deferred']) ?>)</div>
-            <div style="display:flex;flex-wrap:wrap;gap:7px">
-                <?php foreach ($ops['deferred'] as $op): ?>
-                    <span class="chl-badge" style="opacity:.55"><?= e($op) ?></span>
-                <?php endforeach; ?>
+            <div style="border-top:1px solid var(--border);padding-top:18px">
+                <div class="chl-stat-label" style="margin-bottom:4px">
+                    Not implemented (<?= count($ops['deferred']) ?>)</div>
+                <p style="margin:0 0 8px;color:var(--text-muted);font-size:12px">
+                    <?= e($ops['deferred_reason'] ?? '') ?></p>
+                <div style="display:flex;flex-wrap:wrap;gap:7px">
+                    <?php foreach ($ops['deferred'] as $op): ?>
+                        <span class="chl-badge" style="opacity:.5"><?= e($op) ?></span>
+                    <?php endforeach; ?>
+                </div>
             </div>
-            <p style="margin:10px 0 0;color:var(--text-muted);font-size:12px">
-                Session, asynchronous and vendor operations, which do not fit a
-                synchronous server that authenticates every request. A client
-                calling one receives <span class="chl-mono">OperationNotSupported</span>
-                rather than a silent failure.
-            </p>
         <?php endif; ?>
 
-        <p style="margin:14px 0 0;color:var(--text-muted);font-size:12px">
+        <p style="margin:16px 0 0;color:var(--text-muted);font-size:12px">
             Operations are executed by the existing KMIP engine over its own TCP listener on
             port 5696. This portal reads the resulting managed objects; it does not reimplement
             KMIP.
