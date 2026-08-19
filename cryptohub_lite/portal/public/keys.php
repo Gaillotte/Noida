@@ -39,7 +39,9 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
             <div class="chl-card-head">
                 <div>
                     <h2 class="chl-card-title">Keys on token</h2>
-                    <p class="chl-card-sub"><?= count($keys) ?> key object(s)</p>
+                    <p class="chl-card-sub"><?= count($keys) ?> key object(s) ·
+                        material and usage. <a href="kmip.php">KMIP</a> shows the
+                        same objects' lifecycle and attributes.</p>
                 </div>
                 <div class="chl-toolbar">
                     <select class="chl-select" onchange="location.href='keys.php?kind='+this.value">
@@ -57,7 +59,9 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
             <?php if (!$keys): ?>
                 <div class="chl-empty">
                     <div class="chl-empty-title">No keys found</div>
-                    <div>Generate one on the left, or over KMIP on port 5696.</div>
+                    <div>Generate one on the left, or over KMIP on port 5696 —
+                        both run the same <span class="chl-mono">Create</span>
+                        operation on the token.</div>
                 </div>
             <?php else: ?>
                 <div class="chl-table-wrap">
@@ -83,8 +87,15 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
                                     <?php endforeach; ?>
                                     <?php if (empty($k['usage_mask'])): ?>—<?php endif; ?>
                                 </td>
+                                <?php
+                                // The outbound leg of the pair, and the only
+                                // route to the lifecycle actions. Labelled for
+                                // where it goes rather than "Inspect", which
+                                // gave no reason to click it.
+                                ?>
                                 <td><a class="chl-btn chl-btn-sm"
-                                       href="kmip.php?uid=<?= urlencode((string)$k['uid']) ?>">Inspect</a></td>
+                                       href="kmip.php?uid=<?= urlencode((string)$k['uid']) ?>"
+                                       title="KMIP attributes, delegated access, and the lifecycle actions">Manage →</a></td>
                             </tr>
                         <?php endforeach; ?>
                         </tbody>

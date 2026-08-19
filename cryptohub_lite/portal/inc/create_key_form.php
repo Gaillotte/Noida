@@ -1,10 +1,16 @@
 <?php
 /**
- * The "Generate key" card, shared by the Keys and KMIP pages.
+ * The "Generate key" card. Included by the Keys page.
  *
- * One definition rather than a copy on each page: the two would otherwise
- * drift, and a form that offers different algorithms depending on which link
- * you arrived through is a bug waiting to be reported.
+ * It was on the KMIP page too, which is defensible — Create and CreateKeyPair
+ * are KMIP operations — but two copies of the same form made the two pages read
+ * as interchangeable when they answer different questions, and on the KMIP page
+ * it pushed that page's own content (attributes, grants, lifecycle actions)
+ * below the fold. Generation lives here; KMIP links to it.
+ *
+ * Kept as a separate include rather than inlined: it is ~150 lines of form that
+ * would otherwise bury the key list in keys.php, and $create_back keeps it
+ * reusable if a second entry point is ever wanted again.
  *
  * The including page sets $create_back to the file it wants to return to.
  *

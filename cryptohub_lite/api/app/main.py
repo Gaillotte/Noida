@@ -254,6 +254,16 @@ def dashboard(request: Request, user: Dict[str, Any] = Depends(requires("read"))
 
 # ── KMIP objects ─────────────────────────────────────────────────────────────
 
+@app.get("/api/kmip/operations", tags=["KMIP"])
+def kmip_operations(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
+    """Which KMIP operations this engine implements, and which it does not.
+
+    Derived from the dispatcher's handler table, so the answer is the engine's
+    actual capability rather than a list maintained alongside it.
+    """
+    return request.app.state.kmip.supported_operations()
+
+
 @app.get("/api/kmip/objects", tags=["KMIP"])
 def kmip_objects(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
     return request.app.state.kmip.list_objects()

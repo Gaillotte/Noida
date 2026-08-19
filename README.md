@@ -208,7 +208,7 @@ account through the portal is all that is required.
 ### 4. Create your first key
 
 **Keys → Generate key.** Pick an algorithm, give it a label, and generate.
-The same card also appears on the **KMIP** page — one form, two entry points.
+This is the one place keys are created in the UI; the **KMIP** page links to it.
 
 | Algorithm | Sizes | Produces |
 |---|---|---|
@@ -284,13 +284,23 @@ page records it as `kmip.Create` by `admin`.
 **Dashboard** — key, certificate, KMIP and PKCS#11 object counts, HSM status,
 audit volume, system health, with state and algorithm charts.
 
-**Key Management** — generate AES, 3DES, RSA, ECC and DSA keys with the
-PKCS#11 usage attributes chosen per key, beside a list showing class, label,
-type, size, `CKA_ID`, state and usage. Search, filter, CSV export.
+**Keys and KMIP** are two views of the same objects, and the split is worth
+knowing because both pages list the same managed objects — there is no separate
+"key store" and "KMIP store". A key on the token *is* a KMIP managed object.
 
-**KMIP Explorer** — managed objects with types, states and attributes. Create,
-Activate, Revoke, Re-Key and Destroy from the interface; all 41 operations
-available over the wire.
+* **Keys** — *what material exists, and make more.* Generate AES, 3DES, RSA, ECC
+  and DSA keys with the PKCS#11 usage attributes chosen per key, beside a list
+  showing class, label, type, size, `CKA_ID`, state and usage. Search, filter,
+  CSV export. **Manage →** on any row opens that object on the KMIP page.
+* **KMIP Explorer** — *govern the life of what exists.* Managed objects by KMIP
+  identifier and owner, with a detail panel for lifecycle dates, KMIP attributes
+  and delegated access, and the lifecycle actions: Activate, Re-Key, Revoke and
+  Destroy. All 41 operations are available over the wire.
+
+Generation lives on Keys alone. `Create` and `CreateKeyPair` are genuine KMIP
+operations, so the form was not out of place on the KMIP page — but having it in
+both made the pages read as interchangeable and pushed the KMIP-specific content
+below the fold. The two link to each other instead.
 
 **PKCS#11 Explorer** — slots, tokens and objects with raw `CKA_*` attributes
 exactly as the token reports them. Secret-bearing attributes are never

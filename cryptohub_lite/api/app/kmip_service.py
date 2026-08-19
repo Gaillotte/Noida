@@ -93,6 +93,42 @@ class KmipService:
         # without it, so the portal still functions when the HSM is down.
         self._shim = None
 
+    # ── capability ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def supported_operations() -> Dict[str, Any]:
+        """Which KMIP operations the engine implements, read from the engine.
+
+        Asked of the dispatcher's handler table rather than answered from a
+        list kept here. That table *is* the behaviour — an operation with no
+        entry in it is refused with OperationNotSupported — so this cannot claim
+        an operation that would not actually run, and an operation added
+        upstream appears without anyone remembering to update a page.
+
+        The portal used to hardcode the badge list, and it had drifted: the card
+        said 41 operations while displaying 28 of them.
+        """
+        from kmip_pkcs11.operations.dispatcher import OperationDispatcher
+
+        # __init__ only populates the handler table and stores its arguments;
+        # building one this way avoids requiring a store or an open HSM session
+        # just to ask what the engine can do.
+        dispatcher = OperationDispatcher.__new__(OperationDispatcher)
+        OperationDispatcher.__init__(dispatcher, store=None, shim=None)
+        implemented_codes = set(dispatcher._handlers)
+
+        implemented, deferred = [], []
+        for operation in enums.Operation:
+            (implemented if operation.value in implemented_codes
+             else deferred).append(operation.name)
+
+        return {
+            "implemented": sorted(implemented),
+            "deferred": sorted(deferred),
+            "implemented_count": len(implemented),
+            "total": len(implemented) + len(deferred),
+        }
+
     # ── objects ──────────────────────────────────────────────────────────────
 
     def list_objects(self, owner: Optional[str] = None) -> List[Dict[str, Any]]:
