@@ -78,6 +78,12 @@ services:
       KMIP_ALLOW_PLAINTEXT: ${KMIP_ALLOW_PLAINTEXT:-true}
       KMIP_TLS_CERT: ${KMIP_TLS_CERT:-}
       KMIP_TLS_KEY: ${KMIP_TLS_KEY:-}
+      # The CA that signed client certificates. Read by the entry point but
+      # previously not passed through here, so setting it in the environment had
+      # no effect and mTLS could not be enabled without editing this file.
+      # Verification only actually happens with KMIP_REQUIRE_CLIENT_CERT=true —
+      # a CA on its own makes the certificate optional, which is rarely intended.
+      KMIP_TLS_CA: ${KMIP_TLS_CA:-}
       KMIP_REQUIRE_CLIENT_CERT: ${KMIP_REQUIRE_CLIENT_CERT:-false}
       # KMIP_ALLOW_PIN_FALLBACK is gone. It let a client authenticate with the
       # shared token PIN while the username beside it was simply believed. The

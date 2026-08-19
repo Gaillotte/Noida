@@ -270,7 +270,7 @@ def build():
         "kmip_pkcs11 Python package, initialise a SoftHSM2 token, and execute "
         "the automated test suite (811 tests, 100 % pass rate). The server "
         "implements 41 of the 53 KMIP 2.1 operations (see Known Limitations "
-        "in README_KMIP.md for the 12 deliberately deferred). All steps have "
+        "in README.md for the 12 deliberately deferred). All steps have "
         "been validated on Ubuntu 22.04 LTS / Debian 12 with Python 3.11.")
 
     make_table(doc,
@@ -559,7 +559,7 @@ def build():
     note(doc,
         "demo.py is intentionally excluded from the automated test suite — it "
         "requires a fully running server and an interactive environment and is "
-        "exercised manually (see Section 1 / README_KMIP.md Quick Start).")
+        "exercised manually (see Section 1 / README.md Quick Start).")
 
     # ── 7  Test Module Reference ─────────────────────────────────────────────
     h1(doc, "7  Test Module Reference")
@@ -611,7 +611,7 @@ def build():
              "unwrap); capability-gating (mechanisms the token doesn't support must fail "
              "cleanly with OperationNotSupported, never a raw PKCS#11 error); error paths "
              "across every handler; the access-control model (object ownership, the admin "
-             "role, and delegated read/full grants — see README_KMIP.md's Access Control "
+             "role, and delegated read/full grants — see README.md's Access Control "
              "section); and session-concurrency regression tests that hammer the shared "
              "PKCS#11 session with multiple threads at once, verifying correctness under "
              "the threading.RLock in pkcs11_shim/shim.py.",
@@ -703,7 +703,7 @@ def build():
          ["python -m pytest -p pytest_cov --cov=kmip_pkcs11 --cov-report=term-missing"]),
         ("Native crash / segfault under concurrent load",
          "This is not a bug to fix — it is the known python-pkcs11 / SoftHSM2 "
-         "threading limitation documented in README_KMIP.md's Known Limitations. "
+         "threading limitation documented in README.md's Known Limitations. "
          "python-pkcs11 0.9.5 calls C_Initialize(NULL), so the library never "
          "enables its own internal thread safety; separate PKCS#11 sessions per "
          "thread do not work around that and reproducibly segfault or corrupt "
@@ -722,7 +722,7 @@ def build():
          "'read' or 'full' grant, then a grant to a group the identity belongs to. "
          "A role's operation allowlist is checked before all of these, and can refuse "
          "an operation outright. See the Access Control section of "
-         "README_KMIP.md for the full authorization model.",
+         "README.md for the full authorization model.",
          ["# Grant an identity the admin role (unconditional access to every object):",
           "kmip-admin -c config.yaml role grant alice admin",
           "",
@@ -769,7 +769,7 @@ def build():
         "Noida/",
         "├── setup.py                    # Package definition & dependencies",
         "├── pytest.ini                  # Default pytest configuration",
-        "├── README_KMIP.md              # Project overview",
+        "├── README.md              # Project overview",
         "├── generate_docs.py            # Word documentation generator",
         "├── generate_install_guide.py   # This document generator",
         "├── coverage_html/              # HTML coverage report (generated)",

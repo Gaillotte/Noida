@@ -328,6 +328,28 @@ class _PgConnection:
     def close(self) -> None:
         self._connection.close()
 
+    def backup(self, target):
+        """Refuse SQLite's online backup API with an explanation.
+
+        ``metadata/backup.py`` — and so ``kmip-admin backup`` — takes its
+        snapshot by calling this on the store's connection. There is no
+        PostgreSQL equivalent to supply here: a consistent snapshot of a
+        PostgreSQL database is taken by the server, not by the client holding a
+        connection to it.
+
+        Without this the call reaches psycopg and fails with a bare
+        ``AttributeError: 'psycopg2.extensions.connection' object has no
+        attribute 'backup'``, which tells an operator following the backup
+        documentation nothing about what to do instead.
+        """
+        raise NotImplementedError(
+            "The online backup API is SQLite-only, and this store is "
+            "PostgreSQL. Back it up with pg_dump (or a snapshot of the "
+            "chl_pgdata volume), together with the HSM token — the two are one "
+            "unit, since objects reference key material by CKA_ID and secret "
+            "blobs are encrypted under a master key held on the token."
+        )
+
 
 def connect(dsn: str):
     """Opens a connection appropriate to the DSN.

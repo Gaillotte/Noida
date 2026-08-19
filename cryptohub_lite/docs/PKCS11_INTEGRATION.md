@@ -69,10 +69,11 @@ crashes.
 The variable is named `SOFTHSM2_LIB` for historical reasons; it accepts any
 PKCS#11 module path.
 
-> **The PIN is now only an HSM credential.** It used to double as the KMIP
-> client password, which meant anyone holding it could claim any identity.
-> KMIP clients authenticate against portal accounts instead. Do not reintroduce
-> `KMIP_ALLOW_PIN_FALLBACK=true` except while migrating existing clients.
+> **The PIN is only an HSM credential.** It used to double as the KMIP client
+> password, which meant anyone holding it could claim any identity. KMIP clients
+> now authenticate against a per-identity credential the engine holds, projected
+> from portal accounts. `KMIP_ALLOW_PIN_FALLBACK` no longer exists, and there is
+> no way to re-enable the old behaviour.
 
 ## Moving to a vendor HSM
 
@@ -144,8 +145,20 @@ should not be the thing asking.
 
 ## Key material policy
 
-Keys are generated `CKA_SENSITIVE=true`, `CKA_EXTRACTABLE=false`. Material
+Keys default to `CKA_SENSITIVE=true`, `CKA_EXTRACTABLE=false`. Material
 cannot leave the token, and a KMIP `Get` against such a key raises
 `NotExtractable` rather than returning anything. This is the property the HSM
-exists to provide; overriding it per request is possible in the engine but
-should be a deliberate, reviewed decision.
+exists to provide.
+
+**Private keys are not negotiable.** `create_keypair` fixes the private half
+as sensitive and non-extractable and the public half as neither, so no request
+— REST or KMIP — can produce an exportable private key.
+
+**Secret keys are.** The engine has always accepted both flags on `Create`,
+and the portal's **Generate key** form now exposes them, so an operator can
+tick `CKA_EXTRACTABLE` on an AES key. That is occasionally what you want — a
+key destined to be wrapped out to another token — but it is the one choice on
+that form that gives away the HSM's core guarantee, and it should be a
+deliberate, reviewed decision rather than a default anyone reaches for.
+`GET /api/keys` reports `extractable` per object, so an auditor can find every
+key where it was taken.

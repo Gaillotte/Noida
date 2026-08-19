@@ -17,7 +17,7 @@ exist in the 2.6.1 release. Measured by listing each build's mechanisms:
 | **2.7.0, master (source)** | `ECDSA`, `ECDSA-SHA1`, `ECDSA-SHA224`, **`ECDSA-SHA256`**, **`ECDSA-SHA384`**, **`ECDSA-SHA512`** |
 
 On 2.6.1 — *either* backend — EC signing fails with `MechanismInvalid` and **8
-of the 624 tests fail**. No configuration changes that; the release simply does
+of the tests fail**. No configuration changes that; the release simply does
 not implement the mechanisms.
 
 > The crypto backend is a red herring here. It is easy to assume Botan is the
@@ -33,11 +33,11 @@ generally — just don't expect it to supply ECDSA-SHA on 2.6.1.
 
 ### Consequence for the README's claim
 
-`README_KMIP.md` states "624 automated tests — 100% pass rate". That is
-reproducible only on a SoftHSM2 new enough to offer the combined ECDSA
-mechanisms. On 2.6.1 the result is 616 passed, 8 failed. The tests are
-correct and so is the shim, which refuses a mechanism the token lacks rather
-than failing deep inside the binding.
+`README.md` states that the suite passes in full — **811 tests** as of the
+phases 0–5 sync. That is reproducible only on a SoftHSM2 new enough to offer the
+combined ECDSA mechanisms. On 2.6.1 the EC signing tests fail (8 of them, when
+the count was 624). The tests are correct and so is the shim, which refuses a
+mechanism the token lacks rather than failing deep inside the binding.
 
 ## Docker (what the stack does)
 

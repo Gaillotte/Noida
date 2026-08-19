@@ -54,7 +54,7 @@ kmip_pkcs11/           the existing KMIP engine — authoritative, minimally tou
   pkcs11_shim/         PKCS#11 binding, single locked session
   metadata/            store.py (KMIP metadata) + db.py (SQLite/PostgreSQL dialects)
   lifecycle/           state machine, access control
-  tests/               624 tests, run against a live token
+  tests/               811 tests, run against a live token
 
 cryptohub_lite/        everything new
   api/app/             FastAPI: auth, RBAC, audit, KMIP façade
@@ -96,7 +96,7 @@ container first, or they will contend for the port.
 docker compose -f cryptohub_lite/docker-compose.yml exec api python -m pytest /app -q
 ```
 
-Expect **624 tests**. Running them against a distribution SoftHSM2 instead of
+Expect **811 tests**. Running them against a distribution SoftHSM2 instead of
 the source build produces 8 EC failures — an environment difference, not a
 defect. Again: [SOFTHSM2_SETUP.md](SOFTHSM2_SETUP.md).
 

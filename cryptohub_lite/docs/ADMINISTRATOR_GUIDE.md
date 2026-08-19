@@ -58,10 +58,22 @@ KMIPClient(host="cryptohub", port=5696, username="svc-payments", password="...")
 Create a dedicated account per client, give it the least role that works —
 usually **Operator** — and disable it to revoke access immediately.
 
+The engine holds its own credential per account, hashed separately from the
+portal's, and that is what a KMIP client is checked against. It is written
+whenever the portal has the cleartext — on account creation, on a password
+change, and on a successful portal sign-in. Creating the account through the
+portal is therefore all that is required.
+
+> **An account whose password was only ever set outside the portal cannot use a
+> KMIP client.** The engine's credential cannot be derived from the stored
+> portal hash, so there is nothing to convert — set the password once through
+> the portal. The API names any account in this state in a startup warning.
+
 > Previously any username presented with the shared token PIN was accepted as
-> that username, which made every identity forgeable by anyone holding the
-> PIN. That path is off by default. `KMIP_ALLOW_PIN_FALLBACK=true` re-enables
-> it for migration only, and logs a warning on every use.
+> that username, which made every identity forgeable by anyone holding the PIN.
+> That path is gone entirely: the PIN authenticates the server to the HSM and
+> nothing else, and there is no setting to re-enable the old behaviour.
+> `KMIP_ALLOW_PIN_FALLBACK` no longer exists.
 
 ## Audit
 

@@ -246,7 +246,7 @@ def build():
     make_table(doc,
         ["Document", "What it covers"],
         [
-            ["README_KMIP.md",
+            ["README.md",
              "Current state of the system: features, access control, governance, "
              "configuration, limitations. The primary reference."],
             ["KMIP_PKCS11_Design_Document.docx",
