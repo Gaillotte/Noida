@@ -1404,6 +1404,39 @@ class TestServerExtended:
 # test_app/client.py  —  lines 53-60, 71-75, 136, 150-151, 158, 207, etc.
 # ══════════════════════════════════════════════════════════════════════════════
 
+class TestClientBlockCipherMode:
+    """The client's `mode` argument must actually reach the server.
+
+    It used to be accepted and never encoded, so asking for GCM silently got
+    you CBC — no error, just a different algorithm than the caller chose."""
+
+    def test_gcm_is_authenticated_and_unpadded(self, server_client):
+        from kmip_pkcs11.core.enums import BlockCipherMode
+        client, _ = server_client
+        uid = client.create(name="mode-gcm")
+        plaintext = b"twenty-eight bytes of data.."
+        ciphertext, iv, tag = client.encrypt(uid, plaintext, mode=BlockCipherMode.GCM)
+
+        assert tag is not None and len(tag) == 16      # CBC produces no tag
+        assert len(iv) == 12                           # CBC would use 16
+        assert len(ciphertext) == len(plaintext)       # GCM is a stream mode
+        assert client.decrypt(uid, ciphertext, iv=iv, auth_tag=tag,
+                              mode=BlockCipherMode.GCM) == plaintext
+
+    def test_cbc_pads_and_has_no_tag(self, server_client):
+        from kmip_pkcs11.core.enums import BlockCipherMode
+        client, _ = server_client
+        uid = client.create(name="mode-cbc")
+        plaintext = b"twenty-eight bytes of data.."
+        ciphertext, iv, tag = client.encrypt(uid, plaintext, mode=BlockCipherMode.CBC)
+
+        assert tag is None
+        assert len(iv) == 16
+        assert len(ciphertext) == 32                   # padded to the block size
+        assert client.decrypt(uid, ciphertext, iv=iv,
+                              mode=BlockCipherMode.CBC) == plaintext
+
+
 class TestClientExtended:
     def test_context_manager_enter_exit(self, server_client):
         """Covers __enter__ and __exit__ on KMIPClient."""
