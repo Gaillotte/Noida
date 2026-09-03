@@ -83,9 +83,17 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_KEY_USAGE_PROPERTY) == 0) {
-        DWORD dwUsage = (pKey->dwKeySpec == AT_SIGNATURE)
-                        ? NCRYPT_ALLOW_SIGNING_FLAG
-                        : NCRYPT_ALLOW_DECRYPT_FLAG;
+        DWORD dwUsage;
+
+        if (KSP_IsEcdhAlg(pKey->szAlgId))
+            dwUsage = NCRYPT_ALLOW_KEY_AGREEMENT_FLAG;
+        else if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0)
+            dwUsage = NCRYPT_ALLOW_DECRYPT_FLAG;
+        else if (pKey->dwKeySpec == AT_SIGNATURE)
+            dwUsage = NCRYPT_ALLOW_SIGNING_FLAG;
+        else
+            dwUsage = NCRYPT_ALLOW_DECRYPT_FLAG;
+
         *pcbResult = sizeof(DWORD);
         if (pbOutput) {
             if (cbOutput < sizeof(DWORD))
@@ -95,16 +103,75 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_ALGORITHM_GROUP_PROPERTY) == 0) {
-        LPCWSTR pszGroup = (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0)
-                           ? NCRYPT_RSA_ALGORITHM_GROUP
-                           : NCRYPT_ECDSA_ALGORITHM_GROUP;
-        DWORD cbNeeded = (DWORD)((wcslen(pszGroup) + 1) * sizeof(WCHAR));
+        LPCWSTR pszGroup;
+        DWORD   cbNeeded;
+
+        if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0)
+            pszGroup = ALG_GROUP_RSA;
+        else if (KSP_IsEcdhAlg(pKey->szAlgId))
+            pszGroup = ALG_GROUP_ECDH;
+        else if (KSP_IsEddsaAlg(pKey->szAlgId))
+            pszGroup = ALG_GROUP_EDDSA;
+        else if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0)
+            pszGroup = ALG_GROUP_AES;
+        else if (KSP_IsSymmetricAlg(pKey->szAlgId))
+            pszGroup = ALG_GROUP_HMAC;
+        else
+            pszGroup = ALG_GROUP_ECDSA;
+
+        cbNeeded   = (DWORD)((wcslen(pszGroup) + 1) * sizeof(WCHAR));
         *pcbResult = cbNeeded;
         if (pbOutput) {
             if (cbOutput < cbNeeded)
                 ss = NTE_BUFFER_TOO_SMALL;
             else
                 memcpy(pbOutput, pszGroup, cbNeeded);
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_CHAINING_MODE_PROPERTY) == 0) {
+        /* Symmetric keys only */
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
+            ss = NTE_NOT_SUPPORTED;
+        } else {
+            LPCWSTR pszMode = (pKey->szChainingMode[0] != L'\0')
+                              ? pKey->szChainingMode
+                              : BCRYPT_CHAIN_MODE_CBC;
+            DWORD cbNeeded = (DWORD)((wcslen(pszMode) + 1) * sizeof(WCHAR));
+            *pcbResult = cbNeeded;
+            if (pbOutput) {
+                if (cbOutput < cbNeeded)
+                    ss = NTE_BUFFER_TOO_SMALL;
+                else
+                    memcpy(pbOutput, pszMode, cbNeeded);
+            }
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_INITIALIZATION_VECTOR) == 0) {
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
+            ss = NTE_NOT_SUPPORTED;
+        } else {
+            *pcbResult = pKey->cbIV;
+            if (pbOutput) {
+                if (cbOutput < pKey->cbIV)
+                    ss = NTE_BUFFER_TOO_SMALL;
+                else
+                    memcpy(pbOutput, pKey->pbIV, pKey->cbIV);
+            }
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_BLOCK_LENGTH_PROPERTY) == 0) {
+        /* AES block size; meaningless for asymmetric keys */
+        if (_wcsicmp(pKey->szAlgId, ALG_AES) != 0) {
+            ss = NTE_NOT_SUPPORTED;
+        } else {
+            DWORD dwBlock = AES_BLOCK_SIZE;
+            *pcbResult = sizeof(DWORD);
+            if (pbOutput) {
+                if (cbOutput < sizeof(DWORD))
+                    ss = NTE_BUFFER_TOO_SMALL;
+                else
+                    memcpy(pbOutput, &dwBlock, sizeof(DWORD));
+            }
         }
 
     } else {
@@ -139,7 +206,7 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
 
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
-    /* Only NCRYPT_LENGTH_PROPERTY is modifiable (before FinalizeKey) */
+    /* Key length — settable before FinalizeKey only */
     if (_wcsicmp(pszProperty, NCRYPT_LENGTH_PROPERTY) == 0) {
         if (!pbInput || cbInput < sizeof(DWORD)) {
             ss = NTE_INVALID_PARAMETER;
@@ -148,14 +215,79 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
         } else {
             DWORD dwBits;
             memcpy(&dwBits, pbInput, sizeof(DWORD));
-            /* Validate the size (RSA only) */
-            if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0 &&
-                (dwBits == 2048 || dwBits == 3072 || dwBits == 4096)) {
-                pKey->dwKeyBitLen = dwBits;
+
+            if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0) {
+                /* RSA: 2048, 3072 and 4096 only */
+                if (dwBits == 2048 || dwBits == 3072 || dwBits == 4096) {
+                    pKey->dwKeyBitLen = dwBits;
+                    ss = ERROR_SUCCESS;
+                } else {
+                    ss = NTE_BAD_LEN;
+                }
+            } else if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0) {
+                /* AES: 128, 192 and 256 only */
+                if (dwBits == 128 || dwBits == 192 || dwBits == 256) {
+                    pKey->dwKeyBitLen = dwBits;
+                    ss = ERROR_SUCCESS;
+                } else {
+                    ss = NTE_BAD_LEN;
+                }
+            } else if (KSP_IsSymmetricAlg(pKey->szAlgId)) {
+                /* HMAC: any whole-byte length from 128 bits up */
+                if (dwBits >= 128 && (dwBits % 8) == 0) {
+                    pKey->dwKeyBitLen = dwBits;
+                    ss = ERROR_SUCCESS;
+                } else {
+                    ss = NTE_BAD_LEN;
+                }
+            } else {
+                /* EC and EdDSA curves have a fixed length: accept only
+                 * the value already implied by the algorithm name. */
+                ss = (dwBits == pKey->dwKeyBitLen) ? ERROR_SUCCESS : NTE_BAD_LEN;
+            }
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_CHAINING_MODE_PROPERTY) == 0) {
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
+            ss = NTE_NOT_SUPPORTED;
+        } else if (!pbInput || cbInput < sizeof(WCHAR)) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            LPCWSTR pszMode = (LPCWSTR)pbInput;
+
+            if (_wcsicmp(pszMode, BCRYPT_CHAIN_MODE_ECB) == 0 ||
+                _wcsicmp(pszMode, BCRYPT_CHAIN_MODE_CBC) == 0 ||
+                _wcsicmp(pszMode, BCRYPT_CHAIN_MODE_GCM) == 0 ||
+                _wcsicmp(pszMode, KSP_CHAIN_MODE_CTR)    == 0) {
+                wcscpy_s(pKey->szChainingMode, MAX_ALG_ID_LEN, pszMode);
                 ss = ERROR_SUCCESS;
             } else {
-                ss = NTE_BAD_LEN;
+                /* CCM / CFB are not wired to a SoftHSM2 mechanism */
+                ss = NTE_NOT_SUPPORTED;
             }
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_INITIALIZATION_VECTOR) == 0) {
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
+            ss = NTE_NOT_SUPPORTED;
+        } else if (!pbInput || cbInput == 0 || cbInput > AES_BLOCK_SIZE) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            memcpy(pKey->pbIV, pbInput, cbInput);
+            pKey->cbIV = cbInput;
+            ss = ERROR_SUCCESS;
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_AUTH_TAG_LENGTH) == 0) {
+        /* GCM additional authenticated data */
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
+            ss = NTE_NOT_SUPPORTED;
+        } else if (!pbInput || cbInput > MAX_AUTH_DATA_LEN) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            memcpy(pKey->pbAuthData, pbInput, cbInput);
+            pKey->cbAuthData = cbInput;
+            ss = ERROR_SUCCESS;
         }
     }
 

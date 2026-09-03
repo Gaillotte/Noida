@@ -66,12 +66,104 @@ SECURITY_STATUS P11_ResolveMechanism(
     }
 
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0) {
+        _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0) {
         pMechanism->mechanism = CKM_ECDSA;
         return ERROR_SUCCESS;
     }
 
+    /* EdDSA: deterministic, no padding, no external parameters */
+    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0 ||
+        _wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0) {
+        pMechanism->mechanism = CKM_EDDSA;
+        return ERROR_SUCCESS;
+    }
+
+    /* HMAC secret keys sign through C_Sign with the matching HMAC mechanism */
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1) == 0) {
+        pMechanism->mechanism = CKM_SHA_1_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0) {
+        pMechanism->mechanism = CKM_SHA256_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA384) == 0) {
+        pMechanism->mechanism = CKM_SHA384_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA512) == 0) {
+        pMechanism->mechanism = CKM_SHA512_HMAC;
+        return ERROR_SUCCESS;
+    }
+
     return NTE_BAD_ALGID;
+}
+
+/* Map a CNG hash name to PKCS#11 digest mechanism + MGF1 identifier */
+SECURITY_STATUS P11_MapHashAlg(
+    LPCWSTR            pszHashAlg,
+    CK_MECHANISM_TYPE *pHashMech,
+    CK_ULONG          *pMgf)
+{
+    if (!pszHashAlg || !pHashMech || !pMgf)
+        return NTE_INVALID_PARAMETER;
+
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA1_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA_1;   *pMgf = CKG_MGF1_SHA1;   return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA224_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA224;  *pMgf = CKG_MGF1_SHA224; return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA256_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA256;  *pMgf = CKG_MGF1_SHA256; return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA384_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA384;  *pMgf = CKG_MGF1_SHA384; return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA512_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA512;  *pMgf = CKG_MGF1_SHA512; return ERROR_SUCCESS;
+    }
+
+    return NTE_NOT_SUPPORTED;
+}
+
+/* Populate CK_RSA_PKCS_OAEP_PARAMS from a BCRYPT_OAEP_PADDING_INFO.
+ * Defaults to SHA-1 when no padding info is supplied (CNG legacy behaviour). */
+SECURITY_STATUS P11_BuildOaepParams(
+    BCRYPT_OAEP_PADDING_INFO *pOaepInfo,
+    CK_RSA_PKCS_OAEP_PARAMS  *pParams)
+{
+    SECURITY_STATUS ss;
+
+    if (!pParams)
+        return NTE_INVALID_PARAMETER;
+
+    memset(pParams, 0, sizeof(*pParams));
+
+    if (!pOaepInfo || !pOaepInfo->pszAlgId) {
+        /* No padding info → SHA-1, the CNG default for OAEP */
+        pParams->hashAlg = CKM_SHA_1;
+        pParams->mgf     = CKG_MGF1_SHA1;
+    } else {
+        ss = P11_MapHashAlg(pOaepInfo->pszAlgId,
+                            &pParams->hashAlg, &pParams->mgf);
+        if (ss != ERROR_SUCCESS)
+            return ss;
+    }
+
+    pParams->source = CKZ_DATA_SPECIFIED;
+
+    /* An OAEP label is optional; pass it through when present */
+    if (pOaepInfo && pOaepInfo->pbLabel && pOaepInfo->cbLabel > 0) {
+        pParams->pSourceData     = pOaepInfo->pbLabel;
+        pParams->ulSourceDataLen = pOaepInfo->cbLabel;
+    } else {
+        pParams->pSourceData     = NULL;
+        pParams->ulSourceDataLen = 0;
+    }
+
+    return ERROR_SUCCESS;
 }
 
 /* Search for an object by label and class */
@@ -261,13 +353,20 @@ SECURITY_STATUS P11_ExportEcPublicKey(
         BYTE *pbPoint = pbEcPoint;
         DWORD cbRemain = cbEcPoint;
 
-        /* Skip DER OCTET STRING wrapper (PKCS#11 CKA_EC_POINT is always DER-encoded) */
+        /* Skip the DER OCTET STRING wrapper. P-256/P-384 points use a
+         * short-form length; a P-521 point is 133 bytes and uses the
+         * long form (0x81 LEN), so the header is one byte longer. */
         if (pbPoint[0] == 0x04 && cbRemain > 2) {
-            pbPoint  += 2;
-            cbRemain -= 2;
+            if (pbPoint[1] == 0x81 && cbRemain > 3) {
+                pbPoint  += 3;
+                cbRemain -= 3;
+            } else if (pbPoint[1] < 128) {
+                pbPoint  += 2;
+                cbRemain -= 2;
+            }
         }
 
-        if (pbPoint[0] != 0x04) {
+        if (cbRemain < 1 || pbPoint[0] != 0x04) {
             KSP_Free(pbEcPoint);
             return NTE_BAD_KEY;
         }
@@ -282,9 +381,12 @@ SECURITY_STATUS P11_ExportEcPublicKey(
         }
 
         pEccBlob = (BCRYPT_ECCKEY_BLOB *)*ppBlob;
-        pEccBlob->dwMagic = (cbCoord == EC_P256_COORD_SIZE)
-                          ? BCRYPT_ECDSA_PUBLIC_P256_MAGIC
-                          : BCRYPT_ECDSA_PUBLIC_P384_MAGIC;
+        if (cbCoord == EC_P256_COORD_SIZE)
+            pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+        else if (cbCoord == EC_P521_COORD_SIZE)
+            pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_P521_MAGIC;
+        else
+            pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_P384_MAGIC;
         pEccBlob->cbKey   = cbCoord;
 
         memcpy(*ppBlob + sizeof(BCRYPT_ECCKEY_BLOB), pbPoint + 1, 2 * cbCoord);
@@ -295,14 +397,151 @@ SECURITY_STATUS P11_ExportEcPublicKey(
     return ERROR_SUCCESS;
 }
 
-/* Return the EC coordinate size in bytes */
+/* Return the EC coordinate size in bytes (ECDSA and ECDH curves) */
 DWORD P11_EcCoordSize(LPCWSTR pszAlgId)
 {
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0)
+    if (!pszAlgId)
+        return 0;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P256)  == 0)
         return EC_P256_COORD_SIZE;
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0)
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0)
         return EC_P384_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0)
+        return EC_P521_COORD_SIZE;
     return 0;
+}
+
+/* Map an EC / EdDSA algorithm name to its DER-encoded curve OID */
+const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
+{
+    if (!pszAlgId || !pcbOid)
+        return NULL;
+
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P256)  == 0) {
+        *pcbOid = EC_OID_P256_LEN;  return EC_OID_P256;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0) {
+        *pcbOid = EC_OID_P384_LEN;  return EC_OID_P384;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0) {
+        *pcbOid = EC_OID_P521_LEN;  return EC_OID_P521;
+    }
+    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
+        *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;
+    }
+    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED448) == 0) {
+        *pcbOid = EC_OID_ED448_LEN;   return EC_OID_ED448;
+    }
+    return NULL;
+}
+
+/* Build CKA_EC_POINT (DER OCTET STRING wrapping 0x04 || X || Y).
+ * Uses short-form DER length for points below 128 bytes and long-form
+ * (0x81 LEN) above — a P-521 point is 133 bytes and needs long form. */
+SECURITY_STATUS P11_BuildEcPointDer(
+    const BYTE *pbX,
+    const BYTE *pbY,
+    DWORD       cbCoord,
+    BYTE      **ppDer,
+    DWORD      *pcbDer)
+{
+    DWORD cbPoint;   /* 0x04 || X || Y */
+    DWORD cbHeader;
+    BYTE *pb;
+
+    if (!pbX || !pbY || !ppDer || !pcbDer || cbCoord == 0)
+        return NTE_INVALID_PARAMETER;
+
+    cbPoint  = 1 + 2 * cbCoord;
+    cbHeader = (cbPoint < 128) ? 2 : 3;
+
+    *ppDer = (BYTE *)KSP_Alloc(cbHeader + cbPoint);
+    if (!*ppDer)
+        return NTE_NO_MEMORY;
+
+    pb = *ppDer;
+    *pb++ = 0x04;                       /* OCTET STRING tag */
+    if (cbPoint < 128) {
+        *pb++ = (BYTE)cbPoint;          /* short-form length */
+    } else {
+        *pb++ = 0x81;                   /* long form, 1 length byte */
+        *pb++ = (BYTE)cbPoint;
+    }
+    *pb++ = 0x04;                       /* uncompressed point marker */
+    memcpy(pb, pbX, cbCoord); pb += cbCoord;
+    memcpy(pb, pbY, cbCoord);
+
+    *pcbDer = cbHeader + cbPoint;
+    return ERROR_SUCCESS;
+}
+
+/* Export an Edwards-curve public key as a BCRYPT_ECCKEY_BLOB.
+ * EdDSA public keys are a single compressed point, so the blob carries
+ * the raw key bytes directly after the header. */
+SECURITY_STATUS P11_ExportEddsaPublicKey(
+    CK_SESSION_HANDLE  hSession,
+    CK_OBJECT_HANDLE   hPubKey,
+    LPCWSTR            pszAlgId,
+    BYTE             **ppBlob,
+    DWORD             *pcbBlob)
+{
+    BYTE  *pbEcPoint = NULL;
+    DWORD  cbEcPoint = 0;
+    BYTE  *pbRaw;
+    DWORD  cbRaw;
+    DWORD  cbExpected;
+    DWORD  cbBlob;
+    BCRYPT_ECCKEY_BLOB *pEccBlob;
+
+    if (!pszAlgId || !ppBlob || !pcbBlob)
+        return NTE_INVALID_PARAMETER;
+
+    cbExpected = (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)
+                 ? ED25519_PUBKEY_SIZE : ED448_PUBKEY_SIZE;
+
+    if (P11_GetBinaryAttr(hSession, hPubKey, CKA_EC_POINT,
+                          &pbEcPoint, &cbEcPoint) != CKR_OK)
+        return NTE_BAD_KEY;
+
+    /* CKA_EC_POINT is DER OCTET STRING wrapped; unwrap to the raw point */
+    pbRaw = pbEcPoint;
+    cbRaw = cbEcPoint;
+
+    if (cbRaw >= 2 && pbRaw[0] == 0x04) {
+        if (pbRaw[1] == 0x81 && cbRaw >= 3) {
+            pbRaw += 3; cbRaw -= 3;     /* long-form length */
+        } else if (pbRaw[1] < 128) {
+            pbRaw += 2; cbRaw -= 2;     /* short-form length */
+        }
+    }
+
+    if (cbRaw != cbExpected) {
+        KSP_Free(pbEcPoint);
+        return NTE_BAD_KEY;
+    }
+
+    cbBlob  = sizeof(BCRYPT_ECCKEY_BLOB) + cbRaw;
+    *ppBlob = (BYTE *)KSP_AllocZero(cbBlob);
+    if (!*ppBlob) {
+        KSP_Free(pbEcPoint);
+        return NTE_NO_MEMORY;
+    }
+
+    pEccBlob = (BCRYPT_ECCKEY_BLOB *)*ppBlob;
+    pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC;
+    pEccBlob->cbKey   = cbRaw;
+
+    memcpy(*ppBlob + sizeof(BCRYPT_ECCKEY_BLOB), pbRaw, cbRaw);
+
+    *pcbBlob = cbBlob;
+    KSP_Free(pbEcPoint);
+    return ERROR_SUCCESS;
 }
 
 /* Decode a DER ECDSA signature into Windows r||s format */

@@ -35,13 +35,51 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
 }
 void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
+/* Which object class the stub should report as present.
+ * CKO_PRIVATE_KEY (the default) exercises the asymmetric path;
+ * CKO_SECRET_KEY exercises the symmetric path in KSP_OpenKey. */
+static CK_OBJECT_CLASS g_findableClass = CKO_PRIVATE_KEY;
+
 CK_OBJECT_HANDLE P11_FindObjectByLabel(
     CK_SESSION_HANDLE h, CK_OBJECT_CLASS cls, LPCWSTR pszLabel)
 {
-    (void)h; (void)cls; (void)pszLabel;
-    if (P11Mock_GetConfig()->nKeyObjects > 0)
-        return (CK_OBJECT_HANDLE)0x10;
-    return CK_INVALID_HANDLE;
+    (void)h; (void)pszLabel;
+    if (P11Mock_GetConfig()->nKeyObjects <= 0)
+        return CK_INVALID_HANDLE;
+
+    /* Public keys are always reported alongside a findable private key */
+    if (cls == CKO_PUBLIC_KEY && g_findableClass == CKO_PRIVATE_KEY)
+        return (CK_OBJECT_HANDLE)0x11;
+
+    if (cls != g_findableClass)
+        return CK_INVALID_HANDLE;
+
+    return (CK_OBJECT_HANDLE)0x10;
+}
+
+/* Curve OID lookup — mirrors the real P11_GetCurveOid mapping */
+const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
+{
+    if (!pszAlgId || !pcbOid) return NULL;
+    if (wcscmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
+        wcscmp(pszAlgId, ALG_ECDH_P256)  == 0) {
+        *pcbOid = EC_OID_P256_LEN; return EC_OID_P256;
+    }
+    if (wcscmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        wcscmp(pszAlgId, ALG_ECDH_P384)  == 0) {
+        *pcbOid = EC_OID_P384_LEN; return EC_OID_P384;
+    }
+    if (wcscmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        wcscmp(pszAlgId, ALG_ECDH_P521)  == 0) {
+        *pcbOid = EC_OID_P521_LEN; return EC_OID_P521;
+    }
+    if (wcscmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
+        *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;
+    }
+    if (wcscmp(pszAlgId, ALG_EDDSA_ED448) == 0) {
+        *pcbOid = EC_OID_ED448_LEN; return EC_OID_ED448;
+    }
+    return NULL;
 }
 
 CK_RV P11_GetUlongAttr(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
@@ -49,8 +87,10 @@ CK_RV P11_GetUlongAttr(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
 {
     (void)h; (void)o;
     switch (t) {
-    case CKA_KEY_TYPE:     *pv = P11Mock_GetConfig()->ulKeyType;  return CKR_OK;
-    case CKA_MODULUS_BITS: *pv = P11Mock_GetConfig()->ulModBits;  return CKR_OK;
+    case CKA_KEY_TYPE:     *pv = P11Mock_GetConfig()->ulKeyType;   return CKR_OK;
+    case CKA_MODULUS_BITS: *pv = P11Mock_GetConfig()->ulModBits;   return CKR_OK;
+    case CKA_VALUE_LEN:    *pv = P11Mock_GetConfig()->ulValueLen;  return CKR_OK;
+    case CKA_DERIVE:       *pv = P11Mock_GetConfig()->ulDerive;    return CKR_OK;
     default: return CKR_ATTRIBUTE_TYPE_INVALID;
     }
 }
@@ -552,6 +592,235 @@ int main(void)
     ss = KSP_EnumKeys(0, NULL, &pName, &pState, 0);
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+    /* ── Suite: OpenKey — curve identification (P-521, EdDSA, ECDH) ─────── */
+    TEST_SUITE("KSP_OpenKey — curve identification");
+
+    /* P-521 is recognised from its DER OID */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_P521;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_P521_LEN;
+    P11Mock_GetConfig()->ulDerive    = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"P521Key", AT_SIGNATURE, 0);
+        ASSERT_OK("P-521 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is ECDSA_P521", k->szAlgId, ALG_ECDSA_P521);
+            ASSERT_EQ("Length is 521 bits", k->dwKeyBitLen, 521U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* CKA_DERIVE set on a P-256 key means ECDH, not ECDSA */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_P256;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_P256_LEN;
+    P11Mock_GetConfig()->ulDerive    = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"EcdhKey", AT_KEYEXCHANGE, 0);
+        ASSERT_OK("ECDH P-256 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("CKA_DERIVE → ECDH_P256", k->szAlgId, ALG_ECDH_P256);
+            ASSERT_EQ("Length is 256 bits", k->dwKeyBitLen, 256U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Ed25519 is recognised from its OID and reported as an Edwards curve */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC_EDWARDS;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_ED25519;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_ED25519_LEN;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"Ed25519Key", AT_SIGNATURE, 0);
+        ASSERT_OK("Ed25519 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is EDDSA_ED25519", k->szAlgId,
+                        ALG_EDDSA_ED25519);
+            ASSERT_EQ("Length is 255 bits", k->dwKeyBitLen, 255U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Ed448 */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC_EDWARDS;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_ED448;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_ED448_LEN;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"Ed448Key", AT_SIGNATURE, 0);
+        ASSERT_OK("Ed448 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is EDDSA_ED448", k->szAlgId,
+                        ALG_EDDSA_ED448);
+            ASSERT_EQ("Length is 448 bits", k->dwKeyBitLen, 448U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* ── Suite: OpenKey — symmetric keys ────────────────────────────────── */
+    TEST_SUITE("KSP_OpenKey — symmetric keys");
+
+    /* An AES key has no private object, only a secret object */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_SECRET_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_AES;
+    P11Mock_GetConfig()->ulValueLen  = 32;      /* 256-bit AES key */
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"AesKey", 0, 0);
+        ASSERT_OK("AES key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is AES", k->szAlgId, ALG_AES);
+            ASSERT_EQ("Key class is symmetric", k->dwKeyClass,
+                      (DWORD)KSP_KEY_CLASS_SYMMETRIC);
+            ASSERT_EQ("Length derived from CKA_VALUE_LEN", k->dwKeyBitLen, 256U);
+            ASSERT_NEQ("Secret handle set", k->hSecretKey,
+                       (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+            ASSERT_EQ("No private key handle", k->hPrivKey,
+                      (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* A generic-secret object is reported as an HMAC key */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_SECRET_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_GENERIC_SECRET;
+    P11Mock_GetConfig()->ulValueLen  = 48;      /* 384-bit HMAC key */
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"HmacKey", 0, 0);
+        ASSERT_OK("HMAC key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is HMAC_SHA256", k->szAlgId,
+                        ALG_HMAC_SHA256);
+            ASSERT_EQ("Key class is symmetric", k->dwKeyClass,
+                      (DWORD)KSP_KEY_CLASS_SYMMETRIC);
+            ASSERT_EQ("Length is 384 bits", k->dwKeyBitLen, 384U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Neither a private nor a secret object exists */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_DATA;      /* nothing the KSP looks for */
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"Missing", 0, 0);
+        ASSERT_EQ("No key object → NTE_BAD_KEYSET", ss,
+                  (SECURITY_STATUS)NTE_BAD_KEYSET);
+    }
+
+    /* ── Suite: symmetric key creation and deletion ─────────────────────── */
+    TEST_SUITE("Symmetric key creation and deletion");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"AesDel",
+                                    AT_KEYEXCHANGE, 0);
+        ASSERT_OK("AES key created", ss);
+        ASSERT_EQ("C_GenerateKey used, not C_GenerateKeyPair",
+                  P11Mock_GetCalls()->nGenerateKeyPair, 0);
+        ASSERT_EQ("C_GenerateKey called once",
+                  P11Mock_GetCalls()->nGenerateKey, 1);
+
+        /* Deleting a symmetric key destroys its secret object */
+        ss = KSP_DeleteKey(hProv, h, 0);
+        ASSERT_OK("AES key deleted", ss);
+        ASSERT_EQ("Secret object destroyed",
+                  P11Mock_GetCalls()->nDestroyObject, 1);
+    }
+
+    /* Symmetric generation failure propagates */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->rv_GenerateKey = CKR_DEVICE_ERROR;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"AesFail",
+                                    AT_KEYEXCHANGE, 0);
+        ASSERT_ERR("C_GenerateKey failure propagates", ss);
+    }
+
+    /* An unknown algorithm is rejected before any PKCS#11 call */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, L"DSA", L"DsaKey",
+                                    AT_SIGNATURE, 0);
+        ASSERT_EQ("DSA → NTE_BAD_ALGID", ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+        ASSERT_EQ("No key generated", P11Mock_GetCalls()->nGenerateKeyPair, 0);
+    }
+
+    /* ── Suite: P-521 and ECDH key generation ───────────────────────────── */
+    TEST_SUITE("P-521 and ECDH key generation");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_ECDSA_P521, L"P521Gen",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("ECDSA P-521 key created", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_EQ("Default length is 521 bits", k->dwKeyBitLen, 521U);
+            ASSERT_EQ("Key spec is AT_SIGNATURE", k->dwKeySpec,
+                      (DWORD)AT_SIGNATURE);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        /* ECDH keys are key-agreement keys even when AT_SIGNATURE is asked */
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_ECDH_P384, L"EcdhGen",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("ECDH P-384 key created", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_EQ("ECDH forces AT_KEYEXCHANGE", k->dwKeySpec,
+                      (DWORD)AT_KEYEXCHANGE);
+            ASSERT_EQ("Default length is 384 bits", k->dwKeyBitLen, 384U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
 
     KSP_FreeProvider(hProv);
 

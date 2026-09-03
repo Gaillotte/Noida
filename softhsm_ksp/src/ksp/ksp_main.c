@@ -32,7 +32,12 @@ NCRYPT_KEY_STORAGE_FUNCTION_TABLE g_KspFunctionTable = {
     KSP_NotifyChangeKey,
     KSP_GetOperationProperty,
     KSP_FreeObject,
-    KSP_PromptUser
+    KSP_PromptUser,
+    /* Extended slots — symmetric encryption and ECDH key agreement */
+    KSP_Encrypt,
+    KSP_SecretAgreement,
+    KSP_DeriveKey,
+    KSP_FreeSecret
 };
 
 /* Exported entry point: returns the function table */

@@ -9,6 +9,10 @@ test_ksp_provider
 test_ksp_key_props
 test_ksp_key_ops
 test_ksp_crypto
+test_oaep_params
+test_ecdh
+test_eddsa
+test_aes_keys
 
 # gcov coverage data
 *.gcda

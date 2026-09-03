@@ -75,7 +75,9 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKK_DSA             0x00000001UL
 #define CKK_DH              0x00000002UL
 #define CKK_EC              0x00000003UL
+#define CKK_GENERIC_SECRET  0x00000010UL
 #define CKK_AES             0x0000001FUL
+#define CKK_EC_EDWARDS      0x00000040UL
 
 /* Attributs */
 #define CKA_CLASS              0x00000000UL
@@ -112,6 +114,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKA_EXPONENT_1         0x00000126UL
 #define CKA_EXPONENT_2         0x00000127UL
 #define CKA_COEFFICIENT        0x00000128UL
+#define CKA_VALUE_LEN          0x00000161UL
 #define CKA_EC_PARAMS          0x00000180UL
 #define CKA_EC_POINT           0x00000181UL
 #define CKA_EXTRACTABLE        0x00000162UL
@@ -144,6 +147,36 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKM_SHA256_RSA_PKCS_PSS   0x00000043UL
 #define CKM_SHA384_RSA_PKCS_PSS   0x00000044UL
 #define CKM_SHA512_RSA_PKCS_PSS   0x00000045UL
+#define CKM_SHA224                0x00000255UL
+
+/* ECDH key agreement */
+#define CKM_ECDH1_DERIVE          0x00001050UL
+
+/* EdDSA (Edwards curves: Ed25519, Ed448) */
+#define CKM_EC_EDWARDS_KEY_PAIR_GEN 0x00001055UL
+#define CKM_EDDSA                 0x00001057UL
+
+/* AES */
+#define CKM_AES_KEY_GEN           0x00001080UL
+#define CKM_AES_ECB               0x00001081UL
+#define CKM_AES_CBC               0x00001082UL
+#define CKM_AES_MAC               0x00001083UL
+#define CKM_AES_CBC_PAD           0x00001085UL
+#define CKM_AES_CTR               0x00001086UL
+#define CKM_AES_GCM               0x00001087UL
+#define CKM_AES_CMAC              0x0000108AUL
+#define CKM_AES_KEY_WRAP          0x00002109UL
+#define CKM_AES_KEY_WRAP_PAD      0x0000210AUL
+
+/* HMAC */
+#define CKM_SHA_1_HMAC            0x00000221UL
+#define CKM_SHA224_HMAC           0x00000256UL
+#define CKM_SHA256_HMAC           0x00000251UL
+#define CKM_SHA384_HMAC           0x00000261UL
+#define CKM_SHA512_HMAC           0x00000271UL
+
+/* Generic secret */
+#define CKM_GENERIC_SECRET_KEY_GEN 0x00000350UL
 
 /* Return codes */
 #define CKR_OK                          0x00000000UL
@@ -261,6 +294,14 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 
 #define CKZ_DATA_SPECIFIED 0x00000001UL
 
+/* EC key derivation functions (CK_EC_KDF_TYPE) */
+#define CKD_NULL        0x00000001UL
+#define CKD_SHA1_KDF    0x00000002UL
+#define CKD_SHA224_KDF  0x00000005UL
+#define CKD_SHA256_KDF  0x00000006UL
+#define CKD_SHA384_KDF  0x00000007UL
+#define CKD_SHA512_KDF  0x00000008UL
+
 /* Hash algorithms for PSS */
 #define CKM_SHA_1_HMAC  0x00000221UL
 
@@ -351,6 +392,35 @@ typedef struct CK_RSA_PKCS_OAEP_PARAMS {
     CK_ULONG          ulSourceDataLen;
 } CK_RSA_PKCS_OAEP_PARAMS;
 typedef CK_RSA_PKCS_OAEP_PARAMS CK_PTR CK_RSA_PKCS_OAEP_PARAMS_PTR;
+
+/* ECDH1 key derivation parameters (CKM_ECDH1_DERIVE) */
+typedef CK_ULONG CK_EC_KDF_TYPE;
+typedef struct CK_ECDH1_DERIVE_PARAMS {
+    CK_EC_KDF_TYPE kdf;              /* CKD_NULL, CKD_SHA256_KDF, ... */
+    CK_ULONG       ulSharedDataLen;  /* Optional shared data length   */
+    CK_BYTE_PTR    pSharedData;      /* Optional shared data          */
+    CK_ULONG       ulPublicDataLen;  /* Peer public key length        */
+    CK_BYTE_PTR    pPublicData;      /* Peer public key (04||X||Y)    */
+} CK_ECDH1_DERIVE_PARAMS;
+typedef CK_ECDH1_DERIVE_PARAMS CK_PTR CK_ECDH1_DERIVE_PARAMS_PTR;
+
+/* AES-GCM parameters (CKM_AES_GCM) */
+typedef struct CK_GCM_PARAMS {
+    CK_BYTE_PTR pIv;
+    CK_ULONG    ulIvLen;
+    CK_ULONG    ulIvBits;
+    CK_BYTE_PTR pAAD;
+    CK_ULONG    ulAADLen;
+    CK_ULONG    ulTagBits;
+} CK_GCM_PARAMS;
+typedef CK_GCM_PARAMS CK_PTR CK_GCM_PARAMS_PTR;
+
+/* AES-CTR parameters (CKM_AES_CTR) */
+typedef struct CK_AES_CTR_PARAMS {
+    CK_ULONG ulCounterBits;
+    CK_BYTE  cb[16];
+} CK_AES_CTR_PARAMS;
+typedef CK_AES_CTR_PARAMS CK_PTR CK_AES_CTR_PARAMS_PTR;
 
 /* Cryptoki initialisation parameters */
 typedef CK_VOID_PTR CK_CREATEMUTEX;

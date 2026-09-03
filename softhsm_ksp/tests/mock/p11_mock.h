@@ -25,6 +25,10 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_Decrypt;
     CK_RV rv_DestroyObject;
     CK_RV rv_CreateObject;
+    CK_RV rv_GenerateKey;
+    CK_RV rv_DeriveKey;
+    CK_RV rv_EncryptInit;
+    CK_RV rv_Encrypt;
 
     /* Number of simulated slots */
     int nSlots;
@@ -51,6 +55,26 @@ typedef struct _P11_MOCK_CONFIG {
     CK_ULONG   cbModulus;
     const BYTE *pbExponent;
     CK_ULONG   cbExponent;
+
+    /* Ciphertext length returned by C_Encrypt */
+    CK_ULONG   cbCiphertext;
+    /* Plaintext length returned by C_Decrypt */
+    CK_ULONG   cbPlaintext;
+    /* CKA_VALUE returned for derived secrets / symmetric keys */
+    const BYTE *pbSecretValue;
+    CK_ULONG    cbSecretValue;
+    /* CKA_VALUE_LEN returned for symmetric keys */
+    CK_ULONG    ulValueLen;
+    /* CKA_DERIVE returned for EC keys (distinguishes ECDH from ECDSA) */
+    CK_ULONG    ulDerive;
+    /* Mechanism captured by the last C_EncryptInit / C_DeriveKey call */
+    CK_MECHANISM_TYPE lastEncryptMech;
+    CK_MECHANISM_TYPE lastDecryptMech;
+    CK_MECHANISM_TYPE lastDeriveMech;
+    CK_MECHANISM_TYPE lastGenerateMech;
+    CK_MECHANISM_TYPE lastSignMech;
+    /* ECDH peer public data captured from CK_ECDH1_DERIVE_PARAMS */
+    CK_ULONG    lastEcdhPublicDataLen;
 } P11_MOCK_CONFIG;
 
 /* ── Call counters ───────────────────────────────────────────────────────── */
@@ -72,6 +96,10 @@ typedef struct _P11_MOCK_CALLS {
     int nDecrypt;
     int nDestroyObject;
     int nCreateObject;
+    int nGenerateKey;
+    int nDeriveKey;
+    int nEncryptInit;
+    int nEncrypt;
 } P11_MOCK_CALLS;
 
 /* Reset mock configuration (all CKR_OK, default behaviour) */

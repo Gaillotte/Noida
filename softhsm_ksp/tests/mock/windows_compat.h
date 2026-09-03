@@ -97,13 +97,22 @@ typedef long SECURITY_STATUS;
 #define NTE_KEY_DOES_NOT_EXIST    0x80090026L
 
 /* ── NCrypt flags ────────────────────────────────────────────────────────── */
+#define NCRYPT_NO_PADDING_FLAG    0x00000001
 #define NCRYPT_PAD_PKCS1_FLAG     0x00000002
 #define NCRYPT_PAD_PSS_FLAG       0x00000008
 #define NCRYPT_PAD_OAEP_FLAG      0x00000004
+#define NCRYPT_PAD_CIPHER_FLAG    0x00000010
+
+/* Symmetric cipher key properties */
+#define NCRYPT_CHAINING_MODE_PROPERTY   L"Chaining Mode"
+#define NCRYPT_INITIALIZATION_VECTOR    L"IV"
+#define NCRYPT_AUTH_TAG_LENGTH          L"AuthTagLength"
 #define NCRYPT_PERSIST_ONLY_FLAG  0x40000000
 
-#define NCRYPT_ALLOW_SIGNING_FLAG  0x00000002
-#define NCRYPT_ALLOW_DECRYPT_FLAG  0x00000001
+#define NCRYPT_ALLOW_SIGNING_FLAG       0x00000002
+#define NCRYPT_ALLOW_DECRYPT_FLAG       0x00000001
+#define NCRYPT_ALLOW_KEY_AGREEMENT_FLAG 0x00000004
+#define NCRYPT_BLOCK_LENGTH_PROPERTY    L"Block Length"
 #define NCRYPT_IMPL_HARDWARE_FLAG  0x00000002
 
 /* AT_KEYEXCHANGE / AT_SIGNATURE */
@@ -281,24 +290,54 @@ typedef struct _BCRYPT_ECCKEY_BLOB {
     DWORD cbKey;
 } BCRYPT_ECCKEY_BLOB;
 
+/* Symmetric key blob (AES / HMAC raw key material) */
+typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER {
+    DWORD dwMagic;
+    DWORD dwVersion;
+    DWORD cbKeyData;
+} BCRYPT_KEY_DATA_BLOB_HEADER;
+
 #define BCRYPT_RSAPUBLIC_MAGIC      0x31415352UL
 #define BCRYPT_RSAPRIVATE_MAGIC     0x32415352UL
 #define BCRYPT_RSAFULLPRIVATE_MAGIC 0x33415352UL
 #define BCRYPT_ECDSA_PUBLIC_P256_MAGIC 0x31534345UL
 #define BCRYPT_ECDSA_PUBLIC_P384_MAGIC 0x33534345UL
+#define BCRYPT_ECDSA_PUBLIC_P521_MAGIC 0x35534345UL
 #define BCRYPT_ECDSA_PRIVATE_P256_MAGIC 0x32534345UL
 #define BCRYPT_ECDSA_PRIVATE_P384_MAGIC 0x34534345UL
+#define BCRYPT_ECDSA_PRIVATE_P521_MAGIC 0x36534345UL
+#define BCRYPT_ECDH_PUBLIC_P256_MAGIC  0x314B4345UL
+#define BCRYPT_ECDH_PUBLIC_P384_MAGIC  0x334B4345UL
+#define BCRYPT_ECDH_PUBLIC_P521_MAGIC  0x354B4345UL
+/* Generic ECC magic used for Edwards curves (Windows 10 1903+) */
+#define BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC 0x50444345UL
+#define BCRYPT_KEY_DATA_BLOB_MAGIC   0x4D42444BUL
+#define BCRYPT_KEY_DATA_BLOB_VERSION1 0x00000001UL
 
 #define BCRYPT_RSAPUBLIC_BLOB       L"RSAPUBLICBLOB"
 #define BCRYPT_RSAPRIVATE_BLOB      L"RSAPRIVATEBLOB"
 #define BCRYPT_RSAFULLPRIVATE_BLOB  L"RSAFULLPRIVATEBLOB"
 #define BCRYPT_ECCPUBLIC_BLOB       L"ECCPUBLICBLOB"
 #define BCRYPT_ECCPRIVATE_BLOB      L"ECCPRIVATEBLOB"
+#define BCRYPT_KEY_DATA_BLOB        L"KeyDataBlob"
 
 #define BCRYPT_SHA1_ALGORITHM    L"SHA1"
+#define BCRYPT_SHA224_ALGORITHM  L"SHA224"
 #define BCRYPT_SHA256_ALGORITHM  L"SHA256"
 #define BCRYPT_SHA384_ALGORITHM  L"SHA384"
 #define BCRYPT_SHA512_ALGORITHM  L"SHA512"
+
+/* Block cipher chaining modes */
+#define BCRYPT_CHAIN_MODE_ECB    L"ChainingModeECB"
+#define BCRYPT_CHAIN_MODE_CBC    L"ChainingModeCBC"
+#define BCRYPT_CHAIN_MODE_GCM    L"ChainingModeGCM"
+#define BCRYPT_CHAIN_MODE_CCM    L"ChainingModeCCM"
+#define BCRYPT_CHAIN_MODE_CFB    L"ChainingModeCFB"
+
+/* Key derivation function identifiers */
+#define BCRYPT_KDF_RAW_SECRET    L"TRUNCATE"
+#define BCRYPT_KDF_HASH          L"HASH"
+#define BCRYPT_KDF_HMAC          L"HMAC"
 
 typedef struct { LPCWSTR pszAlgId; DWORD cbSalt; } BCRYPT_PSS_PADDING_INFO;
 typedef struct { LPCWSTR pszAlgId; PBYTE pbLabel; DWORD cbLabel; } BCRYPT_OAEP_PADDING_INFO;
@@ -306,6 +345,7 @@ typedef struct { LPCWSTR pszAlgId; PBYTE pbLabel; DWORD cbLabel; } BCRYPT_OAEP_P
 /* ── NCrypt types ────────────────────────────────────────────────────────── */
 typedef ULONG_PTR NCRYPT_PROV_HANDLE;
 typedef ULONG_PTR NCRYPT_KEY_HANDLE;
+typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
 
 #define NCRYPT_NAME_PROPERTY            L"Name"
 #define NCRYPT_VERSION_PROPERTY         L"Version"
@@ -357,6 +397,11 @@ typedef struct _NCRYPT_KEY_STORAGE_FUNCTION_TABLE {
     void  *GetOperationProperty;
     void  *FreeObject;
     void  *PromptUser;
+    /* Extended slots — symmetric encryption and ECDH key agreement */
+    void  *Encrypt;
+    void  *SecretAgreement;
+    void  *DeriveKey;
+    void  *FreeSecret;
 } NCRYPT_KEY_STORAGE_FUNCTION_TABLE;
 
 /* ── Tick count (mock) ───────────────────────────────────────────────────── */

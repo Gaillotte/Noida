@@ -52,4 +52,45 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
     DWORD               cbData,
     DWORD               dwFlags);
 
+/* Encrypt data with a symmetric key (AES ECB / CBC / CTR / GCM) */
+SECURITY_STATUS WINAPI KSP_Encrypt(
+    NCRYPT_PROV_HANDLE hProvider,
+    NCRYPT_KEY_HANDLE  hKey,
+    PBYTE              pbInput,
+    DWORD              cbInput,
+    VOID              *pPaddingInfo,
+    PBYTE              pbOutput,
+    DWORD              cbOutput,
+    DWORD             *pcbResult,
+    DWORD              dwFlags);
+
+/* ECDH key agreement: derive a shared secret from a private key and a
+ * peer public key. Produces an NCRYPT_SECRET_HANDLE consumed by
+ * KSP_DeriveKey and released by KSP_FreeSecret. */
+SECURITY_STATUS WINAPI KSP_SecretAgreement(
+    NCRYPT_PROV_HANDLE    hProvider,
+    NCRYPT_KEY_HANDLE     hPrivKey,
+    NCRYPT_KEY_HANDLE     hPubKey,
+    NCRYPT_SECRET_HANDLE *phAgreedSecret,
+    DWORD                 dwFlags);
+
+/* Derive key material from an agreed secret produced by KSP_SecretAgreement */
+SECURITY_STATUS WINAPI KSP_DeriveKey(
+    NCRYPT_PROV_HANDLE   hProvider,
+    NCRYPT_SECRET_HANDLE hSharedSecret,
+    LPCWSTR              pwszKDF,
+    NCryptBufferDesc    *pParameterList,
+    PBYTE                pbDerivedKey,
+    DWORD                cbDerivedKey,
+    DWORD               *pcbResult,
+    DWORD                dwFlags);
+
+/* Release an agreed secret handle */
+SECURITY_STATUS WINAPI KSP_FreeSecret(
+    NCRYPT_PROV_HANDLE   hProvider,
+    NCRYPT_SECRET_HANDLE hSharedSecret);
+
+/* Validate an agreed-secret handle */
+BOOL KSP_IsValidSecret(NCRYPT_SECRET_HANDLE hSecret);
+
 #endif /* KSP_CRYPTO_H */

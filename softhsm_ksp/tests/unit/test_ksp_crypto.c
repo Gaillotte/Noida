@@ -668,8 +668,40 @@ int main(void)
     NCRYPT_KEY_HANDLE hSmallEc = 0;
     ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
         &hSmallEc, smallEcc, sizeof smallEcc, 0);
-    ASSERT_OK("ImportKey EC blob short → OK (default alg)", ss);
-    KSP_Free((void *)(ULONG_PTR)hSmallEc);
+    ASSERT_EQ("ImportKey EC blob shorter than header → NTE_INVALID_PARAMETER",
+              ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+    /* Header present but coordinates truncated → still rejected */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        BYTE truncEcc[sizeof(BCRYPT_ECCKEY_BLOB) + 10];
+        BCRYPT_ECCKEY_BLOB *pT = (BCRYPT_ECCKEY_BLOB *)truncEcc;
+        NCRYPT_KEY_HANDLE hTrunc = 0;
+        memset(truncEcc, 0, sizeof truncEcc);
+        pT->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+        pT->cbKey   = EC_P256_COORD_SIZE;   /* claims 32+32 but only 10 present */
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+            &hTrunc, truncEcc, sizeof truncEcc, 0);
+        ASSERT_EQ("ImportKey EC truncated coordinates → NTE_INVALID_PARAMETER",
+                  ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
+
+    /* Unknown coordinate size → NTE_BAD_ALGID */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        BYTE oddEcc[sizeof(BCRYPT_ECCKEY_BLOB) + 2 * 20];
+        BCRYPT_ECCKEY_BLOB *pO = (BCRYPT_ECCKEY_BLOB *)oddEcc;
+        NCRYPT_KEY_HANDLE hOdd = 0;
+        memset(oddEcc, 0, sizeof oddEcc);
+        pO->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+        pO->cbKey   = 20;                   /* not a supported curve size */
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+            &hOdd, oddEcc, sizeof oddEcc, 0);
+        ASSERT_EQ("ImportKey EC unknown curve size → NTE_BAD_ALGID",
+                  ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+    }
 
     /* Private blob → NTE_NOT_SUPPORTED */
     P11Mock_Reset();

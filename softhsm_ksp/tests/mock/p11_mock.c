@@ -167,6 +167,26 @@ static CK_RV mock_GetAttributeValue(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
                 *(CK_ULONG*)tmpl[i].pValue = g_cfg.ulModBits;
             tmpl[i].ulValueLen = sizeof(CK_ULONG);
             break;
+        case CKA_VALUE_LEN:
+            if (tmpl[i].pValue && tmpl[i].ulValueLen >= sizeof(CK_ULONG))
+                *(CK_ULONG*)tmpl[i].pValue = g_cfg.ulValueLen;
+            tmpl[i].ulValueLen = sizeof(CK_ULONG);
+            break;
+        case CKA_DERIVE:
+            if (tmpl[i].pValue && tmpl[i].ulValueLen >= sizeof(CK_ULONG))
+                *(CK_ULONG*)tmpl[i].pValue = g_cfg.ulDerive;
+            tmpl[i].ulValueLen = sizeof(CK_ULONG);
+            break;
+        case CKA_VALUE:
+            if (!g_cfg.pbSecretValue) return CKR_ATTRIBUTE_TYPE_INVALID;
+            if (!tmpl[i].pValue) {
+                tmpl[i].ulValueLen = g_cfg.cbSecretValue;
+            } else {
+                memcpy(tmpl[i].pValue, g_cfg.pbSecretValue,
+                       g_cfg.cbSecretValue);
+                tmpl[i].ulValueLen = g_cfg.cbSecretValue;
+            }
+            break;
         case CKA_MODULUS:
             if (!tmpl[i].pValue) {
                 tmpl[i].ulValueLen = g_cfg.cbModulus;
@@ -254,11 +274,29 @@ static CK_RV mock_FindObjectsFinal(CK_SESSION_HANDLE h) {
 
 static CK_RV mock_EncryptInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                                CK_OBJECT_HANDLE k) {
-    (void)h; (void)m; (void)k; return CKR_OK;
+    (void)h; (void)k;
+    g_calls.nEncryptInit++;
+    if (m) g_cfg.lastEncryptMech = m->mechanism;
+    return g_cfg.rv_EncryptInit;
 }
 static CK_RV mock_Encrypt(CK_SESSION_HANDLE h, CK_BYTE_PTR d, CK_ULONG dl,
     CK_BYTE_PTR e, CK_ULONG_PTR el) {
-    (void)h; (void)d; (void)dl; (void)e; (void)el; return CKR_OK;
+    CK_ULONG need;
+    (void)h; (void)d;
+    g_calls.nEncrypt++;
+
+    if (g_cfg.rv_Encrypt != CKR_OK) return g_cfg.rv_Encrypt;
+    if (!el) return CKR_ARGUMENTS_BAD;
+
+    /* Default: ciphertext same length as plaintext (stream-like) */
+    need = g_cfg.cbCiphertext ? g_cfg.cbCiphertext : dl;
+
+    if (e == NULL) { *el = need; return CKR_OK; }
+    if (*el < need) { *el = need; return CKR_BUFFER_TOO_SMALL; }
+
+    memset(e, 0xE1, need);
+    *el = need;
+    return CKR_OK;
 }
 static CK_RV mock_EncryptUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
     CK_ULONG pl, CK_BYTE_PTR ep, CK_ULONG_PTR epl) {
@@ -271,8 +309,9 @@ static CK_RV mock_EncryptFinal(CK_SESSION_HANDLE h, CK_BYTE_PTR lep,
 
 static CK_RV mock_DecryptInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                                CK_OBJECT_HANDLE k) {
-    (void)h; (void)m; (void)k;
+    (void)h; (void)k;
     g_calls.nDecryptInit++;
+    if (m) g_cfg.lastDecryptMech = m->mechanism;
     return g_cfg.rv_DecryptInit;
 }
 
@@ -314,8 +353,9 @@ static CK_RV mock_DigestFinal(CK_SESSION_HANDLE h, CK_BYTE_PTR dg,
 
 static CK_RV mock_SignInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                             CK_OBJECT_HANDLE k) {
-    (void)h; (void)m; (void)k;
+    (void)h; (void)k;
     g_calls.nSignInit++;
+    if (m) g_cfg.lastSignMech = m->mechanism;
     return g_cfg.rv_SignInit;
 }
 
@@ -387,7 +427,12 @@ static CK_RV mock_DecryptVerifyUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR ep,
 
 static CK_RV mock_GenerateKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     CK_ATTRIBUTE_PTR t, CK_ULONG n, CK_OBJECT_HANDLE_PTR ph) {
-    (void)h; (void)m; (void)t; (void)n; *ph = 0xFF; return CKR_OK;
+    (void)h; (void)t; (void)n;
+    g_calls.nGenerateKey++;
+    if (m) g_cfg.lastGenerateMech = m->mechanism;
+    if (g_cfg.rv_GenerateKey != CKR_OK) return g_cfg.rv_GenerateKey;
+    if (ph) *ph = 0xFF;
+    return CKR_OK;
 }
 
 static CK_RV mock_GenerateKeyPair(
@@ -419,8 +464,23 @@ static CK_RV mock_UnwrapKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
 static CK_RV mock_DeriveKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     CK_OBJECT_HANDLE bk, CK_ATTRIBUTE_PTR t, CK_ULONG n,
     CK_OBJECT_HANDLE_PTR ph) {
-    (void)h; (void)m; (void)bk; (void)t; (void)n; (void)ph;
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    (void)h; (void)bk; (void)t; (void)n;
+    g_calls.nDeriveKey++;
+
+    if (m) {
+        g_cfg.lastDeriveMech = m->mechanism;
+        /* Capture the peer public data length for ECDH assertions */
+        if (m->mechanism == CKM_ECDH1_DERIVE && m->pParameter &&
+            m->ulParameterLen >= sizeof(CK_ECDH1_DERIVE_PARAMS)) {
+            CK_ECDH1_DERIVE_PARAMS *p =
+                (CK_ECDH1_DERIVE_PARAMS *)m->pParameter;
+            g_cfg.lastEcdhPublicDataLen = p->ulPublicDataLen;
+        }
+    }
+
+    if (g_cfg.rv_DeriveKey != CKR_OK) return g_cfg.rv_DeriveKey;
+    if (ph) *ph = 0xD5;
+    return CKR_OK;
 }
 static CK_RV mock_SeedRandom(CK_SESSION_HANDLE h, CK_BYTE_PTR s, CK_ULONG sl) {
     (void)h; (void)s; (void)sl; return CKR_OK;
@@ -486,6 +546,10 @@ void P11Mock_Reset(void)
     g_cfg.rv_Decrypt         = CKR_OK;
     g_cfg.rv_DestroyObject   = CKR_OK;
     g_cfg.rv_CreateObject    = CKR_OK;
+    g_cfg.rv_GenerateKey     = CKR_OK;
+    g_cfg.rv_DeriveKey       = CKR_OK;
+    g_cfg.rv_EncryptInit     = CKR_OK;
+    g_cfg.rv_Encrypt         = CKR_OK;
 
     g_cfg.nSlots      = 1;
     g_cfg.nKeyObjects = 0;

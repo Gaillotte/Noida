@@ -33,7 +33,11 @@ TESTS = \
     test_ksp_provider \
     test_ksp_key_props \
     test_ksp_key_ops \
-    test_ksp_crypto
+    test_ksp_crypto \
+    test_oaep_params \
+    test_ecdh \
+    test_eddsa \
+    test_aes_keys
 
 .PHONY: all clean run coverage
 
@@ -83,6 +87,27 @@ test_ksp_key_ops: test_ksp_key_ops.c \
 # ── test_ksp_crypto : SignHash, Decrypt, ExportKey, ImportKey ─────────────
 test_ksp_crypto: test_ksp_crypto.c \
     $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+# ── test_oaep_params : P11_MapHashAlg, P11_BuildOaepParams (Phase 2) ──────
+test_oaep_params: test_oaep_params.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_ecdh : SecretAgreement, DeriveKey, FreeSecret (Phase 4) ──────────
+test_ecdh: test_ecdh.c \
+    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+# ── test_eddsa : Ed25519 / Ed448 keygen, sign, export (Phase 5) ───────────
+test_eddsa: test_eddsa.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(LOG_SRC) \
+    $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+# ── test_aes_keys : AES keygen, Encrypt/Decrypt, HMAC (Phase 6) ───────────
+test_aes_keys: test_aes_keys.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 run: all

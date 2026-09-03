@@ -59,13 +59,77 @@
     "\x06\x05\x2b\x81\x04\x00\x22"
 #define EC_OID_P384_LEN  7
 
+/* P-521 (secp521r1): OID 1.3.132.0.35 */
+#define EC_OID_P521 \
+    "\x06\x05\x2b\x81\x04\x00\x23"
+#define EC_OID_P521_LEN  7
+
+/* Ed25519: OID 1.3.101.112 */
+#define EC_OID_ED25519 \
+    "\x06\x03\x2b\x65\x70"
+#define EC_OID_ED25519_LEN  5
+
+/* Ed448: OID 1.3.101.113 */
+#define EC_OID_ED448 \
+    "\x06\x03\x2b\x65\x71"
+#define EC_OID_ED448_LEN  5
+
 /* EC coordinate size in bytes */
 #define EC_P256_COORD_SIZE  32
 #define EC_P384_COORD_SIZE  48
+#define EC_P521_COORD_SIZE  66   /* ceil(521 / 8) */
 
-/* CNG algorithm names */
+/* EdDSA public key / signature sizes in bytes */
+#define ED25519_PUBKEY_SIZE   32
+#define ED25519_SIG_SIZE      64
+#define ED448_PUBKEY_SIZE     57
+#define ED448_SIG_SIZE       114
+
+/* AES key sizes in bytes */
+#define AES_128_KEY_BYTES  16
+#define AES_192_KEY_BYTES  24
+#define AES_256_KEY_BYTES  32
+#define AES_BLOCK_SIZE     16
+#define AES_GCM_TAG_BITS  128
+
+/* CNG algorithm names — asymmetric */
 #define ALG_RSA        L"RSA"
 #define ALG_ECDSA_P256 L"ECDSA_P256"
 #define ALG_ECDSA_P384 L"ECDSA_P384"
+#define ALG_ECDSA_P521 L"ECDSA_P521"
+#define ALG_ECDH_P256  L"ECDH_P256"
+#define ALG_ECDH_P384  L"ECDH_P384"
+#define ALG_ECDH_P521  L"ECDH_P521"
+#define ALG_EDDSA_ED25519 L"EDDSA_ED25519"
+#define ALG_EDDSA_ED448   L"EDDSA_ED448"
+
+/* CNG algorithm names — symmetric / MAC */
+#define ALG_AES          L"AES"
+#define ALG_HMAC_SHA1    L"HMAC_SHA1"
+#define ALG_HMAC_SHA256  L"HMAC_SHA256"
+#define ALG_HMAC_SHA384  L"HMAC_SHA384"
+#define ALG_HMAC_SHA512  L"HMAC_SHA512"
+
+/* CNG algorithm group names */
+#define ALG_GROUP_RSA    L"RSA"
+#define ALG_GROUP_ECDSA  L"ECDSA"
+#define ALG_GROUP_ECDH   L"ECDH"
+#define ALG_GROUP_EDDSA  L"EDDSA"
+#define ALG_GROUP_AES    L"AES"
+#define ALG_GROUP_HMAC   L"HMAC"
+
+/* Key class — distinguishes asymmetric pairs from symmetric secrets */
+#define KSP_KEY_CLASS_ASYMMETRIC  0
+#define KSP_KEY_CLASS_SYMMETRIC   1
+
+/* Maximum GCM additional-authenticated-data length retained on a key */
+#define MAX_AUTH_DATA_LEN  256
+
+/* Chaining mode for AES-CTR. CNG defines no standard string for counter
+ * mode, so the KSP accepts this name in NCRYPT_CHAINING_MODE_PROPERTY. */
+#define KSP_CHAIN_MODE_CTR  L"ChainingModeCTR"
+
+/* Magic number validating a (KSP_SECRET *) agreed-secret handle */
+#define KSP_SECRET_MAGIC       0x4B535053UL  /* 'KSPS' */
 
 #endif /* CONFIG_H */

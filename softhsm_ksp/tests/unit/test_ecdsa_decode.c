@@ -61,9 +61,15 @@ int main(void)
 
     ASSERT_EQ("P-256 → 32",  P11_EcCoordSize(L"ECDSA_P256"), 32U);
     ASSERT_EQ("P-384 → 48",  P11_EcCoordSize(L"ECDSA_P384"), 48U);
-    ASSERT_EQ("Unknown → 0", P11_EcCoordSize(L"ECDSA_P521"), 0U);
+    ASSERT_EQ("P-521 → 66",  P11_EcCoordSize(L"ECDSA_P521"), 66U);
+    ASSERT_EQ("ECDH P-256 → 32", P11_EcCoordSize(L"ECDH_P256"), 32U);
+    ASSERT_EQ("ECDH P-384 → 48", P11_EcCoordSize(L"ECDH_P384"), 48U);
+    ASSERT_EQ("ECDH P-521 → 66", P11_EcCoordSize(L"ECDH_P521"), 66U);
     ASSERT_EQ("RSA → 0",     P11_EcCoordSize(L"RSA"),        0U);
     ASSERT_EQ("Empty → 0",   P11_EcCoordSize(L""),           0U);
+    ASSERT_EQ("NULL → 0",    P11_EcCoordSize(NULL),          0U);
+    ASSERT_EQ("EdDSA → 0 (not a NIST curve)",
+              P11_EcCoordSize(L"EDDSA_ED25519"),            0U);
 
     /* ── Suite 2 : Cas nominaux P-256 ───────────────────────────────────── */
     TEST_SUITE("P11_DecodeDerEcdsaSignature — P-256 nominal cases");

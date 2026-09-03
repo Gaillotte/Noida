@@ -53,9 +53,18 @@ SECURITY_STATUS P11_ExportEcPublicKey(
     BYTE             **ppBlob,
     DWORD             *pcbBlob);
 
+/* Export a PKCS#11 Edwards-curve public key as a BCRYPT_ECCKEY_BLOB.
+ * EdDSA public keys are a single raw point (no X/Y split). */
+SECURITY_STATUS P11_ExportEddsaPublicKey(
+    CK_SESSION_HANDLE  hSession,
+    CK_OBJECT_HANDLE   hPubKey,
+    LPCWSTR            pszAlgId,
+    BYTE             **ppBlob,
+    DWORD             *pcbBlob);
+
 /* Decode a DER ECDSA signature (SEQUENCE { INTEGER r, INTEGER s })
  * into Windows format (r||s, fixed size based on the curve).
- * pszAlgId: L"ECDSA_P256" or L"ECDSA_P384" */
+ * pszAlgId: L"ECDSA_P256", L"ECDSA_P384" or L"ECDSA_P521" */
 SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     LPCWSTR  pszAlgId,
     BYTE    *pbDer,
@@ -65,5 +74,33 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
 
 /* Return the EC coordinate size in bytes for the given algorithm */
 DWORD P11_EcCoordSize(LPCWSTR pszAlgId);
+
+/* Return the DER-encoded curve OID for an EC / EdDSA algorithm.
+ * Returns NULL and leaves *pcbOid untouched for non-curve algorithms. */
+const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid);
+
+/* Map a CNG hash algorithm name (BCRYPT_*_ALGORITHM) to the matching
+ * PKCS#11 digest mechanism and MGF1 identifier.
+ * Returns NTE_NOT_SUPPORTED for an unrecognised hash. */
+SECURITY_STATUS P11_MapHashAlg(
+    LPCWSTR            pszHashAlg,
+    CK_MECHANISM_TYPE *pHashMech,
+    CK_ULONG          *pMgf);
+
+/* Populate CK_RSA_PKCS_OAEP_PARAMS from BCRYPT_OAEP_PADDING_INFO.
+ * Supports SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512. */
+SECURITY_STATUS P11_BuildOaepParams(
+    BCRYPT_OAEP_PADDING_INFO *pOaepInfo,
+    CK_RSA_PKCS_OAEP_PARAMS  *pParams);
+
+/* Build a PKCS#11 CKA_EC_POINT value (DER OCTET STRING wrapping
+ * 0x04 || X || Y) from the X/Y coordinates of a BCRYPT_ECCKEY_BLOB.
+ * The caller frees *ppDer with KSP_Free. */
+SECURITY_STATUS P11_BuildEcPointDer(
+    const BYTE *pbX,
+    const BYTE *pbY,
+    DWORD       cbCoord,
+    BYTE      **ppDer,
+    DWORD      *pcbDer);
 
 #endif /* P11_UTILS_H */
