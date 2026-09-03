@@ -3,6 +3,27 @@ project(softhsm_ksp C)
 
 set(CMAKE_C_STANDARD 11)
 
+# Optional: path to a SoftHSM2 2.7.0 installation built from source.
+# If provided, the install-time DLL path is embedded as the compile-time default.
+# Example: cmake .. -DSOFTHSM2_DIR=C:/path/to/softhsm2-install
+set(SOFTHSM2_DIR "" CACHE PATH "SoftHSM2 2.7.0 install directory (optional)")
+
+if(SOFTHSM2_DIR)
+    # Locate the built DLL under the install tree
+    file(GLOB_RECURSE _hsm_dll LIST_DIRECTORIES false
+         "${SOFTHSM2_DIR}/*softhsm2*.dll"
+         "${SOFTHSM2_DIR}/*softhsm2*.so")
+    if(_hsm_dll)
+        list(GET _hsm_dll 0 _hsm_dll_path)
+        # Normalise path separators for the C string literal
+        string(REPLACE "/" "\\\\" _hsm_dll_escaped "${_hsm_dll_path}")
+        message(STATUS "SoftHSM2 DLL: ${_hsm_dll_path}")
+        add_compile_definitions(SOFTHSM2_LIB_DEFAULT_OVERRIDE="${_hsm_dll_escaped}")
+    else()
+        message(WARNING "SOFTHSM2_DIR set but no softhsm2 DLL found under ${SOFTHSM2_DIR}")
+    endif()
+endif()
+
 # MSVC: /W3 warning level, treat warnings as errors
 if(MSVC)
     add_compile_options(/W3 /WX)

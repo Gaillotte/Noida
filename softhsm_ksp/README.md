@@ -9,29 +9,54 @@ Prototype of a complete **CNG (Cryptography Next Generation) Key Storage Provide
 | Windows   | 10 / 11 x64     |
 | Visual Studio | 2022 (MSVC) |
 | CMake     | 3.20+           |
-| SoftHSM2  | 2.6+            |
+| SoftHSM2  | **2.7.0** (OpenSSL backend — built from submodule or installed separately) |
+| OpenSSL   | 1.1.x or 3.x (via vcpkg when building from source) |
 | Windows SDK | 10.0.19041+  |
 
-### Installing SoftHSM2
+## Getting SoftHSM2 2.7.0
 
-1. Download the installer from https://github.com/opendnssec/SoftHSMv2
-2. Install in `C:\Program Files\SoftHSM2\` (default path)
+Two options — choose one:
+
+### Option A — Build from source (recommended, included as submodule)
+
+```powershell
+# After cloning the repo:
+git submodule update --init --recursive
+
+# In a Visual Studio x64 Native Tools prompt:
+.\softhsm_ksp\tools\build_softhsm_windows.ps1
+
+# The DLL ends up in softhsm2-install\ and the KSP CMake step below
+# picks it up automatically via -DSOFTHSM2_DIR.
+```
+
+### Option B — Pre-built installer
+
+1. Download the 2.7.0 installer from https://github.com/opendnssec/SoftHSMv2/releases
+2. Install to `C:\Program Files\SoftHSM2\` (default)
 3. Initialise a token:
-   ```
-   softhsm2-util --init-token --slot 0 --label "MyToken" \
-                 --so-pin 0000 --pin 1234
+   ```powershell
+   softhsm2-util --init-token --slot 0 --label "MyToken" --so-pin 0000 --pin 1234
    ```
 
 ## Build
 
 ```powershell
-# In a Visual Studio terminal (x64 Native Tools)
+# In a Visual Studio x64 Native Tools prompt
+cd softhsm_ksp
 mkdir build && cd build
+
+# Option A (submodule build — DLL path baked in at compile time):
+cmake .. -G "Visual Studio 17 2022" -A x64 `
+         -DSOFTHSM2_DIR=..\..\softhsm2-install
+
+# Option B (pre-built installer in default location):
 cmake .. -G "Visual Studio 17 2022" -A x64
+
 cmake --build . --config Release
 ```
 
-The DLL `Release\softhsm_ksp.dll` is built in `build\Release\`.
+The DLL `Release\softhsm_ksp.dll` is built in `softhsm_ksp\build\Release\`.
 
 ## Configuration
 

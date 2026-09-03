@@ -33,6 +33,12 @@ tools, and documentation.
 
 ```
 noida/
+├── softhsm2/                       SoftHSM2 2.7.0 git submodule (OpenSSL backend)
+├── softhsm2-install/               Build output of the submodule (gitignored)
+├── softhsm2-build-*/               Intermediate CMake/make dirs (gitignored)
+├── vcpkg/                          vcpkg (auto-cloned by build script, gitignored)
+├── scripts/
+│   └── build_softhsm_linux.sh      Build SoftHSM2 2.7.0 on Linux (CMake or autotools)
 ├── softhsm_ksp/                    Main KSP project
 │   ├── src/
 │   │   ├── common/                 Logging, memory, configuration
@@ -91,6 +97,14 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 3 — SoftHSM2 2.7.0 upgrade (OpenSSL backend)
+- **`softhsm2/`** git submodule added, pinned to tag 2.7.0
+- **`scripts/build_softhsm_linux.sh`** — builds SoftHSM2 on Linux (CMake or autotools, OpenSSL)
+- **`softhsm_ksp/tools/build_softhsm_windows.ps1`** — builds SoftHSM2 on Windows (vcpkg + CMake + OpenSSL x64)
+- **`softhsm_ksp/CMakeLists.txt`** — added `-DSOFTHSM2_DIR` option; bakes the submodule DLL path at compile time
+- **`softhsm_ksp/src/common/config.h`** — `SOFTHSM2_LIB_DEFAULT` now uses `SOFTHSM2_LIB_DEFAULT_OVERRIDE` when injected by CMake; minimum version comment updated to 2.7.0
+- **`softhsm_ksp/README.md`** and **`CLAUDE.md`** — updated prerequisites, build instructions for both options
 
 ### Session 1 — Translation (French → English)
 - All 44 source / header / test `.c` / `.h` files translated from French to English
@@ -183,11 +197,19 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 ## Build Instructions (Windows)
 
 ```powershell
-# In a Visual Studio x64 Native Tools terminal
+# 1. Initialise submodule
+git submodule update --init --recursive
+
+# 2. Build SoftHSM2 2.7.0 (OpenSSL, x64) — in a VS x64 Native Tools prompt
+.\softhsm_ksp\tools\build_softhsm_windows.ps1
+# Output: softhsm2-install\  (DLL inside)
+
+# 3. Build the KSP DLL
+cd softhsm_ksp
 mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
+cmake .. -G "Visual Studio 17 2022" -A x64 -DSOFTHSM2_DIR=..\..\softhsm2-install
 cmake --build . --config Release
-# Output: build\Release\softhsm_ksp.dll
+# Output: softhsm_ksp\build\Release\softhsm_ksp.dll
 ```
 
 ## Unit Tests (Linux/GCC — no SoftHSM2 needed)

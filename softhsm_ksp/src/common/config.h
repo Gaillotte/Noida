@@ -1,11 +1,18 @@
 /* config.h — SoftHSM2 KSP configuration constants
  * Default paths, PIN, and global constants.
+ * Minimum SoftHSM2 version required: 2.7.0 (OpenSSL backend, PKCS#11 v2.40)
  */
 #ifndef CONFIG_H
 #define CONFIG_H
 
-/* Default path to the SoftHSM2 library */
-#define SOFTHSM2_LIB_DEFAULT   L"C:\\Program Files\\SoftHSM2\\lib\\softhsm2-x64.dll"
+/* Default path to the SoftHSM2 library.
+ * SOFTHSM2_LIB_DEFAULT_OVERRIDE is injected by CMake when SOFTHSM2_DIR is set
+ * (i.e. when SoftHSM2 is compiled from the in-tree submodule). */
+#ifdef SOFTHSM2_LIB_DEFAULT_OVERRIDE
+# define SOFTHSM2_LIB_DEFAULT  L ## SOFTHSM2_LIB_DEFAULT_OVERRIDE
+#else
+# define SOFTHSM2_LIB_DEFAULT  L"C:\\Program Files\\SoftHSM2\\lib\\softhsm2-x64.dll"
+#endif
 
 /* Environment variable to override the library path */
 #define SOFTHSM2_LIB_ENV       "SOFTHSM2_LIB"
