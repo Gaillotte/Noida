@@ -208,7 +208,7 @@ def build():
         "audit log; secret blobs enveloped under an HSM-resident master key",
         "Governance: cryptoperiod enforcement with scheduled deactivation and optional "
         "auto-rotation, and dual control (M-of-N approval) for destructive operations",
-        "41 of 53 KMIP operations implemented; 813 automated tests; 100 % pass rate",
+        "41 of 53 KMIP operations implemented; 816 automated tests; 100 % pass rate",
     ]
     for b in bullets:
         add_bullet(doc, b)
@@ -279,7 +279,7 @@ def build():
         "    ├── test_conformance.py     #  48 OASIS KMIP conformance tests",
         "    ├── test_governance.py      #  48 governance tests: cryptoperiod, dual",
         "    │                           #   control, groups, role allowlists",
-        "    └── test_extended_coverage.py # 643 live tests: every operation, algorithm",
+        "    └── test_extended_coverage.py # 646 live tests: every operation, algorithm",
         "                                 #  coverage, error paths, access control,",
         "                                 #  session concurrency",
     ]
@@ -1144,8 +1144,10 @@ def build():
     section_break(doc)
     add_heading(doc, "5.3 Environment Variables", 2, MID_BLUE)
     env_vars = [
-        ("SOFTHSM2_LIB",  "/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so",
-         "Path to the PKCS#11 shared library."),
+        ("SOFTHSM2_LIB",  "/usr/local/lib/softhsm/libsofthsm2.so",
+         "Path to the PKCS#11 shared library. The default is a source build of "
+         "SoftHSM2 2.7.0; the packaged 2.6.1 does not advertise CKM_ECDSA_SHA256, "
+         "so every EC signing test fails against it."),
         ("SOFTHSM2_CONF", "/tmp/softhsm2_tests/softhsm2.conf",
          "SoftHSM2 configuration file path. Created automatically by the test fixtures."),
     ]
@@ -1252,7 +1254,7 @@ def build():
     add_heading(doc, "7. Test Specification", 1, DARK_BLUE)
 
     add_para(doc,
-        "The test suite comprises 813 tests organised into seven modules, all passing "
+        "The test suite comprises 816 tests organised into seven modules, all passing "
         "(100 % pass rate). All tests are executed with pytest. The test suite requires "
         "a running SoftHSM2 token (initialised automatically by the conftest.py session "
         "fixture). The original five modules' test classes map to OASIS KMIP TC (Test "
@@ -1274,8 +1276,8 @@ def build():
                                 "per-role operation allowlists",        "48",  "Requires SoftHSM2"),
         ("test_extended_coverage.py", "All 41 operations, algorithm/mode coverage, "
                                       "error paths, access control, session concurrency",
-                                      "643", "Requires SoftHSM2"),
-        ("TOTAL",               "",                                     "813", ""),
+                                      "646", "Requires SoftHSM2"),
+        ("TOTAL",               "",                                     "816", ""),
     ]
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = 'Table Grid'
@@ -1296,7 +1298,7 @@ def build():
     # ── 7.2 Running the tests ─────────────────────────────────────────────
     add_heading(doc, "7.2 Running the Test Suite", 2, MID_BLUE)
     for line in [
-        "# Run all 813 tests",
+        "# Run all 816 tests",
         "pytest",
         "",
         "# Run a specific module",
@@ -1618,7 +1620,7 @@ def build():
         "test_conformance.py covers the mandatory/optional KMIP TC surface described in "
         "Section 7.8 above — the operations and behaviors present when this project had "
         "15 operations and 122 tests. test_extended_coverage.py is a later, much larger "
-        "addition (643 tests, several times the size of the original five test modules "
+        "addition (646 tests, several times the size of the original five test modules "
         "combined) covering everything built since: the remaining 25 operations not "
         "exercised by test_conformance.py, algorithm and cipher-mode coverage across the "
         "capability-probed CryptographicAlgorithm set, error paths, and the access-control "
@@ -1655,7 +1657,7 @@ def build():
     add_heading(doc, "8. Test Results Summary", 1, DARK_BLUE)
 
     add_para(doc,
-        "All 813 tests pass on a Debian installation with a SoftHSM2 2.7.0 build "
+        "All 816 tests pass on a Debian installation with a SoftHSM2 2.7.0 build "
         "against OpenSSL 3.0.13 and Python 3.11."
     )
     section_break(doc)
@@ -1667,8 +1669,8 @@ def build():
         ("test_operations.py",       "8",   "8",   "0",  "100 %"),
         ("test_conformance.py",      "48",  "48",  "0",  "100 %"),
         ("test_governance.py",       "48",  "48",  "0",  "100 %"),
-        ("test_extended_coverage.py","643", "643", "0",  "100 %"),
-        ("TOTAL",                    "813", "813", "0",  "100 %"),
+        ("test_extended_coverage.py","646", "646", "0",  "100 %"),
+        ("TOTAL",                    "816", "816", "0",  "100 %"),
     ]
 
     tbl = doc.add_table(rows=1, cols=5)

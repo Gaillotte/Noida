@@ -7469,12 +7469,17 @@ class TestPhase3DeploymentArtifacts:
         assert cfg.get("hsm", "pin_file"), "the template must demonstrate a file-based PIN"
         assert not cfg.get("hsm", "pin"), "the template must not ship an inline PIN"
 
-    def test_dockerfile_builds_softhsm_from_source(self):
-        """The packaged SoftHSM2 lacks the combined ECDSA-with-hash mechanisms,
-        so an image built on it would fail every EC signing test."""
+    def test_dockerfile_builds_a_softhsm_new_enough_for_ec_signing(self):
+        """SoftHSM2 before 2.7.0 does not advertise the combined
+        ECDSA-with-hash mechanisms, so an image built on it fails every EC
+        signing test. The version is what matters, not the crypto backend —
+        the packaged 2.6.1 already links OpenSSL — which is why this asserts
+        the version and not just the configure flag."""
         with open(os.path.join(self.ROOT, "deploy", "Dockerfile")) as f:
             dockerfile = f.read()
         assert "--with-crypto-backend=openssl" in dockerfile
+        assert "ARG SOFTHSM_VERSION=2.7.0" in dockerfile, \
+            "2.6.1 lacks CKM_ECDSA_SHA256; building it from source does not help"
         assert "USER kmip" in dockerfile, "the image must not run as root"
         assert "HEALTHCHECK" in dockerfile
 
@@ -7489,7 +7494,52 @@ class TestPhase3DeploymentArtifacts:
         with open(path) as f:
             workflow = f.read()
         assert "--with-crypto-backend=openssl" in workflow
+        assert "softhsm-2.7.0.tar.gz" in workflow, "2.6.1 lacks CKM_ECDSA_SHA256"
+        assert "2.6.1.tar.gz" not in workflow
         assert "ECDSA_SHA256" in workflow, "CI must assert the mechanism set it depends on"
+
+    def test_example_config_points_at_the_library_the_tests_use(self):
+        """The example config shipped a path to the distribution package,
+        which is the build without CKM_ECDSA_SHA256 — so anyone copying the
+        template got the token the test suite deliberately avoids."""
+        from .conftest import SOFTHSM_LIB
+        from kmip_pkcs11.config import KMIPConfig
+        cfg = KMIPConfig.from_file(
+            os.path.join(self.ROOT, "deploy", "config.example.yaml"))
+        assert cfg.get("hsm", "library") == SOFTHSM_LIB
+
+    def test_demo_defaults_to_the_same_library_as_the_tests(self):
+        """Otherwise 'the demo works' and 'the tests pass' can mean
+        different tokens."""
+        from .conftest import SOFTHSM_LIB
+        from kmip_pkcs11.test_app import demo
+        assert demo.SOFTHSM_LIB == SOFTHSM_LIB
+
+    def test_demo_register_payload_is_one_the_handler_accepts(self):
+        """The demo wrapped its KeyBlock in a second KeyBlock, burying the
+        KeyValue a level too deep, and Register refused it with
+        'KeyMaterial is required'. Nothing executed the demo, so it stayed
+        broken; this asserts the payload shape without running it."""
+        from kmip_pkcs11.core.enums import Tag
+        from kmip_pkcs11.core.ttlv import decode_one, encode_structure
+
+        captured = {}
+
+        class _FakeClient:
+            def _request(self, operation, payload_bytes):
+                captured["payload"] = decode_one(
+                    encode_structure(Tag.RequestPayload, payload_bytes))
+                return decode_one(encode_structure(Tag.ResponsePayload, b""))
+
+        from kmip_pkcs11.test_app.demo import _register_key
+        from kmip_pkcs11.core.enums import CryptographicAlgorithm
+        _register_key(_FakeClient(), b"\x01" * 16, CryptographicAlgorithm.AES)
+
+        key_block = captured["payload"].get(Tag.KeyBlock)
+        assert key_block is not None, "Register needs a KeyBlock"
+        key_value = key_block.get(Tag.KeyValue)
+        assert key_value is not None, "KeyBlock must not be double-wrapped"
+        assert key_value.get(Tag.KeyMaterial).value == b"\x01" * 16
 
 
 # ══════════════════════════════════════════════════════════════════════════════

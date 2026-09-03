@@ -77,7 +77,7 @@ for g in generate_feature_spec generate_install_guide generate_kmip_design_doc  
   operation (see [Access Control](#access-control))
 - **SQLite metadata store** — thread-safe (connection-per-thread), WAL mode,
   JSON attribute values
-- **813 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
+- **816 automated tests** — 100% pass rate, run live against a real SoftHSM2 token
 
 ---
 
@@ -173,7 +173,7 @@ kmip_pkcs11/
     ├── test_conformance.py       #  48 OASIS KMIP conformance tests
     ├── test_governance.py        #  48 governance tests: cryptoperiod, dual
     │                             #   control, groups, role allowlists
-    └── test_extended_coverage.py # 643 live tests: every operation, algorithm
+    └── test_extended_coverage.py # 646 live tests: every operation, algorithm
                                    #  coverage, error paths, authentication,
                                    #  access control, audit, transport,
                                    #  session concurrency
@@ -610,7 +610,7 @@ no PKCS#11 mechanism was ever standardized for them at all.
 ## Running the Tests
 
 ```bash
-# Run all 813 tests
+# Run all 816 tests
 pytest
 
 # Run with verbose output
@@ -636,8 +636,8 @@ pytest --cov=kmip_pkcs11 --cov-report=html
 | test_operations.py      |   8 |   8 | 0 | 100 % |
 | test_conformance.py     |  48 |  48 | 0 | 100 % |
 | test_governance.py      |  48 |  48 | 0 | 100 % |
-| test_extended_coverage.py | 643 | 643 | 0 | 100 % |
-| **TOTAL**            | **813** | **813** | **0** | **100 %** |
+| test_extended_coverage.py | 646 | 646 | 0 | 100 % |
+| **TOTAL**            | **816** | **816** | **0** | **100 %** |
 
 ---
 
@@ -698,7 +698,7 @@ KMIPServer(
 
 | Variable        | Default                                                | Purpose              |
 |----------------|----------------------------------------------------------|----------------------|
-| `SOFTHSM2_LIB`  | `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so`   | PKCS#11 library path |
+| `SOFTHSM2_LIB`  | `/usr/local/lib/softhsm/libsofthsm2.so`   | PKCS#11 library path. The default is a source build of SoftHSM2 2.7.0 — the packaged 2.6.1 lacks `CKM_ECDSA_SHA256`, so every EC signing test fails against it. |
 | `SOFTHSM2_CONF` | auto-created by test fixtures                          | SoftHSM2 config path |
 
 ### Roles and grants

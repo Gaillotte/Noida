@@ -10,9 +10,14 @@ import socket
 import time
 import pytest
 
+# A source build of SoftHSM2 2.7.0, not the distribution package. The version
+# is the reason, not the crypto backend: the packaged 2.6.1 already links
+# OpenSSL, and enumerating both mechanism lists on one machine gives 70
+# mechanisms without CKM_ECDSA_SHA256 for 2.6.1 and 79 with it for 2.7.0. Every
+# EC signing test fails against the older build.
 SOFTHSM_LIB = os.environ.get(
     "SOFTHSM2_LIB",
-    "/usr/local/lib/softhsm/libsofthsm2.so"   # OpenSSL build — supports ECDSA_SHA*
+    "/usr/local/lib/softhsm/libsofthsm2.so"
 )
 TOKEN_LABEL = "KMIPTestSuite"
 USER_PIN    = "9999"

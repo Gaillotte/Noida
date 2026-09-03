@@ -20,9 +20,14 @@ log = logging.getLogger("demo")
 
 # ── paths ────────────────────────────────────────────────────────────────────
 
+# Same default as the test fixtures: a source build of SoftHSM2 2.7.0. The
+# distribution package (2.6.1 at the time of writing) works for this demo,
+# which only uses AES and RSA, but lacks the combined ECDSA-with-hash
+# mechanisms the EC tests need — so pointing both at the same library keeps
+# "the demo works" and "the tests pass" from meaning different things.
 SOFTHSM_LIB = os.environ.get(
     "SOFTHSM2_LIB",
-    "/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+    "/usr/local/lib/softhsm/libsofthsm2.so"
 )
 TOKEN_LABEL = "KMIPTest"
 USER_PIN    = "1234"
@@ -164,7 +169,6 @@ def run_demo():
 
             # ── 13. Register a secret ─────────────────────────────────────
             log.info("[13] Register a new AES-128 key...")
-            import os
             key_bytes = os.urandom(16)
             reg_uid = _register_key(c, key_bytes, CryptographicAlgorithm.AES)
             log.info("    Registered key uid=%s", reg_uid)
@@ -234,10 +238,13 @@ def _register_key(client, key_bytes: bytes, algorithm: int) -> str:
                 encode_integer(Tag.AttributeValue,
                                CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt))
     )
+    # key_block is already a KeyBlock structure — wrapping it in another
+    # KeyBlock buried the KeyValue one level too deep, and the handler
+    # (correctly) reported "KeyMaterial is required".
     payload = (
         encode_enumeration(Tag.ObjectType, ObjectType.SymmetricKey)
         + encode_structure(Tag.TemplateAttribute, attr_bytes)
-        + encode_structure(Tag.KeyBlock, key_block)
+        + key_block
     )
 
     from ..core.enums import Operation

@@ -279,7 +279,7 @@ def build():
         "This guide takes a machine with nothing on it to a running, "
         "TLS-protected KMIP 2.1 server backed by a PKCS#11 token, and then "
         "shows how to verify it, operate it, upgrade it and recover it. It "
-        "also covers running the 813-test suite, which is the fastest way to "
+        "also covers running the 816-test suite, which is the fastest way to "
         "confirm an installation is sound.")
 
     h2(doc, "1.1  Which path do you want?")
@@ -795,7 +795,7 @@ def build():
     # ── 9  Tests ─────────────────────────────────────────────────────────
     h1(doc, "9  Running the test suite")
     body(doc,
-        "813 tests, all executed live against a real SoftHSM2 token rather than "
+        "816 tests, all executed live against a real SoftHSM2 token rather than "
         "against mocks. Running them is the fastest way to confirm an installation "
         "is sound, and the fastest way to find out that a token lacks a mechanism "
         "the suite needs.")
@@ -804,7 +804,7 @@ def build():
     code_block(doc, [
         "pip install --use-pep517 -e '.[dev]'",
         "pytest",
-        "→ 813 passed in 48.22s",
+        "→ 816 passed in 53.44s",
     ])
     tip(doc, "The suite manages its own token: the session fixture wipes "
              "/tmp/softhsm2_tests/tokens and re-initialises it every run, so results "
@@ -846,12 +846,12 @@ def build():
                                                  "assertions."],
             ["test_governance.py", "48", "Yes", "Cryptoperiod enforcement, dual "
                                                 "control, groups, role allowlists."],
-            ["test_extended_coverage.py", "643", "Yes", "Every operation, algorithm and "
+            ["test_extended_coverage.py", "646", "Yes", "Every operation, algorithm and "
                                                         "mode coverage, error paths, "
                                                         "authentication, access "
                                                         "control, audit, transport, "
                                                         "backup, workers, concurrency."],
-            ["TOTAL", "813", "", "100 % pass rate."],
+            ["TOTAL", "816", "", "100 % pass rate."],
         ],
         col_widths=[5.0, 1.8, 2.5, 7.7])
     doc.add_paragraph()
