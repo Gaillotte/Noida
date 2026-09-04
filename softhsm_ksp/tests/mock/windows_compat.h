@@ -33,6 +33,7 @@ typedef unsigned char      BYTE;
 typedef unsigned char      BOOL;
 typedef unsigned short     WORD;
 typedef unsigned int       DWORD;
+typedef unsigned int       ULONG;
 typedef unsigned long long QWORD;
 typedef long               LONG;
 typedef unsigned long long ULONG_PTR;
@@ -338,6 +339,50 @@ typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER {
 #define BCRYPT_KDF_RAW_SECRET    L"TRUNCATE"
 #define BCRYPT_KDF_HASH          L"HASH"
 #define BCRYPT_KDF_HMAC          L"HMAC"
+
+/* ── BCrypt runtime API ──────────────────────────────────────────────────
+ * Declarations only. The integration test (tests/test_ksp_integration.c)
+ * runs on Windows against the real bcrypt.dll; these let it be
+ * syntax-checked on Linux so typos are caught before a Windows build.
+ * ------------------------------------------------------------------------ */
+typedef long  NTSTATUS;
+typedef void *BCRYPT_ALG_HANDLE;
+typedef void *BCRYPT_KEY_HANDLE;
+
+typedef struct { LPCWSTR pszAlgId; } BCRYPT_PKCS1_PADDING_INFO;
+
+#define BCRYPT_RSA_ALGORITHM         L"RSA"
+#define BCRYPT_ECDSA_P256_ALGORITHM  L"ECDSA_P256"
+#define BCRYPT_ECDSA_P384_ALGORITHM  L"ECDSA_P384"
+#define BCRYPT_ECDSA_P521_ALGORITHM  L"ECDSA_P521"
+#define BCRYPT_ECDH_P256_ALGORITHM   L"ECDH_P256"
+#define BCRYPT_ECDH_P384_ALGORITHM   L"ECDH_P384"
+#define BCRYPT_ECDH_P521_ALGORITHM   L"ECDH_P521"
+#define BCRYPT_AES_ALGORITHM         L"AES"
+
+#define BCRYPT_PAD_PKCS1  0x00000002
+#define BCRYPT_PAD_OAEP   0x00000004
+#define BCRYPT_PAD_PSS    0x00000008
+
+NTSTATUS BCryptOpenAlgorithmProvider(BCRYPT_ALG_HANDLE *phAlgorithm,
+    LPCWSTR pszAlgId, LPCWSTR pszImplementation, DWORD dwFlags);
+NTSTATUS BCryptCloseAlgorithmProvider(BCRYPT_ALG_HANDLE hAlgorithm,
+    DWORD dwFlags);
+NTSTATUS BCryptImportKeyPair(BCRYPT_ALG_HANDLE hAlgorithm,
+    BCRYPT_KEY_HANDLE hImportKey, LPCWSTR pszBlobType,
+    BCRYPT_KEY_HANDLE *phKey, PBYTE pbInput, DWORD cbInput, DWORD dwFlags);
+NTSTATUS BCryptDestroyKey(BCRYPT_KEY_HANDLE hKey);
+NTSTATUS BCryptVerifySignature(BCRYPT_KEY_HANDLE hKey, VOID *pPaddingInfo,
+    PBYTE pbHash, DWORD cbHash, PBYTE pbSignature, DWORD cbSignature,
+    DWORD dwFlags);
+NTSTATUS BCryptEncrypt(BCRYPT_KEY_HANDLE hKey, PBYTE pbInput, DWORD cbInput,
+    VOID *pPaddingInfo, PBYTE pbIV, DWORD cbIV, PBYTE pbOutput,
+    DWORD cbOutput, DWORD *pcbResult, DWORD dwFlags);
+NTSTATUS BCryptDecrypt(BCRYPT_KEY_HANDLE hKey, PBYTE pbInput, DWORD cbInput,
+    VOID *pPaddingInfo, PBYTE pbIV, DWORD cbIV, PBYTE pbOutput,
+    DWORD cbOutput, DWORD *pcbResult, DWORD dwFlags);
+
+BOOL SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue);
 
 typedef struct { LPCWSTR pszAlgId; DWORD cbSalt; } BCRYPT_PSS_PADDING_INFO;
 typedef struct { LPCWSTR pszAlgId; PBYTE pbLabel; DWORD cbLabel; } BCRYPT_OAEP_PADDING_INFO;

@@ -39,9 +39,18 @@ TESTS = \
     test_eddsa \
     test_aes_keys
 
-.PHONY: all clean run coverage
+.PHONY: all clean run coverage syntax-check
 
 all: $(TESTS)
+
+# ── syntax-check ──────────────────────────────────────────────────────────
+# The integration test only *runs* on Windows, but parsing it here catches
+# typos before anyone starts a Windows build.
+syntax-check:
+	@echo "Syntax-checking test_ksp_integration.c (Windows-only test)..."
+	@$(CC) -fsyntax-only -I../mock -I../../src -I../../src/ksp \
+	    -I../../src/common -I../../src/pkcs11 ../test_ksp_integration.c \
+	    && echo "  OK — no syntax errors"
 
 # ── test_p11rv_mapping : P11RvToSecStatus ──────────────────────────────────
 test_p11rv_mapping: test_p11rv_mapping.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)

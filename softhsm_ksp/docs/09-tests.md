@@ -3,23 +3,29 @@
 ## Test strategy — Three-layer pyramid
 
 ```
-                    ┌─────────────────────────────────┐
-                    │  Layer 3 — PowerShell functional │  (Windows, KSP registered)
-                    │  test_ksp.ps1       9 scenarios  │
-                    │  test_cng_hlk.ps1  61 HLK tests  │
-                    └──────────────┬──────────────────┘
-                                   │
-               ┌───────────────────┴────────────────────┐
+                 ┌──────────────────────────────────────┐
+                 │  Layer 4 — Official Microsoft HLK     │  (HLK controller + client)
+                 │  HLK Studio, test 7c938be0-...        │
+                 └──────────────┬───────────────────────┘
+                                │
+                 ┌──────────────┴───────────────────────┐
+                 │  Layer 3 — PowerShell functional      │  (Windows, KSP registered)
+                 │  test_ksp.ps1        9 scenarios      │
+                 │  test_cng_hlk.ps1  ~150 HLK tests     │
+                 └──────────────┬───────────────────────┘
+                                │
+               ┌────────────────┴───────────────────────┐
                │   Layer 2 — KSP integration tests       │  (Windows, direct link)
-               │   test_ksp_integration.exe  21 tests    │
-               │   Tests 1-14: original suite            │
+               │   test_ksp_integration.exe  40 tests    │
+               │   Tests 1-14:  original suite           │
                │   Tests 15-21: HLK-conformant scenarios │
-               └───────────────────┬────────────────────┘
-                                   │
-   ┌───────────────────────────────┴────────────────────────────────┐
+               │   Tests 22-40: 2.7.0 mechanism coverage │
+               └────────────────┬───────────────────────┘
+                                │
+   ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         10 test suites · 281 assertions · gcov coverage         │
-   │         Lines: 91.0 %    Functions: 100 %                       │
+   │         14 test suites · 676 assertions · gcov coverage         │
+   │         Lines: 89.5 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -27,6 +33,7 @@ Each layer builds on the previous:
 - **Layer 1** — Isolated unit tests with PKCS#11 mocks; fast, run on Linux CI without Windows SDK or SoftHSM2.
 - **Layer 2** — End-to-end integration against the full KSP stack; requires Windows and a live SoftHSM2 token.
 - **Layer 3** — Full Windows NCrypt API exercised through PowerShell P/Invoke + BCrypt verification; requires the KSP to be registered in the Windows registry.
+- **Layer 4** — The official Microsoft HLK runner. Needs a controller and a separate test client; see [10 — Running the Microsoft HLK tests](./10-hlk-execution.md).
 
 ---
 
@@ -50,6 +57,15 @@ make
 ./test_ksp_key_props
 ./test_memory
 ./test_ecdsa_decode
+./test_oaep_params
+./test_ecdh
+./test_eddsa
+./test_aes_keys
+
+# Or simply:
+make run          # builds and runs all 14 suites
+make coverage     # plus an HTML coverage report
+make syntax-check # parses the Windows-only integration test
 ```
 
 ### Test suites
@@ -65,29 +81,45 @@ make
 | KSP crypto | `test_ksp_crypto.c` | 60 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
 | KSP key properties | `test_ksp_key_props.c` | 25 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
 | Memory | `test_memory.c` | 13 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
-| ECDSA DER decode | `test_ecdsa_decode.c` | 19 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 and P-384 |
-| **Total** | | **281** | |
+| ECDSA DER decode | `test_ecdsa_decode.c` | 37 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
+| OAEP parameters | `test_oaep_params.c` | 49 | `P11_MapHashAlg()` and `P11_BuildOaepParams()` across SHA-1/224/256/384/512, label pass-through, unsupported-hash rejection |
+| ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
+| EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
+| AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
+| **Total** | | **676** | |
+
+Counts above are the assertions each suite reports; the earlier figures
+(10 suites / 281 assertions) predate the SoftHSM2 2.7.0 mechanism work.
 
 ### Coverage (gcov / lcov — 2026-06-13)
 
 | Module | Lines | Hit | Line % | Functions | Hit | Func % |
 |--------|------:|----:|:------:|----------:|----:|:------:|
 | `common/` | 38 | 33 | **86.8 %** | 7 | 7 | **100 %** |
-| `ksp/` | 716 | 652 | **91.1 %** | 27 | 27 | **100 %** |
-| `pkcs11/` | 193 | 177 | **91.7 %** | 9 | 9 | **100 %** |
-| **Total** | **947** | **862** | **91.0 %** | **43** | **43** | **100 %** |
+| `ksp/` | 1154 | 1026 | **88.9 %** | 46 | 46 | **100 %** |
+| `pkcs11/` | 323 | 294 | **91.0 %** | 9 | 9 | **100 %** |
+| **Total** | **1595** | **1427** | **89.5 %** | **62** | **62** | **100 %** |
 
 > Full HTML report: `tests/unit/coverage_html/index.html`
 
-#### Uncovered lines (9 %)
+#### Uncovered lines (10.5 %)
 
-The 85 lines not hit by unit tests fall into three categories:
+The 168 lines not hit by unit tests fall into four categories:
 
 | Category | Examples | Covered by |
 |----------|---------|------------|
+| Out-of-memory branches | `KSP_AllocZero` returning NULL | Not reachable without allocator injection |
 | PKCS#11 error branches | `C_Finalize` failure paths | Manual integration tests |
-| Large key generation (RSA 3072/4096) | Slow paths skipped in unit | Integration test 14, 19 (HLK) |
+| Large key generation (RSA 3072/4096) | Slow paths skipped in unit | Integration tests 14, 19 |
 | Session pool exhaustion | `WAIT_TIMEOUT` after 5 s | Concurrency stress test |
+
+Regenerate the report with `make coverage` (needs `lcov`), or with
+`gcovr` if `lcov` is unavailable:
+
+```bash
+gcovr --root .. --filter '.*/src/.*' --print-summary \
+      --html-details coverage_html/index.html
+```
 
 ---
 
@@ -97,7 +129,8 @@ The 85 lines not hit by unit tests fall into three categories:
 
 ```powershell
 # Build (Visual Studio x64 Developer Command Prompt):
-cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake -B build -G "Visual Studio 17 2022" -A x64 ^
+      -DSOFTHSM2_DIR=..\softhsm2-install
 cmake --build build --config Release
 
 # Prerequisites:
@@ -105,6 +138,13 @@ set SOFTHSM2_LIB=C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll
 set SOFTHSM2_PIN=1234
 
 .\build\Release\test_ksp_integration.exe
+```
+
+The integration test only *runs* on Windows, but it can be parsed on any
+platform to catch typos before a Windows build:
+
+```bash
+cd tests/unit && make syntax-check
 ```
 
 ### Original suite (Tests 1–14)
@@ -178,7 +218,7 @@ the official Windows `NCrypt*` API and `BCrypt*` API through PowerShell P/Invoke
 | 8 | EnumKeys | `NCryptEnumKeys` with state loop |
 | 9 | Key deletion | `NCryptDeleteKey` for both test keys |
 
-### `test_cng_hlk.ps1` — HLK-conformant test suite (61 tests)
+### `test_cng_hlk.ps1` — HLK-conformant test suite (~150 tests)
 
 | Section | Description | Tests |
 |---------|-------------|------:|
@@ -190,8 +230,26 @@ the official Windows `NCrypt*` API and `BCrypt*` API through PowerShell P/Invoke
 | S6 | ECDSA P-384: sign SHA-384 (48-byte hash), 96-byte r‖s signature, BCrypt verify | 6 |
 | S7 | `NCryptEnumKeys` (5 test keys found) + `NCryptOpenKey` round-trip | 7 |
 | S8 | Error conditions: invalid handle, private blob, non-existent key, NULL property handle | 4 |
-| S9 | Cleanup: `NCryptDeleteKey` for all 5 test keys | 5 |
-| **Total** | | **61** |
+| S9 | Cleanup: `NCryptDeleteKey` for every key the run created | 5+ |
+| S10 | ECDSA P-521: create, sign SHA-512 (132-byte r‖s), export, blob layout, BCrypt verify | 11 |
+| S11 | ECDH over P-256 / P-384 / P-521: export/import public keys, both parties agree on the same secret | 27 |
+| S12 | EdDSA Ed25519 (64-byte sig) and Ed448 (114-byte sig): create, sign, export, blob layout | 18 |
+| S13 | AES-256 across ECB / CBC / CTR / GCM: chaining mode, IV, encrypt-decrypt round-trip | 29 |
+| S14 | Error conditions for the extended set: unsupported curve, bad AES length, cipher properties on RSA keys, mismatched-curve ECDH | 5 |
+| **Total** | | **~150** |
+
+Sections S10–S14 cover the mechanisms added for SoftHSM2 2.7.0. S11 is the
+strongest test in the suite: it runs a full two-party key agreement and
+asserts both sides derive **byte-identical** secrets.
+
+#### Validating the suite without Windows
+
+The suite compiles an embedded C# P/Invoke block at run time. Parse errors
+and P/Invoke signature mistakes can be caught anywhere PowerShell 7+ runs:
+
+```bash
+pwsh -File tools/validate_hlk_script.ps1
+```
 
 #### BCrypt verification helpers (C# P/Invoke inside `Add-Type`)
 
@@ -207,6 +265,11 @@ The HLK script includes managed C# helper methods to avoid raw pointer marshalli
 | `Hlk.ExportPublicKey()` | `NCryptExportKey` double-call pattern |
 | `Hlk.GetStringProperty()` / `GetDwordProperty()` | `NCryptGetProperty` wrappers |
 | `Hlk.SignPkcs1()` / `SignPss()` / `SignEcdsa()` | `NCryptSignHash` wrappers |
+| `Hlk.SetStringProperty()` / `SetBinaryProperty()` / `SetDwordProperty()` | `NCryptSetProperty` wrappers (chaining mode, IV, key length) |
+| `Hlk.Encrypt()` / `DecryptSym()` | `NCryptEncrypt` / `NCryptDecrypt` double-call pattern for symmetric keys |
+| `Hlk.AgreeAndDeriveRaw()` | `NCryptSecretAgreement` + `NCryptDeriveKey("TRUNCATE")`, freeing the secret handle |
+| `Hlk.ImportPublic()` | `NCryptImportKey` for a public key blob |
+| `Hlk.BytesEqual()` / `BytesDiffer()` | Byte-array comparison in C#, avoiding LINQ generic inference from PowerShell |
 
 ---
 
@@ -235,5 +298,16 @@ The HLK script includes managed C# helper methods to avoid raw pointer marshalli
 | Key deletion | ✓ | ✓ | ✓ |
 | KEY_USAGE / EXPORT_POLICY / ALG_GROUP | ✓ | ✓ | ✓ |
 | Invalid handle error conditions | ✓ | ✓ | ✓ |
+| ECDSA P-521 key creation and signing | ✓ | ✓ | ✓ |
+| ECDH P-256 / P-384 / P-521 agreement | ✓ | ✓ | ✓ |
+| Two-party ECDH secret equality | — | ✓ | ✓ |
+| EdDSA Ed25519 / Ed448 signing | ✓ | ✓ | ✓ |
+| AES-128/192/256 key generation | ✓ | ✓ | ✓ |
+| AES ECB / CBC / CTR / GCM round-trip | ✓ | ✓ | ✓ |
+| HMAC-SHA256 generic secret keys | ✓ | ✓ | — |
+| RSA OAEP SHA-384 / SHA-512 | ✓ | ✓ | — |
+| OAEP application label | ✓ | ✓ | — |
+| EC public key import (real PKCS#11 object) | ✓ | ✓ | ✓ |
+| Symmetric key reopen by name | ✓ | ✓ | — |
 | Session pool concurrency | — | — | — |
 | Missing SoftHSM2 DLL | — | — | — |

@@ -17,7 +17,8 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [06 — Error mapping](./06-mapping-erreurs.md) | CK_RV → SECURITY_STATUS, codes by function, error flow diagram |
 | [07 — Security and threading](./07-securite-threading.md) | Concurrency, handle validation, PIN management, logging |
 | [08 — Complete flows](./08-flux-complets.md) | TLS scenarios, code signing, enumeration, key rotation, missing token error |
-| [09 — Test suite](./09-tests.md) | Three-layer test pyramid: unit tests (281 assertions, 91 % coverage), integration tests (21 tests incl. HLK scenarios 15–21), PowerShell HLK suite (61 tests) |
+| [09 — Test suite](./09-tests.md) | Four-layer test pyramid: unit tests (676 assertions, 89.5 % coverage), integration tests (40 tests), PowerShell HLK suite (~150 tests) |
+| [10 — Running the Microsoft HLK tests](./10-hlk-execution.md) | The in-repo HLK suite, the official HLK Studio procedure, and what blocks a real certification submission |
 
 ---
 
@@ -48,13 +49,14 @@ softhsm2-x64.dll       PKCS#11 v2.40 — encrypted SQLite storage
 
 ## Supported algorithms
 
-| Algorithm | Generation | Signing | Decryption | Public export |
-|-----------|:---------:|:-------:|:----------:|:-------------:|
-| RSA 2048 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP | ✓ |
-| RSA 3072 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP | ✓ |
-| RSA 4096 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP | ✓ |
-| ECDSA P-256 | ✓ | ✓ (r‖s) | — | ✓ |
-| ECDSA P-384 | ✓ | ✓ (r‖s) | — | ✓ |
+| Algorithm | Generation | Signing | Decryption | Key agreement | Public export |
+|-----------|:---------:|:-------:|:----------:|:-------------:|:-------------:|
+| RSA 2048 / 3072 / 4096 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
+| ECDSA P-256 / P-384 / P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDH P-256 / P-384 / P-521 | ✓ | — | — | ✓ | ✓ |
+| EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |
+| AES 128 / 192 / 256 | ✓ | — | ECB, CBC, CTR, GCM | — | — |
+| HMAC SHA-1/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
 
 ---
 
@@ -67,8 +69,16 @@ softhsm2-x64.dll       PKCS#11 v2.40 — encrypted SQLite storage
 | `SignHash` ECDSA | `CKM_ECDSA` | DER result converted to r‖s |
 | `Decrypt` PKCS1 | `CKM_RSA_PKCS` | — |
 | `Decrypt` OAEP | `CKM_RSA_PKCS_OAEP` | `CK_RSA_PKCS_OAEP_PARAMS` mapped from `BCRYPT_OAEP_PADDING_INFO` |
+| `SignHash` EdDSA | `CKM_EDDSA` | Raw signature, no DER conversion |
+| `SignHash` HMAC | `CKM_SHA*_HMAC` | Secret-key MAC through `C_Sign` |
+| `Decrypt` AES | `CKM_AES_ECB/CBC/CBC_PAD/CTR/GCM` | Mode from `NCRYPT_CHAINING_MODE_PROPERTY` |
+| `Encrypt` AES | `CKM_AES_ECB/CBC/CBC_PAD/CTR/GCM` | IV from `NCRYPT_INITIALIZATION_VECTOR` |
+| `SecretAgreement` | `CKM_ECDH1_DERIVE` | `CKD_NULL`; raw Z returned by `DeriveKey` |
 | `CreateKey` RSA | `CKM_RSA_PKCS_KEY_PAIR_GEN` | `SENSITIVE=TRUE`, `EXTRACTABLE=FALSE` |
-| `CreateKey` EC | `CKM_EC_KEY_PAIR_GEN` | P-256 or P-384 DER OID in `CKA_EC_PARAMS` |
+| `CreateKey` EC | `CKM_EC_KEY_PAIR_GEN` | P-256/P-384/P-521 DER OID in `CKA_EC_PARAMS` |
+| `CreateKey` EdDSA | `CKM_EC_EDWARDS_KEY_PAIR_GEN` | Ed25519 or Ed448 OID in `CKA_EC_PARAMS` |
+| `CreateKey` AES | `CKM_AES_KEY_GEN` | `CKA_VALUE_LEN` = 16 / 24 / 32 |
+| `CreateKey` HMAC | `CKM_GENERIC_SECRET_KEY_GEN` | Generic secret sized to the hash |
 
 ---
 

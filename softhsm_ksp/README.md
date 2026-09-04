@@ -99,16 +99,19 @@ Three complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the ful
 ### Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)
 
 ```bash
-cd tests/unit && make
-./test_p11rv_mapping && ./test_logging && ./test_mechanism_resolve \
-  && ./test_export_blobs && ./test_ksp_provider && ./test_ksp_key_ops \
-  && ./test_ksp_crypto && ./test_ksp_key_props && ./test_memory && ./test_ecdsa_decode
+cd tests/unit && make run
 ```
 
-10 test suites · 281 assertions · **91 % line coverage, 100 % function coverage** (gcov).
+14 test suites · 676 assertions · **89.5 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
-### Layer 2 — KSP integration tests (Windows, 21 tests)
+```bash
+make run           # build and run all 14 suites
+make coverage      # plus an HTML coverage report
+make syntax-check  # parse the Windows-only integration test
+```
+
+### Layer 2 — KSP integration tests (Windows, 40 tests)
 
 ```powershell
 .\build\Release\test_ksp_integration.exe
@@ -116,7 +119,10 @@ Full HTML report: `tests/unit/coverage_html/index.html`.
 
 Tests 1–14: original integration suite (OpenProvider → DeleteKey).  
 Tests 15–21: **HLK-conformant scenarios** — RSA PSS + BCrypt verify, RSA PKCS1 BCrypt verify,
-ECDSA P-256/P-384 BCrypt verify, RSA 3072 deferred generation, RSA OAEP decrypt, error conditions.
+ECDSA P-256/P-384 BCrypt verify, RSA 3072 deferred generation, RSA OAEP decrypt, error conditions.  
+Tests 22–40: **SoftHSM2 2.7.0 mechanism coverage** — ECDSA P-521, OAEP SHA-384/512 and labels,
+EC public key import, ECDH agreement on all three curves, Ed25519/Ed448, AES ECB/CBC/CTR/GCM,
+HMAC-SHA256, symmetric key reopen.
 
 ### Layer 3 — PowerShell functional tests (registered KSP)
 
@@ -124,14 +130,26 @@ ECDSA P-256/P-384 BCrypt verify, RSA 3072 deferred generation, RSA OAEP decrypt,
 # Basic functional tests (9 scenarios)
 .\tools\test_ksp.ps1
 
-# Microsoft CNG HLK-conformant test suite (61 tests, 9 sections)
+# Microsoft CNG HLK-conformant test suite (~150 tests, 14 sections)
 .\tools\test_cng_hlk.ps1
 ```
 
 `test_cng_hlk.ps1` mirrors Microsoft's **TPM 2.0 Platform Crypto Provider KSP Test**
 (HLK ID: `7c938be0-ff4a-44f9-916c-b578f027f0ca`). Covers RSA 2048/3072 PKCS1+PSS with
-BCrypt end-to-end verification, OAEP encrypt/decrypt, ECDSA P-256/P-384 with BCrypt verify,
-all NCrypt property queries, error conditions, and full key lifecycle.
+BCrypt end-to-end verification, OAEP encrypt/decrypt, ECDSA P-256/P-384/P-521 with BCrypt
+verify, ECDH two-party key agreement, EdDSA, AES across four chaining modes, all NCrypt
+property queries, error conditions, and full key lifecycle.
+
+The suite embeds a C# P/Invoke block. Validate it on any platform — no Windows needed:
+
+```bash
+pwsh -File tools/validate_hlk_script.ps1
+```
+
+### Layer 4 — Official Microsoft HLK
+
+See [docs/10-hlk-execution.md](docs/10-hlk-execution.md) for the HLK Studio procedure,
+prerequisites, and what stands between this KSP and a real certification submission.
 
 ## Architecture
 
@@ -160,13 +178,18 @@ Windows Application
 
 ## Supported algorithms
 
-| Algorithm | Generation | Signing | Decryption | Public export |
-|-----------|-----------|---------|------------|---------------|
-| RSA 2048/3072/4096 | ✓ | PKCS1, PSS | PKCS1, OAEP | ✓ |
-| ECDSA P-256 | ✓ | ✓ | — | ✓ |
-| ECDSA P-384 | ✓ | ✓ | — | ✓ |
+| Algorithm | Generation | Signing | Decryption | Key agreement | Public export |
+|-----------|:----------:|---------|------------|:-------------:|:-------------:|
+| RSA 2048/3072/4096 | ✓ | PKCS1, PSS | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
+| ECDSA P-256/P-384/P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDH P-256/P-384/P-521 | ✓ | — | — | ✓ | ✓ |
+| EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |
+| AES 128/192/256 | ✓ | — | ECB, CBC, CTR, GCM | — | — |
+| HMAC SHA-1/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
 
-Private keys are **never exportable** (to simulate the behaviour of a hardware HSM).
+Asymmetric private keys are **never exportable** (to simulate the behaviour of a
+hardware HSM). See [SoftHSM2_KSP_Algorithm_Reference.docx](SoftHSM2_KSP_Algorithm_Reference.docx)
+for the full mechanism, mode and key-size reference.
 
 ## Security
 
@@ -179,3 +202,7 @@ Private keys are **never exportable** (to simulate the behaviour of a hardware H
 - SoftHSM2 does not support `CKM_RSA_X_509` (raw RSA) — not implemented
 - Private key import not supported (HSM by design)
 - Only one token/slot used (the first one with a token present)
+- DES/3DES, DSA, PKCS#3 Diffie-Hellman and GOST are deliberately out of scope
+  (deprecated, or outside the HLK test plan)
+- Raw hash and sign-with-integrated-hash PKCS#11 mechanisms are unreachable by
+  design: CNG always hands `NCryptSignHash` a pre-computed hash
