@@ -90,7 +90,8 @@ noida/
 │   │   ├── 07-security-threading.md Concurrency, handle validation, PIN, logging
 │   │   ├── 08-complete-flows.md    TLS, code signing, key rotation end-to-end flows
 │   │   ├── 09-tests.md             Four-layer test pyramid reference
-│   │   └── 10-hlk-execution.md     Microsoft HLK execution procedure
+│   │   ├── 10-hlk-execution.md     Microsoft HLK execution procedure
+│   │   └── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
 │   ├── CMakeLists.txt
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
@@ -103,6 +104,18 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 5 — Market audit
+- **`docs/11-market-comparison.md`** — capability audit of shipping CNG KSPs
+  (Microsoft Software / Platform Crypto, AWS CloudHSM, Utimaco, Thales,
+  Entrust, Securosys) against this project, with an A/B/C evidence grade on
+  every claim
+- **Key finding**: `EDDSA_ED25519`, `EDDSA_ED448` and `HMAC_SHA*` are **not
+  standard CNG algorithm identifiers** — CNG defines no EdDSA algorithm ID at
+  all. Those features are reachable only from an application written against
+  this KSP specifically, and cannot be BCrypt-verified end to end. `AES` and
+  the ECB/CBC/GCM chaining modes *are* standard; `ChainingModeCTR` is not.
+- Every other surveyed provider exposes only RSA + ECDSA + ECDH on NIST curves
 
 ### Session 4 — Full SoftHSM2 2.7.0 mechanism coverage (8 phases)
 Expanded the KSP from 6 PKCS#11 mechanisms to every mechanism that maps onto

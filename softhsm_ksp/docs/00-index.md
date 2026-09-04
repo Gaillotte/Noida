@@ -19,6 +19,7 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [08 — Complete flows](./08-complete-flows.md) | TLS signing, code signing, enumeration, key rotation, ECDH agreement, AES encryption, missing-token recovery |
 | [09 — Test suite](./09-tests.md) | Four-layer test pyramid: unit tests (676 assertions, 89.5 % coverage), integration tests (40 tests), PowerShell HLK suite (~150 tests) |
 | [10 — Running the Microsoft HLK tests](./10-hlk-execution.md) | The in-repo HLK suite, the official HLK Studio procedure, and what blocks a real certification submission |
+| [11 — CNG KSP market comparison](./11-market-comparison.md) | Capability audit against Microsoft, AWS, Utimaco, Thales, Entrust and Securosys providers, with evidence grades on every claim |
 
 ---
 
