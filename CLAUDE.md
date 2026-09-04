@@ -91,7 +91,8 @@ noida/
 │   │   ├── 08-complete-flows.md    TLS, code signing, key rotation end-to-end flows
 │   │   ├── 09-tests.md             Four-layer test pyramid reference
 │   │   ├── 10-hlk-execution.md     Microsoft HLK execution procedure
-│   │   └── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
+│   │   ├── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
+│   │   └── 12-pkcs11-requirements.md Backend requirements: functions, mechanisms, attributes
 │   ├── CMakeLists.txt
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
@@ -116,6 +117,11 @@ noida/
   this KSP specifically, and cannot be BCrypt-verified end to end. `AES` and
   the ECB/CBC/GCM chaining modes *are* standard; `ChainingModeCTR` is not.
 - Every other surveyed provider exposes only RSA + ECDSA + ECDH on NIST curves
+- **`docs/12-pkcs11-requirements.md`** — the PKCS#11 backend contract extracted
+  from source: 22 Cryptoki functions, 20 dispatch mechanisms, 18 attributes,
+  5 parameter structs, organised into 5 capability tiers with an HSM
+  evaluation checklist. Tier 1 (RSA + ECDSA, market parity) needs 6
+  mechanisms and 17 functions.
 
 ### Session 4 — Full SoftHSM2 2.7.0 mechanism coverage (8 phases)
 Expanded the KSP from 6 PKCS#11 mechanisms to every mechanism that maps onto
