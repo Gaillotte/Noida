@@ -105,9 +105,33 @@ flowchart LR
     B -- No --> ERR
 ```
 
+ECDH introduces a third handle type with its own magic, validated by
+`KSP_IsValidSecret()`:
+
+```mermaid
+flowchart LR
+    H["NCRYPT_SECRET_HANDLE hSecret"]
+    A["(KSP_SECRET *)hSecret"]
+    B{"pSecret != NULL\nand\npSecret->dwMagic ==\nKSP_SECRET_MAGIC ?"}
+    OK["Normal processing"]
+    ERR["NTE_INVALID_HANDLE"]
+
+    H --> A --> B
+    B -- Yes --> OK
+    B -- No --> ERR
+```
+
+| Handle type | Struct | Magic | Value |
+|-------------|--------|-------|-------|
+| `NCRYPT_PROV_HANDLE` | `KSP_PROVIDER` | `KSP_PROVIDER_MAGIC` | `0x4B535050` (`'KSPP'`) |
+| `NCRYPT_KEY_HANDLE` | `KSP_KEY` | `KSP_KEY_MAGIC` | `0x4B53504B` (`'KSPK'`) |
+| `NCRYPT_SECRET_HANDLE` | `KSP_SECRET` | `KSP_SECRET_MAGIC` | `0x4B535053` (`'KSPS'`) |
+
 The magic numbers serve as canaries: if a caller passes an arbitrary pointer
 or a handle from another provider, the magic check fails before any potentially
-dangerous dereference.
+dangerous dereference. Each magic is zeroed on free, so a double-free or
+use-after-free is caught by the same check rather than dereferencing
+released memory.
 
 ---
 
@@ -138,13 +162,42 @@ stateDiagram-v2
 
 ### Non-exportable keys
 
-All private keys are created with:
+All private and secret keys are created with:
 ```c
 { CKA_EXTRACTABLE, &bFalse, sizeof(bFalse) }  // FALSE
 { CKA_SENSITIVE,   &bTrue,  sizeof(bTrue)  }  // TRUE
 ```
 
-Attempting to export a private key → immediate `NTE_NOT_SUPPORTED` (without any PKCS#11 call).
+This covers every family: RSA, ECDSA, ECDH, EdDSA private keys and AES /
+HMAC secret keys. Attempting to export a private key → immediate
+`NTE_NOT_SUPPORTED` (without any PKCS#11 call).
+
+### The one deliberately extractable object
+
+The shared secret produced by `KSP_SecretAgreement` is the single exception.
+It is created as a **session object** with:
+
+```c
+{ CKA_TOKEN,       &bFalse, sizeof(bFalse) }  // never written to the token
+{ CKA_SENSITIVE,   &bFalse, sizeof(bFalse) }
+{ CKA_EXTRACTABLE, &bTrue,  sizeof(bTrue)  }  // so CKA_VALUE can be read
+```
+
+This is required by the contract: `NCryptDeriveKey` must hand the caller
+raw key material, which means reading `CKA_VALUE` back. Three properties
+bound the exposure:
+
+- It never touches persistent storage (`CKA_TOKEN=FALSE`).
+- `KSP_FreeSecret` destroys the object with `C_DestroyObject`.
+- The buffer read from `CKA_VALUE` is zeroed with `SecureZeroMemory()`
+  before being freed, on both the success and the buffer-too-small path.
+
+### Imported public keys are session objects
+
+`KSP_ImportKey` creates public key objects with `CKA_TOKEN=FALSE` and marks
+the wrapper `bSessionObject = TRUE`, so `KSP_FreeKey` destroys them. Without
+this, every import would leak an object into the session for the lifetime of
+the process.
 
 ### No static link to softhsm2.dll
 
@@ -156,7 +209,11 @@ The DLL is loaded via `LoadLibrary` only, which avoids:
 ### Sensitive memory zeroing
 
 - PIN: `SecureZeroMemory()` after `C_Login()`
+- ECDH shared secret: `SecureZeroMemory()` after copying to the caller's
+  buffer, and also on the `NTE_BUFFER_TOO_SMALL` path
 - Hash and signature buffers are **not** zeroed because they are not secret
+- AES IVs are not secret and are not zeroed; the key material behind them
+  never leaves SoftHSM2
 
 ---
 

@@ -71,6 +71,15 @@ The `P11RvToSecStatus()` function in `p11_utils.c` performs this mapping:
 | `C_SignInit` fails | `P11RvToSecStatus(rv)` |
 | `C_Sign` fails | `P11RvToSecStatus(rv)` |
 | Invalid DER (ECDSA) | `NTE_INVALID_PARAMETER` |
+| Unsupported OAEP hash | `NTE_NOT_SUPPORTED` (from `P11_MapHashAlg`) |
+| Unsupported chaining mode (CCM, CFB) | `NTE_NOT_SUPPORTED` |
+| Cipher property on an asymmetric key | `NTE_NOT_SUPPORTED` |
+| `NCryptEncrypt` on an asymmetric key | `NTE_NOT_SUPPORTED` |
+| ECDH across mismatched curves | `NTE_BAD_ALGID` |
+| Hash-based KDF in `NCryptDeriveKey` | `NTE_NOT_SUPPORTED` |
+| EC import blob shorter than its header | `NTE_INVALID_PARAMETER` |
+| EC import with an unknown coordinate size | `NTE_BAD_ALGID` |
+| AES key size outside 128 / 192 / 256 | `NTE_BAD_LEN` |
 | Success | `ERROR_SUCCESS` |
 
 ### KSP_ExportKey
@@ -118,21 +127,28 @@ flowchart LR
     subgraph Appel["NCryptSignHash(hKey, pPadInfo, ...)"]
         RSA_PKCS1["szAlgId=RSA\ndwFlags=NCRYPT_PAD_PKCS1_FLAG"]
         RSA_PSS["szAlgId=RSA\ndwFlags=NCRYPT_PAD_PSS_FLAG\npPadInfo=BCRYPT_PSS_PADDING_INFO"]
-        EC256["szAlgId=ECDSA_P256\ndwFlags=0"]
-        EC384["szAlgId=ECDSA_P384\ndwFlags=0"]
+        EC["szAlgId=ECDSA_P256/384/521\ndwFlags=0"]
+        ED["szAlgId=EDDSA_ED25519/ED448\ndwFlags ignored"]
+        HMAC["szAlgId=HMAC_SHA1/256/384/512\ndwFlags=0"]
     end
 
     subgraph PKCS11["PKCS#11 mechanism"]
         M1["CKM_RSA_PKCS\n(no parameter)"]
         M2["CKM_RSA_PKCS_PSS\n+ CK_RSA_PKCS_PSS_PARAMS\n{hashAlg, mgf, sLen}"]
         M3["CKM_ECDSA\n(no parameter)\n→ DER result → r‖s"]
+        M4["CKM_EDDSA\n(no parameter)\n→ raw result, no conversion"]
+        M5["CKM_SHA*_HMAC\n(no parameter)"]
     end
 
     RSA_PKCS1 --> M1
     RSA_PSS   --> M2
-    EC256     --> M3
-    EC384     --> M3
+    EC        --> M3
+    ED        --> M4
+    HMAC      --> M5
 ```
+
+An unrecognised algorithm name returns `NTE_BAD_ALGID` from
+`P11_ResolveMechanism()` before any session is acquired.
 
 ---
 
@@ -150,7 +166,7 @@ flowchart TD
     step4["4. Read INTEGER s:\n   - Same logic as r"]
     step5["5. Concatenate:\n   pbOut = r_padded ‖ s_padded"]
 
-    WIN["Windows format:\nr (cbCoord bytes, big-endian)\ns (cbCoord bytes, big-endian)\nTotal: 64 bytes (P-256)\n       96 bytes (P-384)"]
+    WIN["Windows format:\nr (cbCoord bytes, big-endian)\ns (cbCoord bytes, big-endian)\nTotal: 64 bytes (P-256)\n       96 bytes (P-384)\n      132 bytes (P-521)"]
 
     DER --> step1 --> step2 --> step3 --> step4 --> step5 --> WIN
 ```

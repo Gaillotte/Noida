@@ -11,12 +11,12 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 |----------|---------|
 | [01 — Architecture](./01-architecture.md) | Overview, layers, data structures, threading model, memory management |
 | [02 — Initialisation](./02-initialisation.md) | Loading softhsm2.dll, `InitOnceExecuteOnce` singleton, session pool, lifecycle |
-| [03 — Key management](./03-gestion-cles.md) | CreatePersistedKey (RSA / ECDSA), OpenKey, EnumKeys, DeleteKey, DER OIDs |
-| [04 — Cryptographic operations](./04-operations-crypto.md) | SignHash (PKCS1 / PSS / ECDSA), Decrypt (PKCS1 / OAEP), ExportKey, ImportKey, blob formats |
-| [05 — Properties](./05-proprietes.md) | GetKeyProperty, SetKeyProperty, GetProviderProperty, mapping table |
-| [06 — Error mapping](./06-mapping-erreurs.md) | CK_RV → SECURITY_STATUS, codes by function, error flow diagram |
-| [07 — Security and threading](./07-securite-threading.md) | Concurrency, handle validation, PIN management, logging |
-| [08 — Complete flows](./08-flux-complets.md) | TLS scenarios, code signing, enumeration, key rotation, missing token error |
+| [03 — Key management](./03-key-management.md) | The five algorithm families, CreatePersistedKey, OpenKey, EnumKeys, DeleteKey, curve OIDs, symmetric keys |
+| [04 — Cryptographic operations](./04-crypto-operations.md) | SignHash (PKCS1 / PSS / ECDSA / EdDSA / HMAC), Decrypt (PKCS1 / OAEP / AES), Encrypt, ECDH agreement, Export/Import, blob formats |
+| [05 — Properties](./05-properties.md) | GetKeyProperty, SetKeyProperty, GetProviderProperty, chaining mode and IV, mapping table |
+| [06 — Error mapping](./06-error-mapping.md) | CK_RV → SECURITY_STATUS, codes by function, mechanism dispatch, error flow diagram |
+| [07 — Security and threading](./07-security-threading.md) | Concurrency, the three handle types, PIN management, secret zeroing, logging |
+| [08 — Complete flows](./08-complete-flows.md) | TLS signing, code signing, enumeration, key rotation, ECDH agreement, AES encryption, missing-token recovery |
 | [09 — Test suite](./09-tests.md) | Four-layer test pyramid: unit tests (676 assertions, 89.5 % coverage), integration tests (40 tests), PowerShell HLK suite (~150 tests) |
 | [10 — Running the Microsoft HLK tests](./10-hlk-execution.md) | The in-repo HLK suite, the official HLK Studio procedure, and what blocks a real certification submission |
 

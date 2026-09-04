@@ -210,5 +210,5 @@ backing the same KSP with real hardware.
 ## See also
 
 - [09 — Test suite](./09-tests.md) — the three-layer test pyramid
-- [04 — Cryptographic operations](./04-operations-crypto.md) — mechanism mapping
-- [06 — Error mapping](./06-mapping-erreurs.md) — `CK_RV` → `SECURITY_STATUS`
+- [04 — Cryptographic operations](./04-crypto-operations.md) — mechanism mapping
+- [06 — Error mapping](./06-error-mapping.md) — `CK_RV` → `SECURITY_STATUS`

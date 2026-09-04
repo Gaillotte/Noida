@@ -196,6 +196,132 @@ sequenceDiagram
 
 ---
 
+## Scenario 6: ECDH key agreement between two parties
+
+The strongest end-to-end test in the suite: two independently generated key
+pairs must arrive at the same shared secret. This is the ECDHE handshake at
+the heart of TLS 1.3.
+
+```mermaid
+sequenceDiagram
+    participant A as Party A
+    participant KSP as softhsm_ksp.dll
+    participant HSM as SoftHSM2
+    participant B as Party B
+
+    note over A,B: 1 — Each party generates an ECDH key pair
+
+    A->>KSP: NCryptCreatePersistedKey("ECDH_P256", "KeyA", AT_KEYEXCHANGE)
+    KSP->>HSM: C_GenerateKeyPair(CKM_EC_KEY_PAIR_GEN,<br/>CKA_EC_PARAMS=P-256 OID,<br/>CKA_DERIVE=TRUE, CKA_SIGN=FALSE)
+    HSM-->>KSP: hPrivA, hPubA
+
+    B->>KSP: NCryptCreatePersistedKey("ECDH_P256", "KeyB", AT_KEYEXCHANGE)
+    KSP->>HSM: C_GenerateKeyPair(...)
+    HSM-->>KSP: hPrivB, hPubB
+
+    note over A,B: 2 — Public keys are exchanged over the wire
+
+    A->>KSP: NCryptExportKey(hKeyA, ECCPUBLICBLOB)
+    KSP->>HSM: C_GetAttributeValue(hPubA, CKA_EC_POINT)
+    KSP-->>A: BCRYPT_ECCKEY_BLOB { magic, cbKey=32 } ‖ X ‖ Y
+
+    B->>KSP: NCryptExportKey(hKeyB, ECCPUBLICBLOB)
+    KSP-->>B: BCRYPT_ECCKEY_BLOB ‖ X ‖ Y
+
+    note over A,B: A sends its blob to B, B sends its blob to A
+
+    note over A,B: 3 — Each imports the peer's public key
+
+    A->>KSP: NCryptImportKey(ECCPUBLICBLOB, blobB) → hPubB'
+    KSP->>KSP: P11_BuildEcPointDer(X, Y, 32)
+    KSP->>HSM: C_CreateObject(CKO_PUBLIC_KEY,<br/>CKA_EC_POINT=DER, CKA_DERIVE=TRUE)
+    HSM-->>KSP: hPubB' (session object)
+
+    B->>KSP: NCryptImportKey(ECCPUBLICBLOB, blobA) → hPubA'
+
+    note over A,B: 4 — Each derives the shared secret
+
+    A->>KSP: NCryptSecretAgreement(hKeyA, hPubB', &hSecretA)
+    KSP->>KSP: Curves match (both 32-byte coords)
+    KSP->>HSM: C_DeriveKey(CKM_ECDH1_DERIVE,<br/>{CKD_NULL, pPublicData=04‖Xb‖Yb}, hPrivA)
+    note over HSM: Z = d_A · Q_B
+    HSM-->>KSP: hDerivedA
+
+    B->>KSP: NCryptSecretAgreement(hKeyB, hPubA', &hSecretB)
+    KSP->>HSM: C_DeriveKey(..., hPrivB)
+    note over HSM: Z = d_B · Q_A
+    HSM-->>KSP: hDerivedB
+
+    A->>KSP: NCryptDeriveKey(hSecretA, "TRUNCATE") → secretA (32 bytes)
+    B->>KSP: NCryptDeriveKey(hSecretB, "TRUNCATE") → secretB (32 bytes)
+
+    note over A,B: secretA == secretB — both sides computed the same Z
+
+    A->>KSP: NCryptFreeObject(hSecretA)
+    KSP->>HSM: C_DestroyObject(hDerivedA)
+    B->>KSP: NCryptFreeObject(hSecretB)
+    KSP->>HSM: C_DestroyObject(hDerivedB)
+```
+
+The mathematics behind the assertion: `d_A · Q_B = d_A · (d_B · G) =
+d_B · (d_A · G) = d_B · Q_A`. Integration test 27 and HLK section S11 both
+assert the two derived buffers are byte-identical, which fails if the DER
+point unwrapping or the curve check is wrong.
+
+> Attempting agreement across different curves (P-256 private with a P-384
+> peer) returns `NTE_BAD_ALGID` before any PKCS#11 call.
+
+---
+
+## Scenario 7: AES data encryption
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant KSP as softhsm_ksp.dll
+    participant HSM as SoftHSM2
+
+    note over App: 1 — Create an AES-256 key (deferred, so Length can be set)
+
+    App->>KSP: NCryptCreatePersistedKey("AES", "DataKey",<br/>0, NCRYPT_PERSIST_ONLY_FLAG)
+    App->>KSP: NCryptSetProperty(hKey, "Length", 256)
+    App->>KSP: NCryptFinalizeKey(hKey)
+    KSP->>HSM: C_GenerateKey(CKM_AES_KEY_GEN,<br/>CKA_VALUE_LEN=32, CKA_ENCRYPT=TRUE,<br/>CKA_SENSITIVE=TRUE, CKA_EXTRACTABLE=FALSE)
+    HSM-->>KSP: hSecretKey
+
+    note over App: 2 — Select the mode and nonce as key properties
+
+    App->>KSP: NCryptSetProperty(hKey, "Chaining Mode", "ChainingModeGCM")
+    App->>KSP: NCryptSetProperty(hKey, "IV", nonce, 12)
+    note over KSP: Stored in pKey->szChainingMode and pKey->pbIV
+
+    note over App: 3 — Encrypt
+
+    App->>KSP: NCryptEncrypt(hKey, plaintext, 32, NULL,<br/>NULL, 0, &cbNeeded, 0)
+    KSP->>KSP: KspBuildAesMechanism() → CKM_AES_GCM<br/>+ CK_GCM_PARAMS {pIv, 12, 96 bits, tag=128}
+    KSP->>HSM: C_EncryptInit + C_Encrypt(NULL) → size
+    KSP-->>App: cbNeeded
+
+    App->>KSP: NCryptEncrypt(hKey, plaintext, 32, NULL,<br/>ciphertext, cbNeeded, &cbResult, 0)
+    KSP->>HSM: C_EncryptInit + C_Encrypt
+    HSM-->>KSP: ciphertext ‖ 16-byte GCM tag
+    KSP-->>App: ERROR_SUCCESS
+
+    note over App: 4 — Decrypt: the IV must be set again
+
+    App->>KSP: NCryptSetProperty(hKey, "IV", nonce, 12)
+    App->>KSP: NCryptDecrypt(hKey, ciphertext, ...)
+    KSP->>HSM: C_DecryptInit + C_Decrypt
+    HSM-->>KSP: plaintext (tag verified)
+    KSP-->>App: ERROR_SUCCESS
+```
+
+> **The IV is consumed by the operation.** Re-set
+> `NCRYPT_INITIALIZATION_VECTOR` before the matching decrypt, exactly as
+> BCrypt requires. Forgetting this is the most common AES integration bug.
+
+---
+
 ## Module dependency overview
 
 ```mermaid

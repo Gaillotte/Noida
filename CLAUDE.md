@@ -83,12 +83,12 @@ noida/
 │   │   ├── 00-index.md             Documentation index
 │   │   ├── 01-architecture.md      Overview, layers, threading, memory
 │   │   ├── 02-initialisation.md    LoadLibrary singleton, session pool lifecycle
-│   │   ├── 03-gestion-cles.md      CreateKey, OpenKey, EnumKeys, DeleteKey
-│   │   ├── 04-operations-crypto.md SignHash, Decrypt, ExportKey, ImportKey
-│   │   ├── 05-proprietes.md        GetKeyProperty, SetKeyProperty, GetProviderProperty
-│   │   ├── 06-mapping-erreurs.md   CK_RV → SECURITY_STATUS mapping
-│   │   ├── 07-securite-threading.md Concurrency, handle validation, PIN, logging
-│   │   ├── 08-flux-complets.md     TLS, code signing, key rotation end-to-end flows
+│   │   ├── 03-key-management.md    CreateKey, OpenKey, EnumKeys, DeleteKey
+│   │   ├── 04-crypto-operations.md SignHash, Decrypt, Encrypt, SecretAgreement, Export/Import
+│   │   ├── 05-properties.md        GetKeyProperty, SetKeyProperty, GetProviderProperty
+│   │   ├── 06-error-mapping.md     CK_RV → SECURITY_STATUS mapping
+│   │   ├── 07-security-threading.md Concurrency, handle validation, PIN, logging
+│   │   ├── 08-complete-flows.md    TLS, code signing, key rotation end-to-end flows
 │   │   ├── 09-tests.md             Four-layer test pyramid reference
 │   │   └── 10-hlk-execution.md     Microsoft HLK execution procedure
 │   ├── CMakeLists.txt

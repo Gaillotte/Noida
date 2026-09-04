@@ -973,7 +973,7 @@ body(doc, "For additional details, refer to:")
 
 bullet(doc, "docs/01-architecture.md — internal design and data structures")
 bullet(doc, "docs/02-initialisation.md — SoftHSM2 loading and session pool lifecycle")
-bullet(doc, "docs/07-securite-threading.md — thread-safety, handle validation, logging")
+bullet(doc, "docs/07-security-threading.md — thread-safety, handle validation, logging")
 bullet(doc, "docs/09-tests.md — complete test reference with assertion tables")
 
 # ── Save ─────────────────────────────────────────────────────────────────────
