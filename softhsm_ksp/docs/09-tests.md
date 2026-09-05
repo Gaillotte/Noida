@@ -1,6 +1,6 @@
 # Test suite — SoftHSM2 KSP
 
-## Test strategy — Three-layer pyramid
+## Test strategy — Four-layer pyramid
 
 ```
                  ┌──────────────────────────────────────┐
@@ -10,7 +10,7 @@
                                 │
                  ┌──────────────┴───────────────────────┐
                  │  Layer 3 — PowerShell functional      │  (Windows, KSP registered)
-                 │  test_ksp.ps1        9 scenarios      │
+                 │  test_ksp.ps1   9 scenarios / 17 chk  │
                  │  test_cng_hlk.ps1  ~150 HLK tests     │
                  └──────────────┬───────────────────────┘
                                 │

@@ -76,7 +76,7 @@ noida/
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register the KSP DLL in the Windows registry
 │   │   ├── register_ksp.reg        Alternative registry import file
-│   │   ├── test_ksp.ps1            Layer 3a — 9 basic PowerShell functional tests
+│   │   ├── test_ksp.ps1            Layer 3a — 9 scenarios / 17 checks (PowerShell)
 │   │   ├── test_cng_hlk.ps1        Layer 3b — ~150-test HLK-conformant PowerShell suite
 │   │   └── validate_hlk_script.ps1 Parses + compiles the HLK script's C# (runs anywhere)
 │   ├── docs/
@@ -305,7 +305,7 @@ gcovr --root .. --filter '.*/src/.*' --print-summary \
 
 ```powershell
 .\build\Release\test_ksp_integration.exe    # 40 tests
-.\tools\test_ksp.ps1                        # 9 functional tests
+.\tools\test_ksp.ps1                        # 9 scenarios, 17 checks
 .\tools\test_cng_hlk.ps1                    # ~150 HLK-conformant tests
 ```
 

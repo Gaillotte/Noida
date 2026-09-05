@@ -94,7 +94,7 @@ Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Providers
 
 ## Tests
 
-Three complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full test reference.
+Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full test reference.
 
 ### Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)
 
@@ -127,7 +127,7 @@ HMAC-SHA256, symmetric key reopen.
 ### Layer 3 — PowerShell functional tests (registered KSP)
 
 ```powershell
-# Basic functional tests (9 scenarios)
+# Basic functional tests (9 scenarios, 17 checks)
 .\tools\test_ksp.ps1
 
 # Microsoft CNG HLK-conformant test suite (~150 tests, 14 sections)
