@@ -207,8 +207,95 @@ backing the same KSP with real hardware.
 
 ---
 
+## Does Microsoft have to sign the provider?
+
+**No — not any more.** This question comes up because it used to be true,
+and the outdated answer is still repeated widely.
+
+### What changed
+
+| Era | Rule for cryptographic providers |
+|-----|----------------------------------|
+| Pre-Vista | Legacy CAPI **CSPs** genuinely required a Microsoft signature. You emailed the binary to `cspsign@microsoft.com` or `cecspsig@microsoft.com` and Microsoft signed it. |
+| Vista and later | Third-party Authenticode signing became available for CSPs. |
+| **Windows 8 and later** | **CSPs are no longer required to be signed at all.** Microsoft retired the manual signing service; those mailboxes no longer process submissions. |
+
+For **CNG KSPs** — what this project is — there was never a Microsoft
+signing programme. A KSP is a user-mode DLL that `ncrypt.dll` loads into the
+calling process. Third-party KSPs are *not* loaded into the LSA key
+isolation service; only Microsoft's own KSP is.
+
+The market confirms it: Thales and Entrust ship their CNG KSPs signed with
+**their own** certificates chaining to a commercial CA, not with anything
+from Microsoft.
+
+### Three separate things that get conflated
+
+| | Applies to a CNG KSP? | Who issues it | Typical time |
+|---|---|---|---|
+| **Authenticode code signing** | Yes, in practice | Commercial CA (DigiCert, Sectigo, GlobalSign…) | OV 1–3 business days, EV 3–7 |
+| **HLK / Windows Hardware Compatibility Program** | No — this is for drivers and hardware | Microsoft Partner Center | Weeks to months |
+| **Kernel-mode driver signing** | No — a KSP is user-mode | Microsoft attestation signing | N/A |
+
+Only the first is relevant. The second is what the rest of this document
+describes, and it is optional for a user-mode provider.
+
+### What you would actually do
+
+Buy a commercial code-signing certificate and sign the DLL yourself:
+
+```powershell
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+              softhsm_ksp.dll
+```
+
+Always timestamp (`/tr`). Without it the signature stops validating the day
+the certificate expires; with it, binaries signed during the validity period
+keep verifying afterwards.
+
+**Who to contact:** a CA directly or through a reseller. No Microsoft
+involvement at any point.
+
+**Timeline:** 1–3 business days for OV, 3–7 for EV, *after* your paperwork is
+submitted. The real delay is usually gathering your own business
+documentation rather than the CA's queue.
+
+**Cost:** roughly USD 250–560 per year depending on type and reseller.
+
+Two changes landed in early 2026 that affect planning:
+
+- Maximum certificate validity is now 459 days (about 15 months).
+- OV certificates now require hardware key protection — a FIPS-compliant USB
+  token or an HSM — the same requirement EV already had.
+
+You will also need a legal entity: code-signing certificates are issued to
+organisations, not to individuals.
+
+### One point not verified
+
+Whether `ncrypt.dll` *enforces* a signature check when loading a third-party
+KSP could not be confirmed from primary documentation. The formal
+requirement was dropped for CSPs at Windows 8 and commercial vendors
+self-sign, but no authoritative statement covering KSPs specifically was
+found, and this project has never been run on a real Windows machine.
+
+**Test this on Windows before relying on either answer.** Note that vendor
+registration tools often perform their own signature-chain check, which is
+separate from anything Windows itself enforces — a failure there does not
+prove the loader would have refused the DLL.
+
+### What signing does and does not fix here
+
+Signing makes the DLL deployable where SmartScreen, WDAC or AppLocker
+policies apply, and it is a prerequisite for any HLK submission. It does
+**not** change the limitation above: SoftHSM2 remains a software token
+keeping keys in an encrypted SQLite file. A signature does not make this a
+hardware-backed provider.
+
+---
+
 ## See also
 
-- [09 — Test suite](./09-tests.md) — the three-layer test pyramid
+- [09 — Test suite](./09-tests.md) — the four-layer test pyramid
 - [04 — Cryptographic operations](./04-crypto-operations.md) — mechanism mapping
 - [06 — Error mapping](./06-error-mapping.md) — `CK_RV` → `SECURITY_STATUS`
