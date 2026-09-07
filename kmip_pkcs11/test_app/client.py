@@ -237,6 +237,7 @@ class KMIPClient:
         payload = (
             encode_text_string(Tag.UniqueIdentifier, uid)
             + encode_byte_string(Tag.Data, plaintext)
+            + _block_cipher_mode(mode)
         )
         if iv:
             payload += encode_byte_string(Tag.IVCounterNonce, iv)
@@ -262,6 +263,7 @@ class KMIPClient:
         payload = (
             encode_text_string(Tag.UniqueIdentifier, uid)
             + encode_byte_string(Tag.Data, ciphertext)
+            + _block_cipher_mode(mode)
         )
         if iv:
             payload += encode_byte_string(Tag.IVCounterNonce, iv)
@@ -392,6 +394,18 @@ class KMIPClientError(Exception):
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+def _block_cipher_mode(mode: int) -> bytes:
+    """Encode the requested mode as CryptographicParameters.
+
+    The server reads the mode from here and defaults to CBC when it is absent,
+    so omitting this made the `mode` argument silently do nothing — asking for
+    GCM got you CBC, with no error to say so."""
+    return encode_structure(
+        Tag.CryptographicParameters,
+        encode_enumeration(Tag.CryptographicParameters_BlockCipherMode, mode),
+    )
+
 
 def _attr(name: str, value_bytes: bytes) -> bytes:
     return encode_structure(

@@ -20,25 +20,29 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # SoftHSM2 is built from source rather than installed from apt. The
-      # packaged build does not expose the combined ECDSA-with-hash mechanisms
-      # (CKM_ECDSA_SHA256 and friends), so every EC signing test fails against
-      # it. Confirmed by enumerating both builds' mechanism lists.
+      # SoftHSM2 is built from source rather than installed from apt, and the
+      # version matters more than the packaging. 2.6.1 does not expose the
+      # combined ECDSA-with-hash mechanisms (CKM_ECDSA_SHA256 and friends), so
+      # every EC signing test fails against it; 2.7.0 does. Confirmed by
+      # enumerating both builds' mechanism lists on the same machine: the
+      # distribution's OpenSSL-backed 2.6.1 advertises 70 mechanisms without
+      # CKM_ECDSA_SHA256, a source-built 2.7.0 advertises 79 with it. The
+      # crypto backend is not the differentiator — both link OpenSSL.
       - name: Cache SoftHSM2 build
         id: cache-softhsm
         uses: actions/cache@v4
         with:
           path: /opt/softhsm
-          key: softhsm-2.6.1-openssl-${{ runner.os }}
+          key: softhsm-2.7.0-openssl-${{ runner.os }}
 
-      - name: Build SoftHSM2 (OpenSSL backend)
+      - name: Build SoftHSM2 2.7.0
         if: steps.cache-softhsm.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential automake autoconf libtool pkg-config libssl-dev
-          curl -fsSL https://dist.opendnssec.org/source/softhsm-2.6.1.tar.gz -o /tmp/softhsm.tar.gz
+          curl -fsSL https://dist.opendnssec.org/source/softhsm-2.7.0.tar.gz -o /tmp/softhsm.tar.gz
           tar -xzf /tmp/softhsm.tar.gz -C /tmp
-          cd /tmp/softhsm-2.6.1
+          cd /tmp/softhsm-2.7.0
           ./configure --prefix=/opt/softhsm --with-crypto-backend=openssl --disable-gost
           make -j"$(nproc)"
           sudo make install

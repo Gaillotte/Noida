@@ -1,11 +1,14 @@
 # kmip-server container image.
 #
-# Two stages: the first builds SoftHSM2 against OpenSSL, the second carries
-# only the runtime. The build is not optional — Debian's SoftHSM2 package is
-# compiled against a crypto backend that does not expose the combined
-# ECDSA-with-hash mechanisms (CKM_ECDSA_SHA256 and friends), so signing with
-# an EC key fails against it. Verified by enumerating the mechanism list of
-# both builds.
+# Two stages: the first builds SoftHSM2 from source, the second carries only
+# the runtime. The build is not optional, and the version is the reason.
+# SoftHSM2 2.6.1 — which is what Debian and Ubuntu package — does not expose
+# the combined ECDSA-with-hash mechanisms (CKM_ECDSA_SHA256 and friends), so
+# signing with an EC key fails against it. 2.7.0 does expose them. Verified by
+# enumerating both mechanism lists on one machine: the packaged 2.6.1
+# advertises 70 mechanisms without CKM_ECDSA_SHA256, a source-built 2.7.0
+# advertises 79 with it. Note that the crypto backend is NOT the
+# differentiator — the packaged build already links OpenSSL.
 #
 #   docker build -f deploy/Dockerfile -t kmip-server .
 #   docker run --rm -v /etc/kmip:/etc/kmip:ro -v kmip-data:/var/lib/kmip \
@@ -14,7 +17,7 @@
 # ── stage 1: build SoftHSM2 with the OpenSSL backend ────────────────────────
 FROM debian:bookworm-slim AS softhsm
 
-ARG SOFTHSM_VERSION=2.6.1
+ARG SOFTHSM_VERSION=2.7.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential automake autoconf libtool pkg-config \
         libssl-dev ca-certificates curl \

@@ -29,7 +29,20 @@ tls:
   require_client_cert: false
 
 hsm:
-  library: /usr/lib/softhsm/libsofthsm2.so
+  # Path to the PKCS#11 library. This one is where a source build of SoftHSM2
+  # lands with --prefix=/usr/local; a distribution package installs to
+  # /usr/lib/softhsm/ instead, and a hardware token uses its vendor's library.
+  #
+  # The version matters. SoftHSM2 before 2.7.0 — which is what Debian and
+  # Ubuntu currently package — does not advertise the combined ECDSA-with-hash
+  # mechanisms (CKM_ECDSA_SHA256 and friends), so every EC signing operation
+  # fails against it. Check before pointing this at a packaged build:
+  #
+  #   softhsm2-util --version
+  #   pkcs11-tool --module <path> -M | grep -i ecdsa
+  #
+  # The installation guide covers building 2.7.0 from source.
+  library: /usr/local/lib/softhsm/libsofthsm2.so
   token_label: KMIPToken
 
   # The PIN unlocks the HSM. Supply exactly one source. Prefer pin_file,

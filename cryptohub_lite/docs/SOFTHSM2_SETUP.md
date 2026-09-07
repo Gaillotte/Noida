@@ -33,7 +33,7 @@ generally — just don't expect it to supply ECDSA-SHA on 2.6.1.
 
 ### Consequence for the README's claim
 
-`README.md` states that the suite passes in full — **811 tests** as of the
+`README.md` states that the suite passes in full — **816 tests** as of the
 phases 0–5 sync. That is reproducible only on a SoftHSM2 new enough to offer the
 combined ECDSA mechanisms. On 2.6.1 the EC signing tests fail (8 of them, when
 the count was 624). The tests are correct and so is the shim, which refuses a
