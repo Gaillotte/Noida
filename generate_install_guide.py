@@ -1262,6 +1262,10 @@ def build():
                                                        "the test specification."],
             ["KMIP_PKCS11_Phase_Report.docx", "How the system reached its current "
                                               "state, phase by phase."],
+            ["KMIP_PKCS11_KMS_Gap_Matrix.docx", "What a high-end commercial KMS is "
+                                                "expected to do, whether this project "
+                                                "covers it, and the route for every "
+                                                "gap."],
             ["README_KMIP.md", "The short version of all of the above."],
         ],
         col_widths=[6.5, 10.5])

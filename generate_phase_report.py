@@ -255,7 +255,13 @@ def build():
             ["KMIP_PKCS11_Project_Documentation.docx",
              "Module-by-module reference and full test specification."],
             ["KMIP_PKCS11_Install_Test_Guide.docx",
-             "Installation, running the suite, and operational troubleshooting."],
+             "Installation, deployment, running the suite, and operational "
+             "troubleshooting."],
+            ["KMIP_PKCS11_Feature_Specification.docx",
+             "Every supported feature and operation, with worked examples."],
+            ["KMIP_PKCS11_KMS_Gap_Matrix.docx",
+             "What the commercial KMS market expects, what is covered here, and the "
+             "route for every gap — where this programme could go next."],
             ["This document",
              "How the system got from the review to its current state — the programme "
              "narrative, phase by phase."],
