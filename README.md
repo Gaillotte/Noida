@@ -922,7 +922,7 @@ Stated plainly rather than discovered later.
 
 ### Generated engine documents
 
-Five Word documents cover the KMIP engine in depth. Each is produced by the
+Six Word documents cover the KMIP engine in depth. Each is produced by the
 script beside it, so regenerating is the way to update one — editing the `.docx`
 by hand puts it out of step with the generator that will overwrite it.
 
@@ -933,11 +933,23 @@ by hand puts it out of step with the generator that will overwrite it.
 | `KMIP_PKCS11_Design_Document.docx` | `generate_kmip_design_doc.py` | Architecture and design rationale, including designs that were rejected and why |
 | `KMIP_PKCS11_Project_Documentation.docx` | `generate_docs.py` | Module-by-module reference and the full test specification |
 | `KMIP_PKCS11_Phase_Report.docx` | `generate_phase_report.py` | How the system reached its current state, phase by phase |
+| `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | 74 features a high-end commercial KMS is expected to have, whether this project covers them, and the route for every gap — including the 19 that cannot be closed by writing more KMIP |
+
+Generating them needs `python-docx` (and `matplotlib` for the design document):
 
 ```bash
+pip install python-docx matplotlib
+
 for g in generate_feature_spec generate_install_guide generate_kmip_design_doc \
-         generate_docs generate_phase_report; do python "$g.py"; done
+         generate_docs generate_phase_report generate_kms_gap_matrix; do
+  python "$g.py"
+done
 ```
+
+The gap matrix is the one to read before promising a customer a feature: it is
+explicit that 19 gaps are **outside KMIP** — identity federation, tenancy, REST,
+cloud key import and SIEM export have no wire representation, so they are not
+waiting on more protocol work.
 
 These describe the engine as a standalone service — a config file, the
 `kmip-server` CLI, systemd. Read them for the protocol and the engine's own
