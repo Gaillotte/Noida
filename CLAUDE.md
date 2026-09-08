@@ -15,7 +15,7 @@ object lifecycle, metadata, access control, governance and protocol framing,
 and delegates every cryptographic operation to PKCS#11.
 
 At `7b56c23`: 41 of 53 KMIP 2.1 operations, 816 tests passing live against a
-real SoftHSM2 2.7.0 token, six generated documents.
+real SoftHSM2 2.7.0 token, six generated documents and an overview deck.
 
 ---
 
@@ -36,8 +36,9 @@ things that were scoped and deliberately not built, and why. Never let
 environment, say so rather than shipping it as though it had been.
 
 **Documents are generated, never hand-edited.** Each `.docx` has a
-`generate_*.py` beside it. Edit the generator and re-run it. A hand edit is
-lost on the next regeneration.
+`generate_*.py` beside it, and the `.pptx` has `generate_overview_deck.js`.
+Edit the generator and re-run it. A hand edit is lost on the next
+regeneration.
 
 **Tests come with the change.** Every phase added regressions for the specific
 behaviour it introduced. That suite is why each phase could build on the last
@@ -109,6 +110,12 @@ for g in generate_feature_spec generate_install_guide generate_kmip_design_doc \
          generate_docs generate_phase_report generate_kms_gap_matrix; do
   python "$g.py"
 done
+```
+
+The deck is the one generator that is not Python:
+
+```bash
+npm install && npm run deck        # needs pptxgenjs, declared in package.json
 ```
 
 ---
@@ -198,6 +205,11 @@ failover, multi-tenancy, FIPS validation.
 - `7b56c23` enterprise KMS gap matrix — 74 features from the commercial
   market, 32 covered, 16 partial, 26 not covered, 19 of which cannot be closed
   by writing more KMIP.
+- Overview deck — 15 slides covering KMIP, the design on PKCS#11, the
+  REST-on-KMIP target architecture, the gap analysis and the roadmap. Built
+  with pptxgenjs; LibreOffice cannot render in this environment, so it was
+  QA'd by schema validation plus a geometric check for off-slide shapes,
+  overlaps and text overflow rather than by looking at rendered slides.
 
 ---
 
@@ -236,6 +248,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_Project_Documentation.docx` | `generate_docs.py` | Module reference and test specification |
 | `KMIP_PKCS11_Phase_Report.docx` | `generate_phase_report.py` | How the system reached its current state |
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | Market requirements vs coverage, with routes for gaps |
+| `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.

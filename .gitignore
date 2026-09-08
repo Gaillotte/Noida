@@ -161,3 +161,7 @@ cython_debug/
 
 # build artifacts from editable installs
 *.egg-info/
+
+# Node — only the slide-deck generator needs it
+node_modules/
+package-lock.json
