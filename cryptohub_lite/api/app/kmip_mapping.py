@@ -125,6 +125,54 @@ def rest_index(routes: Iterable) -> dict:
     return index
 
 
+# Tag descriptions for /api/docs.
+#
+# The "KMIP" tag caused a fair complaint: the architecture diagram states there
+# is no connection between the API and the KMIP server, while Swagger shows a
+# section headed "KMIP" full of REST endpoints. Both are true and the word is
+# doing two jobs - protocol in one place, subject matter in the other - so the
+# tag now says which it means. An undescribed tag left the reader to guess.
+OPENAPI_TAGS = [
+    {"name": "Authentication",
+     "description": "Sign in, inspect the current session, change your own password. "
+                    "Every other tag requires the bearer token issued here."},
+    {"name": "KMIP",
+     "description":
+         "**REST endpoints over KMIP managed objects — not the KMIP protocol.**\n\n"
+         "The name refers to what these endpoints act on, not how they are reached. "
+         "They are JSON over HTTP, and they call the engine's operation handlers as "
+         "Python functions inside this process.\n\n"
+         "The KMIP *protocol* — TTLV frames over TLS — is a separate service on "
+         "**port 5696**. This API never connects to it, which is why the "
+         "architecture diagram shows no link between the two containers: there is "
+         "no network call between them. They meet at the shared database and the "
+         "shared HSM token instead, so an object created either way is the same "
+         "object.\n\n"
+         "Each endpoint below names the KMIP operation it corresponds to, and "
+         "whether a handler really runs. `GET /api/kmip/operations` lists all 41 "
+         "the engine implements and marks which are reachable from here."},
+    {"name": "Keys",
+     "description": "The same managed objects as the KMIP tag, presented by key "
+                    "material — algorithm, size, CKA_ID, usage flags."},
+    {"name": "Certificates",
+     "description": "Managed objects of certificate type, with the X.509 fields parsed out."},
+    {"name": "PKCS#11",
+     "description": "The token's own view: slots, and objects with their raw `CKA_*` "
+                    "attributes. Secret-bearing attributes are never requested, so "
+                    "nothing here can expose key material."},
+    {"name": "Audit",
+     "description": "One trail merged from two logs — the portal's own table and the "
+                    "engine's hash-chained `kmip_audit`. Only the KMIP half is chained; "
+                    "`/api/audit/verify` reports whether it still verifies."},
+    {"name": "Administration",
+     "description": "Portal accounts and roles. Changes here are projected into the "
+                    "engine's identity tables, so a demotion or suspension reaches that "
+                    "user's KMIP client too."},
+    {"name": "Dashboard", "description": "Aggregate counts for the landing page."},
+    {"name": "System", "description": "Liveness for the API, database and HSM."},
+]
+
+
 # The service-level description for /api/docs. Stated once, at the top, because
 # "is this KMIP?" is the first question the endpoint names provoke.
 API_DESCRIPTION = """

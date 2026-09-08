@@ -114,7 +114,7 @@ if (!$result['ok']) {
                         <td><strong><?= e($ev['username'] ?? '—') ?></strong></td>
                         <td class="chl-mono"><?= e($ev['source_ip'] ?? '—') ?></td>
                         <td class="chl-mono"><?= e($ev['action'] ?? '') ?></td>
-                        <td class="chl-mono"><?= e($ev['object_uid'] ? substr((string)$ev['object_uid'], 0, 14) . '…' : '—') ?></td>
+                        <td><?= uid_chip($ev['object_uid'] ?? null, 14) ?></td>
                         <td><?= e($ev['provider'] ?? '—') ?></td>
                         <td><?= result_badge($ev['result'] ?? null) ?></td>
                         <td style="color:var(--text-muted)"><?= e($ev['detail'] ?? '') ?></td>

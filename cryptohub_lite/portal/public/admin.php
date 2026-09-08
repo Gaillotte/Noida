@@ -181,8 +181,32 @@ if (!can('user.manage')) {
     <div class="chl-card-head">
         <div>
             <h2 class="chl-card-title">Roles &amp; Capabilities</h2>
-            <p class="chl-card-sub">Enforced by the API on every request, not by the interface</p>
+            <p class="chl-card-sub">What a role governs &mdash; and what it does not</p>
         </div>
+    </div>
+    <?php
+    // "Is this a database role or a KMIP role?" is a fair question the table
+    // alone does not answer, and the honest answer is neither-and-both: these
+    // gate the REST API, and two of them additionally grant admin inside the
+    // KMIP engine. Nothing here is a PostgreSQL role.
+    ?>
+    <div class="chl-card-body" style="border-bottom:1px solid var(--border);
+                font-size:12px;color:var(--text-muted)">
+        <p style="margin:0 0 10px">
+            These are <b>application roles</b>, checked on every REST API request.
+            They are <b>not database roles</b> &mdash; PostgreSQL is reached by a
+            single service account that every container shares, and no portal user
+            ever holds a database credential.
+        </p>
+        <p style="margin:0">
+            They do reach the KMIP service, but only in one specific way:
+            <b>Administrator</b> and <b>SecurityOfficer</b> are projected into the
+            engine's own <span class="chl-mono">admin</span> role, which grants
+            unconditional access to every managed object regardless of who owns it.
+            The other three roles are not projected, so over KMIP those identities
+            get only what ownership and explicit grants give them. A demotion here
+            takes effect for that user's KMIP client too.
+        </p>
     </div>
     <div class="chl-table-wrap">
         <table class="chl-table">

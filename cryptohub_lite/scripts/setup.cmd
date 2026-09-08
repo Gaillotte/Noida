@@ -8,6 +8,7 @@ REM project and volume names to fall out of step.
 REM
 REM   setup                    build, start, and wait until it is serving
 REM   setup up                 same
+REM   setup start              start without building - after a stop
 REM   setup down               stop and remove containers, keep the volumes
 REM   setup stop               stop containers, keep them
 REM   setup restart [service]  restart everything, or one service
@@ -48,6 +49,7 @@ REM do when neither is, so no subcommand below has to.
 call "%~dp0engine.cmd" || exit /b 1
 
 if /i "%CMD%"=="up"      goto :up
+if /i "%CMD%"=="start"   goto :start
 if /i "%CMD%"=="down"    goto :down
 if /i "%CMD%"=="stop"    goto :stop
 if /i "%CMD%"=="restart" goto :restart
@@ -66,7 +68,18 @@ echo.
 goto :help
 
 REM ------------------------------------------------------------------- up ----
+REM `start` is `up` without the build. Implemented as `up -d --no-build` rather
+REM than `compose start`, because `compose start` only revives containers that
+REM still exist - after a `down` it fails, which is not what "start everything"
+REM should mean. --no-build creates whatever is missing and never compiles.
+:start
+set "UPFLAGS=--no-build"
+echo ==^> Container engine: %ENGINE% ^(compose: %COMPOSE_CMD%^)
+echo ==^> Starting existing images ^(no build; use 'setup up' after changing code^)
+goto :up_run
+
 :up
+set "UPFLAGS="
 echo ==^> Container engine: %ENGINE% ^(compose: %COMPOSE_CMD%^)
 echo ==^> Building images ^(SoftHSM2 is compiled from source; first run takes a few minutes^)
 %COMPOSE_CMD% -f "%COMPOSE%" build || exit /b 1
@@ -87,10 +100,11 @@ REM Retrying is safe because `up -d` is idempotent: containers already created
 REM are left alone and only the missing ones are started, which is why a
 REM half-finished attempt does not have to be cleaned up first.
 echo ==^> Starting the stack
+:up_run
 set /a attempt=0
 :up_try
 set /a attempt+=1
-%COMPOSE_CMD% -f "%COMPOSE%" up -d && goto :up_ok
+%COMPOSE_CMD% -f "%COMPOSE%" up -d %UPFLAGS% && goto :up_ok
 if !attempt! geq 3 (
     echo.
     echo [ERROR] The stack did not start after !attempt! attempts.
@@ -285,6 +299,7 @@ echo IDEMIA CryptoHub Lite - stack management
 echo.
 echo   setup                    build, start, and wait until it is serving
 echo   setup up                 same
+echo   setup start              start without building - after a stop
 echo   setup down               stop and remove containers, keep the volumes
 echo   setup stop               stop containers, keep them
 echo   setup restart [service]  restart everything, or one service

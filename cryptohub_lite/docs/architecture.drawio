@@ -1,13 +1,13 @@
 <mxfile host="Electron" agent="CryptoHub Lite" pages="2">
   <diagram name="Components" id="components">
-    <mxGraphModel dx="1233" dy="550" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="900" math="0" shadow="0">
+    <mxGraphModel dx="1440" dy="607" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="900" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
         <mxCell id="title" parent="1" style="text;html=1;fontSize=20;fontStyle=1;align=left;verticalAlign=middle;" value="IDEMIA CryptoHub Lite (CHL) — component architecture" vertex="1">
           <mxGeometry height="30" width="700" x="40" y="16" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" parent="1" style="text;html=1;fontSize=13;fontColor=#555555;align=left;verticalAlign=middle;" value="Two front doors, one engine, one token. Both routes reach the same 41 operation handlers." vertex="1">
+        <mxCell id="subtitle" parent="1" style="text;html=1;fontSize=13;fontColor=#555555;align=left;verticalAlign=middle;" value="Two front doors, one engine, one token. Three routes in, the same 41 operation handlers at the end of all of them." vertex="1">
           <mxGeometry height="20" width="800" x="40" y="44" as="geometry" />
         </mxCell>
         <mxCell id="browser" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="&lt;b&gt;Browser&lt;/b&gt;&lt;br/&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;a person using the portal&lt;/font&gt;" vertex="1">
@@ -16,10 +16,10 @@
         <mxCell id="kclient" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="&lt;b&gt;KMIP client&lt;/b&gt;&lt;br/&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;an application, e.g. svc-payments&lt;/font&gt;" vertex="1">
           <mxGeometry height="60" width="250" x="950" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="portal" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="&lt;b&gt;chl-portal&lt;/b&gt;  :8081&lt;br/&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;PHP 8.3, server-rendered&lt;br/&gt;no state, no crypto&lt;/font&gt;" vertex="1">
+        <mxCell id="portal" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="&lt;b&gt;chl-portal&lt;/b&gt;  :8081&lt;br/&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;PHP 8.3, server-rendered&lt;br/&gt;no state, no crypto&lt;br/&gt;incl. the &lt;b&gt;KMIP Client Application&lt;/b&gt; page&lt;/font&gt;" vertex="1">
           <mxGeometry height="70" width="230" x="80" y="210" as="geometry" />
         </mxCell>
-        <mxCell id="api" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="&lt;b&gt;chl-api&lt;/b&gt;  :8000&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;FastAPI — REST + JWT (JSON Web Token)&lt;br&gt;, 5 roles&lt;br&gt;portal accounts, portal audit&lt;/font&gt;" vertex="1">
+        <mxCell id="api" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="&lt;b&gt;chl-api&lt;/b&gt;  :8000&lt;br/&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;FastAPI &amp;mdash; REST + JWT (JSON Web Token), 5 roles&lt;br/&gt;portal accounts, portal audit&lt;br/&gt;&lt;font color=&quot;#2d6a2d&quot;&gt;also acts as a KMIP client (see below)&lt;/font&gt;&lt;/font&gt;" vertex="1">
           <mxGeometry height="80" width="230" x="80" y="340" as="geometry" />
         </mxCell>
         <mxCell id="kmipsrv" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="&lt;b&gt;chl-kmip&lt;/b&gt;  :5696&lt;br/&gt;&lt;font style=&quot;font-size:11px;color:#555&quot;&gt;KMIPServer — TLS, per-request auth&lt;br/&gt;thread per connection&lt;/font&gt;" vertex="1">
@@ -54,7 +54,7 @@
         </mxCell>
         <mxCell id="e1l" connectable="0" parent="e1" style="edgeLabel;html=1;fontSize=11;" value="HTTP · HTML" vertex="1">
           <mxGeometry relative="1" x="-0.1" as="geometry">
-            <mxPoint as="offset" />
+            <mxPoint x="-35" y="-8" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="e2" edge="1" parent="1" source="portal" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=block;" target="api">
@@ -62,23 +62,23 @@
         </mxCell>
         <mxCell id="e2l" connectable="0" parent="e2" style="edgeLabel;html=1;fontSize=11;" value="&lt;b&gt;REST + JWT&lt;/b&gt;&lt;br/&gt;JSON over HTTP" vertex="1">
           <mxGeometry relative="1" x="-0.1" as="geometry">
-            <mxPoint as="offset" />
+            <mxPoint x="-41" y="-13" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="e3" edge="1" parent="1" source="kclient" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=block;strokeColor=#82b366;strokeWidth=2;" target="kmipsrv">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e3l" connectable="0" parent="e3" style="edgeLabel;html=1;fontSize=11;fontColor=#2d6a2d;" value="&lt;b&gt;KMIP 2.1&lt;/b&gt;&lt;br/&gt;TTLV binary over TLS&lt;br/&gt;&lt;i&gt;not REST&lt;/i&gt;" vertex="1">
+        <mxCell id="e3l" connectable="0" parent="e3" style="edgeLabel;html=1;fontSize=11;fontColor=#2d6a2d;" value="&lt;b&gt;KMIP 2.1&lt;/b&gt;&lt;br&gt;TTLV binary over TLS&lt;br&gt;&lt;i&gt;(Optional)&lt;/i&gt;" vertex="1">
           <mxGeometry relative="1" x="-0.1" as="geometry">
-            <mxPoint x="10" y="-6" as="offset" />
+            <mxPoint x="10" y="24" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="e4" edge="1" parent="1" source="api" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=block;dashed=1;" target="handlers">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4l" connectable="0" parent="e4" style="edgeLabel;html=1;fontSize=11;" value="&lt;b&gt;in-process call&lt;/b&gt;&lt;br/&gt;no socket, no TTLV on the wire&lt;br/&gt;&lt;font color=&quot;#b85450&quot;&gt;bypasses the dispatcher&lt;/font&gt;" vertex="1">
+        <mxCell id="e4l" connectable="0" parent="e4" style="edgeLabel;html=1;fontSize=11;" value="&lt;b&gt;in-process call&lt;/b&gt;&lt;br/&gt;the REST API performing a KMIP operation&lt;br/&gt;no socket, no TTLV on the wire&lt;br/&gt;&lt;font color=&quot;#b85450&quot;&gt;bypasses the dispatcher&lt;/font&gt;" vertex="1">
           <mxGeometry relative="1" x="0.2" as="geometry">
-            <mxPoint as="offset" />
+            <mxPoint x="-259" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="e5" edge="1" parent="1" source="kmipsrv" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=block;strokeColor=#82b366;strokeWidth=2;" target="dispatch">
@@ -122,28 +122,86 @@
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="note" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fff9e6;strokeColor=#d6b656;spacingLeft=10;spacingTop=6;fontSize=11;" value="&lt;b&gt;How to read this&lt;/b&gt;&lt;br/&gt;&lt;br/&gt;&lt;b&gt;Green&lt;/b&gt; is the KMIP protocol path: TTLV binary frames over TCP/TLS on 5696.&lt;br/&gt;It passes the &lt;b&gt;OperationDispatcher&lt;/b&gt;, so it gets per-request authentication,&lt;br/&gt;the tamper-evident audit chain, and dual control where enabled.&lt;br/&gt;&lt;br/&gt;&lt;b&gt;Blue&lt;/b&gt; is the portal path: ordinary JSON REST on 8000. The API calls the same&lt;br/&gt;handlers &lt;i&gt;as Python functions&lt;/i&gt; — no socket is opened, nothing is framed as TTLV&lt;br/&gt;on a wire — and it does &lt;b&gt;not&lt;/b&gt; go through the dispatcher, so those cross-cutting&lt;br/&gt;concerns are the API's own (JWT, roles, portal audit).&lt;br/&gt;&lt;br/&gt;That is why the Audit page merges two logs: portal actions from PostgreSQL,&lt;br/&gt;KMIP operations from the engine's hash-chained kmip_audit." vertex="1">
-          <mxGeometry height="200" width="540" x="380" y="150" as="geometry" />
+        <mxCell id="note" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fff9e6;strokeColor=#d6b656;spacingLeft=10;spacingTop=6;fontSize=11;" value="&lt;b&gt;How to read this&lt;/b&gt;&lt;br/&gt;&lt;br/&gt;There are &lt;b&gt;three&lt;/b&gt; ways an operation reaches a handler, and they differ only in how they&lt;br/&gt;arrive - never in what they do.&lt;br/&gt;&lt;br/&gt;&lt;b&gt;1. KMIP client &amp;rarr; :5696&lt;/b&gt; (green, right). TTLV over TCP/TLS, through the &lt;b&gt;OperationDispatcher&lt;/b&gt;:&lt;br/&gt;per-request authentication, the tamper-evident audit chain, dual control where enabled.&lt;br/&gt;&lt;br/&gt;&lt;b&gt;2. Portal page &amp;rarr; REST :8000&lt;/b&gt; (blue, left). The API calls the handlers &lt;i&gt;as Python functions&lt;/i&gt;.&lt;br/&gt;No socket, nothing framed as TTLV, and &lt;b&gt;not&lt;/b&gt; through the dispatcher - so JWT, roles and&lt;br/&gt;portal audit are the API's own concern.&lt;br/&gt;&lt;br/&gt;&lt;b&gt;3. KMIP Client Application &amp;rarr; REST :8000 &amp;rarr; :5696&lt;/b&gt; (green, centre). The API opens a genuine&lt;br/&gt;socket and becomes route 1. Same bytes a third-party client would send.&lt;br/&gt;&lt;br/&gt;That is why the Audit page merges two logs: portal actions from PostgreSQL,&lt;br/&gt;KMIP operations from the engine's hash-chained kmip_audit." vertex="1">
+          <mxGeometry height="268" width="540" x="380" y="96" as="geometry" />
         </mxCell>
         <mxCell id="rule" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=middle;fillColor=#f5f5f5;strokeColor=#999999;spacingLeft=10;fontSize=11;" value="&lt;b&gt;The rule that keeps this maintainable:&lt;/b&gt; KMIP logic lives in kmip_pkcs11/ and nowhere else. The PHP tier holds no cryptographic or KMIP knowledge; the API translates shapes and enforces its own auth. If a lifecycle rule seems to belong in cryptohub_lite/, it belongs in the engine — otherwise the portal and KMIP clients will eventually disagree about what an operation does." vertex="1">
           <mxGeometry height="40" width="1150" x="60" y="850" as="geometry" />
         </mxCell>
-        <mxCell id="nolink" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;strokeColor=#b85450;strokeWidth=2;" value="">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="320" y="380" as="sourcePoint" />
-            <mxPoint x="950" y="380" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="nolinkx" parent="1" style="text;html=1;fontSize=24;fontColor=#b85450;align=center;" value="&lt;b&gt;X&lt;/b&gt;" vertex="1">
-          <mxGeometry height="30" width="40" x="615" y="356" as="geometry" />
-        </mxCell>
-        <mxCell id="nolinklbl" parent="1" style="text;html=1;fontSize=11;align=center;fontColor=#b85450;" value="&lt;b&gt;No connection between chl-api and chl-kmip&lt;/b&gt;&lt;br/&gt;&lt;font style=&quot;font-size:10px&quot;&gt;The API never opens a socket to the KMIP server and never speaks TTLV.&lt;br/&gt;They meet only at the shared database and the shared token below.&lt;/font&gt;" vertex="1">
-          <mxGeometry height="46" width="470" x="400" y="400" as="geometry" />
+        <mxCell id="nolinklbl" parent="1" style="text;html=1;fontSize=11;align=center;fontColor=#2d6a2d;" value="&lt;b&gt;Used by one page only: the KMIP Client Application.&lt;/b&gt;&lt;br/&gt;&lt;font style=&quot;font-size:10px&quot;&gt;The portal's own pages never cause this call - they take the in-process route below.&lt;br/&gt;This one exists so a customer can watch the product being driven the way they will drive it:&lt;br/&gt;real TTLV frames, per-request authentication, the dispatcher, a row in the hash-chained audit log.&lt;br/&gt;The page shows both hops - REST browser&amp;rarr;API, then KMIP API&amp;rarr;engine.&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="130" y="431" as="geometry" />
         </mxCell>
         <mxCell id="sharednote" parent="1" style="text;html=1;fontSize=11;align=center;fontColor=#555555;" value="This is the whole of the coupling: same PostgreSQL, same SoftHSM2 token (chl_tokens is mounted into both containers). A key created either way is the same object because both write the same rows and the same token — not because one calls the other." vertex="1">
-          <mxGeometry height="34" width="1060" x="120" y="838" as="geometry" />
+          <mxGeometry height="34" width="1060" x="123" y="826" as="geometry" />
+        </mxCell>
+        <mxCell id="dlDE4UF8Yrd0GK-SxRM8-1" connectable="0" parent="1" style="text;html=1;fontSize=11;fontColor=#2d6a2d;align=left;" value="&lt;div&gt;&lt;font style=&quot;font-size:10px&quot;&gt;The KMIP Client Application drives all 41&lt;br&gt;operations over REST, and the API turns&lt;br&gt;each one into real TTLV on 5696.&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="230" x="953" y="168" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="api" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=block;strokeColor=#82b366;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="kmipsrv">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12l" connectable="0" parent="e12" style="edgeLabel;html=1;fontSize=11;fontColor=#2d6a2d;" value="&lt;b&gt;KMIP 2.1 TTLV over TCP&lt;/b&gt;" vertex="1">
+          <mxGeometry relative="1" x="-0.15" as="geometry">
+            <mxPoint y="-12" as="offset" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-  <diagram name="Technology stack" id="techstack"><mxGraphModel dx="1300" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="560" math="0" shadow="0"><root><mxCell id="0" /><mxCell id="1" parent="0" /><mxCell id="t" value="Technology stack" style="text;html=1;fontSize=20;fontStyle=1;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="14" width="500" height="30" as="geometry" /></mxCell><mxCell id="ts" value="One line per layer. Nothing skips a layer, which is what makes the HSM swappable and the portal replaceable." style="text;html=1;fontSize=12;fontColor=#666666;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="42" width="900" height="20" as="geometry" /></mxCell><mxCell id="L0" value="&lt;b&gt;Presentation&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="84" width="210" height="58" as="geometry" /></mxCell><mxCell id="T0" value="PHP 8.3 + Apache&amp;nbsp; &amp;middot;&amp;nbsp; Bootstrap 5&amp;nbsp; &amp;middot;&amp;nbsp; Chart.js&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;server-rendered, no build step&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="84" width="600" height="58" as="geometry" /></mxCell><mxCell id="L1" value="&lt;b&gt;REST API&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="150" width="210" height="58" as="geometry" /></mxCell><mxCell id="T1" value="FastAPI&amp;nbsp; &amp;middot;&amp;nbsp; Uvicorn&amp;nbsp; &amp;middot;&amp;nbsp; Pydantic&amp;nbsp; &amp;middot;&amp;nbsp; PyJWT&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;auth, RBAC, translation - no KMIP logic&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="150" width="600" height="58" as="geometry" /></mxCell><mxCell id="L2" value="&lt;b&gt;KMIP engine&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="216" width="210" height="58" as="geometry" /></mxCell><mxCell id="T2" value="Python 3.11&amp;nbsp; &amp;middot;&amp;nbsp; kmip_pkcs11&amp;nbsp; &amp;middot;&amp;nbsp; python-pkcs11 (pinned 0.9.x)&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;the whole protocol lives here&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="216" width="600" height="58" as="geometry" /></mxCell><mxCell id="L3" value="&lt;b&gt;Persistence&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="282" width="210" height="58" as="geometry" /></mxCell><mxCell id="T3" value="PostgreSQL 16&amp;nbsp; &amp;middot;&amp;nbsp; psycopg2&amp;nbsp; &amp;middot;&amp;nbsp; metadata/db.py&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;one database, portal and KMIP alike&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="282" width="600" height="58" as="geometry" /></mxCell><mxCell id="L4" value="&lt;b&gt;Cryptographic boundary&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="348" width="210" height="58" as="geometry" /></mxCell><mxCell id="T4" value="SoftHSM2 2.7 (source build)&amp;nbsp; &amp;middot;&amp;nbsp; PKCS#11&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;keys never cross upward; swappable for real hardware&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="348" width="600" height="58" as="geometry" /></mxCell><mxCell id="L5" value="&lt;b&gt;Platform&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="414" width="210" height="58" as="geometry" /></mxCell><mxCell id="T5" value="Rancher Desktop or Docker Desktop&amp;nbsp; &amp;middot;&amp;nbsp; compose&amp;nbsp; &amp;middot;&amp;nbsp; WSL2&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;four OCI containers, no orchestrator&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="414" width="600" height="58" as="geometry" /></mxCell><mxCell id="tool" value="&lt;b&gt;Toolchain&lt;/b&gt;&lt;br/&gt;&lt;br/&gt;&lt;b&gt;setup&lt;/b&gt; - build, run, back up, test&lt;br/&gt;&lt;b&gt;sync.cmd&lt;/b&gt; - merge the component branch&lt;br/&gt;&lt;b&gt;pytest&lt;/b&gt; - 816 tests&lt;br/&gt;&lt;b&gt;kmip-admin&lt;/b&gt; - identities, grants, audit&lt;br/&gt;&lt;b&gt;generate_*.py&lt;/b&gt; - six .docx documents" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff9e6;strokeColor=#d6b656;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=11;" vertex="1" parent="1"><mxGeometry x="880" y="84" width="290" height="160" as="geometry" /></mxCell><mxCell id="paths" value="&lt;b&gt;Local paths&lt;/b&gt;&lt;br/&gt;&lt;br/&gt;&lt;b&gt;C:\dev\Kmip&lt;/b&gt; - the repository&lt;br/&gt;&lt;b&gt;C:\Internal_Idemia\Docker_bkup&lt;/b&gt;&lt;br/&gt;&amp;nbsp;&amp;nbsp;where 'setup backup' writes&lt;br/&gt;&lt;b&gt;%LOCALAPPDATA%\Programs\Rancher Desktop&lt;/b&gt;&lt;br/&gt;&amp;nbsp;&amp;nbsp;per-user install&lt;br/&gt;&lt;br/&gt;In the containers: &lt;b&gt;/app&lt;/b&gt;, and the token at&lt;br/&gt;&lt;b&gt;/var/lib/softhsm/tokens&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=11;" vertex="1" parent="1"><mxGeometry x="880" y="260" width="290" height="220" as="geometry" /></mxCell></root></mxGraphModel></diagram></mxfile>
+  <diagram name="Technology stack" id="techstack">
+    <mxGraphModel dx="1864" dy="875" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="560" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="t" parent="1" style="text;html=1;fontSize=20;fontStyle=1;align=left;" value="Technology stack" vertex="1">
+          <mxGeometry height="30" width="500" x="40" y="14" as="geometry" />
+        </mxCell>
+        <mxCell id="ts" parent="1" style="text;html=1;fontSize=12;fontColor=#666666;align=left;" value="One line per layer. Nothing skips a layer, which is what makes the HSM swappable and the portal replaceable." vertex="1">
+          <mxGeometry height="20" width="900" x="40" y="42" as="geometry" />
+        </mxCell>
+        <mxCell id="L0" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=12;fontSize=12;" value="&lt;b&gt;Presentation&lt;/b&gt;" vertex="1">
+          <mxGeometry height="58" width="210" x="40" y="84" as="geometry" />
+        </mxCell>
+        <mxCell id="T0" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;align=left;spacingLeft=14;fontSize=11;" value="PHP 8.3 + Apache&amp;nbsp; &amp;middot;&amp;nbsp; Bootstrap 5&amp;nbsp; &amp;middot;&amp;nbsp; Chart.js&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;server-rendered, no build step; both libraries served from assets/vendor/, not a CDN - the product has to run with no outbound internet&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="250" y="84" as="geometry" />
+        </mxCell>
+        <mxCell id="L1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=12;fontSize=12;" value="&lt;b&gt;REST API&lt;/b&gt;" vertex="1">
+          <mxGeometry height="58" width="210" x="40" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="T1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;align=left;spacingLeft=14;fontSize=11;" value="FastAPI&amp;nbsp; &amp;middot;&amp;nbsp; Uvicorn&amp;nbsp; &amp;middot;&amp;nbsp; Pydantic&amp;nbsp; &amp;middot;&amp;nbsp; PyJWT&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;auth, RBAC, translation - no KMIP logic&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="250" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="L2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=12;fontSize=12;" value="&lt;b&gt;KMIP engine&lt;/b&gt;" vertex="1">
+          <mxGeometry height="58" width="210" x="40" y="216" as="geometry" />
+        </mxCell>
+        <mxCell id="T2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;align=left;spacingLeft=14;fontSize=11;" value="Python 3.11&amp;nbsp; &amp;middot;&amp;nbsp; kmip_pkcs11&amp;nbsp; &amp;middot;&amp;nbsp; python-pkcs11 (pinned 0.9.x)&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;the whole protocol lives here&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="250" y="216" as="geometry" />
+        </mxCell>
+        <mxCell id="L3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=12;fontSize=12;" value="&lt;b&gt;Persistence&lt;/b&gt;" vertex="1">
+          <mxGeometry height="58" width="210" x="40" y="282" as="geometry" />
+        </mxCell>
+        <mxCell id="T3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;align=left;spacingLeft=14;fontSize=11;" value="PostgreSQL 16&amp;nbsp; &amp;middot;&amp;nbsp; psycopg2&amp;nbsp; &amp;middot;&amp;nbsp; metadata/db.py&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;one database, portal and KMIP alike&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="250" y="282" as="geometry" />
+        </mxCell>
+        <mxCell id="L4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=12;fontSize=12;" value="&lt;b&gt;Cryptographic boundary&lt;/b&gt;" vertex="1">
+          <mxGeometry height="58" width="210" x="40" y="348" as="geometry" />
+        </mxCell>
+        <mxCell id="T4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;align=left;spacingLeft=14;fontSize=11;" value="SoftHSM2 2.7 (source build)&amp;nbsp; &amp;middot;&amp;nbsp; PKCS#11&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;keys never cross upward; swappable for real hardware&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="250" y="348" as="geometry" />
+        </mxCell>
+        <mxCell id="L5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=12;fontSize=12;" value="&lt;b&gt;Platform&lt;/b&gt;" vertex="1">
+          <mxGeometry height="58" width="210" x="40" y="414" as="geometry" />
+        </mxCell>
+        <mxCell id="T5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;align=left;spacingLeft=14;fontSize=11;" value="Rancher Desktop or Docker Desktop&amp;nbsp; &amp;middot;&amp;nbsp; compose&amp;nbsp; &amp;middot;&amp;nbsp; WSL2&lt;br/&gt;&lt;font style=&quot;font-size:10px;color:#777&quot;&gt;four OCI containers, no orchestrator&lt;/font&gt;" vertex="1">
+          <mxGeometry height="58" width="600" x="250" y="414" as="geometry" />
+        </mxCell>
+        <mxCell id="tool" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff9e6;strokeColor=#d6b656;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=11;" value="&lt;b&gt;Toolchain&lt;/b&gt;&lt;br/&gt;&lt;br/&gt;&lt;b&gt;setup&lt;/b&gt; - build, run, back up, test&lt;br/&gt;&lt;b&gt;sync.cmd&lt;/b&gt; - merge the component branch&lt;br/&gt;&lt;b&gt;pytest&lt;/b&gt; - 816 tests&lt;br/&gt;&lt;b&gt;kmip-admin&lt;/b&gt; - identities, grants, audit&lt;br/&gt;&lt;b&gt;generate_*.py&lt;/b&gt; - six .docx documents" vertex="1">
+          <mxGeometry height="160" width="290" x="880" y="84" as="geometry" />
+        </mxCell>
+        <mxCell id="paths" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=11;" value="&lt;b&gt;Local paths&lt;/b&gt;&lt;br/&gt;&lt;br/&gt;&lt;b&gt;C:\dev\Kmip&lt;/b&gt; - the repository&lt;br/&gt;&lt;b&gt;C:\Internal_Idemia\Docker_bkup&lt;/b&gt;&lt;br/&gt;&amp;nbsp;&amp;nbsp;where 'setup backup' writes&lt;br/&gt;&lt;b&gt;%LOCALAPPDATA%\Programs\Rancher Desktop&lt;/b&gt;&lt;br/&gt;&amp;nbsp;&amp;nbsp;per-user install&lt;br/&gt;&lt;br/&gt;In the containers: &lt;b&gt;/app&lt;/b&gt;, and the token at&lt;br/&gt;&lt;b&gt;/var/lib/softhsm/tokens&lt;/b&gt;" vertex="1">
+          <mxGeometry height="220" width="290" x="880" y="260" as="geometry" />
+        </mxCell>
+      <mxCell id="cah" value="&lt;b&gt;KMIP Client Application&lt;/b&gt; &amp;mdash; not another layer: one path that crosses three of them" style="text;html=1;fontSize=13;fontColor=#2d6a2d;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="492" width="800" height="22" as="geometry" /></mxCell><mxCell id="CA0L" value="&lt;b&gt;Browser form&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="520" width="210" height="58" as="geometry" /></mxCell><mxCell id="CA0T" value="vanilla JS, no framework&amp;nbsp; &amp;middot;&amp;nbsp; kmip_client.php renders nothing itself&lt;br/&gt;&lt;font style='font-size:10px;color:#777'&gt;the 41 forms are generated from inspect.signature() on the client's own methods, so they cannot drift from what it accepts&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="520" width="600" height="58" as="geometry" /></mxCell><mxCell id="CA1L" value="&lt;b&gt;API acting as a client&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="586" width="210" height="58" as="geometry" /></mxCell><mxCell id="CA1T" value="kmip_pkcs11.test_app.KMIPClient&amp;nbsp; &amp;middot;&amp;nbsp; socket + TTLV codec&amp;nbsp; &amp;middot;&amp;nbsp; a tracing subclass&lt;br/&gt;&lt;font style='font-size:10px;color:#777'&gt;the same client the test suite uses; the subclass records each frame so the page can show the bytes rather than assert them&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="586" width="600" height="58" as="geometry" /></mxCell><mxCell id="CA2L" value="&lt;b&gt;Wire&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=12;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="652" width="210" height="58" as="geometry" /></mxCell><mxCell id="CA2T" value="KMIP 2.1 TTLV over TCP to chl-kmip:5696&lt;br/&gt;&lt;font style='font-size:10px;color:#777'&gt;through the OperationDispatcher: per-request authentication, the hash-chained audit entry, dual control where enabled&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;align=left;spacingLeft=14;fontSize=11;" vertex="1" parent="1"><mxGeometry x="250" y="652" width="600" height="58" as="geometry" /></mxCell><mxCell id="canote" value="Everything above is already in the six layers; what this adds is the &lt;b&gt;route&lt;/b&gt;. The other portal pages stop at the REST API and the API calls the engine in-process - this one keeps going, out of the API over a real socket, and back in through the front door." style="text;html=1;fontSize=11;fontColor=#666666;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="722" width="810" height="46" as="geometry" /></mxCell></root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

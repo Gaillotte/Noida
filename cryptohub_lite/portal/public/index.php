@@ -7,7 +7,7 @@ $api = new ApiClient();
 $result = $api->get('/api/dashboard');
 $d = $result['ok'] ? $result['data'] : [];
 
-render_head('Dashboard');
+render_head('Dashboard', charts: true);
 
 if (!$result['ok']) {
     render_error($result['error'] ?? 'Could not load the dashboard');

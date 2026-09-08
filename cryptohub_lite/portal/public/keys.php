@@ -41,7 +41,9 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
                     <h2 class="chl-card-title">Keys on token</h2>
                     <p class="chl-card-sub"><?= count($keys) ?> key object(s) ·
                         material and usage. <a href="kmip.php">KMIP</a> shows the
-                        same objects' lifecycle and attributes.</p>
+                        same objects' lifecycle and attributes.<br/>
+                        <span style="font-size:11px">Key material cannot be
+                        exported &mdash; see <b>Extractable</b> below.</span></p>
                 </div>
                 <div class="chl-toolbar">
                     <select class="chl-select" onchange="location.href='keys.php?kind='+this.value">
@@ -52,7 +54,14 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
                     </select>
                     <input class="chl-input" id="keySearch" placeholder="Search…"
                            oninput="filterTable('keySearch','keyTable')">
-                    <a class="chl-btn chl-btn-sm" href="export.php?what=keys">Export CSV</a>
+                    <?php
+                    // Named "inventory" rather than "export": "Export" invites the
+                    // reading that it hands over key material, and it does not.
+                    // KMIP has a real Export operation, and even that refuses a
+                    // non-extractable key - which is every key created here.
+                    ?>
+                    <a class="chl-btn chl-btn-sm" href="export.php?what=keys"
+                       title="Metadata only - uid, name, type, algorithm, size, state, owner, sensitive, extractable. Never key material.">Export inventory (CSV)</a>
                 </div>
             </div>
 
@@ -75,8 +84,7 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
                             <tr>
                                 <td><?= type_badge($k['object_type'] ?? null) ?></td>
                                 <td><strong><?= e($k['name'] ?? '(unnamed)') ?></strong>
-                                    <div class="chl-mono" style="font-size:10.5px;color:var(--text-dim)">
-                                        <?= e(substr((string)$k['uid'], 0, 18)) ?>…</div></td>
+                                    <div><?= uid_chip($k['uid'] ?? null) ?></div></td>
                                 <td><span class="chl-badge grey"><?= e($k['algorithm'] ?? '—') ?></span></td>
                                 <td><?= $k['length'] ? e($k['length']) . ' bit' : '—' ?></td>
                                 <td class="chl-mono"><?= e($k['cka_id'] ?? '—') ?></td>

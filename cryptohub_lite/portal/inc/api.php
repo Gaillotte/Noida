@@ -14,6 +14,15 @@ final class ApiClient
     private string $baseUrl;
     private ?string $token;
 
+    /**
+     * The last REST exchange, for pages that need to *show* it.
+     *
+     * The KMIP client application exists so a customer can see what the product
+     * does rather than take it on faith, and half of that is the REST hop.
+     * Recorded per instance, and only read by pages that ask.
+     */
+    public ?array $lastExchange = null;
+
     public function __construct(?string $token = null)
     {
         // Resolved at runtime so the same image works under Docker Compose
@@ -110,10 +119,33 @@ final class ApiClient
         }
         curl_setopt_array($ch, $options);
 
-        $raw    = curl_exec($ch);
-        $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err    = curl_error($ch);
+        $started = microtime(true);
+        $raw     = curl_exec($ch);
+        $status  = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err     = curl_error($ch);
         curl_close($ch);
+
+        // Recorded before anything is interpreted, so what is displayed is what
+        // was sent. The bearer token and any password are redacted: this panel
+        // is meant to be shown to someone, sometimes on a shared screen.
+        $sentBody = $options[CURLOPT_POSTFIELDS] ?? null;
+        $shown    = $sentBody ? json_decode($sentBody, true) : null;
+        if (is_array($shown)) {
+            foreach (['password', 'new_password', 'current_password'] as $secret) {
+                if (isset($shown[$secret])) { $shown[$secret] = '********'; }
+            }
+        }
+        $this->lastExchange = [
+            'method'      => $method,
+            'url'         => $this->baseUrl . $path,
+            'headers'     => array_map(
+                static fn($h) => preg_replace('/^(Authorization: Bearer ).*/', '$1<redacted>', $h),
+                $this->headers()),
+            'body'        => $shown,
+            'status'      => $status,
+            'elapsed_ms'  => round((microtime(true) - $started) * 1000, 1),
+            'response'    => $raw === false ? null : json_decode((string)$raw, true),
+        ];
 
         if ($raw === false) {
             // A connection failure and an API error are different problems

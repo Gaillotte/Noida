@@ -253,6 +253,32 @@ a:hover { text-decoration: underline; }
 .chl-mono { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
 .chl-table-wrap { overflow-x: auto; }
 
+/* A KMIP Unique Identifier: short on screen, whole on the clipboard. */
+.chl-uid {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-dim); background: none;
+  border: 1px solid transparent; border-radius: 4px;
+  padding: 1px 5px; margin-left: -5px; cursor: pointer;
+}
+.chl-uid:hover { color: var(--text); border-color: var(--border); background: var(--surface-hover); }
+.chl-uid.copied { color: var(--ok, #4CAF7D); border-color: currentColor; }
+.chl-uid-icon { opacity: .55; font-size: 11px; }
+.chl-uid:hover .chl-uid-icon { opacity: 1; }
+
+/* A disclosure for detail that is worth keeping on the page but not worth
+   scrolling past every time - raw payloads, wire dumps. */
+.chl-disclose > summary {
+  cursor: pointer;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-dim); font-weight: 600;
+  padding: 6px 0; list-style: none;
+}
+.chl-disclose > summary::-webkit-details-marker { display: none; }
+.chl-disclose > summary::before { content: '\25B8'; display: inline-block; width: 14px; }
+.chl-disclose[open] > summary::before { content: '\25BE'; }
+.chl-disclose > summary:hover { color: var(--text); }
+
 /* ── controls ────────────────────────────────────────────────────────────── */
 
 .chl-btn {

@@ -9,6 +9,7 @@
 #
 #   setup                    build, start, and wait until it is serving
 #   setup up                 same
+#   setup start              start without building - after a stop
 #   setup down               stop and remove containers, keep the volumes
 #   setup stop               stop containers, keep them
 #   setup restart [service]  restart everything, or one service
@@ -127,9 +128,19 @@ do_restore() {
 }
 
 do_up() {
+    # $1 = "nobuild" for `setup start`. Implemented as `up -d --no-build`
+    # rather than `compose start`, because `compose start` only revives
+    # containers that still exist - after a `down` it fails, which is not
+    # what "start everything" should mean.
+    local upflags=""
     info "Container engine: $(chl_engine_label)"
-    info "Building images (SoftHSM2 is compiled from source; first run takes a few minutes)"
-    compose build
+    if [ "${1:-}" = "nobuild" ]; then
+        upflags="--no-build"
+        info "Starting existing images (no build; use 'setup up' after changing code)"
+    else
+        info "Building images (SoftHSM2 is compiled from source; first run takes a few minutes)"
+        compose build
+    fi
 
     # Retried, because on Rancher Desktop for Windows this step intermittently
     # dies with:
@@ -149,7 +160,7 @@ do_up() {
     info "Starting the stack"
     local attempt
     for attempt in 1 2 3; do
-        if compose up -d; then
+        if compose up -d $upflags; then
             break
         fi
         if [ "$attempt" -eq 3 ]; then
@@ -198,6 +209,7 @@ BANNER
 
 case "$cmd" in
     up)      do_up ;;
+    start)   do_up nobuild ;;
     down)    compose down ;;
     stop)    compose stop ;;
     restart) compose restart ${arg:+"$arg"} ;;

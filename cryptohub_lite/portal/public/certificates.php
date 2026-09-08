@@ -90,7 +90,7 @@ function expiry_badge(?int $days): string
                 <?php foreach ($certs as $c): ?>
                     <tr>
                         <td><strong><?= e($c['name'] ?? '(unnamed)') ?></strong>
-                            <div class="chl-mono"><?= e(substr((string)$c['uid'], 0, 18)) ?>…</div></td>
+                            <div><?= uid_chip($c['uid'] ?? null) ?></div></td>
                         <td class="chl-mono"><?= e($c['subject'] ?? '—') ?></td>
                         <td class="chl-mono"><?= e($c['issuer'] ?? '—') ?></td>
                         <td class="chl-mono"><?= e(substr((string)($c['not_after'] ?? '—'), 0, 10)) ?></td>

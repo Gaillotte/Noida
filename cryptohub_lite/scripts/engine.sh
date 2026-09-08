@@ -87,11 +87,28 @@ chl_heal_engine() {
         return 1
     }
 
-    local engine running=""
+    # Three outcomes, not two: `ps` can succeed and list nothing, succeed and
+    # list containers, or fail. On a partial wedge it fails, and treating that
+    # as "nothing is running" would cycle WSL under a live stack - the accident
+    # this guard exists to prevent. The empty case is trusted only when the
+    # command actually succeeded; unknown fails closed.
+    local engine running="" decided="" out
     for engine in docker nerdctl; do
         command -v "$engine" >/dev/null 2>&1 || continue
-        [ -n "$("$engine" ps -q 2>/dev/null)" ] && { running=yes; break; }
+        if out="$("$engine" ps -q 2>/dev/null)"; then
+            decided="$engine"
+            [ -n "$out" ] && running=yes
+            break
+        fi
     done
+    if [ -z "$decided" ] && [ "${CHL_FORCE_HEAL:-}" != "1" ]; then
+        printf '\n\033[0;31merror\033[0m Could not determine whether containers are running -\n' >&2
+        printf '      the engine answers but its daemon calls fail, which is the partial\n' >&2
+        printf '      wedge this guard exists for. Cycling WSL now could tear the VM down\n' >&2
+        printf '      underneath a live PostgreSQL and SoftHSM2 token.\n' >&2
+        printf '      Force with CHL_FORCE_HEAL=1 only if nothing is running.\n' >&2
+        return 1
+    fi
     if [ -n "$running" ] && [ "${CHL_FORCE_HEAL:-}" != "1" ]; then
         printf '\n\033[0;31merror\033[0m The engine still lists running containers, so this is a\n' >&2
         printf '      partial wedge. Cycling WSL now would tear the VM down underneath\n' >&2

@@ -208,13 +208,42 @@ class KmipService:
         uids = self._store.list_objects()
         objects = []
         for uid in uids:
-            row = self._store.get_object(uid)
+            # One bad object must not empty the list. A row this process cannot
+            # decrypt - written under a master key it has no access to - used to
+            # raise straight out of here and return 500 for every key in the
+            # store. Report it as unreadable and carry on: an operator needs to
+            # be told the object exists and cannot be read, which is exactly
+            # what a blanked page fails to say.
+            try:
+                row = self._store.get_object(uid)
+            except Exception as exc:            # noqa: BLE001 - see comment
+                log.warning("Object %s could not be read: %s", uid, exc)
+                objects.append(self._unreadable(uid, exc))
+                continue
             if row is None:
                 continue
             if owner and row.get("owner_identity") not in (owner, None):
                 continue
             objects.append(self.render(row))
         return objects
+
+    def _unreadable(self, uid: str, exc: Exception) -> Dict[str, Any]:
+        """A placeholder in render()'s own shape, so anything that can display
+        an object can display this one.
+
+        Built by rendering an empty row rather than by listing the keys again:
+        two hand-written copies of that shape would drift. The attribute tables
+        are not encrypted, so the object's name usually still resolves - which
+        is the one thing an operator needs in order to identify it.
+        """
+        try:
+            rendered = self.render({"uuid": uid})
+        except Exception:                       # noqa: BLE001
+            rendered = {"uid": uid}
+        rendered["object_type"] = "Unreadable"
+        rendered["state"] = "Unknown"
+        rendered["read_error"] = str(exc)
+        return rendered
 
     def get_object(self, uid: str) -> Optional[Dict[str, Any]]:
         row = self._store.get_object(uid)

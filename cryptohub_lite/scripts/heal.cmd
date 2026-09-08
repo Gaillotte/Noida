@@ -67,14 +67,42 @@ REM Deliberately not `... | find /c /v ""` to count them. `find` is a Windows
 REM builtin *and* a Unix tool, and when this runs from a shell whose PATH puts
 REM Git Bash's /usr/bin first, the Unix one wins and starts walking the whole
 REM C: drive. Just noting "at least one id was printed" needs no counting tool.
+REM Three outcomes, not two. `ps` can succeed and list nothing, succeed and
+REM list containers, or *fail* - and on a partial wedge it fails, because the
+REM daemon call times out. Treating that failure as "nothing is running" is
+REM what made the first version of this guard useless: it would have cycled
+REM WSL under a live stack, which is the accident it exists to prevent.
+REM
+REM So the empty case is only trusted when the command actually succeeded.
+REM Unknown fails closed.
 set "RUNNING="
+set "DECIDED="
 for %%E in (docker nerdctl) do (
-    if not defined RUNNING (
+    if not defined DECIDED (
         where %%E >nul 2>&1
         if not errorlevel 1 (
-            for /f "usebackq delims=" %%C in (`%%E ps -q 2^>nul`) do set "RUNNING=yes"
+            %%E ps -q >"%TEMP%\chl_ps.txt" 2>nul
+            if not errorlevel 1 (
+                set "DECIDED=%%E"
+                for /f "usebackq delims=" %%C in ("%TEMP%\chl_ps.txt") do set "RUNNING=yes"
+            )
         )
     )
+)
+del "%TEMP%\chl_ps.txt" >nul 2>&1
+
+if not defined DECIDED (
+    echo.
+    echo [ERROR] Could not determine whether containers are running - the engine
+    echo         answers but its daemon calls are failing, which is the partial
+    echo         wedge this guard exists for. Cycling WSL now could tear the VM
+    echo         down underneath a live PostgreSQL and SoftHSM2 token.
+    echo.
+    echo         Check Rancher Desktop, then either stop the stack deliberately
+    echo         and retry, or force it with CHL_FORCE_HEAL=1 if you are certain
+    echo         nothing is running.
+    if not "%CHL_FORCE_HEAL%"=="1" endlocal & exit /b 1
+    echo         CHL_FORCE_HEAL=1 set; continuing anyway.
 )
 
 if 1==1 (

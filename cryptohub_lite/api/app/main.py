@@ -10,6 +10,7 @@ implementation.
 import datetime
 import hmac
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
@@ -18,9 +19,9 @@ from pydantic import BaseModel, Field
 
 from kmip_pkcs11.metadata.store import MetadataStore
 
-from . import audit_view
+from . import audit_view, kmip_client
 from .config import settings
-from .kmip_mapping import API_DESCRIPTION, kmip_op, rest_index
+from .kmip_mapping import API_DESCRIPTION, OPENAPI_TAGS, kmip_op, rest_index
 from .kmip_identity import KmipIdentityMirror
 from .kmip_service import KmipService, Pkcs11Service
 from . import schemas
@@ -37,6 +38,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
+    openapi_tags=OPENAPI_TAGS,
 )
 
 app.add_middleware(
@@ -46,6 +48,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _attach_blob_cipher(store, shim) -> None:
+    """Read the same at-rest encryption the KMIP server writes.
+
+    chl-kmip envelopes secret payloads that have no PKCS#11 object behind them
+    - SecretData, OpaqueObject, SplitKey shares - under an AES-256 master key
+    held on the token, then writes them to the database both containers share.
+    This process opened the same database with no cipher, so any such object
+    was undecryptable here; and because the Keys page lists *every* object, a
+    single row written over 5696 returned 500 for the whole page.
+
+    The master key lives on the token, which is mounted into both containers,
+    so there is nothing to configure - it is discovered by label. Provisioning
+    stays the engine's job (`auto_provision=False`): if no master key exists
+    yet then nothing has been encrypted, and there is nothing to read.
+    """
+    if getattr(store, "_cipher", None) is not None:
+        return
+    from kmip_pkcs11.core.exceptions import CryptographicFailure
+    from kmip_pkcs11.metadata.blob_cipher import BlobCipher
+    try:
+        store._cipher = BlobCipher(shim, auto_provision=False)
+    except CryptographicFailure:
+        log.info("No metadata master key on the token yet; the KMIP server "
+                 "provisions it on first start.")
+    except Exception as exc:                    # noqa: BLE001
+        # A reader that cannot decrypt is degraded, not broken: every object
+        # whose material lives on the HSM still lists correctly.
+        log.warning("Could not attach the metadata blob cipher: %s", exc)
 
 
 @app.on_event("startup")
@@ -65,6 +97,7 @@ def startup() -> None:
     # constructor so a missing HSM leaves the read paths working.
     if app.state.pkcs11.available:
         app.state.kmip.attach_shim(app.state.pkcs11.shim)
+        _attach_blob_cipher(app.state.metadata, app.state.pkcs11.shim)
 
     # Seed an administrator only when there are no users at all, so this can
     # never overwrite or resurrect an account on a running system.
@@ -698,6 +731,72 @@ def delete_user(username: str, request: Request,
     portal.audit("user.delete", "SUCCESS", username=user["username"],
                  source_ip=client_ip(request), detail=f"deleted {username}")
     return {"detail": f"Deleted {username}"}
+
+
+# ── KMIP client application ─────────────────────────────────────────────────────────────
+# The one place this API talks KMIP over a socket rather than in-process.
+
+class ClientRequest(BaseModel):
+    operation: str = Field(description="KMIP operation name, e.g. Create")
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    username: str = Field(description="a KMIP identity - a portal account that "
+                                      "has signed in at least once")
+    password: str = Field(description="used for this one request and not stored")
+
+
+@app.get("/api/kmip/client/operations", tags=["KMIP client"])
+def client_operations(user: Dict[str, Any] = Depends(requires("read"))):
+    """The operations the client application can drive, each with the form it needs.
+
+    Derived from `inspect.signature()` on the KMIP client, so the fields asked
+    for are the arguments the client actually takes — no hand-maintained list.
+    """
+    ops = kmip_client.describe()
+    return {"total": len(ops), "operations": ops}
+
+
+@app.post("/api/kmip/client/execute", tags=["KMIP client"])
+def client_execute(body: ClientRequest, request: Request,
+                    user: Dict[str, Any] = Depends(requires("read"))):
+    """Run one KMIP operation as a real client, over TTLV on port 5696.
+
+    Unlike every other KMIP endpoint here, this opens a socket. The request is
+    encoded as TTLV, authenticated per-request against `kmip_identities`, and
+    passes the `OperationDispatcher` — so it lands in the hash-chained audit log
+    exactly as a third-party client's would.
+
+    **Credentials are supplied per call and never stored.** The API holds a JWT
+    for the signed-in user, not their password, and the engine hashes
+    credentials separately — so it cannot re-use the portal session to
+    authenticate over KMIP. Asking each time is the honest option; the
+    alternative would be the portal keeping a password it has no business
+    keeping.
+
+    The caller's `read` capability governs reaching this endpoint. What the
+    operation is then *allowed* to do is decided by the engine, against the KMIP
+    identity supplied here — which may be a different, lesser identity.
+    """
+    try:
+        result = kmip_client.execute(
+            body.operation, body.arguments,
+            host=os.getenv("KMIP_CLIENT_HOST", "kmip"),
+            port=int(os.getenv("KMIP_CLIENT_PORT", "5696")),
+            username=body.username, password=body.password)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except OSError as exc:
+        # Transport, not protocol: the KMIP server is unreachable.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            f"Could not reach the KMIP server: {exc}")
+
+    portal: PortalStore = request.app.state.portal
+    # Audited on the portal side too. The engine records the KMIP identity; this
+    # records which portal user drove it, which is a different question.
+    portal.audit(f"client.{body.operation}",
+                 "SUCCESS" if result.get("ok") else "FAILURE",
+                 username=user["username"], source_ip=client_ip(request),
+                 provider="KMIP", detail=f"as {body.username}")
+    return result
 
 
 @app.get("/api/health", tags=["System"], response_model=schemas.Health)
