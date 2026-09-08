@@ -64,7 +64,8 @@ These will waste an hour each if you meet them cold.
 | Tests fail in unrelated places | Two pytest processes sharing the SoftHSM token. Run one at a time (`pgrep -fa pytest`). |
 | A fresh container looks like a different project | This branch has diverged from `main` — 36 commits here that are not there, 8 there that are not here. If `kmip_pkcs11/` is missing, the checkout is stale: `git fetch origin && git reset --hard origin/claude/kmip-specifications-iprzym`. |
 | Generators fail on import | `pip install python-docx matplotlib` — not declared in `setup.py`, since they are documentation-only. |
-| Need to see a `.docx` or `.pptx` | LibreOffice is installed but cannot convert **anything** here — it fails on a plain text file, so `soffice --convert-to pdf` is not available. For slides, `python tools/render_pptx.py deck.pptx out` draws them with PIL and is good enough to catch missing shapes, overlaps and overflow. There is no equivalent for Word documents; verify those structurally. |
+| `soffice` says "source file could not be loaded" for every file, even a `.txt` | Only `libreoffice-core` and `-common` are installed, so there are **no document filters**. `apt-get install -y libreoffice-impress libreoffice-writer` fixes it, and conversion then works normally. Worth doing immediately — without it there is no way to see a rendered document, which is how a deck shipped with every diagram missing. |
+| Rendering a deck to look at it | `soffice --headless --convert-to pdf --outdir . deck.pptx` then `pdftoppm -jpeg -r 100 deck.pdf slide` (`apt-get install poppler-utils`). `tools/render_pptx.py` is a PIL approximation for when LibreOffice is unavailable — useful, but it under-estimates bullet height and draws block arrows as plain rectangles, so trust the real render when both are available. |
 | Building slides | Never use a `line` shape for a connector: pptxgenjs accepts zero width or height and PowerPoint renders nothing. Use `downArrow` / `rightArrow` block shapes. Run `python tools/qa_pptx_geometry.py deck.pptx`, then actually look at the render. |
 
 The test fixtures wipe and re-initialise `/tmp/softhsm2_tests/tokens` every
@@ -214,7 +215,12 @@ failover, multi-tenancy, FIPS validation.
   all fifteen arrows were absent and the diagrams read as disconnected boxes.
   A card heading that wrapped to two lines was also overwritten by its body.
   Both were found only once `tools/render_pptx.py` existed to look at the
-  slides — the geometric check had passed them.
+  slides — the geometric check had passed them. `85c7569` fixed those; a
+  further round found that LibreOffice was not broken at all, only missing its
+  filter packages, and a real render then showed bullet lists overflowing four
+  more cards that the PIL approximation had under-measured. The generator now
+  estimates the height of every card's content at build time and prints what
+  does not fit.
 
 ---
 
@@ -254,6 +260,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_Phase_Report.docx` | `generate_phase_report.py` | How the system reached its current state |
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | Market requirements vs coverage, with routes for gaps |
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap |
+| `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.

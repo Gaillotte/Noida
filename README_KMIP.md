@@ -43,6 +43,7 @@ regenerable from the script beside it so they cannot drift silently:
 | `KMIP_PKCS11_Phase_Report.docx` | `generate_phase_report.py` | How the system reached its current state, phase by phase |
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | 74 features a high-end commercial KMS is expected to have, whether this project covers them, and the route for every gap — including the 19 that cannot be closed by writing more KMIP |
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview deck: what KMIP is, the design on PKCS#11, the REST-on-KMIP target architecture, the gap analysis and the roadmap |
+| `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as a PDF, for reading without PowerPoint |
 
 Generating them needs `python-docx` (and `matplotlib` for the design document):
 
@@ -56,7 +57,7 @@ for g in generate_feature_spec generate_install_guide generate_kmip_design_doc \
 done
 
 # The deck is the one generator that is not Python:
-npm install && npm run deck
+npm install && npm run deck:all   # .pptx and .pdf
 ```
 
 ---

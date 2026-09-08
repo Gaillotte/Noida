@@ -74,6 +74,28 @@ function darkSlide(eyebrow, title) {
   return s;
 }
 
+// Estimated height of a block of text, calibrated against a LibreOffice
+// render. Bullets cost more than they look: the hanging indent narrows the
+// usable width, and paraSpaceAfter adds up over three or four items.
+function textHeight(text, size, widthIn, isBullet) {
+  const usable = widthIn - (isBullet ? 0.22 : 0);
+  const cpl = Math.max(8, (usable * 72) / (size * 0.58));
+  return Math.ceil(text.length / cpl) * size * 1.30 / 72;
+}
+
+// Warn at build time when a card cannot hold what it is given, rather than
+// discovering it in a render — or worse, not discovering it.
+const WARNINGS = [];
+function checkFit(o, ty, needed) {
+  const available = o.y + o.h - ty - 0.18;
+  if (needed > available + 0.02) {
+    WARNINGS.push(`  card "${(o.head || o.tag || "").slice(0, 38)}" at `
+      + `(${o.x.toFixed(2)}, ${o.y.toFixed(2)}) needs ${needed.toFixed(2)}" `
+      + `but has ${available.toFixed(2)}" — grow h by `
+      + `${(needed - available).toFixed(2)}"`);
+  }
+}
+
 // A content block: tinted panel, heading, body. No edge stripes.
 function card(s, o) {
   s.addShape(pres.ShapeType.roundRect, {
@@ -105,6 +127,8 @@ function card(s, o) {
     ty += hh + 0.08;
   }
   if (o.bullets) {
+    checkFit(o, ty, o.bullets.reduce(
+      (a, t) => a + textHeight(t, o.size || 13, o.w - 0.52, true) + 6 / 72, 0));
     s.addText(o.bullets.map((t, i) => ({
       text: t, options: { bullet: true, breakLine: i < o.bullets.length - 1 },
     })), {
@@ -114,6 +138,7 @@ function card(s, o) {
       paraSpaceAfter: 6, lineSpacing: 17,
     });
   } else if (o.body) {
+    if (!o.bodyH) checkFit(o, ty, textHeight(o.body, o.size || 13, o.w - 0.52, false));
     s.addText(o.body, {
       x: o.x + 0.26, y: ty, w: o.w - 0.52,
       h: o.bodyH || (o.y + o.h - ty - 0.18),
@@ -231,7 +256,7 @@ function arrowRight(s, x, yCentre, w) {
 {
   const s = lightSlide("What is KMIP · 1 of 3", "One protocol for every key store");
   card(s, {
-    x: M, y: 1.72, w: 5.9, h: 2.28, fill: "F7E9E8",
+    x: M, y: 1.72, w: 5.9, h: 2.80, fill: "F7E9E8",
     tag: "Before", tagColor: GAP, head: "N vendors, N integrations",
     bullets: [
       "Every HSM and KMS exposed its own proprietary API",
@@ -240,7 +265,7 @@ function arrowRight(s, x, yCentre, w) {
     ],
   });
   card(s, {
-    x: M + 6.2, y: 1.72, w: 5.9, h: 2.28, fill: "E2F0E7",
+    x: M + 6.2, y: 1.72, w: 5.9, h: 2.80, fill: "E2F0E7",
     tag: "With KMIP", tagColor: OK, head: "One protocol, many products",
     bullets: [
       "A client speaks KMIP once and talks to any compliant server",
@@ -249,7 +274,7 @@ function arrowRight(s, x, yCentre, w) {
     ],
   });
   card(s, {
-    x: M, y: 4.22, w: CW, h: 2.35, fill: ICE,
+    x: M, y: 4.72, w: CW, h: 2.32, fill: ICE,
     head: "What the standard actually is",
     bullets: [
       "An OASIS standard: a wire protocol plus an object model, not a product",
@@ -271,21 +296,21 @@ function arrowRight(s, x, yCentre, w) {
   const s = lightSlide("What is KMIP · 2 of 3", "Managed objects, attributes, a lifecycle");
 
   card(s, {
-    x: M, y: 1.72, w: 3.85, h: 2.55, fill: ICE,
+    x: M, y: 1.72, w: 3.85, h: 3.22, fill: ICE,
     tag: "Object types", head: "What KMIP manages",
     bullets: ["SymmetricKey", "PublicKey / PrivateKey", "Certificate", "SecretData",
       "OpaqueObject", "SplitKey"],
     size: 12.5,
   });
   card(s, {
-    x: M + 4.12, y: 1.72, w: 3.85, h: 2.55, fill: ICE,
+    x: M + 4.12, y: 1.72, w: 3.85, h: 3.22, fill: ICE,
     tag: "Attributes", head: "What describes them",
     bullets: ["Algorithm and length", "Cryptographic usage mask", "Name and custom x- attributes",
       "Links between keys", "Dates: activation, deactivation", "Owner and state"],
     size: 12.5,
   });
   card(s, {
-    x: M + 8.24, y: 1.72, w: 3.86, h: 2.55, fill: "FBF3E3",
+    x: M + 8.24, y: 1.72, w: 3.86, h: 3.22, fill: "FBF3E3",
     tag: "The subtle one", tagColor: WARN, head: "Cryptoperiod",
     body: "KMIP defines no cryptoperiod attribute. The Deactivation Date is the "
       + "end of the period — so enforcing a cryptoperiod means acting on a "
@@ -295,7 +320,7 @@ function arrowRight(s, x, yCentre, w) {
 
   // lifecycle flow
   s.addText("Lifecycle", {
-    x: M, y: 4.52, w: 3.0, h: 0.28, isTextBox: true, margin: 0,
+    x: M, y: 5.12, w: 3.0, h: 0.28, isTextBox: true, margin: 0,
     fontFace: BODY, fontSize: 10, bold: true, charSpacing: 1.6, color: MID,
   });
   const boxes = [
@@ -303,22 +328,22 @@ function arrowRight(s, x, yCentre, w) {
   ];
   boxes.forEach(([label, fill], i) => {
     const x = M + i * 2.42;
-    node(s, { x: x, y: 4.86, w: 2.08, h: 0.62, fill: fill, label: label, size: 13 });
-    if (i < boxes.length - 1) arrowRight(s, x + 2.11, 5.17, 0.28);
+    node(s, { x: x, y: 5.44, w: 2.08, h: 0.62, fill: fill, label: label, size: 13 });
+    if (i < boxes.length - 1) arrowRight(s, x + 2.11, 5.75, 0.28);
   });
   // Set apart from the chain, with no arrow into it: Compromised is entered
   // from any live state, not reached by walking the sequence.
   node(s, {
-    x: M + 4 * 2.42 + 0.34, y: 4.86, w: 2.08, h: 0.62, fill: GAP,
+    x: M + 4 * 2.42 + 0.34, y: 5.44, w: 2.08, h: 0.62, fill: GAP,
     label: "Compromised", size: 13,
   });
   s.addText("from any live state", {
-    x: M + 4 * 2.42 + 0.34, y: 5.56, w: 2.08, h: 0.26, isTextBox: true, margin: 0,
+    x: M + 4 * 2.42 + 0.34, y: 6.14, w: 2.08, h: 0.26, isTextBox: true, margin: 0,
     align: "center", fontFace: BODY, fontSize: 9.5, color: FAINT,
   });
 
   s.addText("Deactivated keys may still decrypt and verify — retiring a key must not strand the data encrypted under it.", {
-    x: M, y: 5.95, w: CW, h: 0.36, isTextBox: true, margin: 0,
+    x: M, y: 6.52, w: CW, h: 0.36, isTextBox: true, margin: 0,
     fontFace: BODY, fontSize: 13, italic: true, color: NAVY,
   });
   s.addNotes("The Deactivated rule is the one people get wrong: a retired key "
@@ -333,7 +358,7 @@ function arrowRight(s, x, yCentre, w) {
   const s = lightSlide("What is KMIP · 3 of 3", "What the standard deliberately leaves out");
 
   card(s, {
-    x: M, y: 1.72, w: 5.9, h: 2.72, fill: "E2F0E7",
+    x: M, y: 1.72, w: 5.9, h: 2.88, fill: "E2F0E7",
     tag: "KMIP defines", tagColor: OK, head: "Keys, and operations on keys",
     bullets: [
       "Managed objects and their attributes",
@@ -343,7 +368,7 @@ function arrowRight(s, x, yCentre, w) {
     ],
   });
   card(s, {
-    x: M + 6.2, y: 1.72, w: 5.9, h: 2.72, fill: "F7E9E8",
+    x: M + 6.2, y: 1.72, w: 5.9, h: 2.88, fill: "F7E9E8",
     tag: "KMIP does not define", tagColor: GAP, head: "Everything around them",
     bullets: [
       "Identities, roles, groups, grants — no user management at all",
@@ -354,14 +379,14 @@ function arrowRight(s, x, yCentre, w) {
   });
 
   card(s, {
-    x: M, y: 4.66, w: 7.5, h: 1.92, fill: NAVY, flat: true,
+    x: M, y: 4.82, w: 7.5, h: 2.00, fill: NAVY, flat: true,
     head: "The consequence", headColor: PAPER,
     body: "Every commercial KMS bolts an administrative plane onto its KMIP server. "
       + "A KMIP layer is an interoperability surface — it is not, by itself, a product.",
     color: "C9DAEA", size: 13.5,
   });
   card(s, {
-    x: M + 7.8, y: 4.66, w: 4.3, h: 1.92, fill: "FBF3E3",
+    x: M + 7.8, y: 4.82, w: 4.3, h: 2.00, fill: "FBF3E3",
     tag: "Versions", tagColor: WARN, head: "2.1 → 3.0",
     body: "2.1 (2019) is what this project implements. 3.0 CSD02 (May 2026) adds "
       + "ML-KEM, ML-DSA, SLH-DSA and Encapsulate/Decapsulate.",
@@ -761,7 +786,7 @@ function arrowRight(s, x, yCentre, w) {
   });
 
   card(s, {
-    x: M, y: 4.62, w: 5.9, h: 1.86, fill: ICE,
+    x: M, y: 4.62, w: 5.9, h: 2.28, fill: ICE,
     head: "How the waves are ordered",
     bullets: [
       "By what each unlocks, not by visibility",
@@ -772,7 +797,7 @@ function arrowRight(s, x, yCentre, w) {
     size: 12.5,
   });
   card(s, {
-    x: M + 6.2, y: 4.62, w: 5.9, h: 1.86, fill: "FBF3E3",
+    x: M + 6.2, y: 4.62, w: 5.9, h: 2.28, fill: "FBF3E3",
     tag: "The rule that made phases 0–5 work", tagColor: WARN,
     head: "Every wave has a demonstrable gate",
     body: "Not a checklist — a condition someone can watch you meet. A wave is "
@@ -892,4 +917,12 @@ function arrowRight(s, x, yCentre, w) {
 }
 
 pres.writeFile({ fileName: "KMIP_PKCS11_Overview_Deck.pptx" })
-  .then(f => console.log("wrote " + f));
+  .then(f => {
+    console.log("wrote " + f);
+    if (WARNINGS.length) {
+      console.log("\n" + WARNINGS.length + " card(s) too small for their content:");
+      WARNINGS.forEach(w => console.log(w));
+    } else {
+      console.log("all cards fit their content");
+    }
+  });
