@@ -20,8 +20,10 @@ from kmip_pkcs11.metadata.store import MetadataStore
 
 from . import audit_view
 from .config import settings
+from .kmip_mapping import API_DESCRIPTION, kmip_op, rest_index
 from .kmip_identity import KmipIdentityMirror
 from .kmip_service import KmipService, Pkcs11Service
+from . import schemas
 from .portal_store import ROLE_DESCRIPTIONS, ROLES, PortalStore
 from .security import client_ip, create_token, current_user, requires
 
@@ -31,7 +33,7 @@ log = logging.getLogger("cryptohub_lite")
 
 app = FastAPI(
     title="IDEMIA CryptoHub Lite API",
-    description="Management API over the existing KMIP/PKCS#11 platform",
+    description=API_DESCRIPTION,
     version="1.0.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
@@ -128,6 +130,18 @@ class UserUpdate(BaseModel):
 
 @app.post("/api/auth/login", response_model=LoginResponse, tags=["Authentication"])
 def login(body: LoginRequest, request: Request):
+    """Exchange a username and password for a bearer token.
+
+    The token carries the username and role, and every other endpoint reads it.
+    Send it as `Authorization: Bearer <access_token>`.
+
+    A successful login also provisions the caller's KMIP credential if the
+    engine does not have one yet, which is why signing in once is what enables
+    an account's KMIP client. `using_default_password` is true while the
+    account still uses the shipped bootstrap password.
+
+    Both outcomes are audited; a failure records the username that was tried.
+    """
     portal: PortalStore = request.app.state.portal
     user = portal.verify_password(body.username, body.password)
 
@@ -170,6 +184,11 @@ def login(body: LoginRequest, request: Request):
 
 @app.get("/api/auth/me", tags=["Authentication"])
 def whoami(user: Dict[str, Any] = Depends(current_user)):
+    """The caller's own identity and capabilities, decoded from the token.
+
+    Useful for a UI deciding what to show. Authorization is enforced per
+    endpoint regardless of what this returns.
+    """
     from .security import CAPABILITIES
     return {**user, "capabilities": sorted(CAPABILITIES.get(user["role"], set()))}
 
@@ -179,7 +198,7 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=8)
 
 
-@app.post("/api/auth/password", tags=["Authentication"])
+@app.post("/api/auth/password", tags=["Authentication"], response_model=schemas.Detail)
 def change_own_password(body: PasswordChange, request: Request,
                         user: Dict[str, Any] = Depends(current_user)):
     """Changes the signed-in user's own password.
@@ -214,8 +233,14 @@ def change_own_password(body: PasswordChange, request: Request,
     return {"detail": "Password changed"}
 
 
-@app.post("/api/auth/logout", tags=["Authentication"])
+@app.post("/api/auth/logout", tags=["Authentication"], response_model=schemas.Detail)
 def logout(request: Request, user: Dict[str, Any] = Depends(current_user)):
+    """Record a sign-out in the audit trail.
+
+    Tokens are stateless and self-expiring, so nothing is revoked here — the
+    client discards the token. This exists so the trail shows sessions ending
+    as well as starting.
+    """
     # JWTs are stateless, so this records the intent rather than revoking a
     # session. Saying so is better than implying a revocation that does not
     # happen; token lifetime is bounded by JWT_TTL_MINUTES.
@@ -226,8 +251,13 @@ def logout(request: Request, user: Dict[str, Any] = Depends(current_user)):
 
 # ── dashboard ────────────────────────────────────────────────────────────────
 
-@app.get("/api/dashboard", tags=["Dashboard"])
+@app.get("/api/dashboard", tags=["Dashboard"], response_model=schemas.Dashboard)
 def dashboard(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
+    """Counts for the landing page: objects by type, state and algorithm,
+    plus HSM availability and audit volume.
+
+    Aggregated per request rather than cached, so the numbers cannot be stale.
+    """
     kmip: KmipService = request.app.state.kmip
     pkcs11: Pkcs11Service = request.app.state.pkcs11
     portal: PortalStore = request.app.state.portal
@@ -254,22 +284,39 @@ def dashboard(request: Request, user: Dict[str, Any] = Depends(requires("read"))
 
 # ── KMIP objects ─────────────────────────────────────────────────────────────
 
-@app.get("/api/kmip/operations", tags=["KMIP"])
+@app.get("/api/kmip/operations", tags=["KMIP"], response_model=schemas.SupportedOperations)
+@kmip_op(equivalent=["Query"])
 def kmip_operations(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
     """Which KMIP operations this engine implements, and which it does not.
 
     Derived from the dispatcher's handler table, so the answer is the engine's
     actual capability rather than a list maintained alongside it.
+
+    Each operation also carries `rest`: the REST endpoints that reach it, if
+    any. That answers the question the flat list provokes — *can I do this from
+    the portal, or only over the wire?* — and it is inverted from this app's own
+    route table, so it cannot claim an endpoint that has been renamed away.
     """
-    return request.app.state.kmip.supported_operations()
+    result = request.app.state.kmip.supported_operations()
+    index = rest_index(request.app.routes)
+
+    for group in result["groups"]:
+        group["operations"] = [
+            {"name": name, "rest": index.get(name, [])} for name in group["operations"]
+        ]
+    result["rest_index"] = index
+    result["rest_reachable_count"] = sum(1 for op in result["implemented"] if op in index)
+    return result
 
 
-@app.get("/api/kmip/objects", tags=["KMIP"])
+@app.get("/api/kmip/objects", tags=["KMIP"], response_model=List[schemas.KMIPObject])
+@kmip_op(equivalent=["Locate"])
 def kmip_objects(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
     return request.app.state.kmip.list_objects()
 
 
-@app.get("/api/kmip/objects/{uid}", tags=["KMIP"])
+@app.get("/api/kmip/objects/{uid}", tags=["KMIP"], response_model=schemas.KMIPObjectDetail)
+@kmip_op(equivalent=["GetAttributes", "GetAttributeList"])
 def kmip_object(uid: str, request: Request,
                 user: Dict[str, Any] = Depends(requires("read"))):
     obj = request.app.state.kmip.get_object(uid)
@@ -323,7 +370,8 @@ class RevokeRequest(BaseModel):
     message: str = ""
 
 
-@app.post("/api/kmip/objects", status_code=status.HTTP_201_CREATED, tags=["KMIP"])
+@app.post("/api/kmip/objects", status_code=status.HTTP_201_CREATED, tags=["KMIP"], response_model=schemas.CreatedObject)
+@kmip_op(invokes=["Create"])
 def create_key(body: CreateKeyRequest, request: Request,
                user: Dict[str, Any] = Depends(requires("key.create"))):
     service: KmipService = request.app.state.kmip
@@ -346,7 +394,8 @@ def create_key(body: CreateKeyRequest, request: Request,
     return {"uid": uid, "name": body.name}
 
 
-@app.post("/api/kmip/keypairs", status_code=status.HTTP_201_CREATED, tags=["KMIP"])
+@app.post("/api/kmip/keypairs", status_code=status.HTTP_201_CREATED, tags=["KMIP"], response_model=schemas.CreatedKeyPair)
+@kmip_op(invokes=["CreateKeyPair"])
 def create_key_pair(body: CreateKeyPairRequest, request: Request,
                     user: Dict[str, Any] = Depends(requires("key.create"))):
     """Creates an asymmetric key pair, producing two linked managed objects."""
@@ -372,26 +421,30 @@ def create_key_pair(body: CreateKeyPairRequest, request: Request,
     return {**pair, "name": body.name}
 
 
-@app.post("/api/kmip/objects/{uid}/activate", tags=["KMIP"])
+@app.post("/api/kmip/objects/{uid}/activate", tags=["KMIP"], response_model=schemas.LifecycleResult)
+@kmip_op(invokes=["Activate"])
 def activate_object(uid: str, request: Request,
                     user: Dict[str, Any] = Depends(requires("key.lifecycle"))):
     return _lifecycle_action(request, user, uid, "Activate")
 
 
-@app.post("/api/kmip/objects/{uid}/revoke", tags=["KMIP"])
+@app.post("/api/kmip/objects/{uid}/revoke", tags=["KMIP"], response_model=schemas.LifecycleResult)
+@kmip_op(invokes=["Revoke"])
 def revoke_object(uid: str, body: RevokeRequest, request: Request,
                   user: Dict[str, Any] = Depends(requires("key.lifecycle"))):
     return _lifecycle_action(request, user, uid, "Revoke",
                              reason=body.reason, message=body.message)
 
 
-@app.post("/api/kmip/objects/{uid}/rekey", tags=["KMIP"])
+@app.post("/api/kmip/objects/{uid}/rekey", tags=["KMIP"], response_model=schemas.LifecycleResult)
+@kmip_op(invokes=["ReKey"])
 def rekey_object(uid: str, request: Request,
                  user: Dict[str, Any] = Depends(requires("key.lifecycle"))):
     return _lifecycle_action(request, user, uid, "ReKey")
 
 
-@app.delete("/api/kmip/objects/{uid}", tags=["KMIP"])
+@app.delete("/api/kmip/objects/{uid}", tags=["KMIP"], response_model=schemas.LifecycleResult)
+@kmip_op(invokes=["Destroy"])
 def destroy_object(uid: str, request: Request,
                    user: Dict[str, Any] = Depends(requires("key.destroy"))):
     return _lifecycle_action(request, user, uid, "Destroy")
@@ -422,13 +475,15 @@ def _lifecycle_action(request: Request, user: Dict[str, Any], uid: str,
     return {"uid": uid, "action": action, "result": result}
 
 
-@app.get("/api/certificates", tags=["Certificates"])
+@app.get("/api/certificates", tags=["Certificates"], response_model=List[schemas.KMIPObject])
+@kmip_op(equivalent=["Locate"], note="Filtered to certificate object types.")
 def certificates(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
     """Certificate objects with validity parsed, soonest to expire first."""
     return request.app.state.kmip.certificates()
 
 
-@app.get("/api/keys", tags=["Keys"])
+@app.get("/api/keys", tags=["Keys"], response_model=List[schemas.KMIPObject])
+@kmip_op(equivalent=["Locate"], note="The same objects as `/api/kmip/objects`, presented by key material rather than by KMIP identifier.")
 def keys(request: Request, user: Dict[str, Any] = Depends(requires("read")),
          kind: Optional[str] = Query(None, description="SymmetricKey, PrivateKey, PublicKey, Certificate")):
     objects = request.app.state.kmip.list_objects()
@@ -439,24 +494,38 @@ def keys(request: Request, user: Dict[str, Any] = Depends(requires("read")),
 
 # ── PKCS#11 explorer ─────────────────────────────────────────────────────────
 
-@app.get("/api/pkcs11/health", tags=["PKCS#11"])
+@app.get("/api/pkcs11/health", tags=["PKCS#11"], response_model=schemas.HSMHealth)
 def pkcs11_health(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
+    """Whether the PKCS#11 token is open, and why not if it is not.
+
+    Distinct from `/api/health`: this reports the HSM specifically, and the API
+    stays up with read paths working when the token is unavailable.
+    """
     return request.app.state.pkcs11.health()
 
 
-@app.get("/api/pkcs11/slots", tags=["PKCS#11"])
+@app.get("/api/pkcs11/slots", tags=["PKCS#11"], response_model=List[schemas.Slot])
 def pkcs11_slots(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
+    """Slots the PKCS#11 module reports, and the token in each.
+
+    Empty slots are included — they are spare capacity, not a fault.
+    """
     return request.app.state.pkcs11.slots()
 
 
 @app.get("/api/pkcs11/objects", tags=["PKCS#11"])
 def pkcs11_objects(request: Request, user: Dict[str, Any] = Depends(requires("read"))):
+    """Objects as the *token* reports them, with raw `CKA_*` attributes.
+
+    The hardware view, next to the KMIP view of the same keys. Secret-bearing
+    attributes are never requested, so nothing here can expose key material.
+    """
     return request.app.state.pkcs11.objects()
 
 
 # ── audit ────────────────────────────────────────────────────────────────────
 
-@app.get("/api/audit", tags=["Audit"])
+@app.get("/api/audit", tags=["Audit"], response_model=schemas.AuditPage)
 def audit(request: Request,
           user: Dict[str, Any] = Depends(requires("audit")),
           limit: int = Query(200, le=1000), offset: int = 0,
@@ -474,7 +543,7 @@ def audit(request: Request,
     )
 
 
-@app.get("/api/audit/verify", tags=["Audit"])
+@app.get("/api/audit/verify", tags=["Audit"], response_model=schemas.AuditChain)
 def audit_verify(request: Request, user: Dict[str, Any] = Depends(requires("audit"))):
     """Whether the KMIP audit log's hash chain is intact.
 
@@ -487,6 +556,12 @@ def audit_verify(request: Request, user: Dict[str, Any] = Depends(requires("audi
 @app.get("/api/audit/export", tags=["Audit"])
 def audit_export(request: Request, fmt: str = Query("csv", pattern="^(csv|json|excel)$"),
                  user: Dict[str, Any] = Depends(requires("audit.export"))):
+    """Download the merged audit trail as CSV, JSON or Excel.
+
+    Covers both logs, like `/api/audit`. Bounded at 100,000 rows, and the export
+    is itself audited — with the bound recorded when it applied, so a truncated
+    file is not later mistaken for a complete record.
+    """
     portal: PortalStore = request.app.state.portal
     limit = 100_000
     (payload, media_type, filename), total = audit_view.export(
@@ -506,13 +581,19 @@ def audit_export(request: Request, fmt: str = Query("csv", pattern="^(csv|json|e
 
 # ── administration ───────────────────────────────────────────────────────────
 
-@app.get("/api/admin/users", tags=["Administration"])
+@app.get("/api/admin/users", tags=["Administration"], response_model=List[schemas.User])
 def list_users(request: Request, user: Dict[str, Any] = Depends(requires("user.manage"))):
+    """All portal accounts. Password hashes and salts are never included."""
     return request.app.state.portal.list_users()
 
 
-@app.get("/api/admin/roles", tags=["Administration"])
+@app.get("/api/admin/roles", tags=["Administration"], response_model=List[schemas.Role])
 def list_roles(user: Dict[str, Any] = Depends(requires("read"))):
+    """The five roles and the capabilities each grants.
+
+    The same table the API enforces on every request, so a UI can grey out what
+    a role cannot do without hardcoding the model.
+    """
     from .security import CAPABILITIES
     return [
         {"name": role, "description": ROLE_DESCRIPTIONS[role],
@@ -521,9 +602,15 @@ def list_roles(user: Dict[str, Any] = Depends(requires("read"))):
     ]
 
 
-@app.post("/api/admin/users", status_code=status.HTTP_201_CREATED, tags=["Administration"])
+@app.post("/api/admin/users", status_code=status.HTTP_201_CREATED, tags=["Administration"], response_model=schemas.User)
 def create_user(body: UserCreate, request: Request,
                 user: Dict[str, Any] = Depends(requires("user.manage"))):
+    """Create a portal account. Requires `user.manage`.
+
+    Also provisions the account's KMIP credential, using the password supplied
+    here — the only moment the cleartext is available for an account that may
+    never sign in to the portal.
+    """
     portal: PortalStore = request.app.state.portal
     if portal.get_user(body.username):
         raise HTTPException(status.HTTP_409_CONFLICT, "That username already exists")
@@ -547,6 +634,12 @@ def create_user(body: UserCreate, request: Request,
 @app.patch("/api/admin/users/{username}", tags=["Administration"])
 def update_user(username: str, body: UserUpdate, request: Request,
                 user: Dict[str, Any] = Depends(requires("user.manage"))):
+    """Change a user's role, enabled state or password. Requires `user.manage`.
+
+    Each change is mirrored into the engine, so a demotion, a suspension or a
+    password reset takes effect for that user's KMIP client too. You cannot
+    disable your own account.
+    """
     portal: PortalStore = request.app.state.portal
     if not portal.get_user(username):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user")
@@ -584,9 +677,14 @@ def update_user(username: str, body: UserUpdate, request: Request,
     return portal.get_user(username) and portal._public_user(portal.get_user(username))
 
 
-@app.delete("/api/admin/users/{username}", tags=["Administration"])
+@app.delete("/api/admin/users/{username}", tags=["Administration"], response_model=schemas.Detail)
 def delete_user(username: str, request: Request,
                 user: Dict[str, Any] = Depends(requires("user.manage"))):
+    """Delete a portal account and its KMIP credential. Requires `user.manage`.
+
+    Removing both matters: a leftover engine credential would keep working
+    after the account was gone. You cannot delete your own account.
+    """
     portal: PortalStore = request.app.state.portal
     if username == user["username"]:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
@@ -602,7 +700,7 @@ def delete_user(username: str, request: Request,
     return {"detail": f"Deleted {username}"}
 
 
-@app.get("/api/health", tags=["System"])
+@app.get("/api/health", tags=["System"], response_model=schemas.Health)
 def health(request: Request):
     """Unauthenticated liveness probe for Docker and the portal's login page."""
     return {

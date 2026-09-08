@@ -838,7 +838,47 @@ setup status                          # confirms the engine and the stack at onc
 > under the other engine. Move it with `setup backup` on one and `setup restore`
 > on the other.
 
-#### When the engine will not come up
+#### When the engine wedges
+
+Rancher Desktop on Windows intermittently loses the Hyper-V (AF_VSOCK) channel
+between the host and the WSL VM. Two symptoms, one fault:
+
+* every command fails because `\\.\pipe\docker_engine` has no listener — the
+  *Win32 socket proxy* crash-loops in `background.log`;
+* a command dies mid-flight with
+  `failed to connect to the backend: timed out dialing Hyper-V socket`.
+
+It is Rancher's network tunnel (`host-switch` ↔ `vm-switch`), not this stack.
+Rancher 1.24 removed the setting that used to disable the tunnel, and neither
+`rdctl set` nor the settings file offers a replacement, so it cannot be
+configured away. Two things worth trying if it happens often: **Preferences →
+Application → Administrative Access**, and an antivirus exclusion for
+`%LOCALAPPDATA%\Programs\Rancher Desktop` — a networking helper exiting with
+status 1 immediately and repeatedly is a common signature of endpoint security
+on a managed machine.
+
+`setup` handles it two ways:
+
+* **`setup up` retries** up to three times. `compose up -d` is idempotent, so a
+  half-finished attempt needs no cleanup.
+* **The engine is revived automatically** when it is unreachable — `rdctl
+  shutdown`, cycle WSL, relaunch, wait — because restarting the app alone does
+  not clear it.
+
+> **Auto-heal refuses while containers are running**, and that guard matters.
+> Cycling WSL under a live PostgreSQL and SoftHSM2 token once brought the stack
+> back against different storage, with an empty database and a freshly
+> initialised token. If you hit a *partial* wedge — engine answering some calls,
+> stack still up — `setup` tells you to `setup backup` and `setup down` first
+> rather than doing it for you.
+
+| Variable | Effect |
+|---|---|
+| `CHL_NO_AUTOHEAL=1` | Never cycle the VM; just print the recovery steps |
+| `CHL_FORCE_HEAL=1` | Heal even with containers running — only if the volumes are expendable |
+| `CHL_ENGINE=docker`&nbsp;\|&nbsp;`nerdctl` | Force one engine when both are present |
+
+#### Doing it by hand
 
 Rancher Desktop's Linux VM can wedge, usually showing `/sbin/init exited with
 status 1` in `%LOCALAPPDATA%\rancher-desktop\logs\wsl.log`. The app window
@@ -919,6 +959,39 @@ holds no cryptographic or KMIP knowledge at all. The shim is the only module
 that imports `pkcs11`, so swapping in a different — for example FIPS-validated
 — token needs no change above it.
 
+An editable diagram of all of this is at
+[`cryptohub_lite/docs/architecture.drawio`](cryptohub_lite/docs/architecture.drawio)
+— open it at [app.diagrams.net](https://app.diagrams.net) or with the *Draw.io
+Integration* extension in VS Code.
+
+### KMIP is not the REST API
+
+Worth stating plainly, because the endpoint names invite the opposite
+conclusion. There are **two separate front doors**, and only one of them speaks
+KMIP:
+
+| | Port | Protocol | Goes through |
+|---|---|---|---|
+| **KMIP** | `5696` | **TTLV binary frames over TCP/TLS** — the OASIS wire format, not HTTP at all | `KMIPServer` → `OperationDispatcher` → handlers |
+| **REST API** | `8000` | Ordinary JSON over HTTP, with a JWT | FastAPI → handlers, called directly as Python functions |
+
+So `http://localhost:8000/api/kmip/objects` is **not** KMIP. It is a JSON
+endpoint named after the objects it returns; a KMIP client cannot talk to it,
+and `curl` cannot talk to 5696. A real client connects to 5696 and sends
+encoded TTLV, as in [Connecting a KMIP client](#connecting-a-kmip-client).
+
+Both routes end at the *same* 41 handlers, the same metadata store and the same
+token — which is what makes a key created either way the same object. But they
+differ in what wraps them, and the difference is visible in the audit trail:
+
+* The **KMIP path** passes the dispatcher, so it gets per-request
+  authentication against `kmip_identities`, the hash-chained `kmip_audit`
+  entry, and dual control where enabled.
+* The **REST path bypasses the dispatcher.** Those concerns are the API's own:
+  JWT and the five roles for authorization, and a row in the portal's audit
+  table. A key created in the portal therefore appears as a `portal` row, while
+  the same operation over the wire appears as a chained `kmip` row.
+
 ---
 
 ## Known limitations
@@ -953,6 +1026,7 @@ Stated plainly rather than discovered later.
 | [PKCS#11 integration](cryptohub_lite/docs/PKCS11_INTEGRATION.md) | The shim, concurrency, moving to a vendor HSM |
 | [SoftHSM2 setup](cryptohub_lite/docs/SOFTHSM2_SETUP.md) | Why it is built from source; token management |
 | [Database schema](cryptohub_lite/docs/SCHEMA.md) | Every table, and SQLite → PostgreSQL migration |
+| [Architecture diagram](cryptohub_lite/docs/architecture.drawio) | Editable draw.io source, two tabs — **Components** (both request paths, storage) and **Technology stack** (layers, versions, toolchain, local paths) |
 
 ### Generated engine documents
 

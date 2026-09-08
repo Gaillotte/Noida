@@ -241,10 +241,33 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
         <div>
             <h2 class="chl-card-title">Supported KMIP Operations</h2>
             <p class="chl-card-sub"><?= (int)$ops['implemented_count'] ?> of
-                <?= (int)$ops['total'] ?> operations implemented by the KMIP engine</p>
+                <?= (int)$ops['total'] ?> operations implemented by the KMIP engine<?php
+                if (isset($ops['rest_reachable_count'])): ?> ·
+                <span class="chl-badge blue" style="font-size:10px">&#9679;</span>
+                <?= (int)$ops['rest_reachable_count'] ?> of those reachable from this
+                portal, the rest only over the wire on 5696<?php endif; ?></p>
         </div>
     </div>
     <div class="chl-card-body">
+        <?php
+        // A legend, because three states rendered as coloured pills are not
+        // self-explanatory - and the first question the card provoked was
+        // whether a grey badge meant KMIP does not define the operation. It
+        // does not: grey/green are both implemented.
+        ?>
+        <div style="display:flex;flex-wrap:wrap;gap:18px;align-items:center;
+                    padding-bottom:14px;margin-bottom:16px;
+                    border-bottom:1px solid var(--border);font-size:11.5px;
+                    color:var(--text-muted)">
+            <span><span class="chl-badge blue">Example &#9679;</span>
+                &nbsp;implemented &mdash; <b>and you can do it from this portal</b></span>
+            <span><span class="chl-badge green">Example</span>
+                &nbsp;implemented &mdash; <b>KMIP clients only</b>, over port 5696</span>
+            <span><span class="chl-badge grey"
+                       style="opacity:.6;text-decoration:line-through">Example</span>
+                &nbsp;<b>not implemented</b> by this engine</span>
+        </div>
+
         <?php
         // Grouped by what each operation is for. A flat run of 41 badges gave no
         // sense of why the set is so broad — in particular that the protocol
@@ -262,7 +285,30 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
                     <?= e($group['description']) ?></p>
                 <div style="display:flex;flex-wrap:wrap;gap:7px">
                     <?php foreach ($group['operations'] as $op): ?>
-                        <span class="chl-badge grey"><?= e($op) ?></span>
+                        <?php
+                        // The API used to return plain strings here and now returns
+                        // {name, rest}. Both are accepted so that a portal container
+                        // restarted ahead of the API still renders instead of erroring.
+                        $name  = is_array($op) ? ($op['name'] ?? '') : $op;
+                        $rest  = is_array($op) ? ($op['rest'] ?? []) : [];
+                        $where = [];
+                        foreach ($rest as $r) {
+                            $where[] = ($r['kind'] === 'invokes' ? '' : '~ ')
+                                     . $r['method'] . ' ' . $r['path'];
+                        }
+                        // Three states, three appearances. Blue and green are both
+                        // "the engine implements this"; they differ only in whether
+                        // the portal can reach it. Not-implemented is struck through
+                        // below. Grey was previously used here and read as "missing",
+                        // because the deferred badges were greyish too.
+                        $cls = $rest ? 'blue' : 'green';
+                        $tip = $rest
+                            ? "Implemented, and reachable from this portal:\n" . implode("\n", $where)
+                            : 'Implemented by the engine. KMIP clients only - no REST '
+                              . 'endpoint reaches it, so it cannot be done from these pages.';
+                        ?>
+                        <span class="chl-badge <?= $cls ?>" title="<?= e($tip) ?>">
+                            <?= e($name) ?><?= $rest ? ' &#9679;' : '' ?></span>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -276,7 +322,11 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
                     <?= e($ops['deferred_reason'] ?? '') ?></p>
                 <div style="display:flex;flex-wrap:wrap;gap:7px">
                     <?php foreach ($ops['deferred'] as $op): ?>
-                        <span class="chl-badge" style="opacity:.5"><?= e($op) ?></span>
+                        <?php // Struck through, so "absent" cannot be mistaken for
+                              // "present but wire-only" at a glance. ?>
+                        <span class="chl-badge grey"
+                              style="opacity:.6;text-decoration:line-through"
+                              title="Not implemented by this engine. A client calling it receives OperationNotSupported."><?= e($op) ?></span>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -287,6 +337,70 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
             port 5696. This portal reads the resulting managed objects; it does not reimplement
             KMIP.
         </p>
+    </div>
+</div>
+
+<?php
+// The full definition, at the foot of the page. The compact legend at the top
+// of the operations card is a reminder; this is the reference, because the
+// distinction that matters here is easy to get backwards: a badge that is not
+// blue still means the operation *works* - just not from these pages.
+$legend = [
+    ['blue', 'Example &#9679;', '',
+     'Implemented, and reachable from this portal',
+     'The engine implements it, and a page or REST endpoint here invokes it. '
+     . 'Hover the badge to see which endpoint.',
+     (int)($ops['rest_reachable_count'] ?? 0)],
+    ['green', 'Example', '',
+     'Implemented &mdash; KMIP clients only',
+     'Fully working, but nothing in this portal calls it. A KMIP client connects to '
+     . 'port 5696 and uses it exactly as it uses the blue ones. <b>Not a gap in the '
+     . 'engine &mdash; a gap in this UI.</b>',
+     (int)($ops['implemented_count'] ?? 0) - (int)($ops['rest_reachable_count'] ?? 0)],
+    ['grey', 'Example', 'opacity:.6;text-decoration:line-through',
+     'Not implemented by this engine',
+     'Defined by KMIP 2.1 but deliberately not built: session, asynchronous and vendor '
+     . 'operations that do not fit a synchronous server which authenticates every request. '
+     . 'A client calling one receives <span class="chl-mono">OperationNotSupported</span>.',
+     count($ops['deferred'] ?? [])],
+];
+?>
+<div class="chl-card">
+    <div class="chl-card-head">
+        <div>
+            <h2 class="chl-card-title">What the colours mean</h2>
+            <p class="chl-card-sub">Three states, and only one of them means the
+                operation is unavailable</p>
+        </div>
+    </div>
+    <div class="chl-table-wrap">
+        <table class="chl-table">
+            <thead><tr>
+                <th style="width:120px">Colour</th>
+                <th style="width:90px">Count</th>
+                <th style="width:290px">Means</th>
+                <th>In practice</th>
+            </tr></thead>
+            <tbody>
+            <?php foreach ($legend as [$cls, $sample, $style, $means, $detail, $count]): ?>
+                <tr>
+                    <td><span class="chl-badge <?= $cls ?>"
+                              <?= $style ? 'style="' . $style . '"' : '' ?>><?= $sample ?></span></td>
+                    <td><strong><?= $count ?></strong> of <?= (int)($ops['total'] ?? 53) ?></td>
+                    <td><strong><?= $means ?></strong></td>
+                    <td style="color:var(--text-muted)"><?= $detail ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <div class="chl-card-body" style="color:var(--text-muted);font-size:12px">
+        The blue dot <span class="chl-badge blue" style="font-size:10px">&#9679;</span>
+        is the only marker that depends on this portal. Blue and green together are the
+        <?= (int)($ops['implemented_count'] ?? 0) ?> operations the engine implements; the
+        struck-through ones are the <?= count($ops['deferred'] ?? []) ?> it does not.
+        Counts come from the engine's own dispatcher table and this application's route
+        table, so they change when the code does rather than when someone remembers.
     </div>
 </div>
 <?php endif; ?>
