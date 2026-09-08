@@ -1,37 +1,58 @@
 {
+  // Every stack task goes through scripts/compose.*, which resolves the
+  // container engine at run time. Hardcoding "docker compose" here worked on
+  // Docker Desktop and on Rancher Desktop set to moby, but not on Rancher set
+  // to containerd, where the engine is reached through nerdctl.
+  //
+  // Paths use forward slashes deliberately: Windows accepts them, and the
+  // backslash form previously used here was invalid JSON ("\c" is not an
+  // escape sequence), which broke the bootstrap task on Windows.
   "version": "2.0.0",
   "tasks": [
     {
       "label": "Setup: bootstrap everything",
       "type": "shell",
       "command": "${workspaceFolder}/cryptohub_lite/scripts/setup.sh",
-      "windows": { "command": "${workspaceFolder}\cryptohub_lite\scripts\setup.cmd" },
+      "windows": { "command": "${workspaceFolder}/cryptohub_lite/scripts/setup.cmd" },
       "problemMatcher": [],
       "group": { "kind": "build", "isDefault": true }
     },
     {
       "label": "Stack: up",
       "type": "shell",
-      "command": "docker compose -f cryptohub_lite/docker-compose.yml up -d --build",
+      "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.sh up -d --build",
+      "windows": { "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.cmd up -d --build" },
       "problemMatcher": []
     },
     {
       "label": "Stack: down",
       "type": "shell",
-      "command": "docker compose -f cryptohub_lite/docker-compose.yml down",
+      "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.sh down",
+      "windows": { "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.cmd down" },
       "problemMatcher": []
     },
     {
       "label": "Stack: logs",
       "type": "shell",
-      "command": "docker compose -f cryptohub_lite/docker-compose.yml logs -f --tail 100",
+      "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.sh logs -f --tail 100",
+      "windows": { "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.cmd logs -f --tail 100" },
       "problemMatcher": [],
       "isBackground": true
     },
     {
-      "label": "Tests: KMIP engine (624)",
+      "label": "Stack: status",
       "type": "shell",
-      "command": "docker compose -f cryptohub_lite/docker-compose.yml exec -T api python -m pytest /app -q",
+      "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.sh ps",
+      "windows": { "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.cmd ps" },
+      "problemMatcher": []
+    },
+    {
+      // Runs against the mounted source, not the copy baked into the image,
+      // so a local edit is what gets tested.
+      "label": "Tests: KMIP engine",
+      "type": "shell",
+      "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.sh exec -T api python -m pytest /app/kmip_pkcs11/tests -q",
+      "windows": { "command": "${workspaceFolder}/cryptohub_lite/scripts/compose.cmd exec -T api python -m pytest /app/kmip_pkcs11/tests -q" },
       "problemMatcher": [],
       "group": { "kind": "test", "isDefault": true }
     },

@@ -32,10 +32,10 @@ happens on the token.
 
 ## Quick start
 
-**Prerequisite:** a container engine — **Docker Desktop or Rancher Desktop**,
-running. Nothing else: Python, PostgreSQL and SoftHSM2 all come from the
-images. See [Running on Rancher Desktop](#running-on-rancher-desktop) if
-Docker Desktop is not available to you.
+**Prerequisite:** a container engine — **Rancher Desktop** (what this is
+developed against) or **Docker Desktop**, running. Nothing else: Python,
+PostgreSQL and SoftHSM2 all come from the images. Either works without
+configuration; see [Container engines](#container-engines) for the detail.
 
 Clone, then run the launcher for your shell **from the repository root**:
 
@@ -101,41 +101,53 @@ on its own therefore starts the whole chain.
 
 ### Checking they are running
 
-```bash
-C=cryptohub_lite/docker-compose.yml
-
-docker compose -f $C ps                    # all four, with health state
-docker compose -f $C logs -f api           # follow one service
-docker compose -f $C logs --tail=50 kmip
+```bat
+setup status               REM all four, with health state
+setup logs api             REM follow one service
+setup logs                 REM follow everything
 ```
 
-`docker compose ps` is the one to trust. A container in `running` state is not
+`setup status` is the one to trust. A container in `running` state is not
 necessarily working — `chl-api` reports `starting` for up to 20 seconds while
 it opens the HSM session and provisions the master key, and `chl-kmip` refuses
 to start at all if TLS is unconfigured and `KMIP_ALLOW_PLAINTEXT` is not set.
 Expect all four `running`, with `chl-postgres` and `chl-api` also `(healthy)`.
 
 If a container is missing from the list it never started; check
-`docker compose -f $C logs <service>` rather than restarting blindly.
+`setup logs <service>` rather than restarting blindly.
 
 If the portal loads but shows *"Cannot reach the CryptoHub API"*, the portal is
 fine and the API is not — check `ps` and `logs api`.
 
 ### Everyday commands
 
-```bash
-docker compose -f $C up -d                 # start everything
-docker compose -f $C up -d --build         # rebuild changed images first
-docker compose -f $C restart api kmip      # after changing API code
-docker compose -f $C restart portal        # after editing a .php file
-docker compose -f $C stop                  # stop, keep the data
-docker compose -f $C down                  # remove containers, keep the volumes
+One script drives the whole stack, on either engine. Run it from the repository
+root; `setup.sh` is the same thing for Git Bash, macOS and Linux.
+
+```bat
+setup                      REM build, start, wait until it is serving
+setup up                   REM same
+setup restart api          REM after changing API code
+setup restart portal       REM after editing a .php file
+setup stop                 REM stop, keep the containers
+setup down                 REM remove containers, keep the volumes
+setup status               REM what is running
+setup logs [service]       REM follow logs
+setup test                 REM run the KMIP engine test suite
+setup shell [service]      REM a shell inside a container (default: api)
+setup backup               REM copy both volumes somewhere safe
+setup help                 REM all of the above
 ```
 
 `down` keeps the two volumes, which is what you want: `chl_pgdata` holds the
 database and `chl_tokens` holds the **actual key material**. Neither can be
-rebuilt from source. `down -v` destroys both — see
+rebuilt from source. `setup destroy` removes them — see
 [Backup and restore](#backup-and-restore) before you ever reach for it.
+
+Under the hood these are `docker compose` (or `nerdctl compose`) against
+`cryptohub_lite/docker-compose.yml`, so the raw commands still work if you
+prefer them. What `setup` adds is resolving *which* engine is present, and
+refusing with an explanation instead of a socket error when none is.
 
 ### Changing a published port
 
@@ -682,35 +694,42 @@ anything:
 | `chl_tokens` | the SoftHSM2 token — the actual key material |
 
 ```bat
-backup.cmd                 REM write both volumes to C:\Internal_Idemia\Docker_bkup
-backup.cmd --list          REM show what is there
-backup.cmd --restore       REM restore (stack must be down)
+setup backup               REM both volumes -> C:\Internal_Idemia\Docker_bkup
+setup backup D:\elsewhere  REM ...or somewhere else
+setup backups              REM show what is there
+setup restore              REM restore (stack must be down)
 ```
 
-Stop the stack first (`docker compose -f $C down`). A copy taken while
-PostgreSQL is writing may not restore cleanly; the script warns but does not
-refuse, because a torn backup still beats none.
+Stop the stack first (`setup down`). A copy taken while PostgreSQL is writing
+may not restore cleanly; the script warns but does not refuse, because a torn
+backup still beats none.
 
 **The database and the HSM token are one unit.** Objects reference key material
 by `CKA_ID`, and secret blobs are encrypted under a master key that lives on the
 token. A database restored beside a *different* token is not a degraded backup —
-it is unreadable. That is why `backup.cmd` handles both volumes together, and
-why restoring recovers a *usable* key rather than merely a listed one.
+it is unreadable. That is why `setup backup` always copies both volumes
+together, and why restoring recovers a *usable* key rather than merely a listed
+one.
 
 > `kmip-admin backup` is **not** the tool for this deployment. It uses SQLite's
 > online backup API and this store is PostgreSQL; it fails with an explanation
-> rather than producing a broken archive. Use `backup.cmd`, or `pg_dump`
+> rather than producing a broken archive. Use `setup backup`, or `pg_dump`
 > together with a copy of the token volume.
+
+> Volumes belong to the engine that created them. If you switch between Rancher
+> Desktop and Docker Desktop, the other engine's stack starts empty — the data
+> is not lost, it is simply under the engine you were using before. `setup
+> backup` under one and `setup restore` under the other is the way to move it.
 
 ### Starting from scratch
 
-```bash
-docker compose -f cryptohub_lite/docker-compose.yml down -v
+```bat
+setup destroy
 ```
 
 Destroys the database **and the HSM token**, so every key is gone. The next
-`up` recreates the bootstrap administrator. Run `backup.cmd` first if you might
-want any of it back.
+`up` recreates the bootstrap administrator. Run `setup backup` first if you
+might want any of it back.
 
 > **This repository is one compose project, `cryptohub-lite`.** If a container
 > list shows a second project named `idemia-cryptohub`, that is a separate Java
@@ -785,24 +804,39 @@ Expect **816 passed**, run live against a real SoftHSM2 token. Fewer than that
 on a distribution SoftHSM2 is an environment difference, not a defect —
 [SoftHSM2 setup](cryptohub_lite/docs/SOFTHSM2_SETUP.md) explains exactly why.
 
-### Running on Rancher Desktop
+### Container engines
 
-Where Docker Desktop is restricted, Rancher Desktop runs this stack unchanged.
-Set its container engine to **`moby` (dockerd)** in *Preferences → Container
-Engine* — the same daemon Docker Desktop uses, so `docker` and `docker compose`
-behave identically and the compose file needs no edits. Nothing here is
-Docker-specific: the images are plain OCI.
+**Rancher Desktop is what this is developed against**, and Docker Desktop works
+identically. Nothing here is specific to either: the images are plain OCI and
+the compose file uses no vendor extensions.
 
-Kubernetes can be switched off. The stack is four containers on one Docker
-network and never touches it.
+`setup` resolves the engine at run time rather than assuming `docker`, so the
+same commands work on both:
+
+| Setup | Engine used | Compose |
+|---|---|---|
+| Rancher Desktop, `moby (dockerd)` — **recommended** | `docker` | `docker compose` |
+| Docker Desktop | `docker` | `docker compose` |
+| Rancher Desktop, `containerd` | `nerdctl` | `nerdctl compose` |
+
+`moby` is worth preferring on Rancher: it is the same daemon Docker Desktop
+uses, so every `docker …` command in this README is literally correct. The
+`containerd` setting works too and `setup` will find it, but the raw commands
+then need `nerdctl`. Force a choice with `CHL_ENGINE=nerdctl` if both are live.
+
+**Kubernetes can be switched off** — and should be, unless you need it for
+something else. The stack is four containers on one network and never touches
+it; disabling it makes Rancher start faster and use noticeably less memory.
 
 ```bash
 rdctl list-settings                   # confirm "containerEngine": {"name": "moby"}
-docker compose version                # the bundled v2 plugin
+setup status                          # confirms the engine and the stack at once
 ```
 
-The `containerd` engine also works, via `nerdctl compose` — but `moby` costs
-nothing and keeps every command in this README literally correct, so prefer it.
+> **Volumes belong to the engine that created them.** Switching between Rancher
+> and Docker Desktop makes the stack look empty — the data is not gone, it is
+> under the other engine. Move it with `setup backup` on one and `setup restore`
+> on the other.
 
 #### When the engine will not come up
 
@@ -901,7 +935,7 @@ Stated plainly rather than discovered later.
 | **Batch operations are not atomic** | A failure in one `BatchItem` does not roll back earlier items in the same batch. |
 | **The audit chain is local and unanchored** | Tampering is detectable, but the chain is not anchored anywhere external — an attacker who rewrites the whole log consistently leaves no trace. Ship entries to an external collector for stronger guarantees. Note also that only the KMIP half of the trail is chained; the portal's own action log is not. |
 | **Governance is available but not wired here** | See [Governance](#governance). |
-| **`kmip-admin backup` does not work against PostgreSQL** | It uses SQLite's online backup API. Use `backup.cmd` or `pg_dump` plus the token volume. |
+| **`kmip-admin backup` does not work against PostgreSQL** | It uses SQLite's online backup API. Use `setup backup` or `pg_dump` plus the token volume. |
 | **No multi-tenancy** | Groups and role allowlists partition *access*, not the namespace: object names, `Locate` queries and quotas are global. Isolation today means one deployment per tenant. |
 | **No ACME / automated certificate issuance** | TLS is enforced and certificates reload without dropping connections, but obtaining and renewing them is left to the operator. |
 | **Not FIPS/CC validated** | SoftHSM2 is not a validated HSM. The PKCS#11 boundary means a validated token can be swapped in with no code change above the shim, but that swap has not happened here. |
