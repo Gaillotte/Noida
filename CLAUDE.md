@@ -64,6 +64,8 @@ These will waste an hour each if you meet them cold.
 | Tests fail in unrelated places | Two pytest processes sharing the SoftHSM token. Run one at a time (`pgrep -fa pytest`). |
 | A fresh container looks like a different project | This branch has diverged from `main` — 36 commits here that are not there, 8 there that are not here. If `kmip_pkcs11/` is missing, the checkout is stale: `git fetch origin && git reset --hard origin/claude/kmip-specifications-iprzym`. |
 | Generators fail on import | `pip install python-docx matplotlib` — not declared in `setup.py`, since they are documentation-only. |
+| Need to see a `.docx` or `.pptx` | LibreOffice is installed but cannot convert **anything** here — it fails on a plain text file, so `soffice --convert-to pdf` is not available. For slides, `python tools/render_pptx.py deck.pptx out` draws them with PIL and is good enough to catch missing shapes, overlaps and overflow. There is no equivalent for Word documents; verify those structurally. |
+| Building slides | Never use a `line` shape for a connector: pptxgenjs accepts zero width or height and PowerPoint renders nothing. Use `downArrow` / `rightArrow` block shapes. Run `python tools/qa_pptx_geometry.py deck.pptx`, then actually look at the render. |
 
 The test fixtures wipe and re-initialise `/tmp/softhsm2_tests/tokens` every
 session. That is deliberate: runs used to leave thousands of keys behind, and
@@ -205,11 +207,14 @@ failover, multi-tenancy, FIPS validation.
 - `7b56c23` enterprise KMS gap matrix — 74 features from the commercial
   market, 32 covered, 16 partial, 26 not covered, 19 of which cannot be closed
   by writing more KMIP.
-- Overview deck — 15 slides covering KMIP, the design on PKCS#11, the
-  REST-on-KMIP target architecture, the gap analysis and the roadmap. Built
-  with pptxgenjs; LibreOffice cannot render in this environment, so it was
-  QA'd by schema validation plus a geometric check for off-slide shapes,
-  overlaps and text overflow rather than by looking at rendered slides.
+- `5686868` overview deck — 15 slides covering KMIP, the design on PKCS#11,
+  the REST-on-KMIP target architecture, the gap analysis and the roadmap.
+  Shipped with every connector invisible: pptxgenjs writes a `line` shape with
+  zero width or height into the XML and PowerPoint draws nothing for it, so
+  all fifteen arrows were absent and the diagrams read as disconnected boxes.
+  A card heading that wrapped to two lines was also overwritten by its body.
+  Both were found only once `tools/render_pptx.py` existed to look at the
+  slides — the geometric check had passed them.
 
 ---
 

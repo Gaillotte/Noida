@@ -91,11 +91,18 @@ function card(s, o) {
     ty += 0.30;
   }
   if (o.head) {
+    const hs = o.headSize || 16;
+    // 0.62em average glyph width, calibrated against the rendered deck: at
+    // 0.52 a 27-character heading was predicted to fit one line and took two,
+    // and the body was drawn over it.
+    const cpl = Math.max(8, ((o.w - 0.52) * 72) / (hs * 0.62));
+    const lines = Math.max(1, Math.ceil(o.head.length / cpl));
+    const hh = Math.max(o.headH || 0, lines * hs * 1.34 / 72);
     s.addText(o.head, {
-      x: o.x + 0.26, y: ty, w: o.w - 0.52, h: o.headH || 0.34, isTextBox: true, margin: 0,
-      fontFace: HEAD, fontSize: o.headSize || 16, bold: true, color: o.headColor || NAVY,
+      x: o.x + 0.26, y: ty, w: o.w - 0.52, h: hh, isTextBox: true, margin: 0,
+      fontFace: HEAD, fontSize: hs, bold: true, color: o.headColor || NAVY,
     });
-    ty += (o.headH || 0.34) + 0.06;
+    ty += hh + 0.08;
   }
   if (o.bullets) {
     s.addText(o.bullets.map((t, i) => ({
@@ -155,10 +162,20 @@ function node(s, o) {
   }
 }
 
-function arrowDown(s, x, y, h) {
-  s.addShape(pres.ShapeType.line, {
-    x: x, y: y, w: 0, h: h,
-    line: { color: MID, width: 1.5, endArrowType: "triangle" },
+// Block arrows, not lines. pptxgenjs will happily write a line shape with
+// zero width or height, and PowerPoint renders exactly nothing for it — the
+// first version of this deck had fifteen invisible connectors for that reason.
+function arrowDown(s, xCentre, y, h) {
+  s.addShape(pres.ShapeType.downArrow, {
+    x: xCentre - 0.09, y: y, w: 0.18, h: Math.max(h, 0.18),
+    fill: { color: MID }, line: { color: MID, width: 1 },
+  });
+}
+
+function arrowRight(s, x, yCentre, w) {
+  s.addShape(pres.ShapeType.rightArrow, {
+    x: x, y: yCentre - 0.09, w: Math.max(w, 0.18), h: 0.18,
+    fill: { color: MID }, line: { color: MID, width: 1 },
   });
 }
 
@@ -285,21 +302,18 @@ function arrowDown(s, x, y, h) {
     ["Pre-Active", MID], ["Active", NAVY], ["Deactivated", "5A7184"], ["Destroyed", "3B4A58"],
   ];
   boxes.forEach(([label, fill], i) => {
-    const x = M + i * 2.48;
-    node(s, { x: x, y: 4.86, w: 2.14, h: 0.62, fill: fill, label: label, size: 13 });
-    if (i < boxes.length - 1) {
-      s.addShape(pres.ShapeType.line, {
-        x: x + 2.16, y: 5.17, w: 0.30, h: 0,
-        line: { color: MID, width: 1.5, endArrowType: "triangle" },
-      });
-    }
+    const x = M + i * 2.42;
+    node(s, { x: x, y: 4.86, w: 2.08, h: 0.62, fill: fill, label: label, size: 13 });
+    if (i < boxes.length - 1) arrowRight(s, x + 2.11, 5.17, 0.28);
   });
+  // Set apart from the chain, with no arrow into it: Compromised is entered
+  // from any live state, not reached by walking the sequence.
   node(s, {
-    x: M + 4 * 2.48, y: 4.86, w: 2.14, h: 0.62, fill: GAP,
+    x: M + 4 * 2.42 + 0.34, y: 4.86, w: 2.08, h: 0.62, fill: GAP,
     label: "Compromised", size: 13,
   });
-  s.addText("reachable from any live state", {
-    x: M + 4 * 2.48, y: 5.52, w: 2.14, h: 0.26, isTextBox: true, margin: 0,
+  s.addText("from any live state", {
+    x: M + 4 * 2.42 + 0.34, y: 5.56, w: 2.08, h: 0.26, isTextBox: true, margin: 0,
     align: "center", fontFace: BODY, fontSize: 9.5, color: FAINT,
   });
 
@@ -395,7 +409,7 @@ function arrowDown(s, x, y, h) {
     size: 12,
   });
   card(s, {
-    x: M, y: 4.20, w: 3.5, h: 2.24, fill: "FBF3E3",
+    x: M, y: 4.20, w: 3.5, h: 2.44, fill: "FBF3E3",
     tag: "Swap point", tagColor: WARN, head: "Any PKCS#11 HSM",
     body: "One file imports the binding. Pointing it at validated hardware needs "
       + "no change above the shim — the capability probe reports whatever that "
@@ -471,12 +485,7 @@ function arrowDown(s, x, y, h) {
     const x = M + i * 2.47;
     node(s, { x: x, y: 1.74, w: 2.16, h: 0.66, fill: fill, label: label, size: 12,
       color: fill === GOLD ? DEEP : PAPER });
-    if (i < steps.length - 1) {
-      s.addShape(pres.ShapeType.line, {
-        x: x + 2.18, y: 2.07, w: 0.27, h: 0,
-        line: { color: MID, width: 1.5, endArrowType: "triangle" },
-      });
-    }
+    if (i < steps.length - 1) arrowRight(s, x + 2.19, 2.07, 0.26);
   });
   s.addText("The dispatcher wraps every one of the 41 operations in this pipeline.", {
     x: M, y: 2.52, w: CW, h: 0.32, isTextBox: true, margin: 0,
@@ -484,7 +493,7 @@ function arrowDown(s, x, y, h) {
   });
 
   card(s, {
-    x: M, y: 3.02, w: 3.85, h: 3.3, fill: "F7E9E8",
+    x: M, y: 3.02, w: 3.85, h: 3.02, fill: "F7E9E8",
     tag: "The hazard", tagColor: GAP, head: "Bypass",
     body: "Anything that calls the store directly skips all four checks. Add a "
       + "second transport carelessly and dual control silently stops applying to "
@@ -492,7 +501,7 @@ function arrowDown(s, x, y, h) {
     size: 12.5,
   });
   card(s, {
-    x: M + 4.12, y: 3.02, w: 3.85, h: 3.3, fill: ICE,
+    x: M + 4.12, y: 3.02, w: 3.85, h: 3.02, fill: ICE,
     tag: "Concurrency", head: "One session per process",
     body: "A PKCS#11 session pool was built, tested, and reproducibly segfaulted: "
       + "python-pkcs11 calls C_Initialize(NULL), so the library's own thread safety "
@@ -501,7 +510,7 @@ function arrowDown(s, x, y, h) {
     size: 12.5,
   });
   card(s, {
-    x: M + 8.24, y: 3.02, w: 3.86, h: 3.3, fill: ICE,
+    x: M + 8.24, y: 3.02, w: 3.86, h: 3.02, fill: ICE,
     tag: "Capability probe", head: "Ask the token, don't assume",
     body: "The shim reads the token's real mechanism list at startup and gates every "
       + "dispatch on it. An unsupported algorithm fails cleanly and by name, instead "
@@ -531,19 +540,22 @@ function arrowDown(s, x, y, h) {
     ["05", "Not everything is object-centric",
       "Approval queues, audit search, expiry reports, chain verification, health. None is an operation on a managed object."],
   ];
+  // Three columns, not five: at 2.14" wide the reasons wrapped to nine lines
+  // each and read as a wall. The conclusion takes the sixth grid slot.
   reasons.forEach(([n, head, body], i) => {
-    const x = M + i * 2.48;
-    card(s, { x: x, y: 1.72, w: 2.14, h: 2.72, fill: ICE, tag: n, head: head,
-      headSize: 13, headH: 0.62, body: body, size: 11 });
+    const x = M + (i % 3) * 4.12;
+    const y = 1.70 + Math.floor(i / 3) * 2.42;
+    card(s, { x: x, y: y, w: 3.85, h: 2.24, fill: ICE, tag: n, head: head,
+      headSize: 14, headH: 0.34, body: body, size: 12 });
   });
   card(s, {
-    x: M, y: 4.68, w: CW, h: 1.72, fill: NAVY, flat: true,
-    head: "The division of labour", headColor: PAPER,
-    body: "KMIP stays the data plane — creating and using keys, spoken by databases and "
-      + "storage. REST becomes the control plane — administering the service, spoken by "
-      + "people and by CI. Do not duplicate crypto operations across both, or you get two "
-      + "paths to Destroy with two authorization implementations.",
-    color: "C9DAEA", size: 13.5,
+    x: M + 2 * 4.12, y: 1.70 + 2.42, w: 3.85, h: 2.52, fill: NAVY, flat: true,
+    head: "The division of labour", headColor: PAPER, headSize: 15,
+    body: "KMIP stays the data plane — machines creating and using keys. REST becomes "
+      + "the control plane — people and CI administering the service. Duplicating crypto "
+      + "operations across both gives you two paths to Destroy, and two authorization "
+      + "implementations to keep in step.",
+    color: "C9DAEA", size: 11.5,
   });
   s.addNotes("The last card is the design discipline. It is tempting to expose "
     + "encrypt/decrypt over REST because it is easy; that is how products end up "
@@ -572,21 +584,24 @@ function arrowDown(s, x, y, h) {
   arrowDown(s, M + 2.77, 3.34, 0.30);
   arrowDown(s, M + 9.32, 3.34, 0.30);
 
-  node(s, { x: M, y: 3.70, w: CW, h: 0.86, fill: NAVY,
+  node(s, { x: M, y: 3.70, w: CW, h: 0.66, fill: NAVY,
     label: "Service layer  —  role allowlist · dual control · audit · metrics", size: 14 });
   s.addText("every call, both transports, one implementation", {
-    x: M, y: 4.58, w: CW, h: 0.28, isTextBox: true, margin: 0,
+    x: M, y: 4.40, w: CW, h: 0.26, isTextBox: true, margin: 0,
     align: "center", fontFace: BODY, fontSize: 11, italic: true, color: FAINT,
   });
 
-  arrowDown(s, W / 2, 4.88, 0.26);
-  node(s, { x: M, y: 5.18, w: 5.55, h: 0.58, fill: DEEP,
+  // One arrow per destination: a single centre arrow pointed at the gap
+  // between the two boxes and connected neither.
+  arrowDown(s, M + 2.77, 4.72, 0.30);
+  arrowDown(s, M + 9.32, 4.72, 0.30);
+  node(s, { x: M, y: 5.10, w: 5.55, h: 0.58, fill: DEEP,
     label: "Operation handlers  →  PKCS#11 token", size: 12.5 });
-  node(s, { x: M + 6.55, y: 5.18, w: 5.55, h: 0.58, fill: DEEP,
+  node(s, { x: M + 6.55, y: 5.10, w: 5.55, h: 0.58, fill: DEEP,
     label: "Metadata store  ·  audit chain", size: 12.5 });
 
   card(s, {
-    x: M, y: 6.00, w: 12.06, h: 0.82, fill: ICE, flat: true,
+    x: M, y: 5.90, w: 12.06, h: 1.08, fill: ICE, flat: true,
     body: "Endpoints:  sessions and identity  ·  keys and lifecycle  ·  grants, groups, roles  ·  "
       + "approval queue  ·  audit search  ·  cryptoperiod and expiry reports  ·  backups.        "
       + "No encrypt, decrypt or sign over REST in v1 — deliberately.",
@@ -727,7 +742,7 @@ function arrowDown(s, x, y, h) {
   waves.forEach(([n, name, detail, fill], i) => {
     const x = M + i * 2.47;
     s.addShape(pres.ShapeType.roundRect, {
-      x: x, y: 1.74, w: 2.16, h: 2.62, rectRadius: 0.06,
+      x: x, y: 1.74, w: 2.16, h: 2.10, rectRadius: 0.06,
       fill: { color: fill }, line: { color: fill, width: 1 }, shadow: shadow(),
     });
     s.addText(n, {
@@ -742,12 +757,7 @@ function arrowDown(s, x, y, h) {
       x: x + 0.16, y: 2.94, w: 1.84, h: 1.26, isTextBox: true, margin: 0, align: "center",
       fontFace: BODY, fontSize: 11, color: fill === GOLD ? "4A3A18" : "C9DAEA",
     });
-    if (i < waves.length - 1) {
-      s.addShape(pres.ShapeType.line, {
-        x: x + 2.18, y: 3.05, w: 0.27, h: 0,
-        line: { color: MID, width: 1.5, endArrowType: "triangle" },
-      });
-    }
+    if (i < waves.length - 1) arrowRight(s, x + 2.19, 2.79, 0.26);
   });
 
   card(s, {
@@ -801,14 +811,14 @@ function arrowDown(s, x, y, h) {
   ];
   items.forEach(([n, head, colour, body, gate], i) => {
     const x = M + (i % 3) * 4.12;
-    const y = 1.70 + Math.floor(i / 3) * 2.72;
+    const y = 1.62 + Math.floor(i / 3) * 2.86;
     card(s, {
-      x: x, y: y, w: 3.85, h: 2.52, fill: ICE,
-      tag: "Wave " + n, tagColor: colour, head: head, headSize: 15, headH: 0.56,
-      body: body, size: 11.5, bodyH: 0.78,
+      x: x, y: y, w: 3.85, h: 2.72, fill: ICE,
+      tag: "Wave " + n, tagColor: colour, head: head, headSize: 15, headH: 0.34,
+      body: body, size: 11.5, bodyH: 0.84,
     });
     s.addText(gate, {
-      x: x + 0.26, y: y + 1.96, w: 3.33, h: 0.44, isTextBox: true, margin: 0,
+      x: x + 0.26, y: y + 2.04, w: 3.33, h: 0.60, isTextBox: true, margin: 0,
       fontFace: BODY, fontSize: 10.5, italic: true, color: OK,
     });
   });
@@ -859,11 +869,11 @@ function arrowDown(s, x, y, h) {
     fontFace: BODY, fontSize: 10.5, bold: true, charSpacing: 1.6, color: GOLD,
   });
   s.addText([
-    { text: "Tokenization and format-preserving encryption — a separate product, not a KMS feature.", options: { bullet: true, breakLine: true } },
+    { text: "Tokenization and FPE — a separate product, not a KMS feature.", options: { bullet: true, breakLine: true } },
     { text: "Being a certificate authority — front it with a real CA instead.", options: { bullet: true, breakLine: true } },
     { text: "A PKCS#11 provider for applications — only if demand appears.", options: { bullet: true } },
   ], {
-    x: M, y: 6.16, w: 5.6, h: 0.95, isTextBox: true, margin: 0,
+    x: M, y: 6.14, w: 6.0, h: 0.98, isTextBox: true, margin: 0,
     fontFace: BODY, fontSize: 11.5, color: "9DB8D4", paraSpaceAfter: 3,
   });
 
