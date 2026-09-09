@@ -69,13 +69,39 @@ happen **before** `FinalizeKey`, or the call returns `NTE_INVALID_HANDLE`.
 
 | Algorithm | Accepted values | Otherwise |
 |-----------|-----------------|-----------|
-| `RSA` | 2048, 3072, 4096 | `NTE_BAD_LEN` |
+| `RSA` | any multiple of 64 in `[KSP_RSA_MIN_BITS, 16384]` (default lower bound 2048) | `NTE_BAD_LEN` |
 | `AES` | 128, 192, 256 | `NTE_BAD_LEN` |
 | `HMAC_*` | any multiple of 8 that is ≥ 128 | `NTE_BAD_LEN` |
 | EC / EdDSA curves | only the value the curve already implies | `NTE_BAD_LEN` |
 
 Curve sizes are fixed by the algorithm name, so a write is accepted only as
 a no-op that restates the existing length.
+
+### RSA public exponent
+
+`NCRYPT_LENGTH_PROPERTY` fixes the modulus size; the public exponent is
+carried by the provider-specific property `"RSA Public Exponent"`
+(`KSP_PUBLIC_EXPONENT_PROPERTY`), read and written as a little-endian
+`DWORD`. CNG defines no standard property for this, so the name is ours and
+only an application coded against this KSP will set it.
+
+| Aspect | Behaviour |
+|--------|-----------|
+| Default | 65537 (F4), so callers that never touch the property are unaffected |
+| Accepted values | odd and ≥ 3 |
+| Even value, or < 3 | `NTE_INVALID_PARAMETER` |
+| Non-RSA key | `NTE_NOT_SUPPORTED` |
+| After `FinalizeKey` | `NTE_INVALID_HANDLE` |
+| Buffer smaller than 4 bytes | `NTE_INVALID_PARAMETER` |
+
+At `FinalizeKey`, `KSP_EncodePublicExponent` converts the `DWORD` to the
+big-endian, minimal-length byte string that `CKA_PUBLIC_EXPONENT` requires —
+65537 becomes the three bytes `01 00 01`, and 3 becomes the single byte `03`.
+
+Small exponents such as 3 are accepted because PKCS#11 allows them, not
+because they are advisable; padding schemes, not the exponent, are what make
+low-exponent RSA safe, so leave this at F4 unless a specific peer requires
+otherwise.
 
 ### Validating NCRYPT_CHAINING_MODE_PROPERTY (write)
 
@@ -152,14 +178,14 @@ sequenceDiagram
 
     alt Key not yet finalised
         KSP->>KSP: pKey->bFinalized == FALSE → OK
-        KSP->>KSP: dwBits ∈ {2048, 3072, 4096} → valid
+        KSP->>KSP: 2048 ≤ dwBits ≤ 16384 and dwBits % 64 == 0
         KSP->>KSP: pKey->dwKeyBitLen = 4096
         KSP-->>NCrypt: ERROR_SUCCESS
     else Key already finalised
         KSP->>KSP: pKey->bFinalized == TRUE
         KSP-->>NCrypt: NTE_INVALID_HANDLE
     else Invalid size
-        KSP->>KSP: dwBits ∉ {2048, 3072, 4096}
+        KSP->>KSP: out of range, or not a multiple of 64
         KSP-->>NCrypt: NTE_BAD_LEN
     end
 

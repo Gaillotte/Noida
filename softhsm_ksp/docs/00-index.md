@@ -17,7 +17,7 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [06 — Error mapping](./06-error-mapping.md) | CK_RV → SECURITY_STATUS, codes by function, mechanism dispatch, error flow diagram |
 | [07 — Security and threading](./07-security-threading.md) | Concurrency, the three handle types, PIN management, secret zeroing, logging |
 | [08 — Complete flows](./08-complete-flows.md) | TLS signing, code signing, enumeration, key rotation, ECDH agreement, AES encryption, missing-token recovery |
-| [09 — Test suite](./09-tests.md) | Four-layer test pyramid: unit tests (676 assertions, 89.5 % coverage), integration tests (40 tests), PowerShell HLK suite (~150 tests) |
+| [09 — Test suite](./09-tests.md) | Four-layer test pyramid: unit tests (780 assertions, 89.8 % coverage), integration tests (40 tests), PowerShell HLK suite (~150 tests) |
 | [10 — Running the Microsoft HLK tests](./10-hlk-execution.md) | The in-repo HLK suite, the official HLK Studio procedure, code-signing reality (Microsoft does not sign providers), and what blocks a real certification submission |
 | [11 — CNG KSP market comparison](./11-market-comparison.md) | Capability audit against Microsoft, AWS, Utimaco, Thales, Entrust and Securosys providers, with evidence grades on every claim |
 | [12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) | Every function, mechanism, attribute and parameter a token must provide, in capability tiers, with a backend evaluation checklist |

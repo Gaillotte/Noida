@@ -103,6 +103,26 @@ int main(void)
     ASSERT_EQ("PSS | PKCS1 → CKM_RSA_PKCS_PSS (PSS takes priority)",
         mech.mechanism, (CK_ULONG)CKM_RSA_PKCS_PSS);
 
+
+    /* ── Gaps ECDSA-05 and HMAC-02 ──────────────────────────────────────── */
+    TEST_SUITE("P11_ResolveMechanism — secp256k1 and HMAC-SHA224");
+
+    ss = P11_ResolveMechanism(L"ECDSA_SECP256K1", 0, &mech, NULL);
+    ASSERT_OK("secp256k1 resolves", ss);
+    ASSERT_EQ("secp256k1 -> CKM_ECDSA", mech.mechanism,
+              (CK_MECHANISM_TYPE)CKM_ECDSA);
+    ASSERT_NULL("secp256k1 takes no mechanism parameter", mech.pParameter);
+
+    ss = P11_ResolveMechanism(L"HMAC_SHA224", 0, &mech, NULL);
+    ASSERT_OK("HMAC-SHA224 resolves", ss);
+    ASSERT_EQ("HMAC-SHA224 -> CKM_SHA224_HMAC", mech.mechanism,
+              (CK_MECHANISM_TYPE)CKM_SHA224_HMAC);
+
+    /* Still distinct from the neighbouring HMAC mechanisms */
+    ss = P11_ResolveMechanism(L"HMAC_SHA256", 0, &mech, NULL);
+    ASSERT_EQ("HMAC-SHA256 unaffected", mech.mechanism,
+              (CK_MECHANISM_TYPE)CKM_SHA256_HMAC);
+
     TEST_REPORT();
     TEST_EXIT();
 }

@@ -47,17 +47,29 @@ for `AT_SIGNATURE`, because a derive-only key cannot sign.
 
 | Algorithm | Default | Settable before `FinalizeKey` |
 |-----------|---------|-------------------------------|
-| `RSA` | 2048 | 2048 / 3072 / 4096 |
+| `RSA` | 2048 | any multiple of 64 from 2048 to 16384 |
 | `ECDSA_*` / `ECDH_*` | fixed by curve | curve value only |
+| `ECDSA_SECP256K1` | 256 | fixed |
 | `EDDSA_ED25519` | 255 | fixed |
 | `EDDSA_ED448` | 448 | fixed |
 | `AES` | 256 | 128 / 192 / 256 |
 | `HMAC_SHA1` | 160 | any whole-byte size ≥ 128 |
+| `HMAC_SHA224` | 224 | any whole-byte size ≥ 128 |
 | `HMAC_SHA256` | 256 | any whole-byte size ≥ 128 |
 | `HMAC_SHA384` | 384 | any whole-byte size ≥ 128 |
 | `HMAC_SHA512` | 512 | any whole-byte size ≥ 128 |
 
 Sizes outside these sets return `NTE_BAD_LEN`.
+
+The RSA lower bound is the build-time constant `KSP_RSA_MIN_BITS`, which
+defaults to 2048. A build that has to interoperate with a legacy CA can
+lower it, but the shipped default rejects anything smaller. There is no
+corresponding escape hatch for the upper bound or the 64-bit step, which
+come from `KSP_RSA_MAX_BITS` and `KSP_RSA_BITS_STEP`.
+
+Generation time grows sharply with modulus size: 8192 bits takes tens of
+seconds on SoftHSM2 and 16384 bits can take several minutes, during which
+`NCryptFinalizeKey` blocks.
 
 ---
 

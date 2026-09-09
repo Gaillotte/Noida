@@ -128,6 +128,21 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
                 memcpy(pbOutput, pszGroup, cbNeeded);
         }
 
+    } else if (_wcsicmp(pszProperty, KSP_PUBLIC_EXPONENT_PROPERTY) == 0) {
+        if (_wcsicmp(pKey->szAlgId, ALG_RSA) != 0) {
+            ss = NTE_NOT_SUPPORTED;
+        } else {
+            DWORD dwExp = pKey->dwPublicExponent
+                          ? pKey->dwPublicExponent : (DWORD)RSA_DEFAULT_PUBEXP;
+            *pcbResult = sizeof(DWORD);
+            if (pbOutput) {
+                if (cbOutput < sizeof(DWORD))
+                    ss = NTE_BUFFER_TOO_SMALL;
+                else
+                    memcpy(pbOutput, &dwExp, sizeof(DWORD));
+            }
+        }
+
     } else if (_wcsicmp(pszProperty, NCRYPT_CHAINING_MODE_PROPERTY) == 0) {
         /* Symmetric keys only */
         if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
@@ -217,8 +232,11 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
             memcpy(&dwBits, pbInput, sizeof(DWORD));
 
             if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0) {
-                /* RSA: 2048, 3072 and 4096 only */
-                if (dwBits == 2048 || dwBits == 3072 || dwBits == 4096) {
+                /* RSA: any multiple of 64 within the configured range.
+                 * The floor defaults to 2048 — see KSP_RSA_MIN_BITS. */
+                if (dwBits >= KSP_RSA_MIN_BITS &&
+                    dwBits <= KSP_RSA_MAX_BITS &&
+                    (dwBits % KSP_RSA_BITS_STEP) == 0) {
                     pKey->dwKeyBitLen = dwBits;
                     ss = ERROR_SUCCESS;
                 } else {
@@ -244,6 +262,27 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
                 /* EC and EdDSA curves have a fixed length: accept only
                  * the value already implied by the algorithm name. */
                 ss = (dwBits == pKey->dwKeyBitLen) ? ERROR_SUCCESS : NTE_BAD_LEN;
+            }
+        }
+
+    } else if (_wcsicmp(pszProperty, KSP_PUBLIC_EXPONENT_PROPERTY) == 0) {
+        /* RSA only, and only before the pair is generated */
+        if (_wcsicmp(pKey->szAlgId, ALG_RSA) != 0) {
+            ss = NTE_NOT_SUPPORTED;
+        } else if (!pbInput || cbInput < sizeof(DWORD)) {
+            ss = NTE_INVALID_PARAMETER;
+        } else if (pKey->bFinalized) {
+            ss = NTE_INVALID_HANDLE;
+        } else {
+            DWORD dwExp;
+            memcpy(&dwExp, pbInput, sizeof(DWORD));
+            /* Must be odd and at least 3: an even exponent is not coprime
+             * with phi(n), and 1 provides no encryption at all. */
+            if (dwExp >= 3 && (dwExp & 1) != 0) {
+                pKey->dwPublicExponent = dwExp;
+                ss = ERROR_SUCCESS;
+            } else {
+                ss = NTE_INVALID_PARAMETER;
             }
         }
 

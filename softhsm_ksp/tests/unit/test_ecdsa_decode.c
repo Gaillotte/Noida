@@ -3,6 +3,7 @@
  */
 #include "../mock/windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"
+#include "../../src/common/config.h"
 #include "test_framework.h"
 #include <string.h>
 
@@ -149,11 +150,21 @@ int main(void)
     /* ── Suite 5 : Cas d'erreur ─────────────────────────────────────────── */
     TEST_SUITE("P11_DecodeDerEcdsaSignature — error cases");
 
-    /* Unknown algorithm */
+    /* Unknown algorithm. P-521 used to stand in here, but it is supported
+     * now and only failed because cbOut was too small — a pass for the wrong
+     * reason. Use a curve the KSP genuinely does not know. */
     cbDer = build_der(r32, 32, 0, s32, 32, 0, derBuf, sizeof derBuf);
     cbOut = 64;
+    ss = P11_DecodeDerEcdsaSignature(L"ECDSA_P192", derBuf, cbDer, outBuf, &cbOut);
+    ASSERT_EQ("Unknown curve → NTE_BAD_ALGID",
+        ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+
+    /* P-521 is supported: it needs 132 bytes, so a 64-byte buffer is a
+     * size error rather than an algorithm error. */
+    cbOut = 64;
     ss = P11_DecodeDerEcdsaSignature(L"ECDSA_P521", derBuf, cbDer, outBuf, &cbOut);
-    ASSERT_ERR("Unknown algorithm → error", ss);
+    ASSERT_EQ("P-521 into a 64-byte buffer → NTE_BUFFER_TOO_SMALL",
+        ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
 
     /* Invalid SEQUENCE tag */
     derBuf[0] = 0x31; /* Wrong tag */
@@ -203,6 +214,64 @@ int main(void)
     memset(outBuf2, 0, 64); cbOut = 64;
     P11_DecodeDerEcdsaSignature(L"ECDSA_P256", derBuf, cbDer, outBuf2, &cbOut);
     ASSERT_MEM("Two identical calls produce the same result", outBuf, outBuf2, 64);
+
+
+    /* ── secp256k1 (gap ECDSA-05) ───────────────────────────────────────── */
+    TEST_SUITE("P11_EcCoordSize — secp256k1");
+
+    ASSERT_EQ("secp256k1 -> 32", P11_EcCoordSize(L"ECDSA_SECP256K1"), 32U);
+    ASSERT_EQ("secp256k1 signature is 64 bytes (2 x 32)",
+              P11_EcCoordSize(L"ECDSA_SECP256K1") * 2, 64U);
+
+    /* secp256k1, P-384 and P-521 OIDs are all 7 bytes: only the final byte
+     * separates them, so a length-based lookup would confuse the three. */
+    ASSERT_EQ("secp256k1 OID length equals P-384's",
+              (unsigned)EC_OID_SECP256K1_LEN, (unsigned)EC_OID_P384_LEN);
+    ASSERT("secp256k1 OID differs from P-384 in its bytes",
+           memcmp(EC_OID_SECP256K1, EC_OID_P384, EC_OID_P384_LEN) != 0);
+    ASSERT("secp256k1 OID differs from P-521 in its bytes",
+           memcmp(EC_OID_SECP256K1, EC_OID_P521, EC_OID_P521_LEN) != 0);
+    ASSERT_EQ("secp256k1 OID final byte is 0x0A",
+              (unsigned char)EC_OID_SECP256K1[EC_OID_SECP256K1_LEN - 1],
+              (unsigned char)0x0A);
+
+    /* Truncated DER: the length bytes must be validated against the buffer
+     * that is actually present, or the decoder reads past its end. */
+    {
+        BYTE trunc[8];
+        trunc[0] = 0x30; trunc[1] = 0x44;   /* SEQUENCE, claims 68 bytes */
+        trunc[2] = 0x02; trunc[3] = 0x20;   /* INTEGER r, claims 32 bytes */
+        trunc[4] = 0x11; trunc[5] = 0x22; trunc[6] = 0x33; trunc[7] = 0x44;
+        cbOut = sizeof outBuf;
+        ss = P11_DecodeDerEcdsaSignature(L"ECDSA_P256", trunc, sizeof trunc,
+                                         outBuf, &cbOut);
+        ASSERT_EQ("Truncated INTEGER r → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
+    {
+        /* r complete, s truncated */
+        BYTE trunc[40];
+        memset(trunc, 0, sizeof trunc);
+        trunc[0] = 0x30; trunc[1] = 0x26;
+        trunc[2] = 0x02; trunc[3] = 0x20;   /* r: 32 bytes, all present */
+        trunc[36] = 0x02; trunc[37] = 0x20; /* s: claims 32, only 2 follow */
+        cbOut = sizeof outBuf;
+        ss = P11_DecodeDerEcdsaSignature(L"ECDSA_P256", trunc, sizeof trunc,
+                                         outBuf, &cbOut);
+        ASSERT_EQ("Truncated INTEGER s → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
+    {
+        /* Long-form SEQUENCE length claiming more bytes than exist */
+        BYTE trunc[5];
+        trunc[0] = 0x30; trunc[1] = 0x84;   /* long form, 4 length bytes */
+        trunc[2] = 0x00; trunc[3] = 0x00; trunc[4] = 0x00;
+        cbOut = sizeof outBuf;
+        ss = P11_DecodeDerEcdsaSignature(L"ECDSA_P256", trunc, sizeof trunc,
+                                         outBuf, &cbOut);
+        ASSERT_EQ("Truncated long-form length → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
 
     TEST_REPORT();
     TEST_EXIT();

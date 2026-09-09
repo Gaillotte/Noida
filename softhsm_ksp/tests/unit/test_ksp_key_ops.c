@@ -79,6 +79,9 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
     if (wcscmp(pszAlgId, ALG_EDDSA_ED448) == 0) {
         *pcbOid = EC_OID_ED448_LEN; return EC_OID_ED448;
     }
+    if (wcscmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
+        *pcbOid = EC_OID_SECP256K1_LEN; return EC_OID_SECP256K1;
+    }
     return NULL;
 }
 
@@ -820,6 +823,98 @@ int main(void)
             ASSERT_EQ("Default length is 384 bits", k->dwKeyBitLen, 384U);
         }
         KSP_FreeKey(hProv, h);
+    }
+
+    /* ── secp256k1 and the configurable RSA public exponent ───────────── */
+    TEST_SUITE("secp256k1 generation and RSA public exponent");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_ECDSA_SECP256K1,
+                                    L"K1Gen", AT_SIGNATURE, 0);
+        ASSERT_OK("secp256k1 key created", ss);
+        ASSERT("secp256k1 handle non-null", h != 0);
+        if (h != 0) {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_EQ("Default length is 256 bits", k->dwKeyBitLen, 256U);
+            ASSERT_EQ("Key spec stays AT_SIGNATURE", k->dwKeySpec,
+                      (DWORD)AT_SIGNATURE);
+            ASSERT_EQ("Signing key, not a derive key", k->dwKeySpec,
+                      (DWORD)AT_SIGNATURE);
+        }
+        ASSERT_EQ("Generated with CKM_EC_KEY_PAIR_GEN",
+            (CK_ULONG)P11Mock_GetConfig()->lastGenerateKeyPairMech,
+            (CK_ULONG)CKM_EC_KEY_PAIR_GEN);
+        KSP_FreeKey(hProv, h);
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* HMAC-SHA224 rounds out the HMAC family. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_HMAC_SHA224,
+                                    L"Hmac224", AT_SIGNATURE, 0);
+        ASSERT_OK("HMAC-SHA224 key created", ss);
+        ASSERT("HMAC-SHA224 handle non-null", h != 0);
+        if (h != 0)
+            ASSERT_EQ("Default length is 224 bits",
+                      ((KSP_KEY *)(ULONG_PTR)h)->dwKeyBitLen, 224U);
+        KSP_FreeKey(hProv, h);
+    }
+
+    {
+        /* A new RSA key must still default to F4. */
+        NCRYPT_KEY_HANDLE h = 0;
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"RsaExp",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("RSA key created", ss);
+        ASSERT("RSA handle non-null", h != 0);
+        if (h != 0)
+            ASSERT_EQ("Public exponent defaults to 65537",
+                ((KSP_KEY *)(ULONG_PTR)h)->dwPublicExponent,
+                (DWORD)RSA_DEFAULT_PUBEXP);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* KSP_EncodePublicExponent: DWORD → big-endian, no leading zero bytes,
+     * which is what CKA_PUBLIC_EXPONENT requires. */
+    {
+        CK_BYTE  buf[4];
+        CK_ULONG n;
+
+        n = KSP_EncodePublicExponent(65537, buf);
+        ASSERT_EQ("F4 encodes to 3 bytes", (CK_ULONG)n, (CK_ULONG)3);
+        ASSERT_EQ("F4 byte 0 = 0x01", (CK_ULONG)buf[0], (CK_ULONG)0x01);
+        ASSERT_EQ("F4 byte 1 = 0x00", (CK_ULONG)buf[1], (CK_ULONG)0x00);
+        ASSERT_EQ("F4 byte 2 = 0x01", (CK_ULONG)buf[2], (CK_ULONG)0x01);
+
+        n = KSP_EncodePublicExponent(3, buf);
+        ASSERT_EQ("3 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
+        ASSERT_EQ("3 byte 0 = 0x03", (CK_ULONG)buf[0], (CK_ULONG)0x03);
+
+        n = KSP_EncodePublicExponent(17, buf);
+        ASSERT_EQ("17 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
+        ASSERT_EQ("17 byte 0 = 0x11", (CK_ULONG)buf[0], (CK_ULONG)0x11);
+
+        n = KSP_EncodePublicExponent(0x01000001, buf);
+        ASSERT_EQ("0x01000001 encodes to 4 bytes", (CK_ULONG)n, (CK_ULONG)4);
+        ASSERT_EQ("byte 0 = 0x01", (CK_ULONG)buf[0], (CK_ULONG)0x01);
+        ASSERT_EQ("byte 3 = 0x01", (CK_ULONG)buf[3], (CK_ULONG)0x01);
+
+        n = KSP_EncodePublicExponent(0x0000FFFF, buf);
+        ASSERT_EQ("0xFFFF encodes to 2 bytes", (CK_ULONG)n, (CK_ULONG)2);
+        ASSERT_EQ("0xFFFF byte 0 = 0xFF", (CK_ULONG)buf[0], (CK_ULONG)0xFF);
+
+        /* Degenerate input still yields a well-formed single zero byte
+         * rather than a zero-length attribute. */
+        n = KSP_EncodePublicExponent(0, buf);
+        ASSERT_EQ("0 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
+        ASSERT_EQ("0 byte 0 = 0x00", (CK_ULONG)buf[0], (CK_ULONG)0x00);
     }
 
     KSP_FreeProvider(hProv);

@@ -188,9 +188,13 @@ Two places where the surface is genuinely broader than the field:
   not evidence of absence.
 - **AES through a KSP at all**, using standard `ChainingMode*` strings.
 
-The narrower RSA range is a deliberate choice rather than a gap: Microsoft
-and Utimaco accept 512-bit RSA, this provider rejects anything below 2048
-with `NTE_BAD_LEN`.
+The RSA range now runs from 2048 to 16384 bits in 64-bit steps, matching
+Microsoft's granularity at the top end. The remaining difference is at the
+bottom: Microsoft and Utimaco accept 512-bit RSA, and this provider rejects
+anything below `KSP_RSA_MIN_BITS` (2048 by default) with `NTE_BAD_LEN`. That
+floor is a deliberate choice, not an omission — a build that must talk to a
+legacy CA can lower the constant, but no deployment gets weak keys by
+default.
 
 ### Finding 4 — The real differentiator is not algorithms
 
@@ -205,6 +209,34 @@ Read the comparison accordingly: it is a fair map of the *interface*
 surface, and says nothing about assurance. Where this project competes is
 development, CI and integration testing — exercising a CNG KSP integration
 without provisioning an HSM.
+
+### Finding 5 — Small gaps closed, and one found
+
+The gap analysis in `SoftHSM2_KSP_Feature_Matrix.pdf` originally listed ten
+small (S-effort) gaps. Five are now closed in code and tests: the RSA size
+range, the 64-bit step, a settable RSA public exponent, PSS with SHA-224,
+and HMAC-SHA224.
+
+Two are deliberately left partial. RSA below 2048 became a build-time option
+rather than a default, for the reason above. secp256k1 generates and signs,
+but only through this provider's own `ECDSA_SECP256K1` identifier; the
+standard CNG route is the generic ECDSA algorithm with
+`BCRYPT_ECC_CURVE_NAME` set to `BCRYPT_ECC_CURVE_SECP256K1`, which needs
+curve-name property handling.
+
+One, `OPS-03` (an Authenticode-signed binary), cannot be closed by a code
+change — it needs a purchased certificate and a legal entity.
+
+The remaining two, `LIFE-06` (`EnumAlgorithms`) and `LIFE-07`
+(`IsAlgSupported`), were **mis-graded as small**. The original note claimed
+`ncrypt.dll` answers both from the registry. That is wrong: both are real
+slots in `NCRYPT_KEY_STORAGE_FUNCTION_TABLE`, and closing them means
+correcting the function table itself. Investigating that turned up a more
+serious problem, recorded as `TABLE-01`: the table in `ksp_main.c` is
+ordered to a hand-written struct in `tests/mock/windows_compat.h` rather
+than to the Windows SDK's `ncrypt_provider.h`, which the Linux unit tests
+cannot detect because they compile against that same hand-written struct.
+`TABLE-01` blocks both, and is graded M.
 
 ---
 

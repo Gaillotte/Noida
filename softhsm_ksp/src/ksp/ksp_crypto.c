@@ -28,6 +28,9 @@ static void FillPssParams(
     if (_wcsicmp(pPssInfo->pszAlgId, BCRYPT_SHA1_ALGORITHM) == 0) {
         pPssParams->hashAlg = CKM_SHA_1;
         pPssParams->mgf     = CKG_MGF1_SHA1;
+    } else if (_wcsicmp(pPssInfo->pszAlgId, BCRYPT_SHA224_ALGORITHM) == 0) {
+        pPssParams->hashAlg = CKM_SHA224;
+        pPssParams->mgf     = CKG_MGF1_SHA224;
     } else if (_wcsicmp(pPssInfo->pszAlgId, BCRYPT_SHA384_ALGORITHM) == 0) {
         pPssParams->hashAlg = CKM_SHA384;
         pPssParams->mgf     = CKG_MGF1_SHA384;

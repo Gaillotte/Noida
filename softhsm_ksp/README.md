@@ -76,9 +76,25 @@ Logging is visible in real time with **DebugView** (Sysinternals).
 .\tools\register_ksp.ps1 -DllPath "C:\path\to\softhsm_ksp.dll"
 ```
 
+The script does two things, and both matter. `BCryptRegisterProvider`
+records the DLL so `NCryptOpenStorageProvider` can load it by name;
+`BCryptAddContextFunctionProvider` publishes the algorithm list so that
+callers which discover providers *by algorithm* can find it. To undo both:
+
+```powershell
+.\tools\register_ksp.ps1 -Unregister
+```
+
+CNG reads the provider list at process start, so restart any application
+that was already running.
+
 ### Via the .reg file
 
 Edit `tools\register_ksp.reg` to replace `<ABSOLUTE_PATH>`, then double-click.
+
+This route writes only the `Image` and `Type` values, which covers loading
+the provider by name but **not** algorithm publication — use it only as a
+fallback when the PowerShell script cannot run.
 
 ### Verification
 
@@ -102,7 +118,7 @@ Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full
 cd tests/unit && make run
 ```
 
-14 test suites · 676 assertions · **89.5 % line coverage, 100 % function coverage** (gcov).
+14 test suites · 780 assertions · **89.8 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
 ```bash
@@ -180,12 +196,22 @@ Windows Application
 
 | Algorithm | Generation | Signing | Decryption | Key agreement | Public export |
 |-----------|:----------:|---------|------------|:-------------:|:-------------:|
-| RSA 2048/3072/4096 | ✓ | PKCS1, PSS | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
+| RSA 2048–16384 (step 64) | ✓ | PKCS1, PSS (SHA-1/224/256/384/512) | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
 | ECDSA P-256/P-384/P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDSA secp256k1 | ✓ | ✓ (r‖s) | — | — | ✓ |
 | ECDH P-256/P-384/P-521 | ✓ | — | — | ✓ | ✓ |
 | EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |
 | AES 128/192/256 | ✓ | — | ECB, CBC, CTR, GCM | — | — |
-| HMAC SHA-1/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
+| HMAC SHA-1/224/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
+
+`EDDSA_ED25519`, `EDDSA_ED448`, `HMAC_SHA*` and `ECDSA_SECP256K1` are this
+provider's own identifiers, not standard CNG ones, so only an application
+written against this KSP will reach them. CNG has no EdDSA algorithm
+identifier at all; it does know secp256k1, but as a curve selected through
+`BCRYPT_ECC_CURVE_NAME` (`BCRYPT_ECC_CURVE_SECP256K1`) on the generic ECDSA
+algorithm rather than as an algorithm name — supporting that route as well
+is tracked as ECDSA-05 in the feature matrix. Everything else in the table
+uses the standard CNG identifiers.
 
 Asymmetric private keys are **never exportable** (to simulate the behaviour of a
 hardware HSM). See [SoftHSM2_KSP_Algorithm_Reference.docx](SoftHSM2_KSP_Algorithm_Reference.docx)

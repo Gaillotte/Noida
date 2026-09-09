@@ -6,6 +6,7 @@
 #include "../../src/pkcs11/pkcs11.h"
 #include "../../src/common/config.h"
 #include "test_framework.h"
+#include <stdio.h>
 #include <wchar.h>
 #include <string.h>
 
@@ -265,6 +266,127 @@ int main(void)
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
     KSP_Free((void *)(ULONG_PTR)hAny);
+
+    /* ── RSA length range (KSP_RSA_MIN_BITS..KSP_RSA_MAX_BITS, step 64) ──── */
+    TEST_SUITE("SetKeyProperty — RSA length range");
+    {
+        static const DWORD accepted[] = { 2048, 2112, 3072, 4096, 7680,
+                                          8192, 15360, 16384 };
+        static const DWORD rejected[] = { 0, 512, 1024, 2047, 2049, 3000,
+                                          16448, 32768 };
+        size_t i;
+
+        for (i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+            NCRYPT_KEY_HANDLE h = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, FALSE);
+            DWORD bits = accepted[i];
+            char  name[80];
+            ss = KSP_SetKeyProperty(hProv, h, NCRYPT_LENGTH_PROPERTY,
+                (PBYTE)&bits, sizeof bits, 0);
+            sprintf(name, "RSA %u bits accepted", (unsigned)bits);
+            ASSERT_EQ(name, ss, (SECURITY_STATUS)ERROR_SUCCESS);
+            ASSERT_EQ("  ...and stored on the key",
+                ((KSP_KEY *)(ULONG_PTR)h)->dwKeyBitLen, bits);
+            KSP_Free((void *)(ULONG_PTR)h);
+        }
+
+        for (i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+            NCRYPT_KEY_HANDLE h = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, FALSE);
+            DWORD bits = rejected[i];
+            char  name[80];
+            ss = KSP_SetKeyProperty(hProv, h, NCRYPT_LENGTH_PROPERTY,
+                (PBYTE)&bits, sizeof bits, 0);
+            sprintf(name, "RSA %u bits rejected → NTE_BAD_LEN", (unsigned)bits);
+            ASSERT_EQ(name, ss, (SECURITY_STATUS)NTE_BAD_LEN);
+            ASSERT_EQ("  ...and the key is unchanged",
+                ((KSP_KEY *)(ULONG_PTR)h)->dwKeyBitLen, 2048U);
+            KSP_Free((void *)(ULONG_PTR)h);
+        }
+    }
+
+    /* ── RSA public exponent property ──────────────────────────────────── */
+    TEST_SUITE("Get/SetKeyProperty — RSA public exponent");
+    {
+        NCRYPT_KEY_HANDLE h = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, FALSE);
+        DWORD exp = 0;
+        DWORD cb  = 0;
+
+        /* The default must remain F4 so existing callers are unaffected. */
+        ((KSP_KEY *)(ULONG_PTR)h)->dwPublicExponent = RSA_DEFAULT_PUBEXP;
+        ss = KSP_GetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, &cb, 0);
+        ASSERT_OK("Get public exponent → OK", ss);
+        ASSERT_EQ("Default exponent is 65537", exp, (DWORD)RSA_DEFAULT_PUBEXP);
+        ASSERT_EQ("cbResult = 4", cb, (DWORD)sizeof(DWORD));
+
+        /* Size query */
+        cb = 0;
+        ss = KSP_GetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            NULL, 0, &cb, 0);
+        ASSERT_OK("Size query → OK", ss);
+        ASSERT_EQ("Size query returns 4", cb, (DWORD)sizeof(DWORD));
+
+        exp = 3;
+        ss = KSP_SetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_OK("Set exponent 3 → OK", ss);
+        ASSERT_EQ("Stored exponent is 3",
+            ((KSP_KEY *)(ULONG_PTR)h)->dwPublicExponent, 3U);
+
+        exp = 17;
+        ss = KSP_SetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_OK("Set exponent 17 → OK", ss);
+
+        /* Even exponents and values below 3 are not valid RSA exponents. */
+        exp = 4;
+        ss = KSP_SetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_EQ("Even exponent → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        exp = 1;
+        ss = KSP_SetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_EQ("Exponent 1 → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        exp = 0;
+        ss = KSP_SetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_EQ("Exponent 0 → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("Rejected values left the key untouched",
+            ((KSP_KEY *)(ULONG_PTR)h)->dwPublicExponent, 17U);
+
+        exp = 65537;
+        ss = KSP_SetKeyProperty(hProv, h, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, 2, 0);
+        ASSERT_EQ("Short buffer → NTE_INVALID_PARAMETER",
+            ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        KSP_Free((void *)(ULONG_PTR)h);
+    }
+    {
+        /* The exponent is meaningless on a non-RSA key, and cannot be
+         * changed once the key material exists on the token. */
+        NCRYPT_KEY_HANDLE hEc = make_test_key(ALG_ECDSA_P256, 256,
+                                              AT_SIGNATURE, FALSE);
+        DWORD exp = 3;
+        ss = KSP_SetKeyProperty(hProv, hEc, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_EQ("Exponent on EC key → NTE_NOT_SUPPORTED",
+            ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        KSP_Free((void *)(ULONG_PTR)hEc);
+
+        NCRYPT_KEY_HANDLE hFin = make_test_key(ALG_RSA, 2048,
+                                               AT_SIGNATURE, TRUE);
+        ss = KSP_SetKeyProperty(hProv, hFin, KSP_PUBLIC_EXPONENT_PROPERTY,
+            (PBYTE)&exp, sizeof exp, 0);
+        ASSERT_EQ("Exponent after Finalize → NTE_INVALID_HANDLE",
+            ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
+        KSP_Free((void *)(ULONG_PTR)hFin);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

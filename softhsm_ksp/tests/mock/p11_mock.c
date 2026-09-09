@@ -355,7 +355,16 @@ static CK_RV mock_SignInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                             CK_OBJECT_HANDLE k) {
     (void)h; (void)k;
     g_calls.nSignInit++;
-    if (m) g_cfg.lastSignMech = m->mechanism;
+    if (m) {
+        g_cfg.lastSignMech = m->mechanism;
+        if (m->mechanism == CKM_RSA_PKCS_PSS &&
+            m->pParameter != NULL &&
+            m->ulParameterLen == sizeof(CK_RSA_PKCS_PSS_PARAMS)) {
+            memcpy(&g_cfg.lastSignPss, m->pParameter,
+                   sizeof(CK_RSA_PKCS_PSS_PARAMS));
+            g_cfg.lastSignPssValid = 1;
+        }
+    }
     return g_cfg.rv_SignInit;
 }
 
@@ -443,6 +452,7 @@ static CK_RV mock_GenerateKeyPair(
 {
     (void)h; (void)m; (void)pubT; (void)nPub; (void)privT; (void)nPriv;
     g_calls.nGenerateKeyPair++;
+    if (m) g_cfg.lastGenerateKeyPairMech = m->mechanism;
     if (g_cfg.rv_GenerateKeyPair != CKR_OK) return g_cfg.rv_GenerateKeyPair;
     *phPub  = 0x20;
     *phPriv = 0x21;

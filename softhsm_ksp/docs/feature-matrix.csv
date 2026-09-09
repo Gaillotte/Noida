@@ -7,14 +7,15 @@ IFACE-05,Provider interface,NotifyChangeKey,Key-change notification handle,Micro
 IFACE-06,Provider interface,GetOperationProperty,Async / overlapped operation state,Microsoft KSP,B,Not covered,Returns NTE_NOT_SUPPORTED. Only needed for overlapped I/O; PKCS#11 is synchronous so there is nothing to report.,L
 IFACE-07,Provider interface,PromptUser,Interactive PIN / consent dialog,Smart card KSPs,B,Not covered,Returns NTE_NOT_SUPPORTED. Would need a UI thread and a window handle from NCRYPT_WINDOW_HANDLE_PROPERTY.,L
 IFACE-08,Provider interface,FreeBuffer / FreeObject,Provider-allocated memory release,All providers,A,Covered,,
+TABLE-01,Provider interface,Function table layout matches the SDK,NCRYPT_KEY_STORAGE_FUNCTION_TABLE slot order and membership,All providers,A,Not covered,"The table in ksp_main.c is ordered to a hand-written struct in tests/mock/windows_compat.h, not to the SDK. It omits IsAlgSupported, EnumAlgorithms and VerifySignature and adds GetOperationProperty and FreeObject, which are not KSP entry points, so every slot from the thirteenth on is displaced. ksp_main.h also includes ncrypt.h, which does not declare this struct at all; the real declaration is in ncrypt_provider.h. Build once against the Windows SDK header and let the compiler assign the slots by name.",M
 RSA-01,Asymmetric RSA,RSA key generation,2048 / 3072 / 4096 bits,All providers,A,Covered,,
-RSA-02,Asymmetric RSA,RSA 1024 and below,512-1024 bits,MS Software KSP; Utimaco,B,Not covered,Deliberately rejected with NTE_BAD_LEN. Would be a one-line change in ksp_properties.c but weakens the security posture; leave as is unless a legacy CA demands it.,S
-RSA-03,Asymmetric RSA,RSA above 4096,8192 / 16384 bits,MS Software KSP; Utimaco,B,Not covered,Add sizes to the validation list in ksp_properties.c. SoftHSM2 supports them but generation is very slow (minutes for 16384).,S
-RSA-04,Asymmetric RSA,RSA arbitrary size increments,64-bit (MS) or 8-bit (Utimaco) steps,MS Software KSP; Utimaco,B,Not covered,Replace the fixed {2048 3072 4096} set with a range check. Trivial; the discrete set is a deliberate choice.,S
-RSA-05,Asymmetric RSA,Custom public exponent,Exponent other than 65537,Vendor-specific,C,Not covered,Hardcoded to 65537 in ksp_key.c. Would read NCRYPT_PUBLIC_EXPONENT if any caller needed it; no standard CNG property exists for this.,S
+RSA-02,Asymmetric RSA,RSA 1024 and below,512-1024 bits,MS Software KSP; Utimaco,B,Partial,"Build-time opt-in only. KSP_RSA_MIN_BITS defaults to 2048; a legacy build can lower it, but the shipped default still rejects <2048 with NTE_BAD_LEN. Deliberate: silently allowing 1024 would weaken every deployment.",S
+RSA-03,Asymmetric RSA,RSA above 4096,8192 / 16384 bits,MS Software KSP; Utimaco,B,Covered,,
+RSA-04,Asymmetric RSA,RSA arbitrary size increments,64-bit (MS) or 8-bit (Utimaco) steps,MS Software KSP; Utimaco,B,Covered,,
+RSA-05,Asymmetric RSA,Custom public exponent,Exponent other than 65537,Vendor-specific,C,Covered,,
 RSA-06,Asymmetric RSA,PKCS#1 v1.5 signing,SHA-1 / 256 / 384 / 512,All providers,A,Covered,,
 RSA-07,Asymmetric RSA,PSS signing,SHA-1 / 256 / 384 / 512 with caller salt length,All providers,B,Covered,,
-RSA-08,Asymmetric RSA,PSS with SHA-224,SHA-224 salt and MGF1,Unknown,C,Not covered,P11_MapHashAlg already maps SHA-224; only FillPssParams omits it. One branch in ksp_crypto.c.,S
+RSA-08,Asymmetric RSA,PSS with SHA-224,SHA-224 salt and MGF1,Unknown,C,Covered,,
 RSA-09,Asymmetric RSA,PKCS#1 v1.5 decryption,AT_KEYEXCHANGE keys,All providers,A,Covered,,
 RSA-10,Asymmetric RSA,OAEP decryption,SHA-1 / 224 / 256 / 384 / 512,All providers,A,Covered,,
 RSA-11,Asymmetric RSA,OAEP application label,pbLabel / cbLabel passed through,Unknown,C,Covered,,
@@ -23,7 +24,7 @@ ECDSA-01,Asymmetric ECDSA,ECDSA P-256,secp256r1; 64-byte signature,All providers
 ECDSA-02,Asymmetric ECDSA,ECDSA P-384,secp384r1; 96-byte signature,All providers,A,Covered,,
 ECDSA-03,Asymmetric ECDSA,ECDSA P-521,secp521r1; 132-byte signature,All providers,A,Covered,,
 ECDSA-04,Asymmetric ECDSA,Brainpool curves,brainpoolP256r1 / 384r1 / 512r1,Entrust; Utimaco (device),C,Not covered,Add the DER OIDs to config.h and P11_GetCurveOid. SoftHSM2 supports them. CNG has BCRYPT_ECC_CURVE_BRAINPOOL* names so this stays standards-compliant.,M
-ECDSA-05,Asymmetric ECDSA,secp256k1,Bitcoin curve,Entrust (device),C,Not covered,Same mechanism as ECDSA-04: one OID entry. CNG names it BCRYPT_ECC_CURVE_SECP256K1.,S
+ECDSA-05,Asymmetric ECDSA,secp256k1,Bitcoin curve,Entrust (device),C,Partial,"Curve, OID and mechanism are wired and the key generates and signs. Reachable only through this KSP's own ECDSA_SECP256K1 identifier; the standard CNG route is the generic ECDSA algorithm with BCRYPT_ECC_CURVE_NAME set to BCRYPT_ECC_CURVE_SECP256K1, which needs curve-name property handling in ksp_properties.c.",S
 ECDSA-06,Asymmetric ECDSA,DER to r||s conversion,PKCS#11 returns DER; CNG wants raw,All providers,A,Covered,,
 ECDH-01,Key agreement,ECDH P-256 / P-384 / P-521,CKM_ECDH1_DERIVE with CKD_NULL,MS Software KSP; Utimaco,B,Covered,,
 ECDH-02,Key agreement,SecretAgreement / DeriveKey / FreeSecret,NCRYPT_SECRET_HANDLE lifecycle,MS Software KSP; Utimaco,B,Covered,,
@@ -49,7 +50,7 @@ AES-08,Symmetric AES,AES-CFB,Cipher feedback,None via KSP,A,Not covered,Returns 
 AES-09,Symmetric AES,AES key wrap,RFC 3394 / 5649,Some HSMs (device),C,Not covered,SoftHSM2 offers CKM_AES_KEY_WRAP and KEY_WRAP_PAD. Needs KSP_ExportKey / ImportKey wired to C_WrapKey / C_UnwrapKey plus a CNG blob convention.,L
 AES-10,Symmetric AES,AES-CMAC,Block-cipher MAC,Some HSMs (device),C,Not covered,SoftHSM2 offers CKM_AES_CMAC. Would route through KSP_SignHash like HMAC does; same non-standard-identifier caveat applies.,M
 HMAC-01,Symmetric MAC,HMAC-SHA1 / 256 / 384 / 512,Generic secret keys,None via KSP,A,Partial,Works against SoftHSM2 but HMAC_SHA* are our own identifiers. CNG does HMAC through BCrypt algorithm handles not KSP key algorithms.,N/A
-HMAC-02,Symmetric MAC,HMAC-SHA224,SHA-224 variant,None,C,Not covered,SoftHSM2 has CKM_SHA224_HMAC. One entry in config.h and P11_ResolveMechanism; inherits the same identifier caveat.,S
+HMAC-02,Symmetric MAC,HMAC-SHA224,SHA-224 variant,None,C,Covered,,
 3DES-01,Symmetric legacy,3DES / DES,56 / 112 / 168 bits,None via KSP,B,Not covered,Deliberately out of scope. Deprecated and excluded from modern HLK requirements despite SoftHSM2 supporting 14 DES mechanisms.,L
 FMT-01,Key formats,BCRYPT_RSAPUBLIC_BLOB export,Header + exponent + modulus,All providers,A,Covered,,
 FMT-02,Key formats,BCRYPT_ECCPUBLIC_BLOB export,Header + X + Y,All providers,A,Covered,,
@@ -82,8 +83,8 @@ LIFE-02,Key lifecycle,FinalizeKey,Deferred generation trigger,All providers,A,Co
 LIFE-03,Key lifecycle,OpenKey by name,Asymmetric and symmetric,All providers,A,Covered,,
 LIFE-04,Key lifecycle,DeleteKey,Destroys all token objects,All providers,A,Covered,,
 LIFE-05,Key lifecycle,EnumKeys,Paged enumeration with state,All providers,A,Covered,,
-LIFE-06,Key lifecycle,EnumAlgorithms,NCryptEnumAlgorithms support,All providers,B,Not covered,Not in the KSP function table; ncrypt.dll answers from the registry. Verify our registration lists every algorithm we support or callers will not discover them.,S
-LIFE-07,Key lifecycle,IsAlgSupported,NCryptIsAlgSupported,All providers,B,Not covered,Same as LIFE-06: served from registry registration rather than a KSP entry point. Worth auditing register_ksp.ps1 against config.h.,S
+LIFE-06,Key lifecycle,EnumAlgorithms,NCryptEnumAlgorithms support,All providers,B,Not covered,"Re-graded. Earlier note was wrong: this is not served from the registry. NCRYPT_KEY_STORAGE_FUNCTION_TABLE has a real EnumAlgorithms slot that this KSP does not fill, and registration must also publish the list via BCryptAddContextFunctionProvider. Needs the function-table correction in TABLE-01 first.",M
+LIFE-07,Key lifecycle,IsAlgSupported,NCryptIsAlgSupported,All providers,B,Not covered,"Re-graded, same cause as LIFE-06: IsAlgSupported is a function-table slot, not a registry lookup. Blocked on TABLE-01.",M
 LIFE-08,Key lifecycle,Machine vs user key scope,NCRYPT_MACHINE_KEY_FLAG,All providers,B,Not covered,All keys are token-global. PKCS#11 has no per-user scoping within a slot; would need label prefixing plus an ACL model.,M
 OPS-01,Operational,Hardware key protection,Tamper-resistant storage,All commercial providers,A,Not covered,Fundamental: SoftHSM2 is a software token using encrypted SQLite. Only fixable by pointing the KSP at a real HSM which the PKCS#11 abstraction already allows.,N/A
 OPS-02,Operational,FIPS 140-2/3 validation,Certified cryptographic module,All commercial providers,B,Not covered,Follows from OPS-01. Requires certified hardware and a formal validation programme.,N/A

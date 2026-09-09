@@ -24,6 +24,33 @@ static int WideToUtf8Label(LPCWSTR pwsz, char *pszBuf, int cbBuf)
     return WideCharToMultiByte(CP_UTF8, 0, pwsz, -1, pszBuf, cbBuf, NULL, NULL);
 }
 
+/* Encode an exponent as a minimal-length big-endian byte string, the form
+ * CKA_PUBLIC_EXPONENT expects. 65537 becomes {01 00 01}; 3 becomes {03}.
+ * Returns the number of bytes written into pbOut (at most 4). */
+CK_ULONG KSP_EncodePublicExponent(DWORD dwExp, CK_BYTE *pbOut)
+{
+    CK_BYTE  tmp[4];
+    int      i;
+    int      first = 4;
+
+    tmp[0] = (CK_BYTE)((dwExp >> 24) & 0xFF);
+    tmp[1] = (CK_BYTE)((dwExp >> 16) & 0xFF);
+    tmp[2] = (CK_BYTE)((dwExp >>  8) & 0xFF);
+    tmp[3] = (CK_BYTE)( dwExp        & 0xFF);
+
+    for (i = 0; i < 4; i++) {
+        if (tmp[i] != 0x00) { first = i; break; }
+    }
+    if (first == 4) {          /* exponent 0 — encode a single zero byte */
+        pbOut[0] = 0x00;
+        return 1;
+    }
+
+    for (i = first; i < 4; i++)
+        pbOut[i - first] = tmp[i];
+    return (CK_ULONG)(4 - first);
+}
+
 /* ── Algorithm classifiers ──────────────────────────────────────────────── */
 
 BOOL KSP_IsEcdsaAlg(LPCWSTR pszAlgId)
@@ -31,7 +58,8 @@ BOOL KSP_IsEcdsaAlg(LPCWSTR pszAlgId)
     if (!pszAlgId) return FALSE;
     return (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
             _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
-            _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0);
+            _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0);
 }
 
 BOOL KSP_IsEcdhAlg(LPCWSTR pszAlgId)
@@ -54,6 +82,7 @@ BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId)
     if (!pszAlgId) return FALSE;
     return (_wcsicmp(pszAlgId, ALG_AES)         == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA1)   == 0 ||
+            _wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA384) == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA512) == 0);
@@ -69,10 +98,12 @@ static DWORD DefaultKeyBits(LPCWSTR pszAlgId)
         _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0)     return 384;
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0)     return 521;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) return 256;
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)  return 255;
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0)  return 448;
     if (_wcsicmp(pszAlgId, ALG_AES) == 0)            return 256;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1)   == 0)    return 160;
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0)    return 224;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0)    return 256;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA384) == 0)    return 384;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA512) == 0)    return 512;
@@ -104,7 +135,8 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
     char              szLabel[MAX_KEY_LABEL_LEN];
     int               nLabelLen;
     CK_ULONG          ulModBits = pKey->dwKeyBitLen;
-    CK_BYTE           pubExp[]  = { 0x01, 0x00, 0x01 }; /* public exponent 65537 */
+    CK_BYTE           pubExp[4];                 /* big-endian, minimal length */
+    CK_ULONG          cbPubExp;
     CK_BBOOL          bTrue     = CK_TRUE;
     CK_BBOOL          bFalse    = CK_FALSE;
     CK_BBOOL          bSign, bDecrypt;
@@ -116,6 +148,11 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
         return NTE_INVALID_PARAMETER;
     nLabelLen--; /* Exclude the null terminator */
 
+    cbPubExp = KSP_EncodePublicExponent(pKey->dwPublicExponent
+                                            ? pKey->dwPublicExponent
+                                            : RSA_DEFAULT_PUBEXP,
+                                        pubExp);
+
     bSign    = (pKey->dwKeySpec == AT_SIGNATURE)    ? CK_TRUE : CK_FALSE;
     bDecrypt = (pKey->dwKeySpec == AT_KEYEXCHANGE)  ? CK_TRUE : CK_FALSE;
 
@@ -124,7 +161,7 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
         { CKA_TOKEN,          &bTrue,      sizeof(bTrue)      },
         { CKA_LABEL,          szLabel,     (CK_ULONG)nLabelLen },
         { CKA_MODULUS_BITS,   &ulModBits,  sizeof(ulModBits)  },
-        { CKA_PUBLIC_EXPONENT, pubExp,     sizeof(pubExp)     },
+        { CKA_PUBLIC_EXPONENT, pubExp,     cbPubExp           },
         { CKA_VERIFY,         &bSign,      sizeof(bSign)      },
         { CKA_ENCRYPT,        &bDecrypt,   sizeof(bDecrypt)   },
     };
@@ -617,7 +654,8 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     if (pszKeyName)
         wcscpy_s(pKey->szKeyName, MAX_KEY_LABEL_LEN, pszKeyName);
 
-    pKey->dwKeyBitLen = DefaultKeyBits(pszAlgId);
+    pKey->dwKeyBitLen      = DefaultKeyBits(pszAlgId);
+    pKey->dwPublicExponent = RSA_DEFAULT_PUBEXP;
 
     bPersistOnly = (dwFlags & NCRYPT_PERSIST_ONLY_FLAG) != 0;
 

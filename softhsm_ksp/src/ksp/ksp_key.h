@@ -13,6 +13,7 @@ typedef struct _KSP_KEY {
     WCHAR            szKeyName[MAX_KEY_LABEL_LEN]; /* CKA_LABEL */
     WCHAR            szAlgId[MAX_ALG_ID_LEN];    /* L"RSA", L"ECDSA_P256"... */
     DWORD            dwKeyBitLen;               /* Key length in bits (RSA) */
+    DWORD            dwPublicExponent;          /* RSA public exponent (default 65537) */
     DWORD            dwKeySpec;                 /* AT_SIGNATURE or AT_KEYEXCHANGE */
     CK_OBJECT_HANDLE hPrivKey;                  /* PKCS#11 private key handle */
     CK_OBJECT_HANDLE hPubKey;                   /* PKCS#11 public key handle */
@@ -95,6 +96,10 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey);
 
 /* Generate a symmetric key in SoftHSM2 (AES / HMAC generic secret) */
 SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey);
+
+/* Encode an RSA public exponent as minimal-length big-endian bytes.
+ * pbOut must have room for 4 bytes; returns the count written. */
+CK_ULONG KSP_EncodePublicExponent(DWORD dwExp, CK_BYTE *pbOut);
 
 /* Return TRUE when pszAlgId names a NIST ECDSA curve */
 BOOL KSP_IsEcdsaAlg(LPCWSTR pszAlgId);

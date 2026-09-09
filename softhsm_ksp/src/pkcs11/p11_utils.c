@@ -67,7 +67,8 @@ SECURITY_STATUS P11_ResolveMechanism(
 
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0) {
+        _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
         pMechanism->mechanism = CKM_ECDSA;
         return ERROR_SUCCESS;
     }
@@ -82,6 +83,10 @@ SECURITY_STATUS P11_ResolveMechanism(
     /* HMAC secret keys sign through C_Sign with the matching HMAC mechanism */
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1) == 0) {
         pMechanism->mechanism = CKM_SHA_1_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0) {
+        pMechanism->mechanism = CKM_SHA224_HMAC;
         return ERROR_SUCCESS;
     }
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0) {
@@ -334,7 +339,6 @@ SECURITY_STATUS P11_ExportEcPublicKey(
     DWORD  cbCoord;
     DWORD  cbBlob;
     BCRYPT_ECCKEY_BLOB *pEccBlob;
-    P11_CONTEXT *pCtx = P11_GetContext();
 
     /* Read CKA_EC_POINT (ANSI X9.62 format: 0x04 || Qx || Qy) */
     if (P11_GetBinaryAttr(hSession, hPubKey, CKA_EC_POINT,
@@ -411,6 +415,8 @@ DWORD P11_EcCoordSize(LPCWSTR pszAlgId)
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0)
         return EC_P521_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0)
+        return EC_SECP256K1_COORD_SIZE;
     return 0;
 }
 
@@ -431,6 +437,9 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0) {
         *pcbOid = EC_OID_P521_LEN;  return EC_OID_P521;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
+        *pcbOid = EC_OID_SECP256K1_LEN; return EC_OID_SECP256K1;
     }
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
         *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;
@@ -579,6 +588,7 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     /* Skip the sequence length */
     if (*p & 0x80) {
         DWORD nLenBytes = *p & 0x7F; p++;
+        if (nLenBytes > (DWORD)(pEnd - p)) return NTE_INVALID_PARAMETER;
         p += nLenBytes;
     } else {
         p++;
@@ -587,7 +597,9 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     /* Decode INTEGER r */
     if (p >= pEnd || *p != 0x02) return NTE_INVALID_PARAMETER; p++;
     if (p >= pEnd) return NTE_INVALID_PARAMETER;
-    cbInt = *p++; pbInt = p; p += cbInt;
+    cbInt = *p++;
+    if (cbInt > (DWORD)(pEnd - p)) return NTE_INVALID_PARAMETER;
+    pbInt = p; p += cbInt;
 
     /* Strip the 0x00 sign byte if present */
     if (cbInt > 0 && *pbInt == 0x00) { pbInt++; cbInt--; }
@@ -597,7 +609,9 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     /* Decode INTEGER s */
     if (p >= pEnd || *p != 0x02) return NTE_INVALID_PARAMETER; p++;
     if (p >= pEnd) return NTE_INVALID_PARAMETER;
-    cbInt = *p++; pbInt = p;
+    cbInt = *p++;
+    if (cbInt > (DWORD)(pEnd - p)) return NTE_INVALID_PARAMETER;
+    pbInt = p;
 
     if (cbInt > 0 && *pbInt == 0x00) { pbInt++; cbInt--; }
     if (cbInt > cbCoord) return NTE_INVALID_PARAMETER;

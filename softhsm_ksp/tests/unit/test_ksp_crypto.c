@@ -156,6 +156,12 @@ int main(void)
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha1, hash, 20,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA1 size → OK", ss);
+    ASSERT_EQ("PSS SHA-1 → hashAlg CKM_SHA_1",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA_1);
+    ASSERT_EQ("PSS SHA-1 → mgf CKG_MGF1_SHA1",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA1);
+    ASSERT_EQ("PSS SHA-1 → salt 20 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)20);
 
     /* PSS with SHA512 */
     P11Mock_Reset();
@@ -170,6 +176,12 @@ int main(void)
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha512, hash, 32,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA512 size → OK", ss);
+    ASSERT_EQ("PSS SHA-512 → hashAlg CKM_SHA512",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA512);
+    ASSERT_EQ("PSS SHA-512 → mgf CKG_MGF1_SHA512",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA512);
+    ASSERT_EQ("PSS SHA-512 → salt 64 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)64);
 
     /* PSS with SHA384 */
     P11Mock_Reset();
@@ -184,6 +196,32 @@ int main(void)
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha384, hash, 32,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA384 size → OK", ss);
+    ASSERT_EQ("PSS SHA-384 → hashAlg CKM_SHA384",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA384);
+    ASSERT_EQ("PSS SHA-384 → mgf CKG_MGF1_SHA384",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA384);
+    ASSERT_EQ("PSS SHA-384 → salt 48 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)48);
+
+    /* PSS with SHA224 */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->cbSignature = 256;
+
+    BCRYPT_PSS_PADDING_INFO pssInfoSha224;
+    pssInfoSha224.pszAlgId = BCRYPT_SHA224_ALGORITHM;
+    pssInfoSha224.cbSalt   = 28;
+
+    cbResult = 0;
+    ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha224, hash, 28,
+        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+    ASSERT_OK("SignHash RSA PSS SHA224 size → OK", ss);
+    ASSERT_EQ("PSS SHA-224 → hashAlg CKM_SHA224",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA224);
+    ASSERT_EQ("PSS SHA-224 → mgf CKG_MGF1_SHA224",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA224);
+    ASSERT_EQ("PSS SHA-224 → salt 28 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)28);
 
     /* PSS without pPaddingInfo → default parameters */
     P11Mock_Reset();
@@ -194,6 +232,8 @@ int main(void)
     ss = KSP_SignHash(hProv, hRsaPss, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS without info → OK (default SHA256)", ss);
+    ASSERT_EQ("PSS default → hashAlg CKM_SHA256",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA256);
 
     KSP_Free((void *)(ULONG_PTR)hRsaPss); hRsaPss = 0;
 

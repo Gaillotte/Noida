@@ -71,8 +71,15 @@ typedef struct _P11_MOCK_CONFIG {
     CK_MECHANISM_TYPE lastEncryptMech;
     CK_MECHANISM_TYPE lastDecryptMech;
     CK_MECHANISM_TYPE lastDeriveMech;
+    /* Set by C_GenerateKey (symmetric keys) only. */
     CK_MECHANISM_TYPE lastGenerateMech;
+    /* Set by C_GenerateKeyPair (asymmetric keys) only. */
+    CK_MECHANISM_TYPE lastGenerateKeyPairMech;
     CK_MECHANISM_TYPE lastSignMech;
+    /* CK_RSA_PKCS_PSS_PARAMS captured by the last C_SignInit call. Valid
+     * only when lastSignPssValid is non-zero. */
+    CK_RSA_PKCS_PSS_PARAMS lastSignPss;
+    int                    lastSignPssValid;
     /* ECDH peer public data captured from CK_ECDH1_DERIVE_PARAMS */
     CK_ULONG    lastEcdhPublicDataLen;
 } P11_MOCK_CONFIG;

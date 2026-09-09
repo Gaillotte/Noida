@@ -18,7 +18,7 @@ provider, and to know exactly which capability is lost when one is missing.
 | Category | Count | Notes |
 |----------|------:|-------|
 | Cryptoki functions called | 22 | of ~68 in PKCS#11 v2.40 |
-| Mechanisms used as `CK_MECHANISM.mechanism` | 20 | see §3 |
+| Mechanisms used as `CK_MECHANISM.mechanism` | 21 | see §3 |
 | Mechanisms used only as a hash **parameter** | 5 | never passed to `C_DigestInit` — see §3.6 |
 | Object attributes set or read | 18 | see §4 |
 | Mechanism parameter structures | 5 | see §5 |
@@ -76,7 +76,7 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 | Mechanism | CNG algorithm ID | Object produced | Notes |
 |-----------|------------------|-----------------|-------|
 | `CKM_RSA_PKCS_KEY_PAIR_GEN` | `RSA` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | Public exponent fixed at 65537 |
-| `CKM_EC_KEY_PAIR_GEN` | `ECDSA_P256/384/521`, `ECDH_P256/384/521` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | Curve chosen by `CKA_EC_PARAMS` |
+| `CKM_EC_KEY_PAIR_GEN` | `ECDSA_P256/384/521`, `ECDSA_SECP256K1`, `ECDH_P256/384/521` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | Curve chosen by `CKA_EC_PARAMS` |
 | `CKM_EC_EDWARDS_KEY_PAIR_GEN` | `EDDSA_ED25519`, `EDDSA_ED448` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | PKCS#11 v3.0 mechanism |
 | `CKM_AES_KEY_GEN` | `AES` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
 | `CKM_GENERIC_SECRET_KEY_GEN` | `HMAC_SHA1/256/384/512` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
@@ -90,6 +90,7 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 | `CKM_ECDSA` | `NCryptSignHash`, no padding | none | raw hash | **DER**, converted to r‖s by the KSP |
 | `CKM_EDDSA` | `NCryptSignHash`, no padding | none | message | raw, no conversion |
 | `CKM_SHA_1_HMAC` | `NCryptSignHash` on an HMAC key | none | message | 20 bytes |
+| `CKM_SHA224_HMAC` | " | none | message | 28 bytes |
 | `CKM_SHA256_HMAC` | " | none | message | 32 bytes |
 | `CKM_SHA384_HMAC` | " | none | message | 48 bytes |
 | `CKM_SHA512_HMAC` | " | none | message | 64 bytes |
@@ -137,7 +138,7 @@ recognise them as valid parameter values for those mechanisms.
 | Mechanism | MGF companion | Used by |
 |-----------|---------------|---------|
 | `CKM_SHA_1` | `CKG_MGF1_SHA1` | PSS, OAEP |
-| `CKM_SHA224` | `CKG_MGF1_SHA224` | OAEP only |
+| `CKM_SHA224` | `CKG_MGF1_SHA224` | PSS, OAEP |
 | `CKM_SHA256` | `CKG_MGF1_SHA256` | PSS, OAEP |
 | `CKM_SHA384` | `CKG_MGF1_SHA384` | PSS, OAEP |
 | `CKM_SHA512` | `CKG_MGF1_SHA512` | PSS, OAEP |
@@ -162,7 +163,7 @@ recognise them as valid parameter values for those mechanisms.
 | `CKA_ENCRYPT` | ✓ | — | `CK_TRUE` for RSA `AT_KEYEXCHANGE` | Public counterpart |
 | `CKA_DERIVE` | ✓ | ✓ | `CK_TRUE` for ECDH, `CK_FALSE` for ECDSA | **The ECDSA/ECDH discriminator** |
 | `CKA_MODULUS_BITS` | ✓ | — | 2048 / 3072 / 4096 | RSA size |
-| `CKA_PUBLIC_EXPONENT` | ✓ | — | `01 00 01` | Fixed at 65537 |
+| `CKA_PUBLIC_EXPONENT` | ✓ | — | `01 00 01` | Defaults to 65537; big-endian, minimal length, from `KSP_EncodePublicExponent` |
 | `CKA_EC_PARAMS` | ✓ | ✓ | DER curve OID | Curve selection — see §6 |
 
 ### 4.2 Set at creation — symmetric keys
@@ -240,11 +241,12 @@ This is the one object created **without** sensitivity protection, because
 | P-256 (secp256r1) | 1.2.840.10045.3.1.7 | `06 08 2A 86 48 CE 3D 03 01 07` | 10 |
 | P-384 (secp384r1) | 1.3.132.0.34 | `06 05 2B 81 04 00 22` | 7 |
 | P-521 (secp521r1) | 1.3.132.0.35 | `06 05 2B 81 04 00 23` | 7 |
+| secp256k1 | 1.3.132.0.10 | `06 05 2B 81 04 00 0A` | 7 |
 | Ed25519 | 1.3.101.112 | `06 03 2B 65 70` | 5 |
 | Ed448 | 1.3.101.113 | `06 03 2B 65 71` | 5 |
 
-> Length alone cannot identify a curve: P-384 and P-521 are both 7 bytes,
-> Ed25519 and Ed448 both 5. The KSP compares the full byte sequence.
+> Length alone cannot identify a curve: P-384, P-521 and secp256k1 are all
+> 7 bytes, Ed25519 and Ed448 both 5. The KSP compares the full byte sequence.
 
 ---
 
@@ -301,7 +303,7 @@ application coded against this KSP's `AES` key handles.
 
 | Requirement | Items |
 |-------------|-------|
-| Mechanisms | `CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA`, `CKM_GENERIC_SECRET_KEY_GEN`, `CKM_SHA_1_HMAC`, `CKM_SHA256_HMAC`, `CKM_SHA384_HMAC`, `CKM_SHA512_HMAC` |
+| Mechanisms | `CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA`, `CKM_GENERIC_SECRET_KEY_GEN`, `CKM_SHA_1_HMAC`, `CKM_SHA224_HMAC`, `CKM_SHA256_HMAC`, `CKM_SHA384_HMAC`, `CKM_SHA512_HMAC` |
 | Key types | `CKK_EC_EDWARDS`, `CKK_GENERIC_SECRET` |
 
 > **Tiers 4 and 5 use CNG algorithm identifiers this project defined itself.**
@@ -336,11 +338,11 @@ and its documentation.
 - [ ] At least one slot reports a token present
 - [ ] 16 concurrent R/W sessions supported
 - [ ] `C_Login` with `CKU_USER`
-- [ ] `CKM_RSA_PKCS_KEY_PAIR_GEN` — RSA 2048 / 3072 / 4096
+- [ ] `CKM_RSA_PKCS_KEY_PAIR_GEN` — RSA, any multiple of 64 from 2048 to 16384
 - [ ] `CKM_RSA_PKCS` for both sign and decrypt
-- [ ] `CKM_RSA_PKCS_PSS` with `CK_RSA_PKCS_PSS_PARAMS`
+- [ ] `CKM_RSA_PKCS_PSS` with `CK_RSA_PKCS_PSS_PARAMS`, SHA-1/224/256/384/512
 - [ ] `CKM_RSA_PKCS_OAEP` with SHA-1/224/256/384/512 and a label
-- [ ] `CKM_EC_KEY_PAIR_GEN` — P-256, P-384, P-521
+- [ ] `CKM_EC_KEY_PAIR_GEN` — P-256, P-384, P-521, secp256k1
 - [ ] `CKM_ECDSA` returning **DER-encoded** signatures
 - [ ] `CKA_EC_POINT` returned as a DER `OCTET STRING`, long form for P-521
 - [ ] `CKA_TOKEN=TRUE` + `CKA_SENSITIVE=TRUE` + `CKA_EXTRACTABLE=FALSE` accepted together

@@ -24,8 +24,8 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         14 test suites · 676 assertions · gcov coverage         │
-   │         Lines: 89.5 %    Functions: 100 %                       │
+   │         14 test suites · 780 assertions · gcov coverage         │
+   │         Lines: 89.8 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,33 +72,35 @@ make syntax-check # parses the Windows-only integration test
 
 | Suite | File | Assertions | What is tested |
 |-------|------|:----------:|----------------|
-| PKCS#11 error mapping | `test_p11rv_mapping.c` | 22 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
-| Logging | `test_logging.c` | 9 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
-| Mechanism resolution | `test_mechanism_resolve.c` | 18 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
-| Export blobs | `test_export_blobs.c` | 23 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
-| KSP provider | `test_ksp_provider.c` | 27 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
-| KSP key operations | `test_ksp_key_ops.c` | 65 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
-| KSP crypto | `test_ksp_crypto.c` | 60 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
-| KSP key properties | `test_ksp_key_props.c` | 25 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
-| Memory | `test_memory.c` | 13 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
-| ECDSA DER decode | `test_ecdsa_decode.c` | 37 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
+| PKCS#11 error mapping | `test_p11rv_mapping.c` | 26 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
+| Logging | `test_logging.c` | 7 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
+| Mechanism resolution | `test_mechanism_resolve.c` | 35 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
+| Export blobs | `test_export_blobs.c` | 38 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
+| KSP provider | `test_ksp_provider.c` | 31 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
+| KSP key operations | `test_ksp_key_ops.c` | 154 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
+| KSP crypto | `test_ksp_crypto.c` | 98 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
+| KSP key properties | `test_ksp_key_props.c` | 87 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
+| Memory | `test_memory.c` | 21 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
+| ECDSA DER decode | `test_ecdsa_decode.c` | 47 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
 | OAEP parameters | `test_oaep_params.c` | 49 | `P11_MapHashAlg()` and `P11_BuildOaepParams()` across SHA-1/224/256/384/512, label pass-through, unsupported-hash rejection |
 | ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **676** | |
+| **Total** | | **780** | |
 
-Counts above are the assertions each suite reports; the earlier figures
-(10 suites / 281 assertions) predate the SoftHSM2 2.7.0 mechanism work.
+Counts above are the assertions each suite reports, read back from a full
+`make run`. The earlier figures (10 suites / 281 assertions) predate the
+SoftHSM2 2.7.0 mechanism work; the jump from 676 to 780 is the small-gap
+work described in `docs/11-market-comparison.md`.
 
-### Coverage (gcov / lcov — 2026-06-13)
+### Coverage (gcov / gcovr — 2026-09-09)
 
 | Module | Lines | Hit | Line % | Functions | Hit | Func % |
 |--------|------:|----:|:------:|----------:|----:|:------:|
 | `common/` | 38 | 33 | **86.8 %** | 7 | 7 | **100 %** |
-| `ksp/` | 1154 | 1026 | **88.9 %** | 46 | 46 | **100 %** |
-| `pkcs11/` | 323 | 294 | **91.0 %** | 9 | 9 | **100 %** |
-| **Total** | **1595** | **1427** | **89.5 %** | **62** | **62** | **100 %** |
+| `ksp/` | 1280 | 1144 | **89.4 %** | 42 | 42 | **100 %** |
+| `pkcs11/` | 335 | 307 | **91.6 %** | 14 | 14 | **100 %** |
+| **Total** | **1653** | **1484** | **89.8 %** | **63** | **63** | **100 %** |
 
 > Full HTML report: `tests/unit/coverage_html/index.html`
 
