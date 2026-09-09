@@ -22,6 +22,14 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [11 — CNG KSP market comparison](./11-market-comparison.md) | Capability audit against Microsoft, AWS, Utimaco, Thales, Entrust and Securosys providers, with evidence grades on every claim |
 | [12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) | Every function, mechanism, attribute and parameter a token must provide, in capability tiers, with a backend evaluation checklist |
 
+### Generated deliverables
+
+| Artefact | Source of truth | Regenerate with |
+|----------|-----------------|-----------------|
+| [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf) — 96 market capabilities, our coverage, and the gap remedy for each | [`feature-matrix.csv`](./feature-matrix.csv) | `python3 generate_feature_matrix.py` |
+| `SoftHSM2_KSP_Algorithm_Reference.docx` | `generate_algo_ref.py` | `python3 generate_algo_ref.py` |
+| `SoftHSM2_KSP_Complete_Developer_Guide.docx` | `generate_guide.py` | `python3 generate_guide.py` |
+
 ---
 
 ## Quick overview diagram

@@ -92,13 +92,16 @@ noida/
 │   │   ├── 09-tests.md             Four-layer test pyramid reference
 │   │   ├── 10-hlk-execution.md     Microsoft HLK execution procedure
 │   │   ├── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
-│   │   └── 12-pkcs11-requirements.md Backend requirements: functions, mechanisms, attributes
+│   │   ├── 12-pkcs11-requirements.md Backend requirements: functions, mechanisms, attributes
+│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (96 rows)
 │   ├── CMakeLists.txt
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
-│   └── SoftHSM2_KSP_Algorithm_Reference.docx        Algorithm reference (Word)
+│   ├── SoftHSM2_KSP_Algorithm_Reference.docx        Algorithm reference (Word)
+│   └── SoftHSM2_KSP_Feature_Matrix.pdf              Market coverage + gap analysis (PDF)
 ├── generate_guide.py               python-docx script → Complete_Developer_Guide.docx
 ├── generate_algo_ref.py            python-docx script → Algorithm_Reference.docx
+├── generate_feature_matrix.py      reportlab script  → Feature_Matrix.pdf (reads the CSV)
 └── CLAUDE.md                       ← this file
 ```
 
@@ -117,6 +120,13 @@ noida/
   this KSP specifically, and cannot be BCrypt-verified end to end. `AES` and
   the ECB/CBC/GCM chaining modes *are* standard; `ChainingModeCTR` is not.
 - Every other surveyed provider exposes only RSA + ECDSA + ECDH on NIST curves
+- **`docs/feature-matrix.csv` + `generate_feature_matrix.py` → `SoftHSM2_KSP_Feature_Matrix.pdf`**
+  — 96 capabilities observed across shipping CNG KSPs in 14 categories, each
+  marked Covered / Partial / Not covered against this project with the remedy
+  and effort for every gap. Currently 44 covered, 5 partial, 47 not covered;
+  44 actionable gaps (10 S, 16 M, 18 L). The rest are deliberate positions or
+  external blockers. Highest-value gap identified: **X25519 key agreement**,
+  which unlike Ed25519 signing *is* a standard CNG curve.
 - **`docs/12-pkcs11-requirements.md`** — the PKCS#11 backend contract extracted
   from source: 22 Cryptoki functions, 20 dispatch mechanisms, 18 attributes,
   5 parameter structs, organised into 5 capability tiers with an HSM
@@ -355,7 +365,17 @@ See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure
 Two python-docx scripts regenerate the Word documents:
 
 ```bash
-pip install python-docx
-python3 generate_guide.py       # → softhsm_ksp/SoftHSM2_KSP_Complete_Developer_Guide.docx
-python3 generate_algo_ref.py    # → softhsm_ksp/SoftHSM2_KSP_Algorithm_Reference.docx
+pip install python-docx reportlab
+python3 generate_guide.py          # → softhsm_ksp/SoftHSM2_KSP_Complete_Developer_Guide.docx
+python3 generate_algo_ref.py       # → softhsm_ksp/SoftHSM2_KSP_Algorithm_Reference.docx
+python3 generate_feature_matrix.py # → softhsm_ksp/SoftHSM2_KSP_Feature_Matrix.pdf
 ```
+
+**The feature matrix is data-driven.** Its source of truth is
+`softhsm_ksp/docs/feature-matrix.csv` — one row per capability, with columns
+`id, category, feature, detail, market, evidence, status, gap_solution, effort`.
+To record that a gap has closed, set that row's `status` to `Covered` and clear
+`gap_solution`; to add a newly observed market feature, append a row with a
+fresh ID. Then regenerate. Every count on page 1 of the PDF is computed from
+the CSV, so the summary cannot drift from the table, and coverage changes show
+up as a one-line diff rather than an opaque binary change.
