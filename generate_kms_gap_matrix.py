@@ -833,31 +833,62 @@ def build():
     # ── sources ──────────────────────────────────────────────────────────
     add_heading(doc, f"{n + 1}  Sources", 1, DARK_BLUE)
     add_para(doc,
-        "The requirement list was assembled from vendor capability documentation and "
-        "the two NIST publications that define what a key management system owes its "
-        "operator. The coverage column comes from this repository.")
+        "The requirement list was assembled from published vendor capability "
+        "documentation and the two NIST publications that define what a key "
+        "management system owes its operator. The coverage column comes entirely "
+        "from this repository.")
     section_break(doc)
+    add_para(doc, "Products whose documentation was read", bold=True, colour=MID_BLUE)
     simple_table(doc,
-        ["Source", "Used for"],
+        ["Product", "What it contributed"],
         [
             ["Thales CipherTrust Manager",
-             "Clustering, multi-tenancy, REST API, key lifecycle scope."],
+             "HA clustering and intelligent key sharing, multi-tenancy, REST API, "
+             "key lifecycle scope, deployment options."],
             ["Fortanix Data Security Manager",
-             "Quorum approval, BYOK, cloud EKM/XKS, tokenization."],
-            ["Entrust KeyControl, Utimaco ESKM",
+             "Quorum approval policy, BYOK and BYOKMS, cloud EKM and AWS XKS, "
+             "tokenization, FIPS 140-2 Level 3 appliance."],
+            ["Entrust KeyControl",
+             "Distributed isolated vaults for data residency; a compliance "
+             "dashboard covering PCI DSS, HIPAA and NIST SP 800-130; automated "
+             "rotation, backup and revocation; FIPS 140-3 and Common Criteria "
+             "EAL4+ HSM integration."],
+            ["Utimaco Enterprise Secure Key Manager",
              "Enterprise deployment expectations, HA and DR framing."],
-            ["AWS KMS, Azure Key Vault Managed HSM, GCP Cloud KMS",
-             "External key store patterns, cloud integration surface."],
-            ["OASIS KMIP 2.1 and the KMIP 3.0 draft",
-             "Protocol scope, and what the protocol deliberately leaves out."],
+            ["AWS KMS, Azure Key Vault Managed HSM, Google Cloud KMS",
+             "External key store patterns — AWS XKS, Azure external key "
+             "management, Google Cloud EKM — BYOK import, rotation intervals, "
+             "and the FIPS levels each is validated to."],
+        ],
+        widths=[2.4, 4.1])
+    section_break(doc)
+    add_para(doc, "Standards and specifications", bold=True, colour=MID_BLUE)
+    simple_table(doc,
+        ["Source", "What it contributed"],
+        [
+            ["OASIS KMIP 2.1, and the 3.0 draft (CSD02, May 2026)",
+             "Protocol scope, and what the protocol deliberately leaves out. The "
+             "3.0 draft is where ML-KEM, ML-DSA, SLH-DSA and the Encapsulate / "
+             "Decapsulate operations arrive."],
             ["NIST SP 800-57 Part 1",
              "Key lifecycle states and cryptoperiod expectations."],
             ["NIST SP 800-152 (CKMS profile)",
-             "Backup, recovery and audit requirements."],
+             "Backup, recovery, audit and disaster-recovery requirements."],
             ["This repository at " + ASSESSED_AT,
              "Every entry in the coverage and route columns."],
         ],
         widths=[2.4, 4.1])
+    section_break(doc)
+    add_para(doc,
+        "A note on method, since it bears on how much weight the requirement list "
+        "carries. The five products above were chosen because they span the "
+        "category: two software-first platforms, one appliance vendor, one vault "
+        "architecture, and the three cloud services. Their published documentation "
+        "is marketing material and describes what each vendor chooses to "
+        "advertise, so the list is a fair picture of what the market expects a KMS "
+        "to do and not a substitute for a hands-on evaluation of any one product. "
+        "Where several vendors describe the same capability in different words, it "
+        "appears here once.", italic=True, size=9)
     section_break(doc)
     add_para(doc,
         "This document is generated. Re-run generate_kms_gap_matrix.py after closing a "
