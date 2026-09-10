@@ -15,6 +15,7 @@ refuses to build rather than printing a plan that does not add up.
 
 import datetime
 import importlib.util
+import json
 import os
 
 from docx import Document
@@ -47,7 +48,8 @@ STAGES = [
 ]
 
 # step, stage, title, objective, design, implementation, tests, gate,
-# features closed (must match gap-matrix feature names exactly), size
+# features closed (must match gap-matrix feature names exactly), size,
+# impact on the existing design
 STEPS = [
     (1, "A", "Service layer and guard",
      "Make authorization, dual control, audit and metrics impossible to bypass — "
@@ -74,7 +76,11 @@ STEPS = [
      f"All {BASELINE_TESTS} existing tests pass with no test file modified, and "
      "the reflection test proves no service method escapes the guard.",
      [],
-     "~600 lines moved, ~15 new tests. No new dependencies."),
+     "~600 lines moved, ~15 new tests. No new dependencies.",
+     [
+      "OperationDispatcher loses its cross-cutting logic and becomes a codec: decode, call the service, encode.",
+      "access_control.py and dual_control.py are invoked from one place instead of being wired into a transport.",
+      "No schema change, no configuration change, nothing on the wire changes."]),
 
     (2, "A", "Query and reporting layer",
      "Let the store answer the questions a console asks, in one query rather "
@@ -96,7 +102,10 @@ STEPS = [
      "A store holding 12,000 objects returns page one of fifty, sorted by expiry, "
      "in a single query, with the same figures a full scan produces.",
      ["Key inventory and discovery", "Crypto-agility reporting"],
-     "~400 lines, ~20 tests."),
+     "~400 lines, ~20 tests.",
+     [
+      "metadata/store.py gains paged query methods; the existing locate() is untouched, so the KMIP handler is unaffected.",
+      "New indexes on the sortable columns — the first schema migration since Phase 1."]),
 
     (3, "B", "HTTP transport, sessions and service accounts",
      "An authenticated HTTPS listener that shares nothing with the KMIP port, "
@@ -131,7 +140,11 @@ STEPS = [
      "the API is under load.",
      ["API keys / service accounts", "Connection and rate limiting",
       "Request bounds and DoS resistance"],
-     "~900 lines, ~35 tests."),
+     "~900 lines, ~35 tests.",
+     [
+      "A second listener and a second authenticated entry point: the security surface roughly doubles.",
+      "New config section, new tables for tokens, new failure modes the KMIP path never had (429, CSRF).",
+      "observability.py keeps its own unauthenticated port, deliberately separate."]),
 
     (4, "B", "Read endpoints",
      "Everything a console displays, with authorization identical to KMIP.",
@@ -155,7 +168,10 @@ STEPS = [
      "queue against real data, and a test proves no write path is reachable "
      "through any registered route.",
      [],
-     "~700 lines, ~40 tests."),
+     "~700 lines, ~40 tests.",
+     [
+      "Read paths gain an HTTP representation; the KMIP path does not change at all.",
+      "The 404-versus-403 decision becomes an API contract every later step must preserve."]),
 
     (5, "B", "Write endpoints, and the governance gaps",
      "Lifecycle and delegation over REST, with governance applying by "
@@ -185,7 +201,10 @@ STEPS = [
      "and both pass.",
      ["Automatic rotation", "Split knowledge / M-of-N shares",
       "Bulk and batch operations"],
-     "~1,100 lines, ~55 tests."),
+     "~1,100 lines, ~55 tests.",
+     [
+      "Write paths over HTTP, with governance applied through the guard rather than re-implemented beside it.",
+      "lifecycle/governance.py extends to key pairs, create_split_key gains a second method, and the service layer gains transactions."]),
 
     (6, "B", "Administration, OpenAPI, separation of duties",
      "Complete the API surface and split the administrator so no one role can "
@@ -206,7 +225,10 @@ STEPS = [
      "openapi.json validates, covers every route the router knows about, and the "
      "two admin roles are provably disjoint in capability.",
      ["REST / JSON API", "Separation of duties"],
-     "~800 lines, ~45 tests."),
+     "~800 lines, ~45 tests.",
+     [
+      "The admin role splits in two — the first change to the authorization model since Phase 5, and the first needing a migration for existing deployments.",
+      "An OpenAPI document becomes a build artefact CI has to keep in step with the router."]),
 
     (7, "B", "Web console and self-service",
      "The interface most of the market considers table stakes, and the reason "
@@ -229,7 +251,10 @@ STEPS = [
      "An operator completes a full day of routine work — provisioning, "
      "approving, investigating an audit question — without touching the CLI.",
      ["Web console", "Self-service developer portal"],
-     "~2,000 lines of front-end, ~30 tests."),
+     "~2,000 lines of front-end, ~30 tests.",
+     [
+      "A front-end build enters the repository — the first artefact that is neither Python nor documentation tooling.",
+      "Content Security Policy and cookie handling become part of the security review surface."]),
 
     (8, "C", "Enterprise identity and policy",
      "Authenticate against the corporate directory, and express conditions the "
@@ -253,7 +278,10 @@ STEPS = [
      "A corporate login yields exactly the roles the directory says, and a "
      "policy denial names the rule that fired in the audit log.",
      ["Enterprise IdP — LDAP/AD, SAML, OIDC", "Attribute or policy-based access"],
-     "~900 lines, ~40 tests."),
+     "~900 lines, ~40 tests.",
+     [
+      "Identity resolution gains a third path beside password and mTLS certificate.",
+      "The guard gains a policy evaluation point — the first change to its order of checks since step 1."]),
 
     (9, "C", "Audit externalisation, compliance and ceremony",
      "Make the audit trail survive an attacker with file access, and produce "
@@ -283,7 +311,10 @@ STEPS = [
      "verification — is caught by the external anchor.",
      ["Formal key ceremony", "External audit anchoring", "SIEM integration",
       "Compliance reporting", "Alerting"],
-     "~1,000 lines, ~45 tests."),
+     "~1,000 lines, ~45 tests.",
+     [
+      "The audit log stops being purely local: it gains an outbound path and an external dependency.",
+      "Worker 0 takes on a third single-instance responsibility beside the scheduler and the metrics endpoint."]),
 
     (10, "D", "Storage abstraction and PostgreSQL",
      "Remove the single-writer constraint that blocks everything in stage D.",
@@ -307,7 +338,10 @@ STEPS = [
      f"The full suite — {BASELINE_TESTS} tests plus everything added since — "
      "passes against PostgreSQL as well as SQLite.",
      ["Enterprise database backend"],
-     "~1,500 lines, ~60 tests. Needs a PostgreSQL instance in CI."),
+     "~1,500 lines, ~60 tests. Needs a PostgreSQL instance in CI.",
+     [
+      "metadata/store.py stops being SQLite and becomes an interface with two implementations — the largest structural change in the plan.",
+      "Every SQLite-specific mechanism needs a deliberate equivalent, including the lock that stops the audit chain forking."]),
 
     (11, "D", "High availability, failover and deployment",
      "Survive the loss of a node, a token, or a site.",
@@ -335,7 +369,10 @@ STEPS = [
      ["HA clustering", "Multi-site replication and DR", "HSM failover and pooling",
       "Horizontal throughput", "Scheduled and offsite backup",
       "Kubernetes / container deployment"],
-     "~1,800 lines, ~55 tests. Needs multiple nodes and a second token."),
+     "~1,800 lines, ~55 tests. Needs multiple nodes and a second token.",
+     [
+      "Single-process assumptions become cluster-wide ones: the scheduler needs a leader lock, not a worker index.",
+      "pkcs11_shim gains a pool and health checks — the first change to the shim's contract since the capability probe."]),
 
     (12, "D", "Multi-tenancy",
      "Let unrelated tenants share one deployment without seeing each other.",
@@ -360,7 +397,10 @@ STEPS = [
      "A generated test over every operation and every route proves no "
      "cross-tenant reachability exists.",
      ["Multi-tenancy and namespaces", "Per-tenant quotas"],
-     "~1,600 lines, ~80 tests."),
+     "~1,600 lines, ~80 tests.",
+     [
+      "A tenant column reaches every table, every query, the audit log, the CLI and the API.",
+      "Object names stop being globally unique — the change most likely to surprise an existing deployment."]),
 ]
 
 # Features the twelve steps do not close, with the reason.
@@ -744,7 +784,7 @@ def build():
     section_break(doc)
 
     for (num, stage, title, objective, design, impl, tests, gate, closes,
-         size) in STEPS:
+         size, impact) in STEPS:
         add_heading(doc, f"Step {num} — {title}", 2, DARK_BLUE)
         p = doc.add_paragraph()
         r = p.add_run(f"Stage {stage}   ·   {size}")
@@ -755,6 +795,8 @@ def build():
         add_para(doc, objective, bold=True, size=10.5)
         section_break(doc)
 
+        labelled_block(doc, "Impact on the existing design", impact, WARN_AMBER)
+        section_break(doc)
         labelled_block(doc, "Design", design)
         section_break(doc)
         labelled_block(doc, "Implementation", impl)
@@ -867,6 +909,27 @@ def build():
     out = "KMIP_PKCS11_REST_KMS_Plan.docx"
     doc.save(out)
     print(f"Saved: {out}")
+
+    # The slide deck is built from this same data, so the two cannot drift.
+    # generate_rest_kms_deck.js reads it; run this generator first.
+    payload = {
+        "baseline": BASELINE,
+        "baseline_tests": BASELINE_TESTS,
+        "generated": TODAY,
+        "totals": {"open": len(open_features), "closed": len(claimed),
+                   "deferred": len(deferred)},
+        "stages": [{"letter": a, "name": b, "note": c} for a, b, c in STAGES],
+        "steps": [
+            {"n": n, "stage": st, "title": ti, "objective": ob, "design": de,
+             "implementation": im, "tests": te, "gate": ga, "closes": cl,
+             "size": si, "impact": ip}
+            for (n, st, ti, ob, de, im, te, ga, cl, si, ip) in STEPS
+        ],
+        "remaining": [{"feature": f, "kind": k, "why": w} for f, k, w in REMAINING],
+    }
+    with open("plan_steps.json", "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=1, ensure_ascii=False)
+    print("Saved: plan_steps.json  (source for the slide deck)")
     print(f"  {len(open_features)} features open · {len(claimed)} closed by the "
           f"plan · {len(deferred)} deferred · reconciles with the gap matrix")
 

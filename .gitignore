@@ -165,3 +165,6 @@ cython_debug/
 # Node — only the slide-deck generator needs it
 node_modules/
 package-lock.json
+
+# generated: the bridge between the plan generator and its slide deck
+plan_steps.json

@@ -262,6 +262,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap |
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twelve-step delivery plan to a complete KMS with a REST control plane. Its arithmetic is checked against the gap matrix at build time |
+| `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 39 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.
@@ -270,6 +271,11 @@ the matrix still names the commit it describes.
 matrix does not list as open, claims one twice, or leaves an open feature
 accounted for by neither the plan nor its deferred list. Close a gap, mark it
 `full` in the matrix, and the plan will tell you it no longer reconciles.
+
+The plan and its deck share one source. `generate_rest_kms_plan.py` emits
+`plan_steps.json` (gitignored) and `generate_rest_kms_deck.js` reads it, so
+`npm run plan:all` rebuilds document, deck and PDF together. Edit the STEPS
+table in the Python generator; never the deck.
 
 ---
 

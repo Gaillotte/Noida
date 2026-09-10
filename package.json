@@ -6,7 +6,10 @@
   "scripts": {
     "deck": "node generate_overview_deck.js",
     "pdf": "soffice --headless --convert-to pdf --outdir . KMIP_PKCS11_Overview_Deck.pptx",
-    "deck:all": "npm run deck && npm run pdf"
+    "deck:all": "npm run deck && npm run pdf",
+    "plan-deck": "node generate_rest_kms_deck.js",
+    "plan-pdf": "soffice --headless --convert-to pdf --outdir . KMIP_PKCS11_REST_KMS_Plan_Deck.pptx",
+    "plan:all": "python generate_rest_kms_plan.py && npm run plan-deck && npm run plan-pdf"
   },
   "devDependencies": {
     "pptxgenjs": "^3.12.0"
