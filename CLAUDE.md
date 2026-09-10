@@ -263,6 +263,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twelve-step delivery plan to a complete KMS with a REST control plane. Its arithmetic is checked against the gap matrix at build time |
 | `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 39 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not |
+| `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which source evidenced each of the 74 requirements. **Provenance, not a capability comparison** — a mark means a source's documentation named the requirement, never that a product has it |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.
@@ -276,6 +277,13 @@ The plan and its deck share one source. `generate_rest_kms_plan.py` emits
 `plan_steps.json` (gitignored) and `generate_rest_kms_deck.js` reads it, so
 `npm run plan:all` rebuilds document, deck and PDF together. Edit the STEPS
 table in the Python generator; never the deck.
+
+`generate_feature_provenance.py` reconciles against the matrix the same way and
+refuses to build on an invented feature, a missing one, an unknown source code,
+or a requirement with no source at all. Its "CAT" column is the honest residue —
+20 of the 74 requirements were named by no vendor or standard in the research
+and rest on ordinary practice. If the requirement list is ever challenged, those
+are the rows to defend first.
 
 ---
 
