@@ -261,9 +261,15 @@ rest, backup and restore.
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | Market requirements vs coverage, with routes for gaps |
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap |
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
+| `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twelve-step delivery plan to a complete KMS with a REST control plane. Its arithmetic is checked against the gap matrix at build time |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.
+
+`generate_rest_kms_plan.py` refuses to build if a step claims a feature the gap
+matrix does not list as open, claims one twice, or leaves an open feature
+accounted for by neither the plan nor its deferred list. Close a gap, mark it
+`full` in the matrix, and the plan will tell you it no longer reconciles.
 
 ---
 
