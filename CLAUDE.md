@@ -115,10 +115,12 @@ for g in generate_feature_spec generate_install_guide generate_kmip_design_doc \
 done
 ```
 
-The deck is the one generator that is not Python:
+The decks are the generators that are not Python:
 
 ```bash
-npm install && npm run deck        # needs pptxgenjs, declared in package.json
+npm install && npm run all         # every checked-in document, in dependency order
+npm run deck:all                   # matrix totals, overview deck, its PDF
+npm run plan:all                   # plan document, its deck, its PDF
 ```
 
 ---
@@ -207,7 +209,7 @@ failover, multi-tenancy, FIPS validation.
   two ways because nothing ever executed it.
 - `7b56c23` enterprise KMS gap matrix — 74 features from the commercial
   market, 32 covered, 16 partial, 26 not covered, 19 of which cannot be closed
-  by writing more KMIP.
+  by writing more KMIP. Later widened to 82; see the end of this section.
 - `5686868` overview deck — 15 slides covering KMIP, the design on PKCS#11,
   the REST-on-KMIP target architecture, the gap analysis and the roadmap.
   Shipped with every connector invisible: pptxgenjs writes a `line` shape with
@@ -221,6 +223,42 @@ failover, multi-tenancy, FIPS validation.
   more cards that the PIL approximation had under-measured. The generator now
   estimates the height of every card's content at build time and prints what
   does not fit.
+- `9c18326` requirement provenance — which source evidenced each of the 74
+  requirements. Deliberately **not** a capability comparison: the research was
+  a handful of published pages per vendor, and filling 74 × 7 cells as though
+  it were a comparison would have been fabrication at scale. It reported the
+  uncomfortable figure honestly — 20 requirements rested on no source at all.
+
+### Four more products, and what they changed (11 Sep 2026)
+
+Bloombase KeyCastle, Cosmian/Eviden KMS, Securosys CyberVault KMS and
+HashiCorp Vault were added to the research. Two results worth keeping:
+
+- **The requirement list was short by eight.** Encryption as a service over a
+  data-plane API, KMIP's JSON and XML encodings, an OpenAPI document with
+  generated clients, key-bound usage policy enforced inside the HSM,
+  certificate discovery and expiry monitoring, confidential-computing
+  deployment, distributed tracing, and sealed startup with quorum unseal. 74 →
+  82: 32 covered, 18 partial, 32 not covered, 23 outside KMIP's reach.
+- **The unsourced residue halved, 20 → 10.** Most of what the category
+  baseline was carrying alone — groups, rate limiting, metrics, an
+  administrative CLI, mTLS identity, certificate lifecycle, an enterprise
+  database backend — turned out to be named by one of the four. Ten
+  requirements still rest on nothing but ordinary practice, and the provenance
+  document lists them.
+
+Two mechanical findings came out of the same work. The gap figures on the
+overview deck were a hand-copied scorecard, so the matrix now writes
+`gap_totals.json` and the deck reads it — the same treatment `plan_steps.json`
+already gave the plan deck. And the plan deck's fit check was wrong in a way
+that mattered: it estimated line height from the font size while `panel()`
+pinned spacing at 16pt, so shrinking a font bought no vertical space and the
+check passed content the render showed hanging out of its panel.
+
+Note for anyone repeating this research: the network policy in this
+environment blocks all four vendors' documentation domains, so they were read
+through indexed summaries rather than the pages themselves. Every document
+that rests on that research says so.
 
 ---
 
@@ -245,6 +283,11 @@ rest, backup and restore.
 - No post-quantum: needs both a PQC token and KMIP 3.0.
 - The container image and CI workflow have never been executed — this
   environment blocks Docker Hub and the SoftHSM2 mirror.
+- Named by the four products added in September and absent here: no data-plane
+  crypto API over HTTP, no distributed tracing, no operator-quorum unseal (the
+  token PIN holder is the whole ceremony), and dual control is enforced by the
+  server rather than bound to the key inside the token — own the server and
+  you own the policy.
 
 ---
 
@@ -263,7 +306,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twelve-step delivery plan to a complete KMS with a REST control plane. Its arithmetic is checked against the gap matrix at build time |
 | `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 39 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not |
-| `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which source evidenced each of the 74 requirements. **Provenance, not a capability comparison** — a mark means a source's documentation named the requirement, never that a product has it |
+| `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which of eleven sources evidenced each of the 82 requirements. **Provenance, not a capability comparison** — a mark means a source's documentation named the requirement, never that a product has it |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.
@@ -280,10 +323,17 @@ table in the Python generator; never the deck.
 
 `generate_feature_provenance.py` reconciles against the matrix the same way and
 refuses to build on an invented feature, a missing one, an unknown source code,
-or a requirement with no source at all. Its "CAT" column is the honest residue —
-20 of the 74 requirements were named by no vendor or standard in the research
-and rest on ordinary practice. If the requirement list is ever challenged, those
-are the rows to defend first.
+a requirement with no source at all, or a "CAT" mark sitting beside a real one.
+That last rule is what makes the CAT column mean something: it is the honest
+residue, 10 of the 82 requirements that no source named and that rest on
+ordinary practice. If the requirement list is ever challenged, those are the
+rows to defend first.
+
+The overview deck no longer carries its own copy of the gap figures.
+`generate_kms_gap_matrix.py` writes `gap_totals.json` (gitignored) and
+`generate_overview_deck.js` reads it, asserting the per-domain columns still
+sum to the totals. `npm run all` rebuilds every checked-in document in
+dependency order.
 
 ---
 

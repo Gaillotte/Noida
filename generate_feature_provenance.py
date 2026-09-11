@@ -1,6 +1,6 @@
 """
-Generate the provenance matrix: which source evidenced each of the 74
-requirements in the gap analysis.
+Generate the provenance matrix: which source evidenced each requirement in the
+gap analysis.
 
 Run: python generate_feature_provenance.py
 
@@ -13,11 +13,15 @@ per vendor — enough to establish what the market expects a KMS to do, nowhere
 near enough to compare products feature by feature. A capability comparison
 would need a hands-on evaluation of each product and is not what this is.
 
-The "Category" column is the honest residue: requirements that no specific
-source in that research named, and that are here because they are ordinary
-practice for a networked service handling secrets. Those rows are the ones to
-treat with most caution, and the table marks them rather than hiding them
-among the sourced ones.
+Marks are given strictly. A source that documents "audit logging" evidences an
+audit trail, not a tamper-evident one, so it does not mark the tamper-evidence
+row. Blank cells in rows a product plainly satisfies are the expected cost of
+that rule.
+
+CAT is the residue: requirements no source in the research named, present
+because they are ordinary practice for a networked service handling secrets.
+It is mutually exclusive with every other code — verify() enforces that — so
+the CAT column count is exactly the number of unsourced requirements.
 """
 
 import datetime
@@ -46,101 +50,116 @@ SOURCES = [
     ("FOR", "Fortanix Data Security Manager", "vendor"),
     ("ENT", "Entrust KeyControl", "vendor"),
     ("UTI", "Utimaco Enterprise Secure Key Manager", "vendor"),
+    ("BLO", "Bloombase KeyCastle", "vendor"),
+    ("COS", "Cosmian / Eviden KMS", "vendor"),
+    ("SEC", "Securosys CyberVault KMS", "vendor"),
+    ("VLT", "HashiCorp Vault", "vendor"),
     ("CLD", "AWS KMS / Azure Managed HSM / Google Cloud KMS", "vendor"),
     ("STD", "NIST SP 800-57, SP 800-152, OASIS KMIP 2.1 and 3.0", "standard"),
-    ("CAT", "Category baseline — no specific source named it", "residue"),
+    ("CAT", "Category baseline — no source named it", "residue"),
 ]
 
 # feature name (must match the gap matrix exactly) -> sources that evidenced it
 PROVENANCE = {
     # ── Key lifecycle and cryptography ───────────────────────────────────
-    "HSM-backed storage, keys never leave": ["THA", "FOR", "ENT", "UTI", "CLD", "STD"],
-    "Full lifecycle state machine": ["THA", "ENT", "STD"],
+    "HSM-backed storage, keys never leave": ["THA", "FOR", "ENT", "UTI", "BLO",
+                                             "COS", "SEC", "CLD", "STD"],
+    "Full lifecycle state machine": ["THA", "ENT", "BLO", "COS", "SEC", "STD"],
     "Cryptoperiod enforcement": ["ENT", "CLD", "STD"],
-    "Automatic rotation": ["THA", "ENT", "UTI", "CLD"],
-    "Key lineage and versioning": ["THA", "CLD"],
-    "Algorithm breadth": ["STD", "CAT"],
-    "Post-quantum (ML-KEM, ML-DSA, SLH-DSA)": ["STD", "CAT"],
-    "Hardware RNG": ["UTI", "STD"],
-    "Key derivation": ["STD", "CAT"],
-    "Key wrapping / secure import-export": ["THA", "CLD", "STD"],
-    "Split knowledge / M-of-N shares": ["FOR", "UTI", "STD"],
-    "Formal key ceremony": ["STD", "CAT"],
-    "Bulk and batch operations": ["STD", "CAT"],
+    "Automatic rotation": ["THA", "ENT", "UTI", "COS", "SEC", "CLD"],
+    "Key lineage and versioning": ["THA", "VLT", "CLD"],
+    "Algorithm breadth": ["COS", "SEC", "VLT", "STD"],
+    "Post-quantum (ML-KEM, ML-DSA, SLH-DSA)": ["COS", "SEC", "STD"],
+    "Hardware RNG": ["UTI", "BLO", "STD"],
+    "Key derivation": ["VLT", "STD"],
+    "Key wrapping / secure import-export": ["THA", "BLO", "VLT", "CLD", "STD"],
+    "Split knowledge / M-of-N shares": ["FOR", "UTI", "VLT", "STD"],
+    "Formal key ceremony": ["VLT", "STD"],
+    "Bulk and batch operations": ["STD"],
     "Verifiable destruction": ["THA", "ENT", "STD"],
+    "Key-bound usage policy enforced in hardware": ["SEC"],
 
     # ── Protocol and ecosystem integration ───────────────────────────────
-    "KMIP server": ["THA", "ENT", "UTI", "STD"],
-    "KMIP interoperability certification": ["STD", "CAT"],
+    "KMIP server": ["THA", "ENT", "UTI", "BLO", "COS", "SEC", "VLT", "STD"],
+    "KMIP interoperability certification": ["BLO", "STD"],
     "KMIP 3.0": ["STD"],
-    "PKCS#11 provider for applications": ["UTI", "CAT"],
-    "REST / JSON API": ["THA", "FOR", "UTI", "CLD"],
+    "PKCS#11 provider for applications": ["UTI", "BLO", "COS", "SEC"],
+    "REST / JSON API": ["THA", "FOR", "UTI", "COS", "SEC", "VLT", "CLD"],
     "Cloud BYOK (AWS, Azure, GCP)": ["THA", "FOR", "CLD"],
-    "Cloud EKM / XKS / hold-your-own-key": ["FOR", "CLD"],
-    "Database TDE integration": ["THA", "ENT"],
-    "Storage, backup and VM integrations": ["ENT", "CAT"],
-    "Secrets management": ["THA", "FOR", "ENT"],
-    "Tokenization / format-preserving encryption": ["THA", "FOR"],
-    "Certificate lifecycle": ["CAT"],
+    "Cloud EKM / XKS / hold-your-own-key": ["FOR", "SEC", "CLD"],
+    "Database TDE integration": ["THA", "ENT", "COS", "SEC"],
+    "Storage, backup and VM integrations": ["ENT", "BLO", "SEC"],
+    "Secrets management": ["THA", "FOR", "ENT", "VLT"],
+    "Tokenization / format-preserving encryption": ["THA", "FOR", "COS"],
+    "Certificate lifecycle": ["BLO", "COS", "SEC"],
+    "Encryption as a service (data-plane API)": ["COS", "VLT", "CLD"],
+    "KMIP JSON and XML encodings": ["COS", "STD"],
+    "OpenAPI specification and generated clients": ["COS", "CLD"],
 
     # ── Identity and access control ──────────────────────────────────────
-    "Per-identity authentication": ["THA", "UTI", "CAT"],
-    "Enterprise IdP — LDAP/AD, SAML, OIDC": ["UTI", "CAT"],
-    "mTLS certificate identity": ["CAT"],
-    "API keys / service accounts": ["CLD", "CAT"],
-    "Role-based access control": ["THA", "UTI", "CAT"],
-    "Groups": ["CAT"],
-    "Per-object access grants": ["THA", "CAT"],
-    "Attribute or policy-based access": ["THA", "FOR", "ENT"],
-    "Dual control / quorum approval": ["FOR", "UTI"],
-    "Separation of duties": ["STD", "CAT"],
-    "Multi-tenancy and namespaces": ["THA", "ENT"],
-    "Per-tenant quotas": ["CAT"],
-    "Connection and rate limiting": ["CAT"],
+    "Per-identity authentication": ["THA", "UTI", "COS", "VLT"],
+    "Enterprise IdP — LDAP/AD, SAML, OIDC": ["UTI", "COS", "VLT"],
+    "mTLS certificate identity": ["COS", "VLT"],
+    "API keys / service accounts": ["COS", "VLT", "CLD"],
+    "Role-based access control": ["THA", "UTI", "SEC", "VLT"],
+    "Groups": ["VLT"],
+    "Per-object access grants": ["THA", "COS"],
+    "Attribute or policy-based access": ["THA", "FOR", "ENT", "COS", "SEC"],
+    "Dual control / quorum approval": ["FOR", "UTI", "SEC", "VLT"],
+    "Separation of duties": ["STD"],
+    "Multi-tenancy and namespaces": ["THA", "ENT", "SEC", "VLT"],
+    "Per-tenant quotas": ["VLT"],
+    "Connection and rate limiting": ["VLT"],
 
     # ── Audit, compliance and assurance ──────────────────────────────────
     "Tamper-evident audit log": ["THA", "UTI", "STD"],
     "External audit anchoring": ["CAT"],
-    "SIEM integration": ["UTI", "CAT"],
-    "Retention and archival": ["STD", "CAT"],
-    "FIPS 140-2/3 validated HSM": ["FOR", "ENT", "CLD", "CAT"],
-    "Common Criteria / eIDAS": ["ENT", "CAT"],
-    "Compliance reporting": ["THA", "ENT"],
-    "Key inventory and discovery": ["THA", "ENT"],
+    "SIEM integration": ["UTI", "BLO", "VLT"],
+    "Retention and archival": ["BLO", "STD"],
+    "FIPS 140-2/3 validated HSM": ["FOR", "ENT", "BLO", "COS", "SEC", "CLD"],
+    "Common Criteria / eIDAS": ["ENT", "SEC"],
+    "Compliance reporting": ["THA", "ENT", "SEC"],
+    "Key inventory and discovery": ["THA", "ENT", "SEC"],
     "Cryptoperiod policy alignment": ["STD"],
-    "Crypto-agility reporting": ["CAT"],
+    "Crypto-agility reporting": ["SEC"],
+    "Certificate discovery and expiry monitoring": ["SEC"],
 
     # ── Availability, scale and recovery ─────────────────────────────────
-    "HA clustering": ["THA", "UTI", "CAT"],
-    "Multi-site replication and DR": ["ENT", "UTI", "STD"],
-    "HSM failover and pooling": ["UTI", "CAT"],
-    "Horizontal throughput": ["THA"],
-    "Enterprise database backend": ["CAT"],
+    "HA clustering": ["THA", "UTI", "BLO", "COS", "VLT"],
+    "Multi-site replication and DR": ["ENT", "UTI", "VLT", "STD"],
+    "HSM failover and pooling": ["UTI", "BLO"],
+    "Horizontal throughput": ["THA", "COS", "VLT"],
+    "Enterprise database backend": ["COS", "VLT"],
     "Scheduled and offsite backup": ["THA", "ENT", "STD"],
-    "Restore that proves itself": ["STD", "CAT"],
+    "Restore that proves itself": ["STD"],
     "Zero-downtime certificate rotation": ["CAT"],
     "Rolling upgrades": ["CAT"],
-    "Kubernetes / container deployment": ["THA", "CAT"],
+    "Kubernetes / container deployment": ["THA", "COS", "SEC"],
+    "Confidential computing deployment": ["COS"],
 
     # ── Operations and observability ─────────────────────────────────────
     "Health and readiness probes": ["CAT"],
-    "Metrics": ["CAT"],
+    "Metrics": ["VLT"],
     "Structured logging": ["CAT"],
     "Configuration-driven deployment": ["CAT"],
-    "Administrative CLI": ["CAT"],
-    "Web console": ["THA", "FOR", "ENT"],
-    "Self-service developer portal": ["THA", "CAT"],
-    "Alerting": ["CAT"],
+    "Administrative CLI": ["COS", "VLT"],
+    "Web console": ["THA", "FOR", "ENT", "BLO", "COS", "SEC"],
+    "Self-service developer portal": ["THA"],
+    "Alerting": ["BLO", "SEC"],
+    "Distributed tracing": ["COS"],
 
     # ── Platform hardening ───────────────────────────────────────────────
     "TLS enforced by default": ["CAT"],
-    "Metadata encrypted at rest": ["STD", "CAT"],
-    "Master key rotation": ["STD", "CAT"],
-    "Non-extractable key enforcement": ["CLD", "STD"],
+    "Metadata encrypted at rest": ["COS", "VLT", "STD"],
+    "Master key rotation": ["VLT", "STD"],
+    "Non-extractable key enforcement": ["SEC", "CLD", "STD"],
     "Request bounds and DoS resistance": ["CAT"],
     "Secrets kept out of configuration": ["CAT"],
     "Hardened service": ["CAT"],
+    "Sealed startup with quorum unseal": ["VLT"],
 }
+
+TOTAL = 0          # set from the matrix at build time; never hard-coded
 
 STATUS_LABEL = {"full": "Covered", "partial": "Partial", "gap": "Gap"}
 STATUS_COLOUR = {"full": OK_GREEN, "partial": WARN_AMBER, "gap": GAP_RED}
@@ -178,6 +197,10 @@ def verify(matrix):
             raise SystemExit(f"{feat}: no source at all — every requirement needs one")
         if len(set(marks)) != len(marks):
             raise SystemExit(f"{feat}: duplicate source code")
+        if "CAT" in marks and len(marks) > 1:
+            raise SystemExit(
+                f"{feat}: CAT means no source named it, so it cannot sit beside "
+                f"{[m for m in marks if m != 'CAT']}")
     return listed
 
 
@@ -222,7 +245,11 @@ def section_break(doc):
 
 
 COLS = [c for c, _n, _k in SOURCES]
-COL_W = [4.40] + [0.68] * len(COLS) + [0.85]
+# A4 landscape leaves 10.59" between the margins. Spend it on the requirement
+# name first — a wrapped feature name is much harder to read than a tight tick
+# column — then divide the rest.
+_SRC_W = 0.50
+COL_W = [10.59 - _SRC_W * len(COLS) - 0.80] + [_SRC_W] * len(COLS) + [0.80]
 
 
 def matrix_header(tbl):
@@ -271,7 +298,23 @@ def matrix_row(tbl, feature, marks, status, shade):
     set_cell_bg(cs, shade)
 
 
+def fixed_layout(tbl):
+    """Without this the renderer autofits and gives eleven one-character tick
+    columns more width than the requirement names, which is how the first
+    render of this table came out."""
+    tbl.autofit = False
+    tblPr = tbl._tbl.tblPr
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tblPr.append(layout)
+    grid = tbl._tbl.find(qn("w:tblGrid"))
+    if grid is not None:
+        for col, w in zip(grid.findall(qn("w:gridCol")), COL_W):
+            col.set(qn("w:w"), str(int(w * 1440)))
+
+
 def widths(tbl):
+    fixed_layout(tbl)
     for row in tbl.rows:
         for cell, w in zip(row.cells, COL_W):
             cell.width = Inches(w)
@@ -279,7 +322,9 @@ def widths(tbl):
 
 def build():
     matrix = load_matrix()
-    verify(matrix)
+    listed = verify(matrix)
+    global TOTAL
+    TOTAL = len(listed)
 
     doc = Document()
     for sec in doc.sections:
@@ -294,7 +339,8 @@ def build():
 
     # ── header ───────────────────────────────────────────────────────────
     t = doc.add_paragraph()
-    tr = t.add_run("Requirement provenance — where each of the 74 features came from")
+    tr = t.add_run(f"Requirement provenance — where each of the {TOTAL} "
+                   f"features came from")
     tr.bold = True
     tr.font.size = Pt(19)
     tr.font.color.rgb = DARK_BLUE
@@ -312,28 +358,47 @@ def build():
     section_break(doc)
 
     # legend
-    legend = doc.add_table(rows=1, cols=len(SOURCES))
+    # Eleven codes will not read across a single row, so the legend runs down
+    # the page in two columns of pairs.
+    pairs = [SOURCES[i:i + 2] for i in range(0, len(SOURCES), 2)]
+    legend = doc.add_table(rows=len(pairs), cols=4)
     legend.style = "Table Grid"
-    for i, (code, name, kind) in enumerate(SOURCES):
-        cell = legend.rows[0].cells[i]
-        cell.width = Inches(10.59 / len(SOURCES))
-        set_cell_bg(cell, "FBF3E3" if kind == "residue" else "EEF4FA")
-        p = cell.paragraphs[0]
-        rc = p.add_run(code + "  ")
-        rc.bold = True
-        rc.font.size = Pt(9)
-        rc.font.color.rgb = WARN_AMBER if kind == "residue" else DARK_BLUE
-        rn = p.add_run(name)
-        rn.font.size = Pt(8)
-        rn.font.color.rgb = DARK_GREY
+    for r, pair in enumerate(pairs):
+        for c, entry in enumerate(pair):
+            code, name, kind = entry
+            shade = "FBF3E3" if kind == "residue" else "EEF4FA"
+            cc = legend.rows[r].cells[c * 2]
+            cn = legend.rows[r].cells[c * 2 + 1]
+            cc.width, cn.width = Inches(0.62), Inches(4.67)
+            rc = cc.paragraphs[0].add_run(code)
+            rc.bold = True
+            rc.font.size = Pt(9)
+            rc.font.color.rgb = WARN_AMBER if kind == "residue" else DARK_BLUE
+            rn = cn.paragraphs[0].add_run(name)
+            rn.font.size = Pt(8.5)
+            rn.font.color.rgb = DARK_GREY
+            set_cell_bg(cc, shade)
+            set_cell_bg(cn, shade)
+        if len(pair) == 1:                     # odd count — blank the last pair
+            for c in (2, 3):
+                set_cell_bg(legend.rows[r].cells[c], "FFFFFF")
     section_break(doc)
 
     add_para(doc,
-        "CAT is the honest residue: requirements no specific source in that "
-        "research named, present because they are ordinary practice for a "
-        "networked service that handles secrets. A row carried only by CAT is "
-        "the weakest-sourced kind in the table, and is marked in amber so it "
-        "reads that way at a glance rather than hiding among the others.",
+        "CAT is the honest residue: requirements no source in the research "
+        "named, present because they are ordinary practice for a networked "
+        "service that handles secrets. It never sits beside another code — the "
+        "generator refuses to build if it does — so the CAT column counts "
+        "exactly the requirements nothing evidenced, and those rows are marked "
+        "in amber rather than left to hide among the others.",
+        italic=True, size=9, colour=DARK_GREY)
+    section_break(doc)
+    add_para(doc,
+        "Marks are given strictly, and that costs blank cells. A vendor whose "
+        "documentation describes audit logging has evidenced an audit trail, "
+        "not a tamper-evident one, so it leaves the tamper-evidence row blank. "
+        "Read a blank as \u201cnot seen in what was read\u201d, never as "
+        "\u201cabsent from the product\u201d.",
         italic=True, size=9, colour=DARK_GREY)
     doc.add_page_break()
 
@@ -368,7 +433,8 @@ def build():
 
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
-    for i, text in enumerate(["Source", "Requirements evidenced", "Share of 74", "Kind"]):
+    for i, text in enumerate(["Source", "Requirements evidenced",
+                              f"Share of {TOTAL}", "Kind"]):
         cell = tbl.rows[0].cells[i]
         cell.text = text
         set_cell_bg(cell, "1A3A5C")
@@ -382,7 +448,7 @@ def build():
     for i, (code, name, kind) in enumerate(SOURCES):
         row = tbl.add_row()
         vals = [f"{code} — {name}", str(per_source[code]),
-                f"{per_source[code] * 100 // 74} %", kind_label[kind]]
+                f"{per_source[code] * 100 // TOTAL} %", kind_label[kind]]
         for j, v in enumerate(vals):
             cell = row.cells[j]
             cell.text = v
@@ -397,7 +463,7 @@ def build():
     section_break(doc)
 
     add_para(doc, f"Requirements carried only by the category baseline: "
-                  f"{len(cat_only)} of 74", bold=True, colour=WARN_AMBER)
+                  f"{len(cat_only)} of {TOTAL}", bold=True, colour=WARN_AMBER)
     add_para(doc,
         "These are the rows to challenge first if the requirement list is ever "
         "disputed. Each is defensible as ordinary practice, but none was named "
@@ -414,6 +480,11 @@ def build():
         "the former say what a product does, the latter what it advertises.",
         "An analyst grid, which would add an independent view of the category "
         "rather than each vendor's own.",
+        "Direct access to four of the vendors' documentation sites. Bloombase, "
+        "Cosmian, Securosys and HashiCorp were researched through indexed "
+        "summaries of their pages because the network policy where this "
+        "document is built blocks all four domains — so their columns are "
+        "thinner than the reading would otherwise support.",
     ]:
         add_bullet(doc, item, size=9.5)
 
@@ -427,7 +498,8 @@ def build():
     out = "KMIP_PKCS11_Feature_Provenance.docx"
     doc.save(out)
     print(f"Saved: {out}")
-    print(f"  74 requirements · {len(cat_only)} carried by the category baseline alone")
+    print(f"  {TOTAL} requirements · {len(cat_only)} carried by the category "
+          f"baseline alone")
     for code, _n, _k in SOURCES:
         print(f"  {code}: {per_source[code]}")
 

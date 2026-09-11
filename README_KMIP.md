@@ -41,12 +41,12 @@ regenerable from the script beside it so they cannot drift silently:
 | `KMIP_PKCS11_Design_Document.docx` | `generate_kmip_design_doc.py` | Architecture and design rationale, including designs that were rejected and why |
 | `KMIP_PKCS11_Project_Documentation.docx` | `generate_docs.py` | Module-by-module reference and the full test specification |
 | `KMIP_PKCS11_Phase_Report.docx` | `generate_phase_report.py` | How the system reached its current state, phase by phase |
-| `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | 74 features a high-end commercial KMS is expected to have, whether this project covers them, and the route for every gap — including the 19 that cannot be closed by writing more KMIP |
+| `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | 82 features a high-end commercial KMS is expected to have, whether this project covers them, and the route for every gap — including the 23 that cannot be closed by writing more KMIP |
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview deck: what KMIP is, the design on PKCS#11, the REST-on-KMIP target architecture, the gap analysis and the roadmap |
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as a PDF, for reading without PowerPoint |
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twelve-step plan to a complete KMS with a REST control plane — design, implementation, tests and a gate for each step, closing 28 of the 42 open gap-matrix features |
 | `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The plan as 39 slides — design impact, proposed solution and test strategy for each of the twelve steps |
-| `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which source evidenced each of the 74 requirements in the gap matrix — provenance, explicitly not a product capability comparison |
+| `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which source evidenced each of the 82 requirements in the gap matrix — provenance, explicitly not a product capability comparison |
 
 Generating them needs `python-docx` (and `matplotlib` for the design document):
 

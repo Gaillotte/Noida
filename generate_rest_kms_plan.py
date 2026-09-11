@@ -184,11 +184,19 @@ STEPS = [
       "and link to the queue. That falls out of the existing enforcement.",
       "Three matrix gaps are closed here because they are lifecycle work: "
       "asymmetric auto-rotation, Shamir threshold split keys, and batch "
-      "atomicity via a service-level transaction."],
+      "atomicity via a service-level transaction.",
+      "The data plane beside the control plane: POST /keys/{uid}/encrypt | "
+      "decrypt | sign | mac, and /datakey returning a fresh key both wrapped "
+      "under the named key and in the clear — the surface applications actually "
+      "consume, and the primitives already run inside the token."],
      ["All writes go through the guard. Scheduled rotation extends to key pairs "
       "using the existing ReKeyKeyPair handler; CreateSplitKey gains a Shamir "
       "method alongside XOR; the service layer wraps a batch in one transaction "
-      "so a mid-batch failure rolls back."],
+      "so a mid-batch failure rolls back.",
+      "The crypto endpoints are thin: they translate JSON to the arguments the "
+      "existing Encrypt, Decrypt, Sign and MAC handlers already take. Re-wrap "
+      "is decrypt-then-encrypt under the successor key, inside one guarded "
+      "call so plaintext never leaves the process."],
      ["The dual-control assertion from the KMIP wire test, run verbatim against "
       "REST: the first Destroy is refused, the key survives, two other "
       "identities approve, the retry succeeds, and the approval is spent.",
@@ -196,15 +204,21 @@ STEPS = [
       "— parametrised over the transport, one test body.",
       "Asymmetric rotation cross-links both new objects to both old ones.",
       "Shamir: any k of n shares reconstruct, any k-1 fail.",
-      "A batch whose third item fails leaves the first two unapplied."],
+      "A batch whose third item fails leaves the first two unapplied.",
+      "Ciphertext from the REST encrypt endpoint decrypts over KMIP and the "
+      "reverse — one test body, both transports, so the two cannot diverge.",
+      "A data key returns a wrapped form that unwraps to the plaintext form; "
+      "re-wrap to the successor key yields the original plaintext and the old "
+      "ciphertext no longer decrypts under the new version."],
      "The KMIP dual-control test and the REST dual-control test share one body "
      "and both pass.",
      ["Automatic rotation", "Split knowledge / M-of-N shares",
-      "Bulk and batch operations"],
-     "~1,100 lines, ~55 tests.",
+      "Bulk and batch operations", "Encryption as a service (data-plane API)"],
+     "~1,350 lines, ~68 tests.",
      [
       "Write paths over HTTP, with governance applied through the guard rather than re-implemented beside it.",
-      "lifecycle/governance.py extends to key pairs, create_split_key gains a second method, and the service layer gains transactions."]),
+      "lifecycle/governance.py extends to key pairs, create_split_key gains a second method, and the service layer gains transactions.",
+      "The server acquires a data plane. Until now every caller fetched a key reference and asked the token to act on it; now applications send data and never see a key at all."]),
 
     (6, "B", "Administration, OpenAPI, separation of duties",
      "Complete the API surface and split the administrator so no one role can "
@@ -214,18 +228,25 @@ STEPS = [
       "key-admin (objects, cryptoperiods), so a key administrator cannot grant "
       "themselves access to what they administer.",
       "An OpenAPI 3.1 document generated from the router's route table, not "
-      "hand-written — a hand-written spec drifts within a month."],
+      "hand-written — a hand-written spec drifts within a month.",
+      "An interactive explorer served from that document, and client libraries "
+      "generated from it in CI rather than written by hand, for the same "
+      "reason: anything maintained separately from the router drifts from it."],
      ["Migration assigns both new roles to anyone holding admin today, so an "
       "upgrade changes nobody's access until an operator splits them."],
      ["A key-admin cannot create an identity; a security-admin cannot read key "
       "material; neither can escalate to the other.",
       "The generated OpenAPI document validates against the 3.1 schema, and a "
       "reflection test asserts every registered route appears in it.",
+      "A client generated from the document round-trips a create, read and "
+      "delete against a live server, so the specification is proved usable and "
+      "not merely well-formed.",
       "Responses for a sample of endpoints match their declared schemas."],
      "openapi.json validates, covers every route the router knows about, and the "
      "two admin roles are provably disjoint in capability.",
-     ["REST / JSON API", "Separation of duties"],
-     "~800 lines, ~45 tests.",
+     ["REST / JSON API", "Separation of duties",
+      "OpenAPI specification and generated clients"],
+     "~900 lines, ~50 tests.",
      [
       "The admin role splits in two — the first change to the authorization model since Phase 5, and the first needing a migration for existing deployments.",
       "An OpenAPI document becomes a build artefact CI has to keep in step with the router."]),
@@ -293,8 +314,14 @@ STEPS = [
       "wholesale, internally consistent rewrite.",
       "Compliance report generators over the audit log and key inventory — PCI "
       "DSS key-management evidence, NIST SP 800-57 cryptoperiod evidence.",
-      "A key ceremony runbook, and a kmip-admin command that produces a signed "
-      "transcript of what was done, by whom, witnessed by whom.",
+      "A key ceremony runbook, and a kmip-admin command producing a signed "
+      "transcript of what was done, by whom and witnessed by whom — extended "
+      "to the token PIN itself, split into operator-held shares so the service "
+      "starts sealed and a quorum opens it. Today one PIN holder is the whole "
+      "ceremony.",
+      "OpenTelemetry spans around every guarded operation and token call. "
+      "Metrics say a request was slow; a span says which PKCS#11 call it "
+      "waited on.",
       "Alerting rules over the metrics already exported."],
      ["The shipper runs in worker 0 alongside the scheduler, with the same "
       "single-instance reasoning."],
@@ -306,15 +333,22 @@ STEPS = [
       "anchor comparison fails.",
       "Report figures match direct store queries.",
       "A ceremony transcript verifies against its signature and fails after a "
-      "single byte is changed."],
+      "single byte is changed.",
+      "Any k of n unseal shares start the service and any k-1 leave it sealed; "
+      "a sealed service answers /health and refuses every KMIP and REST "
+      "operation rather than failing obscurely deep in the shim.",
+      "A traced request carries one trace id from the HTTP layer through the "
+      "guard to the token call, and a sampled-out request costs no spans."],
      "A rewritten but internally consistent audit log — one that passes local "
      "verification — is caught by the external anchor.",
      ["Formal key ceremony", "External audit anchoring", "SIEM integration",
-      "Compliance reporting", "Alerting"],
-     "~1,000 lines, ~45 tests.",
+      "Compliance reporting", "Alerting", "Distributed tracing",
+      "Sealed startup with quorum unseal"],
+     "~1,350 lines, ~60 tests.",
      [
       "The audit log stops being purely local: it gains an outbound path and an external dependency.",
-      "Worker 0 takes on a third single-instance responsibility beside the scheduler and the metrics endpoint."]),
+      "Worker 0 takes on a third single-instance responsibility beside the scheduler and the metrics endpoint.",
+      "Startup gains a sealed state. Every health check, every deployment script and every operator runbook has to account for a service that is running but not yet open."]),
 
     (10, "D", "Storage abstraction and PostgreSQL",
      "Remove the single-writer constraint that blocks everything in stage D.",
@@ -403,6 +437,22 @@ STEPS = [
       "Object names stop being globally unique — the change most likely to surprise an existing deployment."]),
 ]
 
+# Why a feature is not closed by the plan. Checked against REMAINING at build
+# time, so a new reason has to be given a label rather than failing in the
+# middle of the document.
+REMAINING_KINDS = {
+    "integration": "Additive work, best done after stage B",
+    "validation": "Testing against a vendor, not new code",
+    "product scope": "A different product surface",
+    "supplier": "Depends on the token",
+    "optional step": "Schedulable, but only worth doing with a capable token",
+    "external": "Depends on an external event",
+    "demand": "Build only if asked for",
+    "out of scope": "Deliberately not this product",
+    "procurement": "Buying and testing, not building",
+    "infrastructure": "Depends on hardware and deployment, not code",
+}
+
 # Features the twelve steps do not close, with the reason.
 REMAINING = [
     ("Cloud BYOK (AWS, Azure, GCP)", "integration",
@@ -445,6 +495,23 @@ REMAINING = [
      "Belongs to the token. The PKCS#11 boundary makes the swap cheap; running "
      "the suite against validated hardware is the actual work."),
     ("Common Criteria / eIDAS", "procurement", "As above."),
+    ("KMIP JSON and XML encodings", "demand",
+     "A second codec beside the TTLV one plus an HTTP binding, reusing the "
+     "object model unchanged. Entirely in-protocol and cheap, but the REST API "
+     "serves the audience that would want it, so nothing waits on this."),
+    ("Key-bound usage policy enforced in hardware", "supplier",
+     "The quorum, time-lock and usage limits would have to live in the key's "
+     "own attributes and be enforced by the token, so that owning the server "
+     "is not owning the policy. SoftHSM has no such mechanism; this is a "
+     "property of the HSM, and the reason to prefer one that has it."),
+    ("Certificate discovery and expiry monitoring", "product scope",
+     "Discovery means scanning endpoints and stores this server does not own. "
+     "That is a scanner feeding the inventory, adjacent to the certificate "
+     "authority decision already deferred above."),
+    ("Confidential computing deployment", "infrastructure",
+     "Attested hardware, a store designed for an untrusted host, and an "
+     "attestation clients check before trusting the service. Nothing in the "
+     "plan depends on it and nothing in this environment can verify it."),
 ]
 
 
@@ -475,6 +542,11 @@ def verify_against_matrix():
     for step in STEPS:
         claimed.extend(step[8])
     deferred = [name for name, _kind, _why in REMAINING]
+
+    unlabelled = sorted({k for _n, k, _w in REMAINING if k not in REMAINING_KINDS})
+    if unlabelled:
+        raise SystemExit("deferred features given a reason with no label:\n  "
+                         + "\n  ".join(unlabelled))
 
     unknown = [f for f in claimed + deferred if f not in open_features]
     if unknown:
@@ -826,20 +898,9 @@ def build():
         f"engineering time, or because it belongs to a different product.")
     section_break(doc)
 
-    kinds = {
-        "integration": "Additive work, best done after stage B",
-        "validation": "Testing against a vendor, not new code",
-        "product scope": "A different product surface",
-        "supplier": "Depends on the token",
-        "optional step": "Schedulable, but only worth doing with a capable token",
-        "external": "Depends on an external event",
-        "demand": "Build only if asked for",
-        "out of scope": "Deliberately not this product",
-        "procurement": "Buying and testing, not building",
-    }
     make_table(doc,
         ["Feature", "Why not now", "Detail"],
-        [[name, kinds[kind], why] for name, kind, why in REMAINING],
+        [[name, REMAINING_KINDS[kind], why] for name, kind, why in REMAINING],
         widths=[1.9, 1.5, 3.1])
     section_break(doc)
 

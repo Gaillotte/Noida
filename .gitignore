@@ -168,3 +168,4 @@ package-lock.json
 
 # generated: the bridge between the plan generator and its slide deck
 plan_steps.json
+gap_totals.json

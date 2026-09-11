@@ -6,10 +6,11 @@ every gap.
 Run: python generate_kms_gap_matrix.py
 
 The requirement list was assembled from what the leading commercial platforms
-ship (Thales CipherTrust Manager, Entrust KeyControl, Fortanix DSM, Utimaco
-ESKM, and the cloud KMS services) together with NIST SP 800-57 and SP 800-152.
-The coverage column is grounded in this repository at the commit named on the
-title page, not in intentions.
+ship — Thales CipherTrust Manager, Entrust KeyControl, Fortanix DSM, Utimaco
+ESKM, Bloombase KeyCastle, Cosmian/Eviden KMS, Securosys CyberVault KMS,
+HashiCorp Vault and the cloud KMS services — together with NIST SP 800-57 and
+SP 800-152. The coverage column is grounded in this repository at the commit
+named on the title page, not in intentions.
 
 The fourth column is the one that earns the document. Many gaps here cannot be
 closed by writing more KMIP: the specification standardises key objects and
@@ -19,6 +20,7 @@ marked "Outside KMIP" and name the route that would actually work.
 """
 
 import datetime
+import json
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -126,7 +128,18 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'Zeroization on the token, evidenced.',
             'full',
             'Destroy zeroizes the PKCS#11 object; the audit row survives to resolve '
-            'the identifier.']]},
+            'the identifier.'],
+           ['Key-bound usage policy enforced in hardware',
+            'The approval quorum, time-lock or usage limit travels with the '
+            'key inside the token, so the policy survives compromise of the '
+            'management server.',
+            'gap',
+            '@@OUT@@Dual control here is enforced by the server: an attacker '
+            'who owns the server owns the policy. Moving it into the key '
+            'needs a token whose attributes carry approval rules and '
+            'time-locks — Securosys Smart Key Attributes are the reference '
+            'implementation — and SoftHSM has no equivalent. Token '
+            'capability, not code.']]},
  {'name': 'Protocol and ecosystem integration',
   'rows': [['KMIP server',
             'The interoperability baseline every enterprise KMS ships.',
@@ -145,8 +158,8 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'Enum and operation additions on top of 2.1. Substantial but entirely '
             'in-protocol.'],
            ['PKCS#11 provider for applications',
-            'Applications that speak PKCS#11 — databases, Java keystores — plugging '
-            'straight in.',
+            'Applications plugging straight in through the interfaces they already '
+            'speak — PKCS#11, and alongside it JCE and Microsoft CNG.',
             'gap',
             '@@OUT@@This project consumes PKCS#11; it does not expose it. The route is '
             'a thin PKCS#11 library that fronts the KMIP server, which is how '
@@ -193,7 +206,33 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'partial',
             'Certify, ReCertify and Validate exist but issue self-signed certificates '
             'only, with no CRL or OCSP. A real PKI means fronting a CA such as EJBCA; '
-            "KMIP's Certify was never a CA."]]},
+            "KMIP's Certify was never a CA."],
+           ['Encryption as a service (data-plane API)',
+            'Applications send data rather than fetching keys: encrypt, '
+            'decrypt, sign and HMAC, plus data-key issuance and re-wrap to a '
+            'newer key version.',
+            'partial',
+            'Encrypt, Decrypt, Sign, MAC and Hash already execute inside the '
+            'token, so the capability exists over KMIP. Missing are a '
+            'data-key call returning the wrapped and plaintext pair together, '
+            're-wrap to a newer version, and any of it over HTTP.'],
+           ['KMIP JSON and XML encodings',
+            'The same protocol in the JSON and XML encodings OASIS defines, '
+            'carried over HTTPS, so a client can speak KMIP without a TTLV '
+            'codec.',
+            'gap',
+            'In-protocol and well specified: a second codec beside '
+            'core/ttlv.py plus an HTTP binding, reusing the object model '
+            'unchanged. Worth doing when a client asks — nothing depends on '
+            'it today.'],
+           ['OpenAPI specification and generated clients',
+            'A machine-readable description of the API with an interactive '
+            'explorer, and client libraries generated from it rather than '
+            'hand-written.',
+            'gap',
+            '@@OUT@@There is no API to describe yet. Generating both the '
+            "document and the clients from the router's route table is what "
+            'stops either drifting from the server.']]},
  {'name': 'Identity and access control',
   'rows': [['Per-identity authentication',
             'Individually revocable credentials; no shared secret.',
@@ -313,7 +352,15 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'Which algorithms are in use and where, for migration planning.',
             'partial',
             'The capability probe knows what the token supports and every object '
-            'records its algorithm; nothing surfaces it as a report.']]},
+            'records its algorithm; nothing surfaces it as a report.'],
+           ['Certificate discovery and expiry monitoring',
+            'Find the certificates in use across the estate, track expiry, '
+            'and warn before something goes down.',
+            'gap',
+            '@@OUT@@This server knows only the certificates registered with '
+            'it. Discovery means scanning endpoints and stores it does not '
+            'own — a separate scanner feeding the inventory, not a KMIP '
+            'operation.']]},
  {'name': 'Availability, scale and recovery',
   'rows': [['HA clustering',
             'Active/active nodes behind a VIP, no single point of failure.',
@@ -364,7 +411,14 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'partial',
             'A two-stage Dockerfile exists and its inputs are checked, but it has '
             'never been executed — this environment blocks Docker Hub. No Helm chart '
-            'or operator.']]},
+            'or operator.'],
+           ['Confidential computing deployment',
+            'Run inside a TEE or confidential VM with remote attestation, so '
+            'the host operator cannot read process memory.',
+            'gap',
+            '@@OUT@@Mostly deployment and attestation rather than code, but '
+            'not free: it needs a store designed for an untrusted host, and '
+            'an attestation a client can check before it trusts the service.']]},
  {'name': 'Operations and observability',
   'rows': [['Health and readiness probes',
             'Orchestrator-grade liveness and readiness.',
@@ -405,7 +459,14 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'partial',
             'Approaching expiry is logged and audited, and counters are exported, but '
             'nothing pushes. Alertmanager rules over the existing metrics would close '
-            'most of it.']]},
+            'most of it.'],
+           ['Distributed tracing',
+            'Spans across the service and into the token, usually '
+            'OpenTelemetry, so a slow request can be explained rather than '
+            'guessed at.',
+            'gap',
+            'Structured logs carry a request identifier, which answers what '
+            'happened but not where the time went. Nothing exports spans.']]},
  {'name': 'Platform hardening',
   'rows': [['TLS enforced by default',
             'No accidental plaintext.',
@@ -441,7 +502,17 @@ DOMAINS = [{'name': 'Key lifecycle and cryptography',
             'Least privilege at the OS level.',
             'full',
             'systemd unit with no capabilities, strict filesystem protection, syscall '
-            'filtering and a dedicated user.']]}]
+            'filtering and a dedicated user.'],
+           ['Sealed startup with quorum unseal',
+            'The service starts sealed and its state stays unreadable until '
+            'unsealed — by a quorum of operator-held shares, or automatically '
+            'by a trusted device — and the shares can be re-issued without '
+            'downtime.',
+            'partial',
+            'The auto-unseal half exists: the store is encrypted under a '
+            'non-extractable HSM key, so a stolen database is inert without '
+            'the token. There is no operator quorum and no re-issue ceremony '
+            '— whoever holds the token PIN unseals it alone.']]}]
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -570,7 +641,7 @@ def matrix_table(doc, rows):
 
 def validate():
     """The matrix data is long and was machine-extracted, so a malformed edit is
-    easy to make and hard to see in a 74-row literal. Fail loudly here rather
+    easy to make and hard to see in a literal this long. Fail loudly here rather
     than emitting a document with a blank cell or a silently dropped row."""
     seen = set()
     for domain in DOMAINS:
@@ -598,6 +669,26 @@ def tally(rows):
     for r in rows:
         counts[r[2]] += 1
     return counts
+
+
+def write_totals_json(t):
+    """The overview deck quotes these figures and cannot import this module, so
+    hand them over as data. A deck built from a stale copy of the scorecard is
+    exactly the drift the plan deck was restructured to prevent."""
+    payload = {
+        "assessed_at": ASSESSED_AT,
+        "test_count": TEST_COUNT,
+        "generated": TODAY,
+        "totals": t,
+        "domains": [
+            {"name": d["name"], **tally(d["rows"]),
+             "count": len(d["rows"])}
+            for d in DOMAINS
+        ],
+    }
+    with open("gap_totals.json", "w") as fh:
+        json.dump(payload, fh, indent=2)
+    print("Saved: gap_totals.json")
 
 
 def totals():
@@ -657,8 +748,10 @@ def build():
         ("Document", "Requirements assessment against the commercial KMS market"),
         ("Assessed at", f"{ASSESSED_AT} — {TEST_COUNT} tests green"),
         ("Requirements from", "Thales CipherTrust Manager, Entrust KeyControl, "
-                              "Fortanix DSM, Utimaco ESKM, AWS/Azure/GCP KMS; "
-                              "NIST SP 800-57 and SP 800-152"),
+                              "Fortanix DSM, Utimaco ESKM, Bloombase KeyCastle, "
+                              "Cosmian/Eviden KMS, Securosys CyberVault KMS, "
+                              "HashiCorp Vault, AWS/Azure/GCP KMS; NIST SP 800-57 "
+                              "and SP 800-152"),
         ("Features assessed", f"{t['total']} across {len(DOMAINS)} domains"),
         ("Result", f"{t['full']} covered · {t['partial']} partial · {t['gap']} not "
                    f"covered · {t['outside']} need work outside KMIP"),
@@ -859,6 +952,32 @@ def build():
              "External key store patterns — AWS XKS, Azure external key "
              "management, Google Cloud EKM — BYOK import, rotation intervals, "
              "and the FIPS levels each is validated to."],
+            ["Bloombase KeyCastle",
+             "The appliance-era operations surface: web console, SNMP v1/v2c/v3 "
+             "and syslog with rotation and archival, multiple certificate "
+             "authorities, X.509 and PKCS#12 import and export, and a published "
+             "interoperability programme — which is what KMIP interoperability "
+             "certification looks like in practice."],
+            ["Cosmian / Eviden KMS",
+             "KMIP in JSON as well as binary TTLV; post-quantum algorithms "
+             "shipping now; an encryption oracle rather than key delivery; "
+             "SQLite, PostgreSQL, MySQL, MariaDB and Redis backends; "
+             "OpenTelemetry; OpenAPI 3.1 with an interactive explorer; and "
+             "deployment inside a confidential VM."],
+            ["Securosys CyberVault KMS",
+             "Smart Key Attributes — quorum approval, time-locks and timeouts "
+             "bound to the key and enforced inside the HSM rather than by the "
+             "management server; certificate discovery and expiry monitoring; "
+             "posture checks for unused keys and weak configurations; "
+             "ML-KEM, ML-DSA, SLH-DSA and LMS; REST, KMIP, PKCS#11, JCE and CNG "
+             "side by side."],
+            ["HashiCorp Vault",
+             "The vault architecture: a service that starts sealed and unseals "
+             "on a quorum of Shamir shares or a trusted device; namespaces with "
+             "their own policies; identity entities and groups; rate-limit "
+             "quotas; performance and disaster-recovery replication; encryption "
+             "as a service through the transit engine; and KMIP as one more "
+             "front end."],
         ],
         widths=[2.4, 4.1])
     section_break(doc)
@@ -881,14 +1000,33 @@ def build():
     section_break(doc)
     add_para(doc,
         "A note on method, since it bears on how much weight the requirement list "
-        "carries. The five products above were chosen because they span the "
-        "category: two software-first platforms, one appliance vendor, one vault "
-        "architecture, and the three cloud services. Their published documentation "
-        "is marketing material and describes what each vendor chooses to "
-        "advertise, so the list is a fair picture of what the market expects a KMS "
-        "to do and not a substitute for a hands-on evaluation of any one product. "
-        "Where several vendors describe the same capability in different words, it "
-        "appears here once.", italic=True, size=9)
+        "carries. The nine products above were chosen because they span the "
+        "category: software-first platforms, appliance vendors, an HSM-centric "
+        "control plane, a source-available implementation, a vault architecture, "
+        "and the three cloud services. Their published documentation describes what "
+        "each vendor chooses to advertise, so the list is a fair picture of what the "
+        "market expects a KMS to do and not a substitute for a hands-on evaluation "
+        "of any one product. Where several vendors describe the same capability in "
+        "different words, it appears here once.", italic=True, size=9)
+    section_break(doc)
+    add_para(doc,
+        "The four products added in this revision were researched through indexed "
+        "summaries of their documentation rather than the pages themselves: the "
+        "network policy in the environment this document is built in blocks all "
+        "four vendor documentation domains. That is a real limit on depth and it is "
+        "recorded here rather than glossed over — it is also why the provenance "
+        "document marks only what a source's documentation was actually seen to "
+        "name.", italic=True, size=9)
+    section_break(doc)
+    add_para(doc,
+        "One capability was read and deliberately not made a requirement. Securosys "
+        "ships a conversational assistant that generates and manages keys from "
+        "natural-language instructions. It is a real feature, but a requirement list "
+        "is a statement about what a key management system owes its operator, and "
+        "an assistant that can issue privileged operations is not yet something the "
+        "category expects — or has agreed how to audit. It is noted here so the "
+        "omission is visible as a judgement rather than an oversight.",
+        italic=True, size=9)
     section_break(doc)
     add_para(doc,
         "This document is generated. Re-run generate_kms_gap_matrix.py after closing a "
@@ -901,6 +1039,8 @@ def build():
     fr = f.add_run(f"KMIP on PKCS#11 — Enterprise KMS Gap Matrix — {TODAY}")
     fr.font.size = Pt(8)
     fr.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+
+    write_totals_json(t)
 
     out = "KMIP_PKCS11_KMS_Gap_Matrix.docx"
     doc.save(out)

@@ -5,7 +5,19 @@
 // operation count from the dispatcher, the test count from a run, the gap
 // figures from the matrix generator, the throughput from benchmarks.
 
+const fs = require("fs");
 const pptxgen = require("pptxgenjs");
+
+// The gap figures come from generate_kms_gap_matrix.py, which writes them out
+// rather than leaving this file to copy them. They were copied once, and the
+// per-domain table was wrong for as long as nobody re-added the columns.
+const TOTALS = "gap_totals.json";
+if (!fs.existsSync(TOTALS)) {
+  console.error(`${TOTALS} is missing — run: python generate_kms_gap_matrix.py`);
+  process.exit(1);
+}
+const gap = JSON.parse(fs.readFileSync(TOTALS, "utf8"));
+const G = gap.totals;
 
 // ── palette ───────────────────────────────────────────────────────────────
 // Navy carries the project's existing document identity; gold is the accent,
@@ -79,8 +91,12 @@ function darkSlide(eyebrow, title) {
 // usable width, and paraSpaceAfter adds up over three or four items.
 function textHeight(text, size, widthIn, isBullet) {
   const usable = widthIn - (isBullet ? 0.22 : 0);
+  // 0.58em is the calibrated width for body text; the 0.62 used for headings
+  // is a heavier face. The line height is the part that used to be wrong: the
+  // card bodies ask for 17pt spacing whatever the font size, so an 11.5pt
+  // block is 17pt per line, not 15.
   const cpl = Math.max(8, (usable * 72) / (size * 0.58));
-  return Math.ceil(text.length / cpl) * size * 1.30 / 72;
+  return Math.ceil(text.length / cpl) * Math.max(size * 1.30, 17) / 72;
 }
 
 // Warn at build time when a card cannot hold what it is given, rather than
@@ -160,9 +176,13 @@ function stat(s, x, y, w, n, label, colour) {
   });
 }
 
+// Anchored to the bottom of the slide and grown upward, because a footnote
+// that wraps to a second line used to run off the page.
 function footnote(s, text) {
+  const cpl = (CW * 72) / (10 * 0.52);
+  const h = Math.max(1, Math.ceil(text.length / cpl)) * 0.17;
   s.addText(text, {
-    x: M, y: 6.92, w: CW, h: 0.30, isTextBox: true, margin: 0,
+    x: M, y: 7.22 - h, w: CW, h: h, isTextBox: true, margin: 0,
     fontFace: BODY, fontSize: 10, italic: true, color: FAINT,
   });
 }
@@ -225,8 +245,8 @@ function arrowRight(s, x, yCentre, w) {
   const tiles = [
     ["41 / 53", "KMIP 2.1 operations"],
     ["816", "tests, live against a token"],
-    ["74", "features assessed vs market"],
-    ["19", "gaps outside KMIP's reach"],
+    [String(G.total), "features assessed vs market"],
+    [String(G.outside), "gaps outside KMIP's reach"],
   ];
   tiles.forEach(([n, l], i) => {
     const x = M + i * 3.05;
@@ -379,14 +399,14 @@ function arrowRight(s, x, yCentre, w) {
   });
 
   card(s, {
-    x: M, y: 4.82, w: 7.5, h: 2.00, fill: NAVY, flat: true,
+    x: M, y: 4.82, w: 7.5, h: 2.12, fill: NAVY, flat: true,
     head: "The consequence", headColor: PAPER,
     body: "Every commercial KMS bolts an administrative plane onto its KMIP server. "
       + "A KMIP layer is an interoperability surface — it is not, by itself, a product.",
     color: "C9DAEA", size: 13.5,
   });
   card(s, {
-    x: M + 7.8, y: 4.82, w: 4.3, h: 2.00, fill: "FBF3E3",
+    x: M + 7.8, y: 4.82, w: 4.3, h: 2.12, fill: "FBF3E3",
     tag: "Versions", tagColor: WARN, head: "2.1 → 3.0",
     body: "2.1 (2019) is what this project implements. 3.0 CSD02 (May 2026) adds "
       + "ML-KEM, ML-DSA, SLH-DSA and Encapsulate/Decapsulate.",
@@ -434,7 +454,7 @@ function arrowRight(s, x, yCentre, w) {
     size: 12,
   });
   card(s, {
-    x: M, y: 4.20, w: 3.5, h: 2.44, fill: "FBF3E3",
+    x: M, y: 4.20, w: 3.5, h: 2.52, fill: "FBF3E3",
     tag: "Swap point", tagColor: WARN, head: "Any PKCS#11 HSM",
     body: "One file imports the binding. Pointing it at validated hardware needs "
       + "no change above the shim — the capability probe reports whatever that "
@@ -574,7 +594,7 @@ function arrowRight(s, x, yCentre, w) {
       headSize: 14, headH: 0.34, body: body, size: 12 });
   });
   card(s, {
-    x: M + 2 * 4.12, y: 1.70 + 2.42, w: 3.85, h: 2.52, fill: NAVY, flat: true,
+    x: M + 2 * 4.12, y: 1.70 + 2.42, w: 3.85, h: 2.66, fill: NAVY, flat: true,
     head: "The division of labour", headColor: PAPER, headSize: 15,
     body: "KMIP stays the data plane — machines creating and using keys. REST becomes "
       + "the control plane — people and CI administering the service. Duplicating crypto "
@@ -626,7 +646,7 @@ function arrowRight(s, x, yCentre, w) {
     label: "Metadata store  ·  audit chain", size: 12.5 });
 
   card(s, {
-    x: M, y: 5.90, w: 12.06, h: 1.08, fill: ICE, flat: true,
+    x: M, y: 5.90, w: 12.06, h: 1.18, fill: ICE, flat: true,
     body: "Endpoints:  sessions and identity  ·  keys and lifecycle  ·  grants, groups, roles  ·  "
       + "approval queue  ·  audit search  ·  cryptoperiod and expiry reports  ·  backups.        "
       + "No encrypt, decrypt or sign over REST in v1 — deliberately.",
@@ -642,24 +662,28 @@ function arrowRight(s, x, yCentre, w) {
 // 10 — gap scorecard
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const s = lightSlide("Gap analysis · 1 of 3", "74 features the market expects");
+  const s = lightSlide("Gap analysis · 1 of 3",
+    `${G.total} features the market expects`);
 
-  stat(s, M, 1.66, 2.9, "32", "covered", OK);
-  stat(s, M + 3.02, 1.66, 2.9, "16", "partial", WARN);
-  stat(s, M + 6.04, 1.66, 2.9, "26", "not covered", GAP);
-  stat(s, M + 9.06, 1.66, 3.0, "19", "cannot be closed in KMIP", MID);
+  stat(s, M, 1.66, 2.9, String(G.full), "covered", OK);
+  stat(s, M + 3.02, 1.66, 2.9, String(G.partial), "partial", WARN);
+  stat(s, M + 6.04, 1.66, 2.9, String(G.gap), "not covered", GAP);
+  stat(s, M + 9.06, 1.66, 3.0, String(G.outside), "cannot be closed in KMIP", MID);
 
-  // Straight from generate_kms_gap_matrix.py — these columns sum to 32/16/26.
-  const rows = [
-    ["Key lifecycle and cryptography", "14", "8", "4", "2"],
-    ["Protocol and ecosystem integration", "12", "1", "4", "7"],
-    ["Identity and access control", "13", "6", "1", "6"],
-    ["Audit, compliance and assurance", "10", "3", "2", "5"],
-    ["Availability, scale and recovery", "10", "3", "3", "4"],
-    ["Operations and observability", "8", "5", "1", "2"],
-    ["Platform hardening", "7", "6", "1", "0"],
-    ["TOTAL", "74", "32", "16", "26"],
-  ];
+  const rows = gap.domains.map(d =>
+    [d.name, String(d.count), String(d.full), String(d.partial), String(d.gap)]);
+  rows.push(["TOTAL", String(G.total), String(G.full), String(G.partial),
+             String(G.gap)]);
+
+  // The figures are read, not copied, but a domain that stopped adding up would
+  // still print. Check it here rather than in a reader's head.
+  ["count", "full", "partial", "gap"].forEach(k => {
+    const summed = gap.domains.reduce((a, d) => a + d[k], 0);
+    const expected = k === "count" ? G.total : G[k];
+    if (summed !== expected) {
+      throw new Error(`gap_totals.json: domain ${k} sums to ${summed}, total says ${expected}`);
+    }
+  });
   s.addTable(
     [[
       { text: "Domain", options: { bold: true, color: PAPER, fill: { color: NAVY } } },
@@ -681,8 +705,9 @@ function arrowRight(s, x, yCentre, w) {
     }
   );
   footnote(s, "Requirements drawn from Thales CipherTrust, Entrust KeyControl, Fortanix DSM, "
-    + "Utimaco ESKM and the cloud KMS services, plus NIST SP 800-57 and SP 800-152.");
-  s.addNotes("The fourth statistic is the one to dwell on: 19 of the shortfalls "
+    + "Utimaco ESKM, Bloombase KeyCastle, Cosmian/Eviden, Securosys CyberVault, HashiCorp Vault "
+    + "and the cloud KMS services, plus NIST SP 800-57 and SP 800-152.");
+  s.addNotes(`The fourth statistic is the one to dwell on: ${G.outside} of the shortfalls `
     + "are not backlog items for the KMIP layer at all. Integration and identity "
     + "are where the concentration of gaps sits.");
 }
@@ -739,7 +764,7 @@ function arrowRight(s, x, yCentre, w) {
     const x = M + (i % 4) * 3.09;
     const y = 1.70 + Math.floor(i / 4) * 2.42;
     card(s, {
-      x: x, y: y, w: 2.86, h: 2.20,
+      x: x, y: y, w: 2.86, h: 2.32,
       fill: colour === GAP ? "F7E9E8" : (colour === WARN ? "FBF3E3" : ICE),
       head: head, headSize: 14, headH: 0.62, headColor: colour === MID ? NAVY : colour,
       body: body, size: 11.5,
