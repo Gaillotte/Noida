@@ -19,6 +19,16 @@ if (!fs.existsSync(TOTALS)) {
 const gap = JSON.parse(fs.readFileSync(TOTALS, "utf8"));
 const G = gap.totals;
 
+// The roadmap used to be ten "waves" invented in this file, which stopped
+// matching the delivery plan the moment the plan existed. It now reads the
+// plan's own stages and steps, so the overview and the plan cannot disagree.
+const PLAN = "plan_steps.json";
+if (!fs.existsSync(PLAN)) {
+  console.error(`${PLAN} is missing — run: python generate_rest_kms_plan.py`);
+  process.exit(1);
+}
+const plan = JSON.parse(fs.readFileSync(PLAN, "utf8"));
+
 // ── palette ───────────────────────────────────────────────────────────────
 // Navy carries the project's existing document identity; gold is the accent,
 // because a key management deck should not be two shades of the same blue.
@@ -35,6 +45,15 @@ const LINE = "D6DEE7";
 const OK = "1F7A43";
 const WARN = "9A6410";
 const GAP = "B3261E";
+
+// Stage palette and lookups for the roadmap slides, which are driven by the
+// delivery plan rather than by a list kept here.
+const STAGE_FILL = [NAVY, MID, "5A7184", "6B8299", GOLD];
+const stageSteps = st => plan.steps.filter(p => p.stage === st);
+const stageCloses = st =>
+  stageSteps(st).reduce((a, p) => a + p.closes.length, 0);
+const stageColour = letter =>
+  STAGE_FILL[plan.stages.findIndex(s => s.letter === letter) % STAGE_FILL.length];
 
 const HEAD = "Cambria";
 const BODY = "Calibri";
@@ -786,168 +805,203 @@ function arrowRight(s, x, yCentre, w) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 13 — roadmap overview
+// 13 — roadmap overview: the plan's stages, read from plan_steps.json
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const s = lightSlide("Roadmap · 1 of 3", "Five waves, in dependency order");
+  const s = lightSlide("Roadmap · 1 of 3",
+    `${plan.stages.length} stages, in dependency order`);
 
-  const waves = [
-    ["6", "Control plane", "Service layer, REST API, console", NAVY],
-    ["7", "Enterprise fit", "Directory identity, service accounts, SIEM, rate limiting", MID],
-    ["8", "Scale", "PostgreSQL, HA clustering, DR, HSM failover", "5A7184"],
-    ["9", "Tenancy", "Namespaces, quotas, per-tenant audit", "6B8299"],
-    ["10", "Compliance", "Validated token, KMIP 3.0, post-quantum", GOLD],
-  ];
-  waves.forEach(([n, name, detail, fill], i) => {
-    const x = M + i * 2.47;
+  const bw = 2.16;
+  const bh = 2.28;
+  const pitch = (CW - bw) / (plan.stages.length - 1);
+  plan.stages.forEach((stage, i) => {
+    const x = M + i * pitch;
+    const fill = STAGE_FILL[i % STAGE_FILL.length];
+    const onGold = fill === GOLD;
+    const steps = stageSteps(stage.letter);
+    const closes = stageCloses(stage.letter);
     s.addShape(pres.ShapeType.roundRect, {
-      x: x, y: 1.74, w: 2.16, h: 2.10, rectRadius: 0.06,
+      x: x, y: 1.74, w: bw, h: bh, rectRadius: 0.06,
       fill: { color: fill }, line: { color: fill, width: 1 }, shadow: shadow(),
     });
-    s.addText(n, {
-      x: x, y: 1.90, w: 2.16, h: 0.62, isTextBox: true, margin: 0, align: "center",
-      fontFace: HEAD, fontSize: 34, bold: true, color: fill === GOLD ? DEEP : "9DB8D4",
+    s.addText(stage.letter, {
+      x: x, y: 1.90, w: bw, h: 0.62, isTextBox: true, margin: 0, align: "center",
+      fontFace: HEAD, fontSize: 34, bold: true, color: onGold ? DEEP : "9DB8D4",
     });
-    s.addText(name, {
-      x: x, y: 2.54, w: 2.16, h: 0.36, isTextBox: true, margin: 0, align: "center",
-      fontFace: HEAD, fontSize: 15, bold: true, color: fill === GOLD ? DEEP : PAPER,
+    // Stacked on measured heights, not fixed offsets: a two-line stage name
+    // used to be written straight over the line beneath it.
+    const NS = 13;
+    const nameCpl = Math.max(6, ((bw - 0.16) * 72) / (NS * 0.62));
+    const nameH = Math.ceil(stage.name.length / nameCpl) * NS * 1.34 / 72;
+    let ty = 2.52;
+    s.addText(stage.name, {
+      x: x + 0.08, y: ty, w: bw - 0.16, h: nameH, isTextBox: true, margin: 0,
+      align: "center", fontFace: HEAD, fontSize: NS, bold: true,
+      color: onGold ? DEEP : PAPER,
     });
-    s.addText(detail, {
-      x: x + 0.16, y: 2.94, w: 1.84, h: 1.26, isTextBox: true, margin: 0, align: "center",
-      fontFace: BODY, fontSize: 11, color: fill === GOLD ? "4A3A18" : "C9DAEA",
+    ty += nameH + 0.06;
+    s.addText(`Steps ${steps[0].n}–${steps[steps.length - 1].n} · `
+      + `closes ${closes}`, {
+      x: x + 0.06, y: ty, w: bw - 0.12, h: 0.20, isTextBox: true, margin: 0,
+      align: "center", fontFace: BODY, fontSize: 10, bold: true,
+      color: onGold ? "6B5218" : GOLD,
     });
-    if (i < waves.length - 1) arrowRight(s, x + 2.19, 2.79, 0.26);
+    ty += 0.24;
+    s.addText(stage.note, {
+      x: x + 0.14, y: ty, w: bw - 0.28, h: 1.74 + bh - 0.08 - ty,
+      isTextBox: true, margin: 0, align: "center", fontFace: BODY, fontSize: 9,
+      color: onGold ? "4A3A18" : "C9DAEA", lineSpacing: 11.7,
+    });
+    checkFit({ x: x, y: 1.74, w: bw, h: bh, head: stage.name },
+             ty, textHeight(stage.note, 9, bw - 0.28, false));
+    if (i < plan.stages.length - 1) {
+      arrowRight(s, x + bw + 0.04, 1.74 + bh / 2, pitch - bw - 0.08);
+    }
   });
 
   card(s, {
     x: M, y: 4.62, w: 5.9, h: 2.28, fill: ICE,
-    head: "How the waves are ordered",
+    head: "How the stages are ordered",
     bullets: [
-      "By what each unlocks, not by visibility",
-      "Wave 6 makes five other gaps addressable at once",
-      "Wave 8 is a prerequisite for 9, not a parallel track",
-      "Each wave ships independently and is useful alone",
+      "By dependency, not by what is most visible",
+      "Stage A ships no feature and unblocks everything after it",
+      "Stage E is additive — it can run beside C or D",
+      "Each step ships independently and is useful alone",
     ],
     size: 12.5,
   });
   card(s, {
     x: M + 6.2, y: 4.62, w: 5.9, h: 2.28, fill: "FBF3E3",
     tag: "The rule that made phases 0–5 work", tagColor: WARN,
-    head: "Every wave has a demonstrable gate",
-    body: "Not a checklist — a condition someone can watch you meet. A wave is "
+    head: "Every step has a demonstrable gate",
+    body: "Not a checklist — a condition someone can watch you meet. A step is "
       + "finished when its gate is demonstrated, not when its code is written.",
     size: 12.5,
   });
-  s.addNotes("Phases 0 to 5 used exactly this structure and all six gates were "
-    + "met, so the format is proven on this codebase rather than borrowed.");
+  s.addNotes(`${G.total} assessed features, ${plan.totals.open} short of full `
+    + `coverage; these ${plan.steps.length} steps close ${plan.totals.closed}. `
+    + "Phases 0 to 5 used exactly this structure and all six gates were met, so "
+    + "the format is proven on this codebase rather than borrowed.");
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 14 — near-term detail
+// 14 — every step, in one view
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const s = lightSlide("Roadmap · 2 of 3", "Wave 6 and 7 — the control plane");
+  const s = lightSlide("Roadmap · 2 of 3", `All ${plan.steps.length} steps`);
 
-  const items = [
-    ["6.1", "Service layer extraction", NAVY,
-      "Move authorization, dual control, audit and metrics out of the dispatcher into a guard both transports call.",
-      "Gate: pure refactor — all 816 tests pass unchanged, no new surface."],
-    ["6.2", "Read-only REST + sessions", NAVY,
-      "Login, tokens, key inventory with paging and sort, audit search, approval queue, expiry reports.",
-      "Gate: a read-only console renders real data and can change nothing."],
-    ["6.3", "Write endpoints", NAVY,
-      "Key lifecycle, grants, groups, cryptoperiods — all through the guard, so governance applies automatically.",
-      "Gate: a REST Destroy under dual control is refused exactly as the KMIP one is."],
-    ["6.4", "Console", MID,
-      "A single-page client of the API. No privileged back door; the console can do nothing the API forbids.",
-      "Gate: an operator completes a full day's work without the CLI."],
-    ["7.1", "Directory identity + service accounts", MID,
-      "OIDC or LDAP at the edge resolving to provisioned identities, and revocable machine credentials.",
-      "Gate: a user logs in with corporate credentials; a leaked token is revoked in one action."],
-    ["7.2", "Hardening and SIEM", MID,
-      "Connection caps and per-identity rate limiting; audit shipped as syslog or CEF.",
-      "Gate: the listener survives a flood; entries appear in the SIEM within a minute."],
-  ];
-  items.forEach(([n, head, colour, body, gate], i) => {
-    const x = M + (i % 3) * 4.12;
-    const y = 1.62 + Math.floor(i / 3) * 2.86;
-    card(s, {
-      x: x, y: y, w: 3.85, h: 2.72, fill: ICE,
-      tag: "Wave " + n, tagColor: colour, head: head, headSize: 15, headH: 0.34,
-      body: body, size: 11.5, bodyH: 0.84,
+  const perCol = Math.ceil(plan.steps.length / 2);
+  const colW = 5.9;
+  const rowH = 0.64;
+  const pitchY = 0.72;
+  plan.steps.forEach((st, i) => {
+    const x = M + (i < perCol ? 0 : 6.16);
+    const y = 1.64 + (i % perCol) * pitchY;
+    const colour = stageColour(st.stage);
+    // A coloured spine rather than a repeated stage label: the footnote names
+    // the letters, and the rows stay one line each.
+    s.addShape(pres.ShapeType.rect, {
+      x: x, y: y, w: 0.09, h: rowH,
+      fill: { color: colour }, line: { color: colour, width: 1 },
     });
-    s.addText(gate, {
-      x: x + 0.26, y: y + 2.04, w: 3.33, h: 0.60, isTextBox: true, margin: 0,
-      fontFace: BODY, fontSize: 10.5, italic: true, color: OK,
+    s.addShape(pres.ShapeType.roundRect, {
+      x: x + 0.09, y: y, w: colW - 0.09, h: rowH, rectRadius: 0.04,
+      fill: { color: ICE }, line: { color: ICE, width: 1 },
+    });
+    s.addText(String(st.n), {
+      x: x + 0.22, y: y, w: 0.40, h: rowH, isTextBox: true, margin: 0,
+      valign: "middle", fontFace: HEAD, fontSize: 15, bold: true, color: GOLD,
+    });
+    s.addText(st.title, {
+      x: x + 0.68, y: y, w: colW - 1.55, h: rowH, isTextBox: true, margin: 0,
+      valign: "middle", fontFace: BODY, fontSize: 11.5, color: NAVY,
+    });
+    s.addText(st.closes.length ? `+${st.closes.length}` : "—", {
+      x: x + colW - 0.78, y: y, w: 0.58, h: rowH, isTextBox: true, margin: 0,
+      align: "right", valign: "middle", fontFace: BODY, fontSize: 11.5,
+      bold: true, color: st.closes.length ? OK : FAINT,
     });
   });
-  s.addNotes("6.1 is the one to insist on. It ships no feature and removes the "
-    + "risk that every later endpoint quietly bypasses dual control. If the "
-    + "roadmap gets cut, cut from the end, not from the front.");
+
+  // Names as written: lower-casing turned "The REST control plane" into
+  // "the rest control plane".
+  const legend = plan.stages
+    .map(st => `${st.letter} ${st.name}`).join("   ·   ");
+  footnote(s, `${legend}      +n is the gap-matrix features that step closes.`);
+  s.addNotes("Step 1 is the one to insist on. It ships no feature and removes "
+    + "the risk that every later endpoint quietly bypasses dual control. If the "
+    + "plan gets cut, cut from the end, not from the front.");
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 15 — longer term (dark closer)
+// 15 — the later stages, and what stays out (dark closer)
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const s = darkSlide("Roadmap · 3 of 3", "Wave 8 to 10 — and what stays out");
+  const later = plan.stages.slice(2);
+  const s = darkSlide("Roadmap · 3 of 3",
+    `Stages ${later[0].letter} to ${later[later.length - 1].letter} — `
+    + "and what stays out");
 
-  const later = [
-    ["8", "Scale and availability",
-      "A PostgreSQL backend is the prerequisite: SQLite has no multi-writer story, so clustering, "
-      + "replication and DR all wait behind it. HSM failover follows, once a second token exists to test against."],
-    ["9", "Multi-tenancy",
-      "A tenant boundary reaches into every query, the audit log and the CLI — a wave of its own, not a flag. "
-      + "Worth building when there is a second tenant to serve; until then one deployment per tenant is a real answer."],
-    ["10", "Compliance and post-quantum",
-      "Swap in a validated token and run the suite against it. Adopt KMIP 3.0 and the PQC algorithms once a "
-      + "token ships them in a release — vendor-range enums would work locally and interoperate with nothing."],
-  ];
-  later.forEach(([n, head, body], i) => {
-    const y = 1.72 + i * 1.36;
+  later.forEach((stage, i) => {
+    const y = 1.72 + i * 1.34;
+    const steps = stageSteps(stage.letter);
     s.addShape(pres.ShapeType.roundRect, {
       x: M, y: y, w: 0.72, h: 0.72, rectRadius: 0.08,
       fill: { color: GOLD }, line: { color: GOLD, width: 1 },
     });
-    s.addText(n, {
+    s.addText(stage.letter, {
       x: M, y: y, w: 0.72, h: 0.72, isTextBox: true, margin: 0,
-      align: "center", valign: "middle", fontFace: HEAD, fontSize: 22, bold: true, color: DEEP,
+      align: "center", valign: "middle", fontFace: HEAD, fontSize: 22,
+      bold: true, color: DEEP,
     });
-    s.addText(head, {
-      x: M + 1.0, y: y - 0.02, w: 4.2, h: 0.4, isTextBox: true, margin: 0,
+    s.addText(stage.name, {
+      x: M + 1.0, y: y - 0.02, w: 4.2, h: 0.78, isTextBox: true, margin: 0,
       fontFace: HEAD, fontSize: 17, bold: true, color: PAPER,
     });
-    s.addText(body, {
-      x: M + 5.3, y: y - 0.02, w: 6.8, h: 1.2, isTextBox: true, margin: 0,
-      fontFace: BODY, fontSize: 12, color: "9DB8D4", lineSpacing: 16,
+    s.addText(stage.note, {
+      x: M + 1.0, y: y + 0.72, w: 4.2, h: 0.34, isTextBox: true, margin: 0,
+      fontFace: BODY, fontSize: 10.5, italic: true, color: "7B94AE",
+    });
+    // One step per line. Space-joined, a long title wrapped mid-phrase and the
+    // rows stopped reading as a list.
+    s.addText(steps.map((p, k) => ({
+      text: `${p.n}.  ${p.title}`,
+      options: { breakLine: k < steps.length - 1 },
+    })), {
+      x: M + 5.3, y: y - 0.02, w: 6.7, h: 1.16, isTextBox: true, margin: 0,
+      fontFace: BODY, fontSize: 12, color: "9DB8D4", lineSpacing: 17,
     });
   });
 
+  // Straight from the plan's deferred list, so the deck cannot quietly keep
+  // something out that the plan has since scheduled.
+  const OUT_KINDS = ["out of scope", "demand", "product scope"];
+  const out = plan.remaining.filter(r => OUT_KINDS.includes(r.kind));
   s.addText("Deliberately out of scope", {
-    x: M, y: 5.86, w: 5.6, h: 0.32, isTextBox: true, margin: 0,
+    x: M, y: 5.78, w: 5.6, h: 0.30, isTextBox: true, margin: 0,
     fontFace: BODY, fontSize: 10.5, bold: true, charSpacing: 1.6, color: GOLD,
   });
-  s.addText([
-    { text: "Tokenization and FPE — a separate product, not a KMS feature.", options: { bullet: true, breakLine: true } },
-    { text: "Being a certificate authority — front it with a real CA instead.", options: { bullet: true, breakLine: true } },
-    { text: "A PKCS#11 provider for applications — only if demand appears.", options: { bullet: true } },
-  ], {
-    x: M, y: 6.14, w: 6.0, h: 0.98, isTextBox: true, margin: 0,
-    fontFace: BODY, fontSize: 11.5, color: "9DB8D4", paraSpaceAfter: 3,
+  s.addText(out.map((r, i) => ({
+    text: r.feature, options: { bullet: true, breakLine: i < out.length - 1 },
+  })), {
+    x: M, y: 6.06, w: 5.8, h: 1.04, isTextBox: true, margin: 0,
+    fontFace: BODY, fontSize: 11, color: "9DB8D4", paraSpaceAfter: 2,
   });
 
   s.addShape(pres.ShapeType.roundRect, {
-    x: M + 6.2, y: 5.80, w: 5.9, h: 1.28, rectRadius: 0.06,
+    x: M + 6.2, y: 5.76, w: 5.9, h: 1.32, rectRadius: 0.06,
     fill: { color: "1B3350" }, line: { color: "2A4A6B", width: 1 },
   });
-  s.addText("Nothing ships that cannot be demonstrated. Where something could not be "
-    + "tested here, the roadmap says so rather than counting it as done.", {
-    x: M + 6.46, y: 6.02, w: 5.38, h: 0.9, isTextBox: true, margin: 0,
+  s.addText("Nothing ships that cannot be demonstrated. Where something could "
+    + "not be tested here, the plan says so rather than counting it as done.", {
+    x: M + 6.46, y: 5.98, w: 5.38, h: 0.9, isTextBox: true, margin: 0,
     fontFace: HEAD, fontSize: 13.5, italic: true, color: PAPER, lineSpacing: 18,
   });
-  s.addNotes("Close on the discipline rather than the feature list: phases 0 to "
-    + "5 earned their credibility by finding real defects through execution, and "
-    + "the same standard applies to everything above.");
+  s.addNotes(`${plan.totals.deferred} features stay open after step `
+    + `${plan.steps.length}. The ones listed here are product decisions; the `
+    + "rest wait on a supplier, a procurement decision, an OASIS event or "
+    + "hardware this project cannot verify. Close on the discipline rather "
+    + "than the feature list.");
 }
 
 pres.writeFile({ fileName: "KMIP_PKCS11_Overview_Deck.pptx" })

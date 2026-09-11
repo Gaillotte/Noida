@@ -274,10 +274,18 @@ environment blocks all four vendors' documentation domains, so they were read
 through indexed summaries rather than the pages themselves. Every document
 that rests on that research says so.
 
-**Still inconsistent, deliberately left alone:** the overview deck's roadmap
-slides describe ten "waves", a structure that predates the fourteen-step plan
-and does not map onto it. Reconciling the two is a design decision about which
-narrative survives, not a mechanical fix, so it was not made silently.
+**The overview deck's roadmap was then rebuilt on the plan.** Its last three
+slides used to describe ten "waves" invented in the deck generator, a structure
+that predated the plan and did not map onto it. They now read `plan_steps.json`:
+slide 13 is the five stages with their step ranges and feature counts, slide 14
+lists all fourteen steps with a stage-coloured spine, and slide 15 covers stages
+C to E with a deliberately-out-of-scope list filtered from the plan's own
+deferred entries. The deck holds no roadmap content of its own any more, so the
+two cannot disagree again.
+
+Both decks now depend on `plan_steps.json`, so `generate_rest_kms_plan.py` runs
+before either — `npm run deck:all` and `npm run plan:all` both do this, and the
+deck exits with the command to run if the file is missing.
 
 ---
 
@@ -321,7 +329,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_Project_Documentation.docx` | `generate_docs.py` | Module reference and test specification |
 | `KMIP_PKCS11_Phase_Report.docx` | `generate_phase_report.py` | How the system reached its current state |
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | Market requirements vs coverage, with routes for gaps |
-| `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap |
+| `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap. Its gap figures come from `gap_totals.json` and its roadmap from `plan_steps.json` — neither is written here |
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Fourteen-step delivery plan to a complete KMS with a REST control plane, closing 34 of the 50 open features. Its arithmetic is checked against the gap matrix at build time, and every step and stage count in it is read from the tables rather than typed |
 | `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 45 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not, and its layout scales with the stage and step counts |
