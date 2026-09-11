@@ -750,30 +750,39 @@ function arrowRight(s, x, yCentre, w) {
 {
   const s = lightSlide("Gap analysis · 3 of 3", "Where it falls short of a product");
 
+  // Five columns, ten cards. Kept to one short sentence each: this slide is a
+  // scan, and the gap matrix is where the detail lives.
   const gaps = [
-    ["No REST API or console", "Highest leverage: reporting, self-service, the console and most integrations are all clients of an API that does not exist.", GAP],
-    ["No multi-tenancy", "Names, searches, quotas and audit are global. Isolation today means one deployment per tenant.", GAP],
-    ["SQLite only", "No clustering, replication or DR — and the storage engine, not the protocol, is what blocks them.", GAP],
-    ["No connection or rate limiting", "The listener takes a backlog of 16 with no throttle. Flagged in the original review and never fixed.", GAP],
-    ["Scaling stops at ~1.5×", "Pre-fork workers help, but every audited operation serialises on one write lock. The price of tamper-evidence.", WARN],
-    ["No SIEM export, no external anchor", "Auditors ask for both first. A consistent rewrite of the local log leaves no trace.", WARN],
+    ["No REST API or console", "Reporting, the console, self-service and encryption as a service are all clients of it.", GAP],
+    ["No multi-tenancy", "Names, searches, quotas and audit are global. Isolation means one deployment per tenant.", GAP],
+    ["SQLite only", "No clustering, replication or DR — the storage engine blocks them, not the protocol.", GAP],
+    ["No rate limiting", "The listener takes a backlog of 16 with no throttle. Flagged in the first review.", GAP],
+    ["Policy lives in the server", "Dual control is enforced here, not inside the token. Own the server and you own the policy.", GAP],
+    ["Scaling stops at ~1.5×", "Pre-fork workers help, but every audited operation serialises on one write lock.", WARN],
+    ["No SIEM export or anchor", "Auditors ask for both first. A consistent rewrite of the local log leaves no trace.", WARN],
+    ["Starts unsealed by one PIN", "The store needs the token, so a stolen database is inert. But one PIN holder is the ceremony.", WARN],
     ["Not FIPS or CC validated", "Belongs to the token, not the code. Procurement, not engineering.", MID],
-    ["No post-quantum", "Needs both a PQC token and KMIP 3.0. Neither has shipped in a release yet.", MID],
+    ["No post-quantum", "Needs both a PQC token and KMIP 3.0. Neither has shipped in a release.", MID],
   ];
+  const GCOLS = 5;
+  const GGAP = 0.23;
+  const gw = (CW - (GCOLS - 1) * GGAP) / GCOLS;
   gaps.forEach(([head, body, colour], i) => {
-    const x = M + (i % 4) * 3.09;
-    const y = 1.70 + Math.floor(i / 4) * 2.42;
+    const x = M + (i % GCOLS) * (gw + GGAP);
+    const y = 1.70 + Math.floor(i / GCOLS) * 2.60;
     card(s, {
-      x: x, y: y, w: 2.86, h: 2.32,
+      x: x, y: y, w: gw, h: 2.44,
       fill: colour === GAP ? "F7E9E8" : (colour === WARN ? "FBF3E3" : ICE),
-      head: head, headSize: 14, headH: 0.62, headColor: colour === MID ? NAVY : colour,
-      body: body, size: 11.5,
+      head: head, headSize: 13, headH: 0.52, headColor: colour === MID ? NAVY : colour,
+      body: body, size: 11,
     });
   });
   footnote(s, "Red: absent and material.   Amber: present with a named limit.   Blue: outside this codebase's control.");
-  s.addNotes("Group them: the first four are engineering we could start "
-    + "tomorrow, the middle two are design trade-offs with known costs, and the "
-    + "last two depend on suppliers rather than on us.");
+  s.addNotes("Group them: the red five are engineering we could start tomorrow "
+    + "— except the fifth, which is a reason to prefer a token that binds policy "
+    + "to the key. The amber three are trade-offs with known costs. The blue two "
+    + "depend on suppliers rather than on us. The last two red and amber cards "
+    + "came from reading Securosys and HashiCorp Vault in September.");
 }
 
 // ══════════════════════════════════════════════════════════════════════════

@@ -3,9 +3,10 @@ Generate the delivery plan for a complete KMS with a REST control plane.
 
 Run: python generate_rest_kms_plan.py
 
-Twelve steps, each with a design deliverable, an implementation scope, a test
-plan and a gate that has to be demonstrated before the step is finished — the
-same structure that carried phases 0–5, because it worked.
+Each step carries a design deliverable, an implementation scope, a test plan
+and a gate that has to be demonstrated before the step is finished — the same
+structure that carried phases 0–5, because it worked. The step and stage
+counts in the document are read from the tables below, never typed.
 
 Every step names the features it closes by their entry in the gap matrix, and
 the arithmetic at the front is checked against `generate_kms_gap_matrix.py`
@@ -45,6 +46,7 @@ STAGES = [
     ("B", "The REST control plane", "The API, then the console that uses it."),
     ("C", "Enterprise fit", "What an auditor and a security team ask for."),
     ("D", "Scale, availability and tenancy", "Needs infrastructure to verify."),
+    ("E", "Protocol and estate reach", "Additive, independent of D, verifiable here."),
 ]
 
 # step, stage, title, objective, design, implementation, tests, gate,
@@ -435,6 +437,70 @@ STEPS = [
      [
       "A tenant column reaches every table, every query, the audit log, the CLI and the API.",
       "Object names stop being globally unique — the change most likely to surprise an existing deployment."]),
+
+    (13, "E", "KMIP JSON and XML encodings",
+     "Let a client speak KMIP without implementing a TTLV codec.",
+     ["The object model does not change. What changes is the wire: a JSON codec "
+      "and an XML one beside core/ttlv.py, both driven by the same tag and type "
+      "tables, so a new tag is still added in one place.",
+      "An HTTPS binding on the API listener — POST /kmip, encoding chosen by "
+      "Content-Type — rather than a second socket. The KMIP TCP port is "
+      "untouched.",
+      "Encoding is a transport concern, so it sits below the service layer: "
+      "the same guard, the same handlers, the same audit rows."],
+     ["core/encodings/ with json.py and xml.py implementing the OASIS profiles, "
+      "sharing the tag registry the TTLV codec already reads.",
+      "Content negotiation, and 415 for an encoding that is not enabled. Both "
+      "are off by default: a new parser is new attack surface."],
+     ["Round-trip every operation's request and response through all three "
+      "encodings and assert the decoded structures are identical — the existing "
+      "conformance corpus re-run twice, not a new set of assertions.",
+      "The OASIS JSON and XML test vectors decode to what the TTLV vectors "
+      "decode to.",
+      "A batch, a wrapped key and a dual-control refusal behave the same over "
+      "JSON as over TTLV, so an encoding cannot change semantics.",
+      "An unknown tag, a truncated document and a type mismatch are refused "
+      "with the same error the TTLV codec raises."],
+     "The conformance suite passes unchanged when re-run against the JSON and "
+     "XML encodings, and a request refused over TTLV is refused identically "
+     "over both.",
+     ["KMIP JSON and XML encodings"],
+     "~700 lines, ~40 tests — mostly the existing corpus re-parametrised.",
+     [
+      "core/ttlv.py stops being the only codec, and the tag registry becomes shared infrastructure rather than a TTLV detail.",
+      "Nothing above the codec changes. That is the point of the step: the service layer cannot tell which encoding a request arrived in."]),
+
+    (14, "E", "Certificate discovery and expiry monitoring",
+     "Know which certificates the estate is actually running, and warn before "
+     "one expires.",
+     ["A scanner that connects to configured TLS endpoints, records the chain "
+      "presented, and stores subject, issuer, fingerprint and validity window "
+      "against the inventory.",
+      "Certificates registered here are matched by fingerprint, so the report "
+      "separates what this KMS manages from what it does not — the second "
+      "number is the one that matters.",
+      "Expiry thresholds feed the alerting rules built in step 9 rather than "
+      "opening a second notification path."],
+     ["kmip_pkcs11/discovery/ with the scanner, a scheduler entry beside the "
+      "cryptoperiod scheduler in worker 0, and the inventory tables.",
+      "Scanning is read-only and rate-limited. This is a tool that touches "
+      "production endpoints, and it should be incapable of harming them."],
+     ["A scan of local TLS servers with known certificates records exactly "
+      "those chains, intermediate included.",
+      "A certificate registered here and the same certificate found by "
+      "scanning reconcile to one inventory row, matched on fingerprint.",
+      "An endpoint that times out, presents an expired certificate, or drops "
+      "the handshake is recorded as such rather than skipped silently.",
+      "An expiry threshold fires once per certificate per window, not on every "
+      "scan."],
+     "A scan of a fixture estate reports every certificate, splits managed from "
+     "unmanaged correctly, and raises an expiry alert exactly once for a "
+     "certificate inside the warning window.",
+     ["Certificate discovery and expiry monitoring"],
+     "~600 lines, ~30 tests.",
+     [
+      "The server starts reaching outward. Everything else here waits to be called; this initiates connections, which is a new posture for the service and for its firewall rules.",
+      "The inventory stops being a view of what this KMS holds and becomes a view of the estate, including certificates it does not manage."]),
 ]
 
 # Why a feature is not closed by the plan. Checked against REMAINING at build
@@ -453,7 +519,7 @@ REMAINING_KINDS = {
     "infrastructure": "Depends on hardware and deployment, not code",
 }
 
-# Features the twelve steps do not close, with the reason.
+# Features the steps do not close, with the reason.
 REMAINING = [
     ("Cloud BYOK (AWS, Azure, GCP)", "integration",
      "Per-cloud connectors calling each provider's import API. Well understood, "
@@ -495,19 +561,11 @@ REMAINING = [
      "Belongs to the token. The PKCS#11 boundary makes the swap cheap; running "
      "the suite against validated hardware is the actual work."),
     ("Common Criteria / eIDAS", "procurement", "As above."),
-    ("KMIP JSON and XML encodings", "demand",
-     "A second codec beside the TTLV one plus an HTTP binding, reusing the "
-     "object model unchanged. Entirely in-protocol and cheap, but the REST API "
-     "serves the audience that would want it, so nothing waits on this."),
     ("Key-bound usage policy enforced in hardware", "supplier",
      "The quorum, time-lock and usage limits would have to live in the key's "
      "own attributes and be enforced by the token, so that owning the server "
      "is not owning the policy. SoftHSM has no such mechanism; this is a "
      "property of the HSM, and the reason to prefer one that has it."),
-    ("Certificate discovery and expiry monitoring", "product scope",
-     "Discovery means scanning endpoints and stores this server does not own. "
-     "That is a scanner feeding the inventory, adjacent to the certificate "
-     "authority decision already deferred above."),
     ("Confidential computing deployment", "infrastructure",
      "Attested hardware, a store designed for an untrusted host, and an "
      "attestation clients check before trusting the service. Nothing in the "
@@ -566,7 +624,7 @@ def verify_against_matrix():
         raise SystemExit("open features the plan does not account for:\n  "
                          + "\n  ".join(missed))
 
-    return open_features, claimed, deferred
+    return open_features, claimed, deferred, m.totals()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -654,7 +712,7 @@ def labelled_block(doc, label, items, colour=MID_BLUE):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build():
-    open_features, claimed, deferred = verify_against_matrix()
+    open_features, claimed, deferred, mt = verify_against_matrix()
 
     doc = Document()
     for sec in doc.sections:
@@ -683,7 +741,8 @@ def build():
 
     s2 = doc.add_paragraph()
     s2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sr2 = s2.add_run("Twelve steps · design, implementation and test coverage for each")
+    sr2 = s2.add_run(f"{len(STEPS)} steps in {len(STAGES)} stages · design, "
+                     f"implementation and test coverage for each")
     sr2.font.size = Pt(12)
     sr2.font.color.rgb = DARK_GREY
     doc.add_paragraph()
@@ -691,10 +750,10 @@ def build():
     info = [
         ("Baseline", f"{BASELINE} — {BASELINE_TESTS} tests green, 41 of 53 KMIP "
                      f"2.1 operations"),
-        ("Starting position", f"{len(open_features)} of 74 assessed features are "
-                              f"short of full coverage"),
+        ("Starting position", f"{len(open_features)} of {mt['total']} assessed "
+                              f"features are short of full coverage"),
         ("This plan closes", f"{len(claimed)} of those {len(open_features)}, "
-                             f"across 12 steps"),
+                             f"across {len(STEPS)} steps"),
         ("Deliberately not closed", f"{len(deferred)} — supplier, procurement, "
                                     f"external event, or out of product scope"),
         ("Method", "Every step: a design, an implementation, a test plan, and a "
@@ -774,11 +833,11 @@ def build():
     # ── 2  what it closes ────────────────────────────────────────────────
     add_heading(doc, "2  What the plan closes", 1, DARK_BLUE)
     add_para(doc,
-        f"Of 74 assessed features, {len(open_features)} are short of full "
-        f"coverage today — 16 partial and 26 absent. The twelve steps close "
-        f"{len(claimed)} of them. The remaining {len(deferred)} are listed in "
-        f"section 5 with the reason each is not engineering work this plan can "
-        f"schedule.")
+        f"Of {mt['total']} assessed features, {len(open_features)} are short of "
+        f"full coverage today — {mt['partial']} partial and {mt['gap']} absent. "
+        f"The {len(STEPS)} steps close {len(claimed)} of them. The remaining "
+        f"{len(deferred)} are listed in section 5 with the reason each is not "
+        f"engineering work this plan can schedule.")
     section_break(doc)
 
     rows = []
@@ -791,7 +850,7 @@ def build():
         widths=[0.6, 0.7, 3.9, 1.3])
     section_break(doc)
 
-    add_para(doc, "The four stages", bold=True, colour=MID_BLUE)
+    add_para(doc, f"The {len(STAGES)} stages", bold=True, colour=MID_BLUE)
     make_table(doc,
         ["Stage", "Name", "Character"],
         [[letter, name, note] for letter, name, note in STAGES],
@@ -978,7 +1037,8 @@ def build():
         "baseline_tests": BASELINE_TESTS,
         "generated": TODAY,
         "totals": {"open": len(open_features), "closed": len(claimed),
-                   "deferred": len(deferred)},
+                   "deferred": len(deferred), "assessed": mt["total"],
+                   "steps": len(STEPS), "stages": len(STAGES)},
         "stages": [{"letter": a, "name": b, "note": c} for a, b, c in STAGES],
         "steps": [
             {"n": n, "stage": st, "title": ti, "objective": ob, "design": de,

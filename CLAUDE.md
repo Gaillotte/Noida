@@ -255,10 +255,29 @@ that mattered: it estimated line height from the font size while `panel()`
 pinned spacing at 16pt, so shrinking a font bought no vertical space and the
 check passed content the render showed hanging out of its panel.
 
+The plan then absorbed the new requirements. Four went into existing steps —
+encryption as a service into step 5, the OpenAPI document and its generated
+clients into step 6, distributed tracing and quorum unseal into step 9. Two
+became a new **stage E, "Protocol and estate reach"**: step 13 for the KMIP
+JSON and XML encodings, step 14 for certificate discovery and expiry
+monitoring. Both are additive, independent of stage D, and — unlike the two
+that stayed deferred — verifiable in this environment.
+
+Twelve steps became fourteen, four stages became five, and 34 of the 50 open
+features are now closed by the plan against 16 deferred. The two new features
+that stayed deferred are the honest ones: key-bound policy needs a token
+SoftHSM cannot imitate, and confidential-computing deployment needs attested
+hardware nothing here can verify.
+
 Note for anyone repeating this research: the network policy in this
 environment blocks all four vendors' documentation domains, so they were read
 through indexed summaries rather than the pages themselves. Every document
 that rests on that research says so.
+
+**Still inconsistent, deliberately left alone:** the overview deck's roadmap
+slides describe ten "waves", a structure that predates the fourteen-step plan
+and does not map onto it. Reconciling the two is a design decision about which
+narrative survives, not a mechanical fix, so it was not made silently.
 
 ---
 
@@ -304,8 +323,8 @@ rest, backup and restore.
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | Market requirements vs coverage, with routes for gaps |
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap |
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
-| `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twelve-step delivery plan to a complete KMS with a REST control plane. Its arithmetic is checked against the gap matrix at build time |
-| `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 39 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not |
+| `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Fourteen-step delivery plan to a complete KMS with a REST control plane, closing 34 of the 50 open features. Its arithmetic is checked against the gap matrix at build time, and every step and stage count in it is read from the tables rather than typed |
+| `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 45 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not, and its layout scales with the stage and step counts |
 | `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which of eleven sources evidenced each of the 82 requirements. **Provenance, not a capability comparison** — a mark means a source's documentation named the requirement, never that a product has it |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so

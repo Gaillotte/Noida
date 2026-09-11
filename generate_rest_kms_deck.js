@@ -198,7 +198,7 @@ function arrowRight(s, x, yCentre, w) {
     x: M, y: 1.85, w: CW, h: 0.95, isTextBox: true, margin: 0,
     fontFace: HEAD, fontSize: 50, bold: true, color: PAPER,
   });
-  s.addText("Twelve steps to a REST-fronted key management service", {
+  s.addText(`${plan.steps.length} steps to a REST-fronted key management service`, {
     x: M, y: 2.86, w: CW, h: 0.5, isTextBox: true, margin: 0,
     fontFace: HEAD, fontSize: 22, color: "9DB8D4",
   });
@@ -209,7 +209,7 @@ function arrowRight(s, x, yCentre, w) {
 
   const t = plan.totals;
   const tiles = [
-    ["12", "steps in four stages"],
+    [String(plan.steps.length), `steps in ${plan.stages.length} stages`],
     [String(t.open), "features short of full coverage"],
     [String(t.closed), "closed by this plan"],
     [String(t.deferred), "deferred, with reasons"],
@@ -240,16 +240,21 @@ function arrowRight(s, x, yCentre, w) {
 // Overview
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const s = lightSlide("The plan at a glance", "Four stages, twelve steps");
+  const s = lightSlide("The plan at a glance",
+    `${plan.stages.length} stages, ${plan.steps.length} steps`);
 
   const byStage = {};
   plan.steps.forEach(st => {
     (byStage[st.stage] = byStage[st.stage] || []).push(st);
   });
 
-  const colW = 2.82;
+  // Column width follows the stage count rather than a number typed once for
+  // four of them: a fifth stage used to run 3" off the right edge.
+  const GAP = 0.22;
+  const colW = (CW - (plan.stages.length - 1) * GAP) / plan.stages.length;
+  const narrow = colW < 2.55;
   plan.stages.forEach((stage, i) => {
-    const x = M + i * (colW + 0.26);
+    const x = M + i * (colW + GAP);
     const steps = byStage[stage.letter] || [];
     s.addShape(pres.ShapeType.roundRect, {
       x: x, y: 1.60, w: colW, h: 0.72, rectRadius: 0.06,
@@ -258,11 +263,12 @@ function arrowRight(s, x, yCentre, w) {
     s.addText(`${stage.letter} · ${stage.name}`, {
       x: x + 0.14, y: 1.60, w: colW - 0.28, h: 0.72, isTextBox: true, margin: 0,
       align: "center", valign: "middle",
-      fontFace: HEAD, fontSize: 14, bold: true, color: PAPER,
+      fontFace: HEAD, fontSize: narrow ? 12.5 : 14, bold: true, color: PAPER,
     });
     s.addText(stage.note, {
-      x: x + 0.10, y: 2.38, w: colW - 0.20, h: 0.52, isTextBox: true, margin: 0,
-      align: "center", fontFace: BODY, fontSize: 10, italic: true, color: FAINT,
+      x: x + 0.10, y: 2.38, w: colW - 0.20, h: 0.56, isTextBox: true, margin: 0,
+      align: "center", fontFace: BODY, fontSize: narrow ? 9 : 10, italic: true,
+      color: FAINT,
     });
 
     let y = 3.00;
@@ -273,23 +279,24 @@ function arrowRight(s, x, yCentre, w) {
         fill: { color: ICE }, line: { color: ICE, width: 1 },
       });
       s.addText(String(st.n), {
-        x: x + 0.14, y: y, w: 0.38, h: 0.62, isTextBox: true, margin: 0,
-        valign: "middle", fontFace: HEAD, fontSize: 15, bold: true, color: GOLD,
+        x: x + 0.10, y: y, w: 0.34, h: 0.62, isTextBox: true, margin: 0,
+        valign: "middle", fontFace: HEAD, fontSize: narrow ? 13 : 15, bold: true,
+        color: GOLD,
       });
       s.addText(st.title, {
-        x: x + 0.54, y: y, w: colW - 1.10, h: 0.62, isTextBox: true, margin: 0,
-        valign: "middle", fontFace: BODY, fontSize: 10.5, color: NAVY,
+        x: x + 0.46, y: y, w: colW - 0.94, h: 0.62, isTextBox: true, margin: 0,
+        valign: "middle", fontFace: BODY, fontSize: narrow ? 9 : 10.5, color: NAVY,
       });
       s.addText(closes ? `+${closes}` : "—", {
-        x: x + colW - 0.52, y: y, w: 0.38, h: 0.62, isTextBox: true, margin: 0,
+        x: x + colW - 0.46, y: y, w: 0.34, h: 0.62, isTextBox: true, margin: 0,
         align: "right", valign: "middle",
-        fontFace: BODY, fontSize: 10.5, bold: true,
+        fontFace: BODY, fontSize: narrow ? 9.5 : 10.5, bold: true,
         color: closes ? OK : FAINT,
       });
       y += 0.70;
     });
 
-    if (i < plan.stages.length - 1) arrowRight(s, x + colW + 0.04, 1.96, 0.19);
+    if (i < plan.stages.length - 1) arrowRight(s, x + colW + 0.03, 1.96, GAP - 0.06);
   });
 
   footnote(s, "+n is the number of gap-matrix features the step closes. Steps 1 "
@@ -307,7 +314,7 @@ plan.steps.forEach(step => {
 
   // ── 1. design impact ────────────────────────────────────────────────
   {
-    const s = lightSlide(`Step ${step.n} of 12 · Design impact`, step.title);
+    const s = lightSlide(`Step ${step.n} of ${plan.steps.length} · Design impact`, step.title);
     stepBand(s, step);
     const CAP1 = 4.44;
     const sz1a = fitSize(step.impact, 6.0, CAP1, [12.5, 11.5, 10.5]);
@@ -329,7 +336,7 @@ plan.steps.forEach(step => {
 
   // ── 2. proposed solution ────────────────────────────────────────────
   {
-    const s = lightSlide(`Step ${step.n} of 12 · Proposed solution`, step.title);
+    const s = lightSlide(`Step ${step.n} of ${plan.steps.length} · Proposed solution`, step.title);
     stepBand(s, step);
     const hasCloses = step.closes.length > 0;
     const implW = hasCloses ? 7.4 : CW;
@@ -370,7 +377,7 @@ plan.steps.forEach(step => {
 
   // ── 3. test strategy ────────────────────────────────────────────────
   {
-    const s = lightSlide(`Step ${step.n} of 12 · Test strategy`, step.title);
+    const s = lightSlide(`Step ${step.n} of ${plan.steps.length} · Test strategy`, step.title);
     stepBand(s, step);
     const CAP3 = 3.82;
     const sz3 = fitSize(step.tests, CW, CAP3, [12.5, 11.5, 10.5]);
@@ -437,10 +444,17 @@ plan.steps.forEach(step => {
     x: M, y: 5.66, w: CW, h: 1.08, rectRadius: 0.06,
     fill: { color: "1B3350" }, line: { color: "2A4A6B", width: 1 },
   });
-  s.addText(`${t.closed} of ${t.open} closed by the twelve steps. Six more are `
-    + "ordinary integration work once the REST layer exists to configure them. "
-    + "The last eight depend on a supplier, a procurement decision or an OASIS "
-    + "event — no amount of planning moves them.", {
+  // Split the deferred list by whether it is work someone could schedule or
+  // something outside engineering's reach, rather than by two numbers typed in.
+  const SCHEDULABLE = ["integration", "validation", "product scope", "demand",
+                       "optional step"];
+  const later = plan.remaining.filter(r => SCHEDULABLE.includes(r.kind)).length;
+  const blocked = plan.remaining.length - later;
+  s.addText(`${t.closed} of ${t.open} closed by the ${plan.steps.length} steps. `
+    + `${later} more are work someone could schedule — integration, vendor `
+    + `validation, or a product decision. The last ${blocked} depend on a `
+    + "supplier, a procurement decision, an OASIS event or hardware this "
+    + "project cannot verify; no amount of planning moves them.", {
     x: M + 0.30, y: 5.66, w: CW - 0.60, h: 1.08, isTextBox: true, margin: 0,
     valign: "middle", fontFace: HEAD, fontSize: 13, italic: true, color: PAPER,
     lineSpacing: 19,
