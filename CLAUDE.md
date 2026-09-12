@@ -59,7 +59,8 @@ These will waste an hour each if you meet them cold.
 
 | Symptom | Cause and fix |
 |---|---|
-| EC signing tests fail | SoftHSM2 older than 2.7.0. The packaged 2.6.1 advertises 70 mechanisms without `CKM_ECDSA_SHA256`; a source-built 2.7.0 advertises 79 with it. **The crypto backend is not the differentiator** — the packaged build already links OpenSSL. Build 2.7.0 from source to `/usr/local`. |
+| EC signing tests fail, or `libsofthsm2.so` is missing entirely | A fresh container has no SoftHSM at all, and the packaged 2.6.1 advertises 70 mechanisms without `CKM_ECDSA_SHA256`. **The crypto backend is not the differentiator** — the packaged build already links OpenSSL; the version is. Build 2.7.0 from source (recipe below); it advertises 79 mechanisms with `CKM_ECDSA_SHA256` (0x1044) present, verified by probe on 12 Sep 2026. |
+| Fetching the SoftHSM source | The release tarballs are blocked — `dist.opendnssec.org` does not resolve through the proxy and the GitHub archive URL returns 403 — but **`git clone` from GitHub works**. Earlier notes said "the SoftHSM2 mirror is blocked" and left it there, which read as "you cannot get it". You can: `git clone --depth 1 --branch 2.7.0 https://github.com/opendnssec/SoftHSMv2.git`. |
 | `pip install -e .` fails with `AttributeError: install_layout` | Debian/Ubuntu setuptools interaction. Use `pip install --use-pep517 -e '.[dev]'`. |
 | Tests fail in unrelated places | Two pytest processes sharing the SoftHSM token. Run one at a time (`pgrep -fa pytest`). |
 | A fresh container looks like a different project | This branch has diverged from `main` — 36 commits here that are not there, 8 there that are not here. If `kmip_pkcs11/` is missing, the checkout is stale: `git fetch origin && git reset --hard origin/claude/kmip-specifications-iprzym`. |
@@ -67,6 +68,22 @@ These will waste an hour each if you meet them cold.
 | `soffice` says "source file could not be loaded" for every file, even a `.txt` | Only `libreoffice-core` and `-common` are installed, so there are **no document filters**. `apt-get install -y libreoffice-impress libreoffice-writer` fixes it, and conversion then works normally. Worth doing immediately — without it there is no way to see a rendered document, which is how a deck shipped with every diagram missing. |
 | Rendering a deck to look at it | `soffice --headless --convert-to pdf --outdir . deck.pptx` then `pdftoppm -jpeg -r 100 deck.pdf slide` (`apt-get install poppler-utils`). `tools/render_pptx.py` is a PIL approximation for when LibreOffice is unavailable — useful, but it under-estimates bullet height and draws block arrows as plain rectangles, so trust the real render when both are available. |
 | Building slides | Never use a `line` shape for a connector: pptxgenjs accepts zero width or height and PowerPoint renders nothing. Use `downArrow` / `rightArrow` block shapes. Run `python tools/qa_pptx_geometry.py deck.pptx`, then actually look at the render. |
+
+Building SoftHSM 2.7.0 from source, start to finish — about three minutes:
+
+```bash
+apt-get install -y libtool libtool-bin          # the only missing prerequisite
+git clone --depth 1 --branch 2.7.0 https://github.com/opendnssec/SoftHSMv2.git
+cd SoftHSMv2 && sh autogen.sh
+./configure --prefix=/usr/local --with-crypto-backend=openssl --disable-gost
+make -j"$(nproc)" && make install               # lands at the path the tests expect
+pip install --use-pep517 -e '.[dev]'
+pytest                                          # the fixtures create the token themselves
+```
+
+The fixtures build `/tmp/softhsm2_tests/softhsm2.conf` and run `softhsm2-util
+--init-token` on their own, so nothing else needs setting up — but
+`softhsm2-util` has to be on `PATH`, which `--prefix=/usr/local` handles.
 
 The test fixtures wipe and re-initialise `/tmp/softhsm2_tests/tokens` every
 session. That is deliberate: runs used to leave thousands of keys behind, and
@@ -305,10 +322,19 @@ nodes rather than by weakening the serial audit chain, so the single-node
 ceiling of about 1.5× stays exactly where it is. The generator now refuses to
 build on that contradiction unless the row says how both are true.
 
-Note on grounding: the container that generated it has no SoftHSM, so the suite
-could not run. Claims were grounded by citing code, every citation checked
-against the file, and the document says on page one that it was not re-verified
-by execution.
+Note on grounding, and a correction to it. The document was first written
+saying the suite could not run because the container had no SoftHSM. That was
+true of the container and false as a conclusion: challenged on it, the build
+turned out to take three minutes. SoftHSM2 2.7.0 was built from source at
+`a013bde` and **the full suite passed — 816 tests in 43.8s** — along with the
+sixteen-step demo. The probe confirmed 79 mechanisms with `CKM_ECDSA_SHA256`
+present, which is the figure this file has asserted since August and which no
+session had actually demonstrated. The document now records the run rather than
+the excuse.
+
+The lesson is worth keeping: "the environment does not have it" is a reason to
+try installing it, not a finding. The same sentence had been carried forward
+between sessions for a month.
 
 ---
 
@@ -331,8 +357,10 @@ rest, backup and restore.
 - Audit chain is not externally anchored.
 - SoftHSM2 is not FIPS/CC validated; the swap is cheap, the validation is not.
 - No post-quantum: needs both a PQC token and KMIP 3.0.
-- The container image and CI workflow have never been executed — this
-  environment blocks Docker Hub and the SoftHSM2 mirror.
+- The container image and CI workflow have never been executed. The Docker
+  client is installed but no daemon is reachable, so the image cannot be built
+  here. (The SoftHSM half of this note was wrong: the source builds fine from
+  a GitHub clone, and the suite runs green — see section 3.)
 - Named by the four products added in September and absent here: no data-plane
   crypto API over HTTP, no distributed tracing, no operator-quorum unseal (the
   token PIN holder is the whole ceremony), and dual control is enforced by the

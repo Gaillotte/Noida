@@ -42,9 +42,12 @@ GAP_RED = RGBColor(0xB3, 0x26, 0x1E)
 
 TODAY = datetime.date.today().strftime("%d %B %Y")
 
-# Where the claims in this document come from. The suite could not be run in
-# the session that generated it — see section 1.
-GROUNDED_AT = "2964dee"
+# Where the claims come from, and when they were last actually demonstrated.
+# These are two different things and the document says both.
+GROUNDED_AT = "2964dee"          # the commit the gap matrix assesses
+VERIFIED_AT = "a013bde"          # the commit the suite was last run against
+VERIFIED_RESULT = "816 passed in 43.8s"
+VERIFIED_ON = "12 September 2026"
 
 
 # ── why a feature stopped where it did ───────────────────────────────────────
@@ -559,6 +562,9 @@ def build():
         ("Features", f"{len(partial)} of {len(matrix.DOMAINS) and sum(len(d['rows']) for d in matrix.DOMAINS)} "
                      f"assessed, across {len({p[0] for p in partial})} domains"),
         ("Grounded at", f"{GROUNDED_AT} — the commit the gap matrix assesses"),
+        ("Last demonstrated", f"{VERIFIED_AT} on {VERIFIED_ON} — "
+                              f"{VERIFIED_RESULT}, against a source-built "
+                              f"SoftHSM2 2.7.0"),
         ("Reasons", " · ".join(f"{counts[c]} {REASONS[c][0].lower()}"
                                for c in REASONS if c in counts)),
         ("Plan routing", f"{scheduled} closed by the delivery plan, "
@@ -620,14 +626,26 @@ def build():
              colour=MID_BLUE)
     add_para(doc,
         "The coverage verdicts come from the gap matrix, which was assessed "
-        f"against the repository at {GROUNDED_AT} with the full suite green. "
-        "The explanations here were grounded by reading the code and citing "
-        "it — the file and line references are real and current. They were "
-        "not re-verified by running the suite: the container this document "
-        "was generated in has no SoftHSM installation, so the tests, which "
-        "need a live token, could not execute. That is a limit on this "
-        "document, not on the assessment it describes, and it is recorded "
-        "here rather than left for a reader to discover.", size=9.5)
+        f"against the repository at {GROUNDED_AT}. The explanations here were "
+        "grounded by reading the code and citing it, and every file and line "
+        "reference was checked against the file it names.", size=9.5)
+    add_para(doc,
+        f"They were also re-verified by execution. SoftHSM2 2.7.0 was built "
+        f"from source and the full suite run against a live token at "
+        f"{VERIFIED_AT} on {VERIFIED_ON}: {VERIFIED_RESULT}. The token "
+        f"advertises 79 mechanisms including CKM_ECDSA_SHA256, which is the "
+        f"figure this project's environment notes have claimed since August "
+        f"and which had not, until now, been demonstrated in a session that "
+        f"wrote about it. The sixteen-step end-to-end demo also completed.",
+        size=9.5)
+    add_para(doc,
+        "Two numbers here remain the gap matrix's rather than this document's. "
+        "The algorithm-breadth row quotes 15 of 40: the denominator was "
+        "confirmed — the KMIP CryptographicAlgorithm enum has exactly 40 "
+        "members — but the numerator depends on how an algorithm is judged "
+        "usable on a token, and that method was not re-derived here. It is "
+        "flagged rather than restated as though checked.", size=9.5,
+        italic=True)
     doc.add_page_break()
 
     # ── 2  the reasons ───────────────────────────────────────────────────
