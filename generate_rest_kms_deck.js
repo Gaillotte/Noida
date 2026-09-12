@@ -243,64 +243,65 @@ function arrowRight(s, x, yCentre, w) {
   const s = lightSlide("The plan at a glance",
     `${plan.stages.length} stages, ${plan.steps.length} steps`);
 
-  const byStage = {};
-  plan.steps.forEach(st => {
-    (byStage[st.stage] = byStage[st.stage] || []).push(st);
-  });
+  // A grid rather than a row of columns. Nine stages as columns gave each one
+  // 1.14 inches, which is narrower than the word "Foundation".
+  const COLS = 3;
+  const GX = 0.28, GY = 0.24;
+  const cw = (CW - (COLS - 1) * GX) / COLS;
+  const rows = Math.ceil(plan.stages.length / COLS);
+  const ch = (5.06 - (rows - 1) * GY) / rows;
 
-  // Column width follows the stage count rather than a number typed once for
-  // four of them: a fifth stage used to run 3" off the right edge.
-  const GAP = 0.22;
-  const colW = (CW - (plan.stages.length - 1) * GAP) / plan.stages.length;
-  const narrow = colW < 2.55;
   plan.stages.forEach((stage, i) => {
-    const x = M + i * (colW + GAP);
-    const steps = byStage[stage.letter] || [];
+    const x = M + (i % COLS) * (cw + GX);
+    const y = 1.62 + Math.floor(i / COLS) * (ch + GY);
+    const steps = plan.steps.filter(p => p.stage === stage.letter);
+    const closes = steps.reduce((a, p) => a + p.closes.length, 0);
+    const gated = steps.filter(p => p.depends).length;
+
     s.addShape(pres.ShapeType.roundRect, {
-      x: x, y: 1.60, w: colW, h: 0.72, rectRadius: 0.06,
-      fill: { color: NAVY }, line: { color: NAVY, width: 1 },
+      x: x, y: y, w: cw, h: ch, rectRadius: 0.06,
+      fill: { color: ICE }, line: { color: ICE, width: 1 }, shadow: shadow(),
     });
+    s.addShape(pres.ShapeType.rect, {
+      x: x, y: y, w: 0.10, h: ch,
+      fill: { color: gated === steps.length ? WARN : NAVY },
+      line: { color: gated === steps.length ? WARN : NAVY, width: 1 },
+    });
+    // Measured, not offset. A two-line stage name ("Scale, availability and
+    // tenancy") was written straight over the line beneath it — the third
+    // time this exact defect has appeared in a slide that does not use the
+    // card helper.
+    const NS = 14;
+    const nameCpl = Math.max(6, ((cw - 0.56) * 72) / (NS * 0.62));
+    const nameH = Math.ceil(stage.name.length / nameCpl) * NS * 1.34 / 72;
+    let ty = y + 0.16;
     s.addText(`${stage.letter} · ${stage.name}`, {
-      x: x + 0.14, y: 1.60, w: colW - 0.28, h: 0.72, isTextBox: true, margin: 0,
-      align: "center", valign: "middle",
-      fontFace: HEAD, fontSize: narrow ? 12.5 : 14, bold: true, color: PAPER,
+      x: x + 0.28, y: ty, w: cw - 0.56, h: nameH, isTextBox: true,
+      margin: 0, fontFace: HEAD, fontSize: NS, bold: true, color: NAVY,
     });
+    ty += nameH + 0.06;
+    s.addText(`Steps ${steps[0].n}–${steps[steps.length - 1].n}`
+      + `   ·   closes ${closes}`
+      + (gated ? `   ·   ${gated} gated` : ""), {
+      x: x + 0.28, y: ty, w: cw - 0.56, h: 0.24, isTextBox: true,
+      margin: 0, fontFace: BODY, fontSize: 10.5, bold: true,
+      color: gated ? WARN : OK,
+    });
+    ty += 0.30;
+    // Step titles were here and did not fit once a stage held five of them.
+    // They are on every step's own slides; the note earns the space better.
     s.addText(stage.note, {
-      x: x + 0.10, y: 2.38, w: colW - 0.20, h: 0.56, isTextBox: true, margin: 0,
-      align: "center", fontFace: BODY, fontSize: narrow ? 9 : 10, italic: true,
-      color: FAINT,
+      x: x + 0.28, y: ty, w: cw - 0.56, h: y + ch - ty - 0.12,
+      isTextBox: true, margin: 0, fontFace: BODY, fontSize: 10,
+      italic: true, color: SOFT, lineSpacing: 13,
     });
-
-    let y = 3.00;
-    steps.forEach(st => {
-      const closes = st.closes.length;
-      s.addShape(pres.ShapeType.roundRect, {
-        x: x, y: y, w: colW, h: 0.62, rectRadius: 0.05,
-        fill: { color: ICE }, line: { color: ICE, width: 1 },
-      });
-      s.addText(String(st.n), {
-        x: x + 0.10, y: y, w: 0.34, h: 0.62, isTextBox: true, margin: 0,
-        valign: "middle", fontFace: HEAD, fontSize: narrow ? 13 : 15, bold: true,
-        color: GOLD,
-      });
-      s.addText(st.title, {
-        x: x + 0.46, y: y, w: colW - 0.94, h: 0.62, isTextBox: true, margin: 0,
-        valign: "middle", fontFace: BODY, fontSize: narrow ? 9 : 10.5, color: NAVY,
-      });
-      s.addText(closes ? `+${closes}` : "—", {
-        x: x + colW - 0.46, y: y, w: 0.34, h: 0.62, isTextBox: true, margin: 0,
-        align: "right", valign: "middle",
-        fontFace: BODY, fontSize: narrow ? 9.5 : 10.5, bold: true,
-        color: closes ? OK : FAINT,
-      });
-      y += 0.70;
-    });
-
-    if (i < plan.stages.length - 1) arrowRight(s, x + colW + 0.03, 1.96, GAP - 0.06);
+    checkFit(`stage ${stage.letter}`, y + ch - ty - 0.12,
+             textHeight(stage.note, 10, cw - 0.56, false));
   });
 
-  footnote(s, "+n is the number of gap-matrix features the step closes. Steps 1 "
-    + "and 2 close nothing and are the two the rest depends on.");
+  footnote(s, `Every open feature is routed. An amber spine marks a stage `
+    + `no part of which can start yet — ${plan.totals.gated} steps of `
+    + `${plan.steps.length} wait on hardware, a product or an external event.`);
   s.addNotes("Order is dictated by dependency. Step 1 must precede everything: "
     + "authorization, dual control and audit currently live inside the KMIP "
     + "dispatcher, and a REST layer built before they move would bypass all "
@@ -316,19 +317,31 @@ plan.steps.forEach(step => {
   {
     const s = lightSlide(`Step ${step.n} of ${plan.steps.length} · Design impact`, step.title);
     stepBand(s, step);
-    const CAP1 = 4.44;
+    if (step.depends) {
+      s.addShape(pres.ShapeType.roundRect, {
+        x: M, y: 2.12, w: CW, h: 0.40, rectRadius: 0.05,
+        fill: { color: "FBF3E3" }, line: { color: "E8D5A8", width: 1 },
+      });
+      s.addText(`CANNOT START UNTIL   ${step.depends}`, {
+        x: M + 0.24, y: 2.12, w: CW - 0.48, h: 0.40, isTextBox: true,
+        margin: 0, valign: "middle", fontFace: BODY, fontSize: 10.5,
+        color: WARN,
+      });
+    }
+    const CAP1 = step.depends ? 4.10 : 4.44;
     const sz1a = fitSize(step.impact, 6.0, CAP1, [12.5, 11.5, 10.5]);
     const sz1b = fitSize(step.design, 5.76, CAP1, [12, 11, 10, 9.5]);
     const h1 = Math.min(CAP1, Math.max(2.10,
       panelHeight(step.impact, sz1a, 6.0, true),
       panelHeight(step.design, sz1b, 5.76, true)));
+    const py = step.depends ? 2.64 : 2.30;
     panel(s, {
-      x: M, y: 2.30, w: 6.0, h: h1, fill: "FBF3E3",
+      x: M, y: py, w: 6.0, h: h1, fill: "FBF3E3",
       tag: "What changes in the existing design", tagColor: WARN,
       items: step.impact, size: sz1a,
     });
     panel(s, {
-      x: M + 6.3, y: 2.30, w: 5.76, h: h1, fill: ICE,
+      x: M + 6.3, y: py, w: 5.76, h: h1, fill: ICE,
       tag: "The shape of the solution", items: step.design, size: sz1b,
     });
     s.addNotes(`Objective: ${step.objective}`);
@@ -414,29 +427,30 @@ plan.steps.forEach(step => {
 // Closing
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const s = darkSlide("After step 12", "What the plan does not close");
   const t = plan.totals;
+  const s = darkSlide(`After step ${plan.steps.length}`, "What the plan waits on");
 
-  const kinds = {};
-  plan.remaining.forEach(r => { (kinds[r.kind] = kinds[r.kind] || []).push(r.feature); });
-  const order = ["integration", "validation", "product scope", "supplier",
-                 "optional step", "external", "demand", "out of scope",
-                 "procurement"];
-  const groups = order.filter(k => kinds[k]);
-
-  const perCol = Math.ceil(groups.length / 3);
-  groups.forEach((kind, i) => {
-    const col = Math.floor(i / perCol);
-    const row = i % perCol;
-    const x = M + col * 4.12;
-    const y = 1.68 + row * 1.36;
-    s.addText(kind.toUpperCase(), {
-      x: x, y: y, w: 3.85, h: 0.24, isTextBox: true, margin: 0,
-      fontFace: BODY, fontSize: 10, bold: true, charSpacing: 1.4, color: GOLD,
+  const gatedSteps = plan.steps.filter(p => p.depends);
+  const perCol = Math.ceil(gatedSteps.length / 2);
+  gatedSteps.forEach((step, i) => {
+    const x = M + (i < perCol ? 0 : 6.16);
+    const y = 1.66 + (i % perCol) * 0.92;
+    s.addShape(pres.ShapeType.roundRect, {
+      x: x, y: y, w: 0.56, h: 0.56, rectRadius: 0.06,
+      fill: { color: GOLD }, line: { color: GOLD, width: 1 },
     });
-    s.addText(kinds[kind].join(" · "), {
-      x: x, y: y + 0.28, w: 3.85, h: 0.94, isTextBox: true, margin: 0,
-      fontFace: BODY, fontSize: 11.5, color: "9DB8D4", lineSpacing: 15,
+    s.addText(String(step.n), {
+      x: x, y: y, w: 0.56, h: 0.56, isTextBox: true, margin: 0,
+      align: "center", valign: "middle", fontFace: HEAD, fontSize: 17,
+      bold: true, color: DEEP,
+    });
+    s.addText(step.title, {
+      x: x + 0.72, y: y - 0.04, w: 5.2, h: 0.30, isTextBox: true, margin: 0,
+      fontFace: HEAD, fontSize: 13, bold: true, color: PAPER,
+    });
+    s.addText(step.depends, {
+      x: x + 0.72, y: y + 0.26, w: 5.2, h: 0.58, isTextBox: true, margin: 0,
+      fontFace: BODY, fontSize: 10.5, color: "9DB8D4", lineSpacing: 13,
     });
   });
 
@@ -444,24 +458,20 @@ plan.steps.forEach(step => {
     x: M, y: 5.66, w: CW, h: 1.08, rectRadius: 0.06,
     fill: { color: "1B3350" }, line: { color: "2A4A6B", width: 1 },
   });
-  // Split the deferred list by whether it is work someone could schedule or
-  // something outside engineering's reach, rather than by two numbers typed in.
-  const SCHEDULABLE = ["integration", "validation", "product scope", "demand",
-                       "optional step"];
-  const later = plan.remaining.filter(r => SCHEDULABLE.includes(r.kind)).length;
-  const blocked = plan.remaining.length - later;
-  s.addText(`${t.closed} of ${t.open} closed by the ${plan.steps.length} steps. `
-    + `${later} more are work someone could schedule — integration, vendor `
-    + `validation, or a product decision. The last ${blocked} depend on a `
-    + "supplier, a procurement decision, an OASIS event or hardware this "
-    + "project cannot verify; no amount of planning moves them.", {
+  s.addText(`All ${t.open} open features are routed to a step — none is `
+    + `deferred. But routed is not schedulable: ${t.steps - t.gated} of the `
+    + `${t.steps} steps could start this week and ${t.gated} cannot begin `
+    + "until somebody buys hardware, deploys a product, or an external body "
+    + "runs an event. A plan that closes everything has to say that plainly.", {
     x: M + 0.30, y: 5.66, w: CW - 0.60, h: 1.08, isTextBox: true, margin: 0,
     valign: "middle", fontFace: HEAD, fontSize: 13, italic: true, color: PAPER,
     lineSpacing: 19,
   });
-  s.addNotes("Close on the honest boundary: the plan says what it cannot do as "
-    + "clearly as what it can, and the generator refuses to build if those two "
-    + "lists stop adding up to the gap matrix.");
+  s.addNotes("Close on the honest boundary. The previous revision deferred "
+    + "sixteen features; this one routes all of them and names what each "
+    + "blocked step waits on instead. That is a more useful statement and a "
+    + "more demanding one — and the generator still refuses to build if the "
+    + "routing stops adding up to the gap matrix.");
 }
 
 pres.writeFile({ fileName: "KMIP_PKCS11_REST_KMS_Plan_Deck.pptx" })

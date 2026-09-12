@@ -336,6 +336,36 @@ The lesson is worth keeping: "the environment does not have it" is a reason to
 try installing it, not a finding. The same sentence had been carried forward
 between sessions for a month.
 
+**The plan reaches all 82 (12 Sep 2026).** Twelve more steps in four more
+stages take it from 34 of 50 open features to **all 50**, with nothing
+deferred: F cloud and application reach (BYOK, XKS/EKM, a PKCS#11 provider,
+tokenization), G interoperability and adjacent products (vendor validation,
+OASIS certification, and closing the CA and secrets rows **by integration
+rather than by reimplementation**), H protocol 3.0 and post-quantum, I
+assurance on validated hardware and confidential computing.
+
+The honest part is the new `DEPENDS` map. A plan with a route for everything
+reads as a plan that can be executed end to end, and this one cannot: 19 of the
+26 steps could start this week, **7 cannot begin until somebody buys hardware,
+deploys a product, or an external body runs an event**. Those seven are named
+in section 5 of the document, carry a band on their own deck slide, and are
+marked on both decks' stage grids. Deferring sixteen features was the weaker
+statement; routing them all and saying which are blocked is the stronger and
+more demanding one.
+
+The partial-features generator's contradiction check earned its keep a second
+time — the two rows it calls "belongs to another product" are now closed by
+steps 21 and 22, and it refused to build until each said how both are true.
+They close by integration, and the rows say so.
+
+Layout note for the next person: **nine stages break every layout built for
+four or five.** The plan deck's at-a-glance gave each stage 1.14" and the
+overview deck's stage row had blocks wider than their own pitch. Both are grids
+now. The two-line stage name written over the line beneath it appeared for the
+third time in this project, again in a slide that does not use the `card()`
+helper — if you are positioning text at fixed offsets, you are about to
+reintroduce it.
+
 ---
 
 ## 7. Current state and known gaps
@@ -361,6 +391,9 @@ rest, backup and restore.
   client is installed but no daemon is reachable, so the image cannot be built
   here. (The SoftHSM half of this note was wrong: the source builds fine from
   a GitHub clone, and the suite runs green — see section 3.)
+- Every one of these is routed to a step in the delivery plan, but seven of
+  those steps cannot start until hardware is bought or an external event runs.
+  A route is not a schedule.
 - Named by the four products added in September and absent here: no data-plane
   crypto API over HTTP, no distributed tracing, no operator-quorum unseal (the
   token PIN holder is the whole ceremony), and dual control is enforced by the
@@ -382,8 +415,8 @@ rest, backup and restore.
 | `KMIP_PKCS11_KMS_Gap_Matrix.docx` | `generate_kms_gap_matrix.py` | Market requirements vs coverage, with routes for gaps |
 | `KMIP_PKCS11_Overview_Deck.pptx` | `generate_overview_deck.js` | 15-slide overview: KMIP, the design, the REST target, gaps, roadmap. Its gap figures come from `gap_totals.json` and its roadmap from `plan_steps.json` — neither is written here |
 | `KMIP_PKCS11_Overview_Deck.pdf` | `npm run pdf` | The same deck as PDF, for viewing without PowerPoint |
-| `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Fourteen-step delivery plan to a complete KMS with a REST control plane, closing 34 of the 50 open features. Its arithmetic is checked against the gap matrix at build time, and every step and stage count in it is read from the tables rather than typed |
-| `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 45 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not, and its layout scales with the stage and step counts |
+| `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Twenty-six-step delivery plan closing **all 50** open features. `DEPENDS` names the 7 steps that cannot start until hardware is bought, a product deployed or an external event runs — routed is not schedulable, and the document says so. Arithmetic checked against the gap matrix at build time; step and stage counts read from the tables, never typed |
+| `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 81 slides — three per step: design impact, proposed solution, test strategy, with a gated step carrying its dependency as a band. Built from `plan_steps.json`, so it cannot say anything the plan does not, and its layout scales with the stage and step counts |
 | `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which of eleven sources evidenced each of the 82 requirements. **Provenance, not a capability comparison** — a mark means a source's documentation named the requirement, never that a product has it |
 | `KMIP_PKCS11_Partial_Features.docx` / `.pdf` | `generate_partial_features.py` | Why each of the 18 partial features is partial: what exists (with file and line), what is missing, the reason it stopped, and what would complete it. Reason codes separate unwritten work from a token limit, an undemonstrated claim, a deliberate stop and another product's job |
 

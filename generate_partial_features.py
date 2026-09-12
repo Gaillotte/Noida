@@ -180,7 +180,13 @@ DETAIL = {
       "integration surface, not a cryptographic one.",
   completes="Nothing, in this product. The honest route is to run a secrets "
             "manager beside this server and let it use this one for the keys "
-            "it needs. Building a second Vault inside a KMS serves neither."),
+            "it needs. Building a second Vault inside a KMS serves neither.",
+  plan_note="Step 22 closes the row by taking that route, not by reversing "
+            "it. The dynamic-secrets engine stays outside; what gets built "
+            "here is the half that belongs to a key manager — lease expiry "
+            "wired to automatic destruction, and an audit trail from request "
+            "to destruction — plus a reference integration. The product "
+            "boundary does not move; the deployment story does."),
 
 "Certificate lifecycle": dict(reason="scope",
   exists="Certify, ReCertify and Validate are implemented, certificates are "
@@ -194,7 +200,12 @@ DETAIL = {
       "with its own operational discipline; reimplementing a weak one inside "
       "a key manager would invite exactly the reliance it could not support.",
   completes="Front the deployment with a real CA — EJBCA or equivalent — and "
-            "let this server hold the keys. The boundary is the point."),
+            "let this server hold the keys. The boundary is the point.",
+  plan_note="Step 21 closes the row by integration: Certify and ReCertify "
+            "proxy to a real CA, the key never leaves the token, and CRL and "
+            "OCSP stay the CA's responsibility. This server still does not "
+            "become a certificate authority, which was the decision — it "
+            "stops pretending it does not need one."),
 
 "Encryption as a service (data-plane API)": dict(reason="unbuilt",
   exists="Encrypt, Decrypt, Sign, MAC and Hash all execute inside the token "

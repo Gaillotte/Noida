@@ -811,72 +811,65 @@ function arrowRight(s, x, yCentre, w) {
   const s = lightSlide("Roadmap · 1 of 3",
     `${plan.stages.length} stages, in dependency order`);
 
-  const bw = 2.16;
-  const bh = 2.28;
-  const pitch = (CW - bw) / (plan.stages.length - 1);
+  // Nine stages will not sit in a row: at 2.16" wide the blocks overlap
+  // their own gaps. A grid, with each stage's step range and feature count.
+  const COLS = 3, GX = 0.26, GY = 0.16;
+  const bw = (CW - (COLS - 1) * GX) / COLS;
+  const bh = 1.12;
   plan.stages.forEach((stage, i) => {
-    const x = M + i * pitch;
-    const fill = STAGE_FILL[i % STAGE_FILL.length];
-    const onGold = fill === GOLD;
+    const x = M + (i % COLS) * (bw + GX);
+    const y = 1.62 + Math.floor(i / COLS) * (bh + GY);
     const steps = stageSteps(stage.letter);
-    const closes = stageCloses(stage.letter);
+    const gated = steps.filter(p => p.depends).length;
+    const allGated = gated === steps.length;
+    // Light cards with a coloured spine, matching the plan deck's own
+    // at-a-glance. Nine filled cards cycling a five-colour palette put gold
+    // stats on mid-grey and repeated A's colour on F.
     s.addShape(pres.ShapeType.roundRect, {
-      x: x, y: 1.74, w: bw, h: bh, rectRadius: 0.06,
-      fill: { color: fill }, line: { color: fill, width: 1 }, shadow: shadow(),
+      x: x, y: y, w: bw, h: bh, rectRadius: 0.06,
+      fill: { color: ICE }, line: { color: ICE, width: 1 }, shadow: shadow(),
     });
-    s.addText(stage.letter, {
-      x: x, y: 1.90, w: bw, h: 0.62, isTextBox: true, margin: 0, align: "center",
-      fontFace: HEAD, fontSize: 34, bold: true, color: onGold ? DEEP : "9DB8D4",
+    s.addShape(pres.ShapeType.rect, {
+      x: x, y: y, w: 0.10, h: bh,
+      fill: { color: allGated ? WARN : NAVY },
+      line: { color: allGated ? WARN : NAVY, width: 1 },
     });
-    // Stacked on measured heights, not fixed offsets: a two-line stage name
-    // used to be written straight over the line beneath it.
     const NS = 13;
-    const nameCpl = Math.max(6, ((bw - 0.16) * 72) / (NS * 0.62));
-    const nameH = Math.ceil(stage.name.length / nameCpl) * NS * 1.34 / 72;
-    let ty = 2.52;
+    const cpl = Math.max(6, ((bw - 1.10) * 72) / (NS * 0.62));
+    const nameH = Math.ceil(stage.name.length / cpl) * NS * 1.34 / 72;
+    s.addText(stage.letter, {
+      x: x + 0.20, y: y + 0.14, w: 0.58, h: 0.62, isTextBox: true, margin: 0,
+      align: "center", fontFace: HEAD, fontSize: 30, bold: true,
+      color: allGated ? WARN : MID,
+    });
+    let ty = y + 0.18;
     s.addText(stage.name, {
-      x: x + 0.08, y: ty, w: bw - 0.16, h: nameH, isTextBox: true, margin: 0,
-      align: "center", fontFace: HEAD, fontSize: NS, bold: true,
-      color: onGold ? DEEP : PAPER,
+      x: x + 0.88, y: ty, w: bw - 1.06, h: nameH, isTextBox: true, margin: 0,
+      fontFace: HEAD, fontSize: NS, bold: true, color: NAVY,
     });
-    ty += nameH + 0.06;
-    s.addText(`Steps ${steps[0].n}–${steps[steps.length - 1].n} · `
-      + `closes ${closes}`, {
-      x: x + 0.06, y: ty, w: bw - 0.12, h: 0.20, isTextBox: true, margin: 0,
-      align: "center", fontFace: BODY, fontSize: 10, bold: true,
-      color: onGold ? "6B5218" : GOLD,
+    ty += nameH + 0.04;
+    s.addText(`Steps ${steps[0].n}–${steps[steps.length - 1].n}  ·  closes `
+      + `${stageCloses(stage.letter)}` + (gated ? `  ·  ${gated} gated` : ""), {
+      x: x + 0.88, y: ty, w: bw - 1.06, h: 0.22, isTextBox: true, margin: 0,
+      fontFace: BODY, fontSize: 9.5, bold: true, color: gated ? WARN : OK,
     });
-    ty += 0.24;
-    s.addText(stage.note, {
-      x: x + 0.14, y: ty, w: bw - 0.28, h: 1.74 + bh - 0.08 - ty,
-      isTextBox: true, margin: 0, align: "center", fontFace: BODY, fontSize: 9,
-      color: onGold ? "4A3A18" : "C9DAEA", lineSpacing: 11.7,
-    });
-    checkFit({ x: x, y: 1.74, w: bw, h: bh, head: stage.name },
-             ty, textHeight(stage.note, 9, bw - 0.28, false));
-    if (i < plan.stages.length - 1) {
-      arrowRight(s, x + bw + 0.04, 1.74 + bh / 2, pitch - bw - 0.08);
-    }
   });
 
   card(s, {
-    x: M, y: 4.62, w: 5.9, h: 2.28, fill: ICE,
-    head: "How the stages are ordered",
-    bullets: [
-      "By dependency, not by what is most visible",
-      "Stage A ships no feature and unblocks everything after it",
-      "Stage E is additive — it can run beside C or D",
-      "Each step ships independently and is useful alone",
-    ],
-    size: 12.5,
+    x: M, y: 5.44, w: 5.9, h: 1.40, fill: ICE, flat: true,
+    head: "Routed is not schedulable",
+    body: `All ${plan.totals.open} open features have a step. `
+      + `${plan.totals.steps - plan.totals.gated} of ${plan.totals.steps} `
+      + `steps can start now; ${plan.totals.gated} wait on hardware, a `
+      + "product or an external event.",
+    size: 11, headSize: 14, headH: 0.30,
   });
   card(s, {
-    x: M + 6.2, y: 4.62, w: 5.9, h: 2.28, fill: "FBF3E3",
-    tag: "The rule that made phases 0–5 work", tagColor: WARN,
+    x: M + 6.2, y: 5.44, w: 5.9, h: 1.40, fill: "FBF3E3", flat: true,
     head: "Every step has a demonstrable gate",
-    body: "Not a checklist — a condition someone can watch you meet. A step is "
-      + "finished when its gate is demonstrated, not when its code is written.",
-    size: 12.5,
+    body: "A condition someone can watch you meet, not a checklist. "
+      + "Demonstrated, not written.",
+    size: 11, headSize: 14, headH: 0.30,
   });
   s.addNotes(`${G.total} assessed features, ${plan.totals.open} short of full `
     + `coverage; these ${plan.steps.length} steps close ${plan.totals.closed}. `
@@ -890,13 +883,16 @@ function arrowRight(s, x, yCentre, w) {
 {
   const s = lightSlide("Roadmap · 2 of 3", `All ${plan.steps.length} steps`);
 
-  const perCol = Math.ceil(plan.steps.length / 2);
-  const colW = 5.9;
-  const rowH = 0.64;
-  const pitchY = 0.72;
+  // Two columns held fourteen. Twenty-six need three.
+  const NCOL = 3;
+  const perCol = Math.ceil(plan.steps.length / NCOL);
+  const colGap = 0.26;
+  const colW = (CW - (NCOL - 1) * colGap) / NCOL;
+  const rowH = 0.46;
+  const pitchY = 0.525;
   plan.steps.forEach((st, i) => {
-    const x = M + (i < perCol ? 0 : 6.16);
-    const y = 1.64 + (i % perCol) * pitchY;
+    const x = M + Math.floor(i / perCol) * (colW + colGap);
+    const y = 1.58 + (i % perCol) * pitchY;
     const colour = stageColour(st.stage);
     // A coloured spine rather than a repeated stage label: the footnote names
     // the letters, and the rows stay one line each.
@@ -909,16 +905,17 @@ function arrowRight(s, x, yCentre, w) {
       fill: { color: ICE }, line: { color: ICE, width: 1 },
     });
     s.addText(String(st.n), {
-      x: x + 0.22, y: y, w: 0.40, h: rowH, isTextBox: true, margin: 0,
-      valign: "middle", fontFace: HEAD, fontSize: 15, bold: true, color: GOLD,
+      x: x + 0.16, y: y, w: 0.34, h: rowH, isTextBox: true, margin: 0,
+      valign: "middle", fontFace: HEAD, fontSize: 12, bold: true, color: GOLD,
     });
-    s.addText(st.title, {
-      x: x + 0.68, y: y, w: colW - 1.55, h: rowH, isTextBox: true, margin: 0,
-      valign: "middle", fontFace: BODY, fontSize: 11.5, color: NAVY,
+    s.addText((st.depends ? "⧗ " : "") + st.title, {
+      x: x + 0.54, y: y, w: colW - 1.20, h: rowH, isTextBox: true, margin: 0,
+      valign: "middle", fontFace: BODY, fontSize: 9.5,
+      color: st.depends ? WARN : NAVY,
     });
     s.addText(st.closes.length ? `+${st.closes.length}` : "—", {
-      x: x + colW - 0.78, y: y, w: 0.58, h: rowH, isTextBox: true, margin: 0,
-      align: "right", valign: "middle", fontFace: BODY, fontSize: 11.5,
+      x: x + colW - 0.62, y: y, w: 0.46, h: rowH, isTextBox: true, margin: 0,
+      align: "right", valign: "middle", fontFace: BODY, fontSize: 9.5,
       bold: true, color: st.closes.length ? OK : FAINT,
     });
   });
@@ -927,81 +924,63 @@ function arrowRight(s, x, yCentre, w) {
   // "the rest control plane".
   const legend = plan.stages
     .map(st => `${st.letter} ${st.name}`).join("   ·   ");
-  footnote(s, `${legend}      +n is the gap-matrix features that step closes.`);
+  footnote(s, `${legend}\n+n is the gap-matrix features that step closes.  `
+    + `⧗ marks a step that cannot start until something outside this project happens.`);
   s.addNotes("Step 1 is the one to insist on. It ships no feature and removes "
     + "the risk that every later endpoint quietly bypasses dual control. If the "
     + "plan gets cut, cut from the end, not from the front.");
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 15 — the later stages, and what stays out (dark closer)
+// 15 — what the plan waits on (dark closer)
 // ══════════════════════════════════════════════════════════════════════════
 {
-  const later = plan.stages.slice(2);
-  const s = darkSlide("Roadmap · 3 of 3",
-    `Stages ${later[0].letter} to ${later[later.length - 1].letter} — `
-    + "and what stays out");
+  const s = darkSlide("Roadmap · 3 of 3", "What the plan waits on");
 
-  later.forEach((stage, i) => {
-    const y = 1.72 + i * 1.34;
-    const steps = stageSteps(stage.letter);
+  const gated = plan.steps.filter(p => p.depends);
+  const perCol = Math.ceil(gated.length / 2);
+  gated.forEach((step, i) => {
+    const x = M + (i < perCol ? 0 : 6.16);
+    const y = 1.62 + (i % perCol) * 0.88;
     s.addShape(pres.ShapeType.roundRect, {
-      x: M, y: y, w: 0.72, h: 0.72, rectRadius: 0.08,
+      x: x, y: y, w: 0.54, h: 0.54, rectRadius: 0.06,
       fill: { color: GOLD }, line: { color: GOLD, width: 1 },
     });
-    s.addText(stage.letter, {
-      x: M, y: y, w: 0.72, h: 0.72, isTextBox: true, margin: 0,
-      align: "center", valign: "middle", fontFace: HEAD, fontSize: 22,
+    s.addText(String(step.n), {
+      x: x, y: y, w: 0.54, h: 0.54, isTextBox: true, margin: 0,
+      align: "center", valign: "middle", fontFace: HEAD, fontSize: 16,
       bold: true, color: DEEP,
     });
-    s.addText(stage.name, {
-      x: M + 1.0, y: y - 0.02, w: 4.2, h: 0.78, isTextBox: true, margin: 0,
-      fontFace: HEAD, fontSize: 17, bold: true, color: PAPER,
+    s.addText(step.title, {
+      x: x + 0.70, y: y - 0.04, w: 5.2, h: 0.28, isTextBox: true, margin: 0,
+      fontFace: HEAD, fontSize: 13, bold: true, color: PAPER,
     });
-    s.addText(stage.note, {
-      x: M + 1.0, y: y + 0.72, w: 4.2, h: 0.34, isTextBox: true, margin: 0,
-      fontFace: BODY, fontSize: 10.5, italic: true, color: "7B94AE",
+    s.addText(step.depends, {
+      x: x + 0.70, y: y + 0.24, w: 5.2, h: 0.58, isTextBox: true, margin: 0,
+      fontFace: BODY, fontSize: 10, color: "9DB8D4", lineSpacing: 12.5,
     });
-    // One step per line. Space-joined, a long title wrapped mid-phrase and the
-    // rows stopped reading as a list.
-    s.addText(steps.map((p, k) => ({
-      text: `${p.n}.  ${p.title}`,
-      options: { breakLine: k < steps.length - 1 },
-    })), {
-      x: M + 5.3, y: y - 0.02, w: 6.7, h: 1.16, isTextBox: true, margin: 0,
-      fontFace: BODY, fontSize: 12, color: "9DB8D4", lineSpacing: 17,
-    });
-  });
-
-  // Straight from the plan's deferred list, so the deck cannot quietly keep
-  // something out that the plan has since scheduled.
-  const OUT_KINDS = ["out of scope", "demand", "product scope"];
-  const out = plan.remaining.filter(r => OUT_KINDS.includes(r.kind));
-  s.addText("Deliberately out of scope", {
-    x: M, y: 5.78, w: 5.6, h: 0.30, isTextBox: true, margin: 0,
-    fontFace: BODY, fontSize: 10.5, bold: true, charSpacing: 1.6, color: GOLD,
-  });
-  s.addText(out.map((r, i) => ({
-    text: r.feature, options: { bullet: true, breakLine: i < out.length - 1 },
-  })), {
-    x: M, y: 6.06, w: 5.8, h: 1.04, isTextBox: true, margin: 0,
-    fontFace: BODY, fontSize: 11, color: "9DB8D4", paraSpaceAfter: 2,
   });
 
   s.addShape(pres.ShapeType.roundRect, {
-    x: M + 6.2, y: 5.76, w: 5.9, h: 1.32, rectRadius: 0.06,
+    x: M, y: 5.66, w: CW, h: 1.20, rectRadius: 0.06,
     fill: { color: "1B3350" }, line: { color: "2A4A6B", width: 1 },
   });
-  s.addText("Nothing ships that cannot be demonstrated. Where something could "
-    + "not be tested here, the plan says so rather than counting it as done.", {
-    x: M + 6.46, y: 5.98, w: 5.38, h: 0.9, isTextBox: true, margin: 0,
-    fontFace: HEAD, fontSize: 13.5, italic: true, color: PAPER, lineSpacing: 18,
+  s.addText(`Every one of the ${plan.totals.open} open features now has a `
+    + `step — none is deferred. That is not the same as a plan that can be `
+    + `executed end to end: ${plan.totals.gated} of ${plan.totals.steps} `
+    + "steps wait on hardware to buy, a product to deploy, or an event "
+    + "somebody else runs. Two are worth a second look — validated hardware "
+    + "is the largest security gain here and among the smallest in code, and "
+    + "post-quantum needs only a capable token, because the capability probe "
+    + "already gates on what the token advertises.", {
+    x: M + 0.30, y: 5.66, w: CW - 0.60, h: 1.20, isTextBox: true, margin: 0,
+    valign: "middle", fontFace: HEAD, fontSize: 12.5, italic: true,
+    color: PAPER, lineSpacing: 18,
   });
-  s.addNotes(`${plan.totals.deferred} features stay open after step `
-    + `${plan.steps.length}. The ones listed here are product decisions; the `
-    + "rest wait on a supplier, a procurement decision, an OASIS event or "
-    + "hardware this project cannot verify. Close on the discipline rather "
-    + "than the feature list.");
+  s.addNotes("Close on the boundary rather than the feature list. The "
+    + "previous revision deferred sixteen features; this one routes all of "
+    + "them and names what each blocked step is waiting for instead. That is "
+    + "a more useful statement and a more demanding one.");
 }
 
 pres.writeFile({ fileName: "KMIP_PKCS11_Overview_Deck.pptx" })
