@@ -47,6 +47,7 @@ regenerable from the script beside it so they cannot drift silently:
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Fourteen-step plan to a complete KMS with a REST control plane — design, implementation, tests and a gate for each step, closing 34 of the 50 open gap-matrix features |
 | `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The plan as 45 slides — design impact, proposed solution and test strategy for each of the fourteen steps |
 | `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which source evidenced each of the 82 requirements in the gap matrix — provenance, explicitly not a product capability comparison |
+| `KMIP_PKCS11_Partial_Features.docx` / `.pdf` | `generate_partial_features.py` | The 18 features the gap matrix marks Partial, each with what exists, what is missing, why it stopped there and what would complete it |
 
 Generating them needs `python-docx` (and `matplotlib` for the design document):
 

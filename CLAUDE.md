@@ -287,6 +287,29 @@ Both decks now depend on `plan_steps.json`, so `generate_rest_kms_plan.py` runs
 before either — `npm run deck:all` and `npm run plan:all` both do this, and the
 deck exits with the command to run if the file is missing.
 
+**A document for the partial column (12 Sep 2026).** "Partial" was the verdict
+doing the most work in the matrix and explaining itself the least, so the 18
+rows now get a document of their own: what exists with a file and line, what is
+missing, why it stopped and what would complete it. Sorting them by reason is
+the finding — 11 are simply unwritten, 3 are built but never demonstrated, 1 is
+bounded by the token, 1 is a deliberate stop and 2 belong to other products.
+Most of the column is schedulable, and the few rows that are not deserve more
+attention than their count suggests.
+
+Writing it found two rows arguing with the plan: scheduled backup and
+horizontal throughput were both described as settled while step 11 schedules
+work to close them. Scheduled backup was simply mislabelled — the plan builds a
+scheduler and shipper because clustering makes them necessary. Horizontal
+throughput genuinely is a deliberate stop, and step 11 closes it by adding
+nodes rather than by weakening the serial audit chain, so the single-node
+ceiling of about 1.5× stays exactly where it is. The generator now refuses to
+build on that contradiction unless the row says how both are true.
+
+Note on grounding: the container that generated it has no SoftHSM, so the suite
+could not run. Claims were grounded by citing code, every citation checked
+against the file, and the document says on page one that it was not re-verified
+by execution.
+
 ---
 
 ## 7. Current state and known gaps
@@ -334,6 +357,7 @@ rest, backup and restore.
 | `KMIP_PKCS11_REST_KMS_Plan.docx` | `generate_rest_kms_plan.py` | Fourteen-step delivery plan to a complete KMS with a REST control plane, closing 34 of the 50 open features. Its arithmetic is checked against the gap matrix at build time, and every step and stage count in it is read from the tables rather than typed |
 | `KMIP_PKCS11_REST_KMS_Plan_Deck.pptx` / `.pdf` | `generate_rest_kms_deck.js` | The same plan as 45 slides — three per step: design impact, proposed solution, test strategy. Built from `plan_steps.json`, so it cannot say anything the plan does not, and its layout scales with the stage and step counts |
 | `KMIP_PKCS11_Feature_Provenance.docx` / `.pdf` | `generate_feature_provenance.py` | Which of eleven sources evidenced each of the 82 requirements. **Provenance, not a capability comparison** — a mark means a source's documentation named the requirement, never that a product has it |
+| `KMIP_PKCS11_Partial_Features.docx` / `.pdf` | `generate_partial_features.py` | Why each of the 18 partial features is partial: what exists (with file and line), what is missing, the reason it stopped, and what would complete it. Reason codes separate unwritten work from a token limit, an undemonstrated claim, a deliberate stop and another product's job |
 
 When coverage changes, update `ASSESSED_AT` in `generate_kms_gap_matrix.py` so
 the matrix still names the commit it describes.
@@ -347,6 +371,14 @@ The plan and its deck share one source. `generate_rest_kms_plan.py` emits
 `plan_steps.json` (gitignored) and `generate_rest_kms_deck.js` reads it, so
 `npm run plan:all` rebuilds document, deck and PDF together. Edit the STEPS
 table in the Python generator; never the deck.
+
+`generate_partial_features.py` reconciles against both the matrix and the plan:
+it must explain exactly the rows the matrix calls partial, every row owes all
+four answers, and every feature must be closed by a step or named in the
+deferred list. One more rule earns its keep — a row called "deliberately
+stopped" or "belongs to another product" while the plan schedules a step to
+close it must say how both are true, or the build fails. That check found two
+rows contradicting the plan on its first run.
 
 `generate_feature_provenance.py` reconciles against the matrix the same way and
 refuses to build on an invented feature, a missing one, an unknown source code,

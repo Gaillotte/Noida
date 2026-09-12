@@ -11,10 +11,11 @@
     "pdf": "soffice --headless --convert-to pdf --outdir . KMIP_PKCS11_Overview_Deck.pptx",
     "plan-deck": "node generate_rest_kms_deck.js",
     "plan-pdf": "soffice --headless --convert-to pdf --outdir . KMIP_PKCS11_REST_KMS_Plan_Deck.pptx",
-    "docs-pdf": "soffice --headless --convert-to pdf --outdir . KMIP_PKCS11_KMS_Gap_Matrix.docx KMIP_PKCS11_REST_KMS_Plan.docx KMIP_PKCS11_Feature_Provenance.docx",
+    "docs-pdf": "soffice --headless --convert-to pdf --outdir . KMIP_PKCS11_KMS_Gap_Matrix.docx KMIP_PKCS11_REST_KMS_Plan.docx KMIP_PKCS11_Feature_Provenance.docx KMIP_PKCS11_Partial_Features.docx",
     "deck:all": "npm run totals && npm run plan-doc && npm run deck && npm run pdf",
     "plan:all": "npm run totals && npm run plan-doc && npm run plan-deck && npm run plan-pdf",
-    "all": "npm run totals && npm run provenance && npm run plan-doc && npm run deck && npm run pdf && npm run plan-deck && npm run plan-pdf && npm run docs-pdf"
+    "all": "npm run totals && npm run provenance && npm run plan-doc && npm run partials && npm run deck && npm run pdf && npm run plan-deck && npm run plan-pdf && npm run docs-pdf",
+    "partials": "python generate_partial_features.py"
   },
   "devDependencies": {
     "pptxgenjs": "^3.12.0"
