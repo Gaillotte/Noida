@@ -31,17 +31,39 @@ endif()
 # so rather than hardcode a guess, point this at wherever your copy lives.
 # Example: cmake .. -DCPDK_INCLUDE_DIR="C:/.../Cryptographic Provider Development Kit/Include/um"
 set(CPDK_INCLUDE_DIR "" CACHE PATH
-    "Directory containing ncrypt_provider.h (Cryptographic Provider Development Kit)")
+    "Directory containing ncrypt_provider.h")
 
-if(CPDK_INCLUDE_DIR)
-    if(EXISTS "${CPDK_INCLUDE_DIR}/ncrypt_provider.h")
-        message(STATUS "CPDK header: ${CPDK_INCLUDE_DIR}/ncrypt_provider.h")
+if(WIN32)
+    # Fail at configure time with an explanation, rather than a hundred lines
+    # into the build with a bare C1083 on a header most people have never
+    # heard of.
+    # No speculative PATHS here. Two guesses at where this header lives have
+    # already been wrong, so the search is CPDK_INCLUDE_DIR plus whatever the
+    # compiler's own include path provides — nothing invented.
+    find_file(NCRYPT_PROVIDER_H ncrypt_provider.h
+        HINTS "${CPDK_INCLUDE_DIR}"
+        DOC "ncrypt_provider.h - declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE")
+
+    if(NCRYPT_PROVIDER_H)
+        get_filename_component(_npdir "${NCRYPT_PROVIDER_H}" DIRECTORY)
+        message(STATUS "ncrypt_provider.h: ${NCRYPT_PROVIDER_H}")
+        include_directories("${_npdir}")
     else()
-        message(WARNING
-            "CPDK_INCLUDE_DIR is set to ${CPDK_INCLUDE_DIR} "
-            "but ncrypt_provider.h is not there")
+        message(FATAL_ERROR
+            "\n"
+            "ncrypt_provider.h was not found.\n"
+            "\n"
+            "It declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE, the CNG function\n"
+            "table this provider exports, and only src/ksp/ksp_main.c needs\n"
+            "it. The other nine source files build without it.\n"
+            "\n"
+            "It is NOT part of the Windows SDK, and installing the Windows\n"
+            "Driver Kit does not supply it either — both verified on a clean\n"
+            "windows-latest runner. If you have a copy, point the build at\n"
+            "the directory holding it:\n"
+            "\n"
+            "    cmake .. -A x64 -DCPDK_INCLUDE_DIR=<directory>\n")
     endif()
-    include_directories("${CPDK_INCLUDE_DIR}")
 endif()
 
 # MSVC: /W3 warning level, treat warnings as errors
