@@ -563,3 +563,37 @@ Validation before any PKCS#11 call:
 The resulting key is marked `bSessionObject = TRUE`, so `KSP_FreeKey`
 destroys the session object instead of leaking it. `CKA_DERIVE=TRUE` is set
 so the imported key can serve as an ECDH peer.
+
+---
+
+## Importing raw symmetric key material
+
+`NCryptImportKey` accepts `BCRYPT_KEY_DATA_BLOB` — a
+`BCRYPT_KEY_DATA_BLOB_HEADER` followed by `cbKeyData` bytes of key.
+
+| `cbKeyData` | Stored as | Algorithm reported |
+|-------------|-----------|--------------------|
+| 16, 24, 32 | `CKK_AES` | `AES` |
+| anything else | `CKK_GENERIC_SECRET` | `HMAC_SHA256` |
+
+The blob carries no algorithm name, so length is the only signal available.
+
+`cbKeyData` is caller-supplied and is checked against the bytes actually
+present before any of them are read; a header magic or version that does
+not match returns `NTE_BAD_DATA`, and a length of zero or one larger than
+the buffer returns `NTE_INVALID_PARAMETER`.
+
+The imported object is created `CKA_EXTRACTABLE=FALSE`, exactly like every
+key this provider generates.
+
+### Export is refused, deliberately
+
+`NCryptExportKey` with `BCRYPT_KEY_DATA_BLOB` returns `NTE_NOT_SUPPORTED`
+and logs why. Because the key is not extractable, `C_GetAttributeValue`
+would refuse `CKA_VALUE` and the failure would otherwise surface as a
+generic PKCS#11 error several layers down.
+
+This is not a gap waiting to be filled. Making export work would mean
+creating keys `CKA_EXTRACTABLE=TRUE` — weakening every deployment to
+satisfy one blob type. Material goes in; from then on only the token uses
+it. Callers that need the bytes back should keep their own copy.

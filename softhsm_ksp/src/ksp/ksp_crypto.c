@@ -417,6 +417,20 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
         return NTE_NOT_SUPPORTED;
     }
 
+    /* Nor is raw symmetric key material. Every key this provider creates
+     * or imports is CKA_EXTRACTABLE=FALSE, so C_GetAttributeValue would
+     * refuse CKA_VALUE and the failure would surface as a generic PKCS#11
+     * error several layers down. Say so here instead.
+     *
+     * BCRYPT_KEY_DATA_BLOB is supported for IMPORT — see KSP_ImportKey. */
+    if (_wcsicmp(pszBlobType, BCRYPT_KEY_DATA_BLOB) == 0) {
+        LOG_ERROR("KSP_ExportKey - symmetric key material is not extractable "
+                  "(CKA_EXTRACTABLE=FALSE); import is supported, export is not",
+                  NTE_NOT_SUPPORTED);
+        LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
+        return NTE_NOT_SUPPORTED;
+    }
+
     if (pKey->hPubKey == CK_INVALID_HANDLE) {
         LOG_LEAVE("KSP_ExportKey", NTE_BAD_KEY);
         return NTE_BAD_KEY;
@@ -646,6 +660,108 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
         pKey->bFinalized     = TRUE;
         pKey->bSessionObject = TRUE;   /* Destroyed on KSP_FreeKey */
         pKey->dwKeyBitLen    = dwBits;
+        wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, szAlg);
+
+    } else if (_wcsicmp(pszBlobType, BCRYPT_KEY_DATA_BLOB) == 0) {
+        /* Raw symmetric key material — an AES or HMAC key the caller
+         * already holds. The layout is BCRYPT_KEY_DATA_BLOB_HEADER
+         * followed by cbKeyData bytes of key.
+         *
+         * The imported object is created CKA_EXTRACTABLE=FALSE like every
+         * other key this provider makes, so it cannot be read back out.
+         * That is the point of the HSM model: material goes in, and from
+         * then on only the token can use it. Callers wanting the bytes
+         * back should keep their own copy — see KSP_ExportKey, which says
+         * so rather than failing obscurely. */
+        BCRYPT_KEY_DATA_BLOB_HEADER *pHdr =
+            (BCRYPT_KEY_DATA_BLOB_HEADER *)pbData;
+        CK_OBJECT_CLASS  classSecret = CKO_SECRET_KEY;
+        CK_KEY_TYPE      keyType;
+        CK_OBJECT_HANDLE hSecret = CK_INVALID_HANDLE;
+        BYTE            *pbKeyData;
+        DWORD            cbKeyData;
+        WCHAR            szAlg[MAX_ALG_ID_LEN];
+
+        if (cbData < sizeof(BCRYPT_KEY_DATA_BLOB_HEADER)) {
+            LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        if (pHdr->dwMagic   != BCRYPT_KEY_DATA_BLOB_MAGIC ||
+            pHdr->dwVersion != BCRYPT_KEY_DATA_BLOB_VERSION1) {
+            LOG_LEAVE("KSP_ImportKey", NTE_BAD_DATA);
+            return NTE_BAD_DATA;
+        }
+
+        cbKeyData = pHdr->cbKeyData;
+        pbKeyData = pbData + sizeof(BCRYPT_KEY_DATA_BLOB_HEADER);
+
+        /* cbKeyData comes from the caller: check it against what is
+         * actually present before reading that many bytes. */
+        if (cbKeyData == 0 ||
+            cbKeyData > cbData - sizeof(BCRYPT_KEY_DATA_BLOB_HEADER)) {
+            LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        /* The blob carries no algorithm name, so the length decides.
+         * 16/24/32 bytes is AES; anything else is treated as an HMAC
+         * generic secret, which is what SoftHSM2 stores those as. */
+        if (cbKeyData == 16 || cbKeyData == 24 || cbKeyData == 32) {
+            keyType = CKK_AES;
+            wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_AES);
+        } else {
+            keyType = CKK_GENERIC_SECRET;
+            wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_HMAC_SHA256);
+        }
+
+        {
+            CK_ATTRIBUTE aTemplate[] = {
+                { CKA_CLASS,       &classSecret, sizeof(classSecret) },
+                { CKA_KEY_TYPE,    &keyType,     sizeof(keyType)     },
+                { CKA_TOKEN,       &bFalse,      sizeof(bFalse)      },
+                { CKA_SENSITIVE,   &bTrue,       sizeof(bTrue)       },
+                { CKA_EXTRACTABLE, &bFalse,      sizeof(bFalse)      },
+                { CKA_ENCRYPT,     &bTrue,       sizeof(bTrue)       },
+                { CKA_DECRYPT,     &bTrue,       sizeof(bTrue)       },
+                { CKA_SIGN,        &bTrue,       sizeof(bTrue)       },
+                { CKA_VERIFY,      &bTrue,       sizeof(bTrue)       },
+                { CKA_VALUE,       pbKeyData,    cbKeyData           },
+            };
+
+            ss = P11_AcquireSession(&hSession);
+            if (ss != ERROR_SUCCESS) {
+                LOG_LEAVE("KSP_ImportKey", ss);
+                return ss;
+            }
+
+            rv = pCtx->pFunctionList->C_CreateObject(
+                hSession, aTemplate,
+                (CK_ULONG)(sizeof(aTemplate) / sizeof(CK_ATTRIBUTE)),
+                &hSecret);
+
+            P11_ReleaseSession(hSession);
+
+            if (rv != CKR_OK) {
+                ss = P11RvToSecStatus(rv);
+                LOG_LEAVE("KSP_ImportKey", ss);
+                return ss;
+            }
+        }
+
+        pKey = (KSP_KEY *)KSP_AllocZero(sizeof(KSP_KEY));
+        if (!pKey) {
+            LOG_LEAVE("KSP_ImportKey", NTE_NO_MEMORY);
+            return NTE_NO_MEMORY;
+        }
+
+        pKey->dwMagic        = KSP_KEY_MAGIC;
+        pKey->hSecretKey     = hSecret;
+        pKey->hPubKey        = CK_INVALID_HANDLE;
+        pKey->hPrivKey       = CK_INVALID_HANDLE;
+        pKey->bFinalized     = TRUE;
+        pKey->bSessionObject = TRUE;   /* Destroyed on KSP_FreeKey */
+        pKey->dwKeyBitLen    = cbKeyData * 8;
         wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, szAlg);
 
     } else {

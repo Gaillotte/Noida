@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         16 test suites · 982 assertions · gcov coverage         │
+   │         16 test suites · 1004 assertions · gcov coverage         │
    │         Lines: 90.4 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -80,7 +80,7 @@ make syntax-check # parses the Windows-only integration test
 | Export blobs | `test_export_blobs.c` | 52 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
 | KSP provider | `test_ksp_provider.c` | 112 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
 | KSP key operations | `test_ksp_key_ops.c` | 154 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
-| KSP crypto | `test_ksp_crypto.c` | 98 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
+| KSP crypto | `test_ksp_crypto.c` | 120 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
 | KSP key properties | `test_ksp_key_props.c` | 87 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
 | Memory | `test_memory.c` | 21 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
 | ECDSA DER decode | `test_ecdsa_decode.c` | 47 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
@@ -88,7 +88,7 @@ make syntax-check # parses the Windows-only integration test
 | ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **982** | |
+| **Total** | | **1004** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the

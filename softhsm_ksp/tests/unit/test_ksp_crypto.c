@@ -774,6 +774,153 @@ int main(void)
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
+    /* ── Suite : BCRYPT_KEY_DATA_BLOB import (FMT-08) ─────────────────── */
+    TEST_SUITE("KSP_ImportKey — BCRYPT_KEY_DATA_BLOB");
+    {
+        BYTE blob[sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32];
+        BCRYPT_KEY_DATA_BLOB_HEADER *pHdr =
+            (BCRYPT_KEY_DATA_BLOB_HEADER *)blob;
+        BYTE *pbKey = blob + sizeof(BCRYPT_KEY_DATA_BLOB_HEADER);
+        NCRYPT_KEY_HANDLE hSym = 0;
+        size_t i;
+
+        for (i = 0; i < 32; i++) pbKey[i] = (BYTE)i;
+
+        #define INIT_HDR(n) do {                                   \
+            pHdr->dwMagic   = BCRYPT_KEY_DATA_BLOB_MAGIC;          \
+            pHdr->dwVersion = BCRYPT_KEY_DATA_BLOB_VERSION1;       \
+            pHdr->cbKeyData = (n);                                 \
+        } while (0)
+
+        /* AES-256 */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        INIT_HDR(32);
+        hSym = 0;
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32), 0);
+        ASSERT_OK("Import 32-byte key → OK", ss);
+        ASSERT("Handle returned", hSym != 0);
+        if (hSym) {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hSym;
+            ASSERT_WSTR("Recognised as AES", k->szAlgId, ALG_AES);
+            ASSERT_EQ("256 bits", k->dwKeyBitLen, 256U);
+            ASSERT("Stored as a secret key",
+                k->hSecretKey != (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+            ASSERT("Not an asymmetric key",
+                k->hPrivKey == (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+            ASSERT("Marked finalized", k->bFinalized);
+            KSP_Free((void *)(ULONG_PTR)hSym);
+        }
+        ASSERT_EQ("Created one PKCS#11 object",
+            P11Mock_GetCalls()->nCreateObject, 1);
+
+        /* AES-128 and AES-192 are the other legal AES sizes. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        INIT_HDR(16);
+        hSym = 0;
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 16), 0);
+        ASSERT_OK("Import 16-byte key → OK", ss);
+        if (hSym) {
+            ASSERT_WSTR("AES", ((KSP_KEY *)(ULONG_PTR)hSym)->szAlgId, ALG_AES);
+            ASSERT_EQ("128 bits",
+                ((KSP_KEY *)(ULONG_PTR)hSym)->dwKeyBitLen, 128U);
+            KSP_Free((void *)(ULONG_PTR)hSym);
+        }
+
+        /* A length that is not an AES size becomes a generic secret,
+         * which is how SoftHSM2 stores HMAC keys. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        INIT_HDR(20);
+        hSym = 0;
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 20), 0);
+        ASSERT_OK("Import 20-byte key → OK", ss);
+        if (hSym) {
+            ASSERT_EQ("160 bits",
+                ((KSP_KEY *)(ULONG_PTR)hSym)->dwKeyBitLen, 160U);
+            ASSERT("Not treated as AES",
+                wcscmp(((KSP_KEY *)(ULONG_PTR)hSym)->szAlgId, ALG_AES) != 0);
+            KSP_Free((void *)(ULONG_PTR)hSym);
+        }
+
+        /* Malformed blobs. cbKeyData is caller-supplied, so a value
+         * larger than the buffer must be rejected before it is read. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+
+        INIT_HDR(32);
+        pHdr->dwMagic = 0xDEADBEEF;
+        ASSERT_EQ("Wrong magic → NTE_BAD_DATA",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_BAD_DATA);
+
+        INIT_HDR(32);
+        pHdr->dwVersion = 99;
+        ASSERT_EQ("Wrong version → NTE_BAD_DATA",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_BAD_DATA);
+
+        INIT_HDR(1000);
+        ASSERT_EQ("cbKeyData beyond the buffer → NTE_INVALID_PARAMETER",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        INIT_HDR(0);
+        ASSERT_EQ("Zero-length key → NTE_INVALID_PARAMETER",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        INIT_HDR(32);
+        ASSERT_EQ("Buffer shorter than the header → NTE_INVALID_PARAMETER",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, 4, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("No object created from a malformed blob",
+            P11Mock_GetCalls()->nCreateObject, 0);
+
+        #undef INIT_HDR
+    }
+
+    /* Export of symmetric material is refused, and says why. Every key
+     * this provider holds is CKA_EXTRACTABLE=FALSE. */
+    TEST_SUITE("KSP_ExportKey — BCRYPT_KEY_DATA_BLOB refused");
+    {
+        /* A real imported key, so the refusal comes from the blob-type
+         * check rather than from handle validation. */
+        BYTE blob[sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32];
+        BCRYPT_KEY_DATA_BLOB_HEADER *pHdr =
+            (BCRYPT_KEY_DATA_BLOB_HEADER *)blob;
+        NCRYPT_KEY_HANDLE hSym = 0;
+        DWORD cb = 0;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        memset(blob, 0, sizeof blob);
+        pHdr->dwMagic   = BCRYPT_KEY_DATA_BLOB_MAGIC;
+        pHdr->dwVersion = BCRYPT_KEY_DATA_BLOB_VERSION1;
+        pHdr->cbKeyData = 32;
+
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0);
+        ASSERT_OK("Import a key to export", ss);
+
+        ASSERT_EQ("Export symmetric blob → NTE_NOT_SUPPORTED",
+            KSP_ExportKey(hProv, hSym, 0, BCRYPT_KEY_DATA_BLOB, NULL,
+                NULL, 0, &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        if (hSym) KSP_Free((void *)(ULONG_PTR)hSym);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();
