@@ -33,6 +33,9 @@ already exceeds every provider in the audit.
 
 ## 1. Evidence
 
+*This section records the state that prompted the roadmap, before Phase 0.
+For what it looks like now, see Phase 0 in §3.*
+
 ### 1.1 The build
 
 A cross-compile with `mingw-w64` fails on **7 of the 10 source files**:
@@ -53,8 +56,9 @@ done
 | Compiles | `ksp_provider.c`, `logging.c`, `memory.c` |
 | Fails | `p11_context.c`, `p11_session.c`, `p11_utils.c`, `ksp_main.c`, `ksp_key.c`, `ksp_crypto.c`, `ksp_properties.c` |
 
-There is also **no CI configuration anywhere in the repository**, so nothing
-has ever been enforcing this.
+There was also **no CI configuration anywhere in the repository**, so
+nothing had ever been enforcing this. Phase 0 added
+`.github/workflows/ksp-ci.yml`; all three jobs are green.
 
 `mingw-w64` is a good proxy but not an authority: it lags the Windows SDK
 (it lacks `BCRYPT_ECC_CURVE_NAME` and the Brainpool/secp256k1 curve

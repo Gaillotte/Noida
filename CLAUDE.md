@@ -358,12 +358,14 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 
 ### Known Limitations
 
-- **The Windows build is fixed but not yet proven.** Phase 0 of
-  `docs/13-roadmap.md` fixed all six reasons the DLL could not compile for
-  Windows; nine of ten source files now cross-compile clean and CI enforces
-  it. `ksp_main.c` still cannot be built here — it needs the WDK's
-  `<ncrypt_provider.h>` — so the CI `windows` job is what confirms the whole
-  DLL builds and loads. `BUILD-01` and `TABLE-01` stay Partial until then.
+- **MSVC compiles nine of the ten source files; the DLL is not built in CI.**
+  Phase 0 fixed all six reasons the code could not compile for Windows, and
+  the `windows` CI job now compiles those nine clean at `/W3 /WX` and links
+  `test_p11_layer.exe`. `ksp_main.c` needs `ncrypt_provider.h`, which does
+  not exist on a GitHub-hosted runner, so CMake skips the DLL target and the
+  job posts a warning rather than emitting a provider with no entry point.
+  **A green CI run does not mean the DLL builds.** `BUILD-01` and `TABLE-01`
+  stay Partial until a machine with that header proves it.
 - **Never hand-edit `tests/mock/windows_compat.h` values.** That mock once
   invented two constants and mis-valued two more, and every test passed
   because the tests read the same wrong numbers. `tests/check_mock_drift.py`
