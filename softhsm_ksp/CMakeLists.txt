@@ -159,12 +159,12 @@ target_include_directories(test_ksp_integration PRIVATE
 )
 
 target_link_libraries(test_ksp_integration PRIVATE ncrypt bcrypt)
-endif()
 
 if(MSVC)
     target_compile_options(test_ksp_integration PRIVATE /W3 /WX)
     target_compile_definitions(test_ksp_integration PRIVATE
         _CRT_SECURE_NO_WARNINGS=1 WIN32_LEAN_AND_MEAN=1 UNICODE=1 _UNICODE=1)
+endif()
 endif()
 
 # Installation (optional)
