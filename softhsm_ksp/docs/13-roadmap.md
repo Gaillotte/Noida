@@ -129,7 +129,7 @@ The roadmap below is ordered for those two targets.
 | `VerifySignature` | Stub returning `NTE_NOT_SUPPORTED`; the slot is no longer absent |
 | SHA-224 | Kept, as the provider extension `KSP_SHA224_ALGORITHM` |
 | Mock drift guard | `tests/check_mock_drift.py`, run in CI |
-| CI | `.github/workflows/ci.yml` — three jobs |
+| CI | `.github/workflows/ksp-ci.yml` — three jobs |
 
 | Defect | Fix |
 |--------|-----|

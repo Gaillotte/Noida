@@ -39,6 +39,8 @@ noida/
 ├── vcpkg/                          vcpkg (auto-cloned by build script, gitignored)
 ├── scripts/
 │   └── build_softhsm_linux.sh      Build SoftHSM2 2.7.0 on Linux (CMake or autotools)
+├── .github/workflows/
+│   └── ksp-ci.yml                  KSP CI (path-scoped; the KMIP branch owns ci.yml)
 ├── softhsm_ksp/                    Main KSP project
 │   ├── src/
 │   │   ├── common/                 Logging, memory, configuration
@@ -141,7 +143,7 @@ are now fixed; nine of ten files cross-compile clean.
 - **`tests/check_mock_drift.py`** (new) — fails CI when the mock disagrees
   with the real Windows headers. Verified by re-injecting both historical
   defects and confirming it catches them.
-- **`.github/workflows/ci.yml`** (new) — first CI in the project. Linux unit
+- **`.github/workflows/ksp-ci.yml`** (new) — first CI in the project. Linux unit
   suite plus mingw cross-compile as the fast gate, `windows-latest` MSVC as
   the authority, and a PowerShell job.
 - **`tests/unit/test_function_table.c`** (new) — covers `ksp_main.c`, which

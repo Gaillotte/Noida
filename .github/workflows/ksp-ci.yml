@@ -1,9 +1,19 @@
-name: CI
+name: KSP CI
 
+# This repository holds more than one project, and the KMIP work has its own
+# .github/workflows/ci.yml. Both would own that filename, so this one is
+# named for its project and scoped by path: it runs only when the KSP, or
+# this workflow itself, actually changes.
 on:
   push:
     branches: ['**']
+    paths:
+      - 'softhsm_ksp/**'
+      - '.github/workflows/ksp-ci.yml'
   pull_request:
+    paths:
+      - 'softhsm_ksp/**'
+      - '.github/workflows/ksp-ci.yml'
   workflow_dispatch:
 
 jobs:
