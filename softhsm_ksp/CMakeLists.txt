@@ -24,12 +24,11 @@ if(SOFTHSM2_DIR)
     endif()
 endif()
 
-# ncrypt_provider.h, which declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE, is not
-# in the Windows SDK. It comes with the Cryptographic Provider Development Kit,
-# which installs alongside the SDK rather than inside its Include tree —
-# typically:
-#   C:/Program Files (x86)/Windows Kits/10/Cryptographic Provider Development Kit/Include/um
-# Point this at that directory if the compiler cannot find the header.
+# ncrypt_provider.h declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE and is needed
+# only by ksp_main.c. It is NOT in the Windows SDK, and installing the WDK on
+# a clean windows-latest runner did not supply it either. It is associated
+# with the Cryptographic Provider Development Kit, but that is unconfirmed —
+# so rather than hardcode a guess, point this at wherever your copy lives.
 # Example: cmake .. -DCPDK_INCLUDE_DIR="C:/.../Cryptographic Provider Development Kit/Include/um"
 set(CPDK_INCLUDE_DIR "" CACHE PATH
     "Directory containing ncrypt_provider.h (Cryptographic Provider Development Kit)")

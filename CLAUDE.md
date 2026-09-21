@@ -384,13 +384,17 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 
 ## Build Instructions (Windows)
 
-**`ncrypt_provider.h` is required for `ksp_main.c`.** It declares
-`NCRYPT_KEY_STORAGE_FUNCTION_TABLE` and is *not* in the Windows SDK —
-confirmed on a clean `windows-latest` runner both before and after
-installing the WDK. It comes with the **Cryptographic Provider Development
-Kit**, which installs beside the SDK rather than inside its `Include` tree.
-Pass `-DCPDK_INCLUDE_DIR=<dir>` if CMake cannot find it. The other nine
-source files build without it — MSVC compiles all nine clean at `/W3 /WX`.
+**`ncrypt_provider.h` is required for `ksp_main.c`** — it declares
+`NCRYPT_KEY_STORAGE_FUNCTION_TABLE`.
+
+Verified: it is *not* in the Windows SDK, and installing the WDK on a clean
+`windows-latest` runner did not supply it. **Where it does come from is not
+established** — it is associated with the Cryptographic Provider Development
+Kit, but that has not been confirmed here, and two guesses at its location
+have already been wrong. Pass `-DCPDK_INCLUDE_DIR=<dir>` if you have it.
+
+The other nine source files build without it: MSVC compiles all nine clean
+at `/W3 /WX`, and `test_p11_layer.exe` links.
 
 ```powershell
 # 1. Initialise submodule

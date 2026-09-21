@@ -150,14 +150,17 @@ compiled, on any platform.
 - **MSVC compiles nine of the ten source files clean, at `/W3 /WX`.** No
   errors and no warnings, and `test_p11_layer.exe` linked. That is the first
   time any of this code has been built by the compiler it targets.
-- **`ncrypt_provider.h` is not in the Windows SDK, and not in the WDK
-  either.** A recursive search of the Windows Kits on a clean
-  `windows-latest` runner found nothing, before or after installing the WDK.
-  It comes with the **Cryptographic Provider Development Kit**, which
-  installs beside the SDK rather than inside its `Include` tree. The build
-  now takes `-DCPDK_INCLUDE_DIR` so it can be pointed at any location, and
-  the prerequisite is recorded in `README.md` and `CLAUDE.md` — it had never
-  been written down.
+- **`ncrypt_provider.h` is not in the Windows SDK, and the WDK does not
+  supply it.** A recursive search of the Windows Kits on a clean
+  `windows-latest` runner found nothing, before or after a WDK install that
+  Chocolatey reported as successful. Where the header *does* come from is
+  still unestablished — two guesses (the WDK, then a CPDK directory beside
+  the SDK) were both wrong, so the build now takes `-DCPDK_INCLUDE_DIR` to
+  be pointed at it, and a whole-disk search in CI is recording the answer
+  rather than a third guess. The prerequisite is now in `README.md` and
+  `CLAUDE.md`; it had never been written down at all.
+- **The runner has Visual Studio 18 (2026), MSVC 19.51.** Which is why the
+  pinned "Visual Studio 17 2022" generator failed.
 - **`windows-latest` has moved past Visual Studio 2022.** The pinned
   generator failed with "could not find any instance of Visual Studio". The
   `-G` flag is gone from CI and from both build guides; CMake picks whatever

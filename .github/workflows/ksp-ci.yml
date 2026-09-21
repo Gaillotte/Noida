@@ -96,31 +96,38 @@ jobs:
       # The first attempt searched only Windows Kits\10\Include and found
       # nothing even after the WDK installed. The CPDK puts its headers in a
       # sibling directory, not inside Include, so search the whole tree.
+      # Two searches have now failed: Windows Kits\10\Include, then the
+      # whole Windows Kits tree after installing the WDK. Rather than guess
+      # a third location, search every fixed drive once and record the
+      # answer. bcrypt_provider.h is its sibling and a useful tell.
       - name: Locate ncrypt_provider.h
         id: findhdr
         shell: pwsh
         run: |
-          $roots = @(
-            "${env:ProgramFiles(x86)}\Windows Kits",
-            "${env:ProgramFiles}\Windows Kits"
-          ) | Where-Object { Test-Path $_ }
-          $hits = foreach ($r in $roots) {
-            Get-ChildItem -Path $r -Recurse -Filter ncrypt_provider.h -ErrorAction SilentlyContinue
+          $drives = Get-PSDrive -PSProvider FileSystem |
+                    Where-Object { $_.Used -ne $null }
+          Write-Host "Searching: $($drives.Name -join ', ')"
+          $hits = foreach ($d in $drives) {
+            Get-ChildItem -Path "$($d.Root)" -Recurse -Force `
+              -Include ncrypt_provider.h, bcrypt_provider.h `
+              -ErrorAction SilentlyContinue
           }
           if ($hits) {
-            $dir = $hits[0].Directory.FullName
             Write-Host "Found $($hits.Count):"
             $hits | ForEach-Object { Write-Host "  $($_.FullName)" }
-            "dir=$dir"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "found=yes"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            Write-Host "ncrypt_provider.h NOT FOUND under any Windows Kits root."
-            Write-Host "Kits directories present, for diagnosis:"
-            foreach ($r in $roots) {
-              Get-ChildItem -Path $r -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object { Write-Host "  $($_.FullName)" }
+            $n = $hits | Where-Object { $_.Name -eq 'ncrypt_provider.h' } |
+                 Select-Object -First 1
+            if ($n) {
+              "dir=$($n.Directory.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+              "found=yes"                    | Out-File $env:GITHUB_OUTPUT -Append
+            } else {
+              Write-Host "bcrypt_provider.h present but ncrypt_provider.h is not."
+              "found=no" | Out-File $env:GITHUB_OUTPUT -Append
             }
-            "found=no" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            Write-Host "Neither header exists anywhere on this machine,"
+            Write-Host "even though the WDK reported a successful install."
+            "found=no" | Out-File $env:GITHUB_OUTPUT -Append
           }
 
       - name: Configure
@@ -135,9 +142,11 @@ jobs:
         if: failure() && steps.findhdr.outputs.found == 'no'
         shell: pwsh
         run: |
-          Write-Host "::error::The build needs ncrypt_provider.h from the Windows Driver Kit."
-          Write-Host "Only ksp_main.c requires it (the CNG function table). The other"
-          Write-Host "nine source files build without it, as the linux job shows."
+          Write-Host "::error::ncrypt_provider.h is not on this machine."
+          Write-Host "It declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE and is not in the"
+          Write-Host "Windows SDK; installing the WDK did not supply it either. Only"
+          Write-Host "ksp_main.c needs it — the other nine files compile clean here."
+          Write-Host "Pass -DCPDK_INCLUDE_DIR=<dir> if you have it elsewhere."
           exit 1
 
       - name: Show output
