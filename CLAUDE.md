@@ -384,10 +384,13 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 
 ## Build Instructions (Windows)
 
-**The Windows Driver Kit is required.** `ncrypt_provider.h`, which declares
-`NCRYPT_KEY_STORAGE_FUNCTION_TABLE`, ships with the WDK and not with the
-Windows SDK — confirmed by searching the Windows Kits on a clean
-`windows-latest` runner. Only `ksp_main.c` needs it.
+**`ncrypt_provider.h` is required for `ksp_main.c`.** It declares
+`NCRYPT_KEY_STORAGE_FUNCTION_TABLE` and is *not* in the Windows SDK —
+confirmed on a clean `windows-latest` runner both before and after
+installing the WDK. It comes with the **Cryptographic Provider Development
+Kit**, which installs beside the SDK rather than inside its `Include` tree.
+Pass `-DCPDK_INCLUDE_DIR=<dir>` if CMake cannot find it. The other nine
+source files build without it — MSVC compiles all nine clean at `/W3 /WX`.
 
 ```powershell
 # 1. Initialise submodule

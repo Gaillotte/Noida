@@ -24,6 +24,27 @@ if(SOFTHSM2_DIR)
     endif()
 endif()
 
+# ncrypt_provider.h, which declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE, is not
+# in the Windows SDK. It comes with the Cryptographic Provider Development Kit,
+# which installs alongside the SDK rather than inside its Include tree —
+# typically:
+#   C:/Program Files (x86)/Windows Kits/10/Cryptographic Provider Development Kit/Include/um
+# Point this at that directory if the compiler cannot find the header.
+# Example: cmake .. -DCPDK_INCLUDE_DIR="C:/.../Cryptographic Provider Development Kit/Include/um"
+set(CPDK_INCLUDE_DIR "" CACHE PATH
+    "Directory containing ncrypt_provider.h (Cryptographic Provider Development Kit)")
+
+if(CPDK_INCLUDE_DIR)
+    if(EXISTS "${CPDK_INCLUDE_DIR}/ncrypt_provider.h")
+        message(STATUS "CPDK header: ${CPDK_INCLUDE_DIR}/ncrypt_provider.h")
+    else()
+        message(WARNING
+            "CPDK_INCLUDE_DIR is set to ${CPDK_INCLUDE_DIR} "
+            "but ncrypt_provider.h is not there")
+    endif()
+    include_directories("${CPDK_INCLUDE_DIR}")
+endif()
+
 # MSVC: /W3 warning level, treat warnings as errors
 if(MSVC)
     add_compile_options(/W3 /WX)

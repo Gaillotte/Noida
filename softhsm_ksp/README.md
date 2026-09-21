@@ -12,7 +12,13 @@ Prototype of a complete **CNG (Cryptography Next Generation) Key Storage Provide
 | SoftHSM2  | **2.7.0** (OpenSSL backend — built from submodule or installed separately) |
 | OpenSSL   | 1.1.x or 3.x (via vcpkg when building from source) |
 | Windows SDK | 10.0.19041+  |
-| **Windows Driver Kit** | **Required.** `ncrypt_provider.h`, which declares `NCRYPT_KEY_STORAGE_FUNCTION_TABLE`, ships with the WDK and **not** with the Windows SDK — confirmed by searching the Windows Kits on a clean `windows-latest` runner. Only `ksp_main.c` needs it; the other nine source files build without. [Download the WDK](https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk) |
+| **`ncrypt_provider.h`** | **Required for `ksp_main.c`.** It declares `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` and is **not** in the Windows SDK — confirmed by searching the Windows Kits on a clean `windows-latest` runner, before and after installing the WDK. It comes with the **Cryptographic Provider Development Kit**, which installs beside the SDK rather than inside its `Include` tree. The other nine source files build without it. |
+
+If the compiler cannot find `ncrypt_provider.h`, point the build at the CPDK:
+
+```powershell
+cmake .. -A x64 -DCPDK_INCLUDE_DIR="C:\Program Files (x86)\Windows Kits\10\Cryptographic Provider Development Kit\Include\um"
+```
 
 ## Getting SoftHSM2 2.7.0
 

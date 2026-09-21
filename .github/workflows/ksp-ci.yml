@@ -93,36 +93,40 @@ jobs:
         continue-on-error: true
         run: choco install windowsdriverkit11 --no-progress -y
 
+      # The first attempt searched only Windows Kits\10\Include and found
+      # nothing even after the WDK installed. The CPDK puts its headers in a
+      # sibling directory, not inside Include, so search the whole tree.
       - name: Locate ncrypt_provider.h
         id: findhdr
         shell: pwsh
         run: |
           $roots = @(
-            "${env:ProgramFiles(x86)}\Windows Kits\10\Include",
-            "${env:ProgramFiles}\Windows Kits\10\Include"
+            "${env:ProgramFiles(x86)}\Windows Kits",
+            "${env:ProgramFiles}\Windows Kits"
           ) | Where-Object { Test-Path $_ }
           $hits = foreach ($r in $roots) {
             Get-ChildItem -Path $r -Recurse -Filter ncrypt_provider.h -ErrorAction SilentlyContinue
           }
           if ($hits) {
             $dir = $hits[0].Directory.FullName
-            Write-Host "Found: $($hits[0].FullName)"
-            "dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "found=yes" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Found $($hits.Count):"
+            $hits | ForEach-Object { Write-Host "  $($_.FullName)" }
+            "dir=$dir"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "found=yes"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           } else {
-            Write-Host "ncrypt_provider.h NOT FOUND."
-            Write-Host "It ships with the Windows Driver Kit, not the Windows SDK:"
-            Write-Host "  https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk"
+            Write-Host "ncrypt_provider.h NOT FOUND under any Windows Kits root."
+            Write-Host "Kits directories present, for diagnosis:"
+            foreach ($r in $roots) {
+              Get-ChildItem -Path $r -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host "  $($_.FullName)" }
+            }
             "found=no" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
 
-      # No -G: windows-latest has moved past VS 2022, and pinning the
-      # generator made the first run fail with "could not find any instance
-      # of Visual Studio". Let CMake pick whatever is installed.
       - name: Configure
-        run: cmake -S softhsm_ksp -B build -A x64
-        env:
-          INCLUDE: ${{ steps.findhdr.outputs.dir }};${{ env.INCLUDE }}
+        run: >
+          cmake -S softhsm_ksp -B build -A x64
+          "-DCPDK_INCLUDE_DIR=${{ steps.findhdr.outputs.dir }}"
 
       - name: Build
         run: cmake --build build --config Release

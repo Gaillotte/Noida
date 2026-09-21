@@ -147,11 +147,17 @@ compiled, on any platform.
 
 **What the first CI run settled.** Two things, both previously unknown:
 
-- **`ncrypt_provider.h` is not in the Windows SDK.** A recursive search of
-  the Windows Kits on a clean `windows-latest` runner found nothing. It
-  ships with the **WDK**, so building a CNG provider requires the WDK — a
-  genuine prerequisite this project had never documented. Now recorded in
-  `README.md` and `CLAUDE.md`, and installed by the CI `windows` job.
+- **MSVC compiles nine of the ten source files clean, at `/W3 /WX`.** No
+  errors and no warnings, and `test_p11_layer.exe` linked. That is the first
+  time any of this code has been built by the compiler it targets.
+- **`ncrypt_provider.h` is not in the Windows SDK, and not in the WDK
+  either.** A recursive search of the Windows Kits on a clean
+  `windows-latest` runner found nothing, before or after installing the WDK.
+  It comes with the **Cryptographic Provider Development Kit**, which
+  installs beside the SDK rather than inside its `Include` tree. The build
+  now takes `-DCPDK_INCLUDE_DIR` so it can be pointed at any location, and
+  the prerequisite is recorded in `README.md` and `CLAUDE.md` — it had never
+  been written down.
 - **`windows-latest` has moved past Visual Studio 2022.** The pinned
   generator failed with "could not find any instance of Visual Studio". The
   `-G` flag is gone from CI and from both build guides; CMake picks whatever
