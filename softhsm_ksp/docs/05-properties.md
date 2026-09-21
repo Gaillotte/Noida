@@ -7,7 +7,39 @@
 | `NCRYPT_NAME_PROPERTY` | `L"SoftHSM KSP"` | `WCHAR[]` | ✓ |
 | `NCRYPT_VERSION_PROPERTY` | `1` | `DWORD` | ✓ |
 | `NCRYPT_IMPL_TYPE_PROPERTY` | `NCRYPT_IMPL_SOFTWARE_FLAG` | `DWORD` | ✓ |
+| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ (read-only) |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
+
+### Provider properties that can be written
+
+| Property | Effect |
+|----------|--------|
+| `NCRYPT_PIN_PROPERTY` (`L"SmartCardPin"`) | Sets the user PIN for `C_Login`, replacing `SOFTHSM2_PIN`. Sessions open lazily, so a PIN set between `NCryptOpenStorageProvider` and the first cryptographic call is the one used. Sessions already open keep their login — PKCS#11 cannot change credentials on a live session. |
+| `"SoftHSM Token Label"`, `"SoftHSM Slot"` | `NTE_NOT_SUPPORTED`. Read-only by design: see below. |
+
+The PIN is copied into a fixed buffer, zeroed when the session pool is
+finalised, and never logged — not even its length. A PIN longer than
+`P11_MAX_PIN_LEN` is **rejected rather than truncated**, because a silently
+truncated PIN would fail to log in for no visible reason.
+
+**Token selection is not writable through this call.** By the time a caller
+holds a provider handle the PKCS#11 context has initialised and the session
+pool is bound to a slot, and PKCS#11 has no way to move a session to another
+token. Accepting the value and continuing to use the old token would be
+worse than refusing it: the caller would believe it had switched. Choose the
+token before the provider opens:
+
+| Variable | Selects by |
+|----------|-----------|
+| `SOFTHSM2_TOKEN_LABEL` | `CKA_LABEL` of the token — preferred, because SoftHSM2 slot IDs shift when tokens are added or removed |
+| `SOFTHSM2_SLOT` | Decimal slot ID |
+
+If both are set the label wins. An explicit selection that matches no
+present token is an **error**, not a fallback to slot 0 — falling back would
+sign with the wrong key and look like it worked. With neither set, the first
+slot reporting a token is used, which is the historical behaviour.
+
+Read `"SoftHSM Slot"` back to confirm which token was chosen.
 
 SoftHSM2 keeps keys in an encrypted SQLite file, so the provider reports
 `NCRYPT_IMPL_SOFTWARE_FLAG` rather than claiming hardware backing.
@@ -40,7 +72,39 @@ Keys remain non-exportable regardless — that is enforced by
 | `NCRYPT_INITIALIZATION_VECTOR` | `pKey->pbIV` / `cbIV` | `BYTE[]` | ✓ symmetric only | ✓ symmetric only |
 | `NCRYPT_AUTH_TAG_LENGTH` | `pKey->pbAuthData` (GCM AAD) | `BYTE[]` | ✗ | ✓ symmetric only |
 | `NCRYPT_BLOCK_LENGTH_PROPERTY` | `16` (AES block) | `DWORD` | ✓ AES only | ✗ |
-| Any other property | — | — | `NTE_NOT_SUPPORTED` | `NTE_NOT_SUPPORTED` |
+| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ (read-only) |
+| Any other property | — | — | `NTE_NOT_SUPPORTED` |
+
+### Provider properties that can be written
+
+| Property | Effect |
+|----------|--------|
+| `NCRYPT_PIN_PROPERTY` (`L"SmartCardPin"`) | Sets the user PIN for `C_Login`, replacing `SOFTHSM2_PIN`. Sessions open lazily, so a PIN set between `NCryptOpenStorageProvider` and the first cryptographic call is the one used. Sessions already open keep their login — PKCS#11 cannot change credentials on a live session. |
+| `"SoftHSM Token Label"`, `"SoftHSM Slot"` | `NTE_NOT_SUPPORTED`. Read-only by design: see below. |
+
+The PIN is copied into a fixed buffer, zeroed when the session pool is
+finalised, and never logged — not even its length. A PIN longer than
+`P11_MAX_PIN_LEN` is **rejected rather than truncated**, because a silently
+truncated PIN would fail to log in for no visible reason.
+
+**Token selection is not writable through this call.** By the time a caller
+holds a provider handle the PKCS#11 context has initialised and the session
+pool is bound to a slot, and PKCS#11 has no way to move a session to another
+token. Accepting the value and continuing to use the old token would be
+worse than refusing it: the caller would believe it had switched. Choose the
+token before the provider opens:
+
+| Variable | Selects by |
+|----------|-----------|
+| `SOFTHSM2_TOKEN_LABEL` | `CKA_LABEL` of the token — preferred, because SoftHSM2 slot IDs shift when tokens are added or removed |
+| `SOFTHSM2_SLOT` | Decimal slot ID |
+
+If both are set the label wins. An explicit selection that matches no
+present token is an **error**, not a fallback to slot 0 — falling back would
+sign with the wrong key and look like it worked. With neither set, the first
+slot reporting a token is used, which is the historical behaviour.
+
+Read `"SoftHSM Slot"` back to confirm which token was chosen. `NTE_NOT_SUPPORTED` |
 
 Reading or writing a cipher property on an asymmetric key returns
 `NTE_NOT_SUPPORTED`, and `NCRYPT_BLOCK_LENGTH_PROPERTY` is rejected on

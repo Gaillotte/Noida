@@ -30,4 +30,22 @@ SECURITY_STATUS P11_SessionPool_Initialize(void);
 /* Destroy the session pool (called by P11_Finalize) */
 void P11_SessionPool_Finalize(void);
 
+/* Set the user PIN used for C_Login, overriding SOFTHSM2_PIN.
+ *
+ * Sessions open lazily on first use, so a PIN set between
+ * NCryptOpenStorageProvider and the first cryptographic call is the one
+ * that will be used. Sessions already open keep their login; PKCS#11 has
+ * no way to change credentials on a live session.
+ *
+ * szPin is copied and the caller's buffer is not retained. Pass NULL to
+ * clear the override and fall back to the environment variable.
+ *
+ * Returns NTE_INVALID_PARAMETER if the PIN is longer than the token
+ * accepts. */
+SECURITY_STATUS P11_SetPin(const char *szPin);
+
+/* Zero the stored PIN. Called by P11_SessionPool_Finalize; exposed so a
+ * caller that is done authenticating can drop the credential early. */
+void P11_ClearPin(void);
+
 #endif /* P11_SESSION_H */

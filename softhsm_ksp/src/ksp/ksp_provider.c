@@ -137,6 +137,20 @@ SECURITY_STATUS WINAPI KSP_GetProviderProperty(
                 memcpy(pbOutput, &dwImpl, sizeof(DWORD));
             }
         }
+    } else if (_wcsicmp(pszProperty, KSP_SLOT_PROPERTY) == 0) {
+        /* Which token this process actually selected. Read-only: the slot
+         * is fixed when the PKCS#11 context initialises, and sessions are
+         * bound to it. Useful for a caller that set SOFTHSM2_TOKEN_LABEL
+         * and wants to confirm what it got. */
+        DWORD dwSlot = (DWORD)P11_GetContext()->slotId;
+        *pcbResult = sizeof(DWORD);
+        if (pbOutput) {
+            if (cbOutput < sizeof(DWORD)) {
+                ss = NTE_BUFFER_TOO_SMALL;
+            } else {
+                memcpy(pbOutput, &dwSlot, sizeof(DWORD));
+            }
+        }
     } else {
         ss = NTE_NOT_SUPPORTED;
     }
@@ -153,11 +167,73 @@ SECURITY_STATUS WINAPI KSP_SetProviderProperty(
     DWORD               cbInput,
     DWORD               dwFlags)
 {
-    UNREFERENCED_PARAMETER(hProvider);
-    UNREFERENCED_PARAMETER(pszProperty);
-    UNREFERENCED_PARAMETER(pbInput);
-    UNREFERENCED_PARAMETER(cbInput);
     UNREFERENCED_PARAMETER(dwFlags);
+
+    if (!KSP_IsValidProvider(hProvider))
+        return NTE_INVALID_HANDLE;
+
+    if (!pszProperty || !pbInput)
+        return NTE_INVALID_PARAMETER;
+
+    /* NCRYPT_PIN_PROPERTY — the standard CNG way to hand a provider a PIN,
+     * and the reason this function exists at all. CNG passes it as a
+     * NUL-terminated wide string; PKCS#11 C_Login wants bytes, so it is
+     * narrowed here.
+     *
+     * Sessions open lazily, so a PIN set before the first cryptographic
+     * call is the one used to log in. Both the wide copy and the narrow
+     * copy are zeroed before returning. */
+    if (_wcsicmp(pszProperty, NCRYPT_PIN_PROPERTY) == 0) {
+        WCHAR  wszPin[P11_MAX_PIN_LEN + 1];
+        char   szPin[P11_MAX_PIN_LEN + 1];
+        DWORD  cchPin;
+        int    cb;
+        SECURITY_STATUS ss;
+
+        /* cbInput is a byte count and may or may not include the
+         * terminator, so bound it and terminate ourselves. */
+        cchPin = cbInput / sizeof(WCHAR);
+        if (cchPin == 0 || cchPin > P11_MAX_PIN_LEN)
+            return NTE_INVALID_PARAMETER;
+
+        memcpy(wszPin, pbInput, cchPin * sizeof(WCHAR));
+        wszPin[cchPin] = L'\0';
+        /* Tolerate a caller that already included the terminator. */
+        cchPin = (DWORD)wcslen(wszPin);
+        if (cchPin == 0) {
+            SecureZeroMemory(wszPin, sizeof(wszPin));
+            return NTE_INVALID_PARAMETER;
+        }
+
+        cb = WideCharToMultiByte(CP_UTF8, 0, wszPin, (int)cchPin,
+                                 szPin, sizeof(szPin) - 1, NULL, NULL);
+        SecureZeroMemory(wszPin, sizeof(wszPin));
+
+        if (cb <= 0)
+            return NTE_INVALID_PARAMETER;
+
+        szPin[cb] = '\0';
+        ss = P11_SetPin(szPin);
+        SecureZeroMemory(szPin, sizeof(szPin));
+        return ss;
+    }
+
+    /* Token selection is read-only here, and deliberately so. By the time
+     * a caller holds a provider handle the PKCS#11 context has initialised
+     * and the session pool is bound to a slot; PKCS#11 offers no way to
+     * move a session between tokens. Accepting the value and continuing to
+     * use the old token would be worse than refusing it — the caller would
+     * believe it had switched.
+     *
+     * Choose the token before the provider opens, with SOFTHSM2_SLOT or
+     * SOFTHSM2_TOKEN_LABEL, and read KSP_SLOT_PROPERTY back to confirm. */
+    if (_wcsicmp(pszProperty, KSP_TOKEN_LABEL_PROPERTY) == 0 ||
+        _wcsicmp(pszProperty, KSP_SLOT_PROPERTY) == 0) {
+        LOG_ERROR("KSP_SetProviderProperty - token selection is read-only; "
+                  "use " SOFTHSM2_TOKEN_LABEL_ENV " or " SOFTHSM2_SLOT_ENV,
+                  NTE_NOT_SUPPORTED);
+        return NTE_NOT_SUPPORTED;
+    }
 
     return NTE_NOT_SUPPORTED;
 }

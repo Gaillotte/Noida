@@ -32,6 +32,22 @@ LPWSTR KSP_WStrDup(LPCWSTR p);
 #include "../../src/ksp/ksp_key.h"
 #include "../../src/ksp/ksp_properties.h"
 
+/* Records what KSP_SetProviderProperty hands to the session layer. */
+static char g_szLastPin[256];
+static int  g_nSetPinCalls = 0;
+static SECURITY_STATUS g_ssSetPinResult = ERROR_SUCCESS;
+
+SECURITY_STATUS P11_SetPin(const char *szPin)
+{
+    g_nSetPinCalls++;
+    if (szPin)
+        strncpy(g_szLastPin, szPin, sizeof(g_szLastPin) - 1);
+    else
+        g_szLastPin[0] = '\0';
+    return g_ssSetPinResult;
+}
+void P11_ClearPin(void) { g_szLastPin[0] = '\0'; }
+
 int main(void)
 {
     NCRYPT_PROV_HANDLE hProv = 0;
@@ -324,6 +340,115 @@ int main(void)
     ASSERT_EQ("VerifySignature → NTE_NOT_SUPPORTED",
         KSP_VerifySignature(hProv, 0, NULL, (PBYTE)"h", 1, (PBYTE)"s", 1, 0),
         (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+    /* ── Suite : KSP_SetProviderProperty — PIN (IFACE-04) ─────────────── */
+    TEST_SUITE("KSP_SetProviderProperty — NCRYPT_PIN_PROPERTY");
+    {
+        WCHAR wszPin[] = L"1234";
+
+        g_nSetPinCalls = 0;
+        g_szLastPin[0] = '\0';
+
+        /* cbInput excluding the terminator — what CNG usually passes. */
+        ss = KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                (PBYTE)wszPin, (DWORD)(wcslen(wszPin) * sizeof(WCHAR)), 0);
+        ASSERT_OK("Set PIN → OK", ss);
+        ASSERT_EQ("Session layer called once", g_nSetPinCalls, 1);
+        ASSERT_STR("PIN narrowed to UTF-8 correctly", g_szLastPin, "1234");
+
+        /* cbInput including the terminator — also legal, and the wide
+         * string must not acquire a trailing NUL in the narrow copy. */
+        g_nSetPinCalls = 0;
+        ss = KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                (PBYTE)wszPin, (DWORD)sizeof(wszPin), 0);
+        ASSERT_OK("Set PIN with terminator counted → OK", ss);
+        ASSERT_STR("Terminator not copied into the PIN", g_szLastPin, "1234");
+    }
+    {
+        /* Non-ASCII PINs must survive the wide-to-narrow conversion. */
+        WCHAR wszPin[] = L"pa\u00dfwort";
+        g_szLastPin[0] = '\0';
+        ss = KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                (PBYTE)wszPin, (DWORD)(wcslen(wszPin) * sizeof(WCHAR)), 0);
+        ASSERT_OK("Non-ASCII PIN → OK", ss);
+        ASSERT_STR("Encoded as UTF-8", g_szLastPin, "pa\xc3\x9fwort");
+    }
+    {
+        WCHAR wszPin[] = L"1234";
+
+        ASSERT_EQ("Empty PIN → NTE_INVALID_PARAMETER",
+            KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                (PBYTE)wszPin, 0, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("pbInput=NULL → NTE_INVALID_PARAMETER",
+            KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY, NULL, 8, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("pszProperty=NULL → NTE_INVALID_PARAMETER",
+            KSP_SetProviderProperty(hProv, NULL, (PBYTE)wszPin, 8, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("Invalid provider → NTE_INVALID_HANDLE",
+            KSP_SetProviderProperty(0, NCRYPT_PIN_PROPERTY,
+                (PBYTE)wszPin, 8, 0),
+            (SECURITY_STATUS)NTE_INVALID_HANDLE);
+
+        /* A PIN longer than the fixed buffer must be refused, not
+         * truncated: a truncated PIN would silently fail to log in. */
+        {
+            WCHAR wszLong[P11_MAX_PIN_LEN + 10];
+            size_t i;
+            for (i = 0; i < (sizeof wszLong / sizeof wszLong[0]) - 1; i++)
+                wszLong[i] = L'x';
+            wszLong[i] = L'\0';
+            ASSERT_EQ("Over-long PIN → NTE_INVALID_PARAMETER",
+                KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                    (PBYTE)wszLong, (DWORD)(i * sizeof(WCHAR)), 0),
+                (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        }
+
+        /* Token selection is deliberately read-only through this call. */
+        ASSERT_EQ("Set token label → NTE_NOT_SUPPORTED",
+            KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                (PBYTE)L"tok", 8, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        ASSERT_EQ("Set slot → NTE_NOT_SUPPORTED",
+            KSP_SetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                (PBYTE)L"1", 4, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        ASSERT_EQ("Unknown property → NTE_NOT_SUPPORTED",
+            KSP_SetProviderProperty(hProv, L"No Such Property",
+                (PBYTE)wszPin, 8, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    }
+
+    /* ── Suite : reading the selected slot back (OPS-04) ───────────────── */
+    TEST_SUITE("KSP_GetProviderProperty — slot");
+    {
+        DWORD dwSlot = 0xFFFFFFFF;
+        DWORD cb = 0;
+
+        g_testCtx.slotId = 7;
+        ss = KSP_GetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                (PBYTE)&dwSlot, sizeof dwSlot, &cb, 0);
+        ASSERT_OK("Read slot → OK", ss);
+        ASSERT_EQ("Reports the selected slot", dwSlot, 7U);
+        ASSERT_EQ("cbResult = 4", cb, (DWORD)sizeof(DWORD));
+
+        cb = 0;
+        ss = KSP_GetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                NULL, 0, &cb, 0);
+        ASSERT_OK("Size query → OK", ss);
+        ASSERT_EQ("Size query returns 4", cb, (DWORD)sizeof(DWORD));
+
+        ss = KSP_GetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                (PBYTE)&dwSlot, 2, &cb, 0);
+        ASSERT_EQ("Short buffer → NTE_BUFFER_TOO_SMALL",
+            ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
+
+        g_testCtx.slotId = 0;
+    }
 
     KSP_FreeProvider(hProv);
 

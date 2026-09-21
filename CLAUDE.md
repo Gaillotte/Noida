@@ -57,7 +57,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 15 test suites, 903 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 15 test suites, 943 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -372,7 +372,11 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   now fails CI on any disagreement with the real Windows headers.
 - No raw RSA (`CKM_RSA_X_509`) — SoftHSM2 limitation
 - No private key import — HSM design
-- Only first token-present slot used
+- Token chosen by `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; with neither,
+  the first slot reporting a token. An explicit selection that matches
+  nothing is an error, never a fallback.
+- Token selection is read-only through `NCryptSetProperty` — the session
+  pool is bound to a slot by the time a provider handle exists
 - RSA sizes below `KSP_RSA_MIN_BITS` (2048 by default), above 16384, or not a
   multiple of 64 → `NTE_BAD_LEN`
 - AES sizes outside {128, 192, 256} → `NTE_BAD_LEN`
@@ -425,7 +429,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 15 suites, 903 assertions
+make run           # 15 suites, 943 assertions
 make coverage      # → coverage_html/index.html (90.2 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
@@ -460,7 +464,9 @@ See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure
 | Variable | Default | Purpose |
 |---|---|---|
 | `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Path to SoftHSM2 DLL |
-| `SOFTHSM2_PIN` | `1234` | Token user PIN |
+| `SOFTHSM2_PIN` | `1234` | Token user PIN (or set `NCRYPT_PIN_PROPERTY` on the provider) |
+| `SOFTHSM2_SLOT` | — | Slot ID to use; error if no such token is present |
+| `SOFTHSM2_TOKEN_LABEL` | — | Token `CKA_LABEL` to use; wins over `SOFTHSM2_SLOT` |
 | `KSP_DEBUG` | `0` | Enable logging (`1` = on, visible in DebugView) |
 
 ---

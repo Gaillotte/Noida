@@ -183,21 +183,80 @@ static inline DWORD GetEnvironmentVariableA(const char *name, char *buf, DWORD n
 #define CP_UTF8 65001
 #define CP_ACP  0
 
-static inline int MultiByteToWideChar(DWORD cp, DWORD flags,
-    const char *src, int srcLen, wchar_t *dst, int dstLen) {
-    (void)cp; (void)flags;
-    if (srcLen == -1) srcLen = (int)strlen(src) + 1;
-    int n = mbstowcs(dst, src, dstLen > 0 ? (size_t)dstLen : 0);
-    return (n < 0) ? 0 : n;
-}
-
+/* These replace the earlier wcstombs/mbstowcs versions, which ignored
+ * srcLen and depended on the process locale — in the default "C" locale
+ * any non-ASCII character failed outright, which Windows does not do.
+ * Conversion is real UTF-8 here, and srcLen is honoured.
+ *
+ * Note wchar_t is 4 bytes on Linux and 2 on Windows, so these operate on
+ * whole code points and do not model surrogate pairs. Every caller in this
+ * project passes text, not lone surrogates. */
 static inline int WideCharToMultiByte(DWORD cp, DWORD flags,
     const wchar_t *src, int srcLen, char *dst, int dstLen,
     const char *def, int *used) {
-    (void)cp; (void)flags; (void)def; (void)used;
-    if (srcLen == -1) srcLen = (int)wcslen(src) + 1;
-    size_t n = wcstombs(dst, src, dstLen > 0 ? (size_t)dstLen : 0);
-    return (n == (size_t)-1) ? 0 : (int)n;
+    int i, out = 0;
+    (void)cp; (void)flags; (void)def;
+    if (used) *used = 0;
+    if (!src) return 0;
+    if (srcLen < 0) srcLen = (int)wcslen(src) + 1;   /* includes the NUL */
+
+    for (i = 0; i < srcLen; i++) {
+        unsigned long c = (unsigned long)src[i];
+        char buf[4];
+        int  n;
+
+        if (c < 0x80)          { buf[0] = (char)c; n = 1; }
+        else if (c < 0x800)    { buf[0] = (char)(0xC0 | (c >> 6));
+                                 buf[1] = (char)(0x80 | (c & 0x3F)); n = 2; }
+        else if (c < 0x10000)  { buf[0] = (char)(0xE0 | (c >> 12));
+                                 buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+                                 buf[2] = (char)(0x80 | (c & 0x3F)); n = 3; }
+        else                   { buf[0] = (char)(0xF0 | (c >> 18));
+                                 buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+                                 buf[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+                                 buf[3] = (char)(0x80 | (c & 0x3F)); n = 4; }
+
+        if (dstLen > 0) {
+            if (out + n > dstLen) return 0;   /* Windows: ERROR_INSUFFICIENT_BUFFER */
+            memcpy(dst + out, buf, (size_t)n);
+        }
+        out += n;
+    }
+    return out;
+}
+
+static inline int MultiByteToWideChar(DWORD cp, DWORD flags,
+    const char *src, int srcLen, wchar_t *dst, int dstLen) {
+    int i = 0, out = 0;
+    (void)cp; (void)flags;
+    if (!src) return 0;
+    if (srcLen < 0) srcLen = (int)strlen(src) + 1;   /* includes the NUL */
+
+    while (i < srcLen) {
+        unsigned char b = (unsigned char)src[i];
+        unsigned long c;
+        int extra;
+
+        if (b < 0x80)           { c = b;         extra = 0; }
+        else if ((b & 0xE0) == 0xC0) { c = b & 0x1F; extra = 1; }
+        else if ((b & 0xF0) == 0xE0) { c = b & 0x0F; extra = 2; }
+        else if ((b & 0xF8) == 0xF0) { c = b & 0x07; extra = 3; }
+        else return 0;                      /* invalid lead byte */
+
+        if (i + extra >= srcLen + (extra ? 0 : 1)) {
+            if (i + extra >= srcLen) return 0;   /* truncated sequence */
+        }
+        for (int k = 1; k <= extra; k++)
+            c = (c << 6) | ((unsigned char)src[i + k] & 0x3F);
+        i += extra + 1;
+
+        if (dstLen > 0) {
+            if (out >= dstLen) return 0;
+            dst[out] = (wchar_t)c;
+        }
+        out++;
+    }
+    return out;
 }
 
 /* ── CRITICAL_SECTION (→ pthread_mutex_t) ────────────────────────────────── */
@@ -395,8 +454,9 @@ typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
 #define NCRYPT_NAME_PROPERTY            L"Name"
 #define NCRYPT_VERSION_PROPERTY         L"Version"
 #define NCRYPT_IMPL_TYPE_PROPERTY       L"Impl Type"
+#define NCRYPT_PIN_PROPERTY             L"SmartCardPin"
 #define NCRYPT_ALGORITHM_PROPERTY       L"Algorithm Name"
-#define NCRYPT_LENGTH_PROPERTY          L"KeyLength"
+#define NCRYPT_LENGTH_PROPERTY          L"Length"
 #define NCRYPT_KEY_TYPE_PROPERTY        L"Key Type"
 #define NCRYPT_UNIQUE_NAME_PROPERTY     L"Unique Name"
 #define NCRYPT_EXPORT_POLICY_PROPERTY   L"Export Policy"

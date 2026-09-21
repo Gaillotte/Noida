@@ -103,4 +103,14 @@ SECURITY_STATUS P11_BuildEcPointDer(
     BYTE      **ppDer,
     DWORD      *pcbDer);
 
+/* Compare a PKCS#11 token label against a caller's C string.
+ *
+ * CK_TOKEN_INFO.label is a fixed 32-byte field padded with SPACES and not
+ * NUL terminated, so strcmp against it never matches and strncmp matches
+ * too eagerly ("prod" would match "production"). Trailing spaces are
+ * trimmed from the field, then the comparison is exact.
+ *
+ * pbLabel must point at P11_TOKEN_LABEL_LEN bytes. */
+BOOL P11_TokenLabelMatches(const CK_UTF8CHAR *pbLabel, const char *szWanted);
+
 #endif /* P11_UTILS_H */

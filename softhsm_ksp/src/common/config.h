@@ -23,6 +23,31 @@
 /* Environment variable to override the PIN */
 #define SOFTHSM2_PIN_ENV       "SOFTHSM2_PIN"
 
+/* Slot selection. Without either of these the KSP takes the first slot
+ * reporting a token, which is what it has always done and remains the
+ * default. A machine with more than one token needs to say which:
+ *
+ *   SOFTHSM2_SLOT        decimal slot ID, e.g. "1"
+ *   SOFTHSM2_TOKEN_LABEL CKA_LABEL of the token, e.g. "signing-token"
+ *
+ * The label is the more stable of the two — SoftHSM2 slot IDs are assigned
+ * at initialisation and shift when tokens are added or removed. If both are
+ * set the label wins, because it is the one that survives a reshuffle.
+ * Either may also be set at runtime through NCryptSetProperty on the
+ * provider handle; see KSP_SetProviderProperty. */
+#define SOFTHSM2_SLOT_ENV        "SOFTHSM2_SLOT"
+#define SOFTHSM2_TOKEN_LABEL_ENV "SOFTHSM2_TOKEN_LABEL"
+
+/* PKCS#11 pads CK_TOKEN_INFO.label to 32 bytes with spaces, not NUL. */
+#define P11_TOKEN_LABEL_LEN    32
+
+/* Upper bound on slots enumerated by C_GetSlotList. */
+#define P11_MAX_SLOTS          64
+
+/* Longest user PIN accepted. PKCS#11 imposes no limit; this bounds the
+ * fixed buffer the PIN is copied into. */
+#define P11_MAX_PIN_LEN        127
+
 /* Environment variable to enable debug logging */
 #define KSP_DEBUG_ENV          "KSP_DEBUG"
 
@@ -170,6 +195,12 @@
 /* RSA public exponent, settable before FinalizeKey. CNG defines no standard
  * property for this, so the name is a KSP extension. */
 #define KSP_PUBLIC_EXPONENT_PROPERTY  L"RSA Public Exponent"
+
+/* Provider-level configuration, settable through NCryptSetProperty on the
+ * provider handle. NCRYPT_PIN_PROPERTY is a standard CNG name; the token
+ * selectors are this provider's own, because CNG has no notion of a slot. */
+#define KSP_TOKEN_LABEL_PROPERTY  L"SoftHSM Token Label"
+#define KSP_SLOT_PROPERTY         L"SoftHSM Slot"
 
 /* Magic number validating a (KSP_SECRET *) agreed-secret handle */
 #define KSP_SECRET_MAGIC       0x4B535053UL  /* 'KSPS' */

@@ -48,6 +48,9 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
 }
 void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
+SECURITY_STATUS P11_SetPin(const char *p) { (void)p; return ERROR_SUCCESS; }
+void            P11_ClearPin(void) {}
+
 /* DllMain is an entry point, not part of the KSP API, so ksp_main.h does
  * not declare it. Declared here so the suite can exercise it. */
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);

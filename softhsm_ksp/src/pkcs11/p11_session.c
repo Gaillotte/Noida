@@ -13,6 +13,81 @@ static HANDLE            g_hSemaphore = NULL;
 static CRITICAL_SECTION  g_csPool;
 static BOOL              g_bPoolInit  = FALSE;
 
+/* PIN override set through NCryptSetProperty(NCRYPT_PIN_PROPERTY).
+ * Guarded by g_csPin because it is read on every lazy session open and can
+ * be written from any thread. Zeroed, not just freed, when cleared. */
+static char              g_szPin[P11_MAX_PIN_LEN + 1];
+static BOOL              g_bPinSet    = FALSE;
+static CRITICAL_SECTION  g_csPin;
+static INIT_ONCE         g_pinOnce    = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK InitPinLock(PINIT_ONCE o, PVOID p, PVOID *c)
+{
+    (void)o; (void)p; (void)c;
+    InitializeCriticalSection(&g_csPin);
+    return TRUE;
+}
+
+SECURITY_STATUS P11_SetPin(const char *szPin)
+{
+    size_t cb;
+
+    InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    if (!szPin) {
+        P11_ClearPin();
+        return ERROR_SUCCESS;
+    }
+
+    cb = strlen(szPin);
+    if (cb > P11_MAX_PIN_LEN)
+        return NTE_INVALID_PARAMETER;
+
+    EnterCriticalSection(&g_csPin);
+    SecureZeroMemory(g_szPin, sizeof(g_szPin));
+    memcpy(g_szPin, szPin, cb);
+    g_szPin[cb] = '\0';
+    g_bPinSet   = TRUE;
+    LeaveCriticalSection(&g_csPin);
+
+    /* Deliberately not logged, not even its length. */
+    LOG_INFO("PIN set through the provider property");
+    return ERROR_SUCCESS;
+}
+
+void P11_ClearPin(void)
+{
+    InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    EnterCriticalSection(&g_csPin);
+    SecureZeroMemory(g_szPin, sizeof(g_szPin));
+    g_bPinSet = FALSE;
+    LeaveCriticalSection(&g_csPin);
+}
+
+/* Copy the PIN to use into the caller's buffer.
+ *
+ * Preference: the value set through the provider property, then
+ * SOFTHSM2_PIN, then the compiled-in default. */
+static void GetEffectivePin(char *pszOut, size_t cbOut)
+{
+    DWORD dwLen;
+
+    InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    EnterCriticalSection(&g_csPin);
+    if (g_bPinSet) {
+        strcpy_s(pszOut, cbOut, g_szPin);
+        LeaveCriticalSection(&g_csPin);
+        return;
+    }
+    LeaveCriticalSection(&g_csPin);
+
+    dwLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, pszOut, (DWORD)cbOut);
+    if (dwLen == 0 || dwLen >= cbOut)
+        strcpy_s(pszOut, cbOut, SOFTHSM2_PIN_DEFAULT);
+}
+
 /* Initialise the session pool */
 SECURITY_STATUS P11_SessionPool_Initialize(void)
 {
@@ -63,6 +138,7 @@ void P11_SessionPool_Finalize(void)
     }
 
     DeleteCriticalSection(&g_csPool);
+    P11_ClearPin();
     g_bPoolInit = FALSE;
 }
 
@@ -71,8 +147,7 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
 {
     P11_CONTEXT *pCtx = P11_GetContext();
     CK_RV        rv;
-    char         szPin[128] = {0};
-    DWORD        dwPinLen;
+    char         szPin[P11_MAX_PIN_LEN + 1] = {0};
 
     rv = pCtx->pFunctionList->C_OpenSession(
         pCtx->slotId,
@@ -85,10 +160,7 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
         return P11RvToSecStatus(rv);
     }
 
-    /* Read the PIN from the environment variable */
-    dwPinLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szPin, sizeof(szPin));
-    if (dwPinLen == 0 || dwPinLen >= sizeof(szPin))
-        strcpy_s(szPin, sizeof(szPin), SOFTHSM2_PIN_DEFAULT);
+    GetEffectivePin(szPin, sizeof(szPin));
 
     rv = pCtx->pFunctionList->C_Login(
         pEntry->hSession,

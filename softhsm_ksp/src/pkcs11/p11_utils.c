@@ -620,3 +620,23 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     *pcbOut = cbSig;
     return ERROR_SUCCESS;
 }
+
+/* Compare a PKCS#11 token label (space-padded, not NUL terminated) against
+ * a caller's C string. See the header for why this needs its own function. */
+BOOL P11_TokenLabelMatches(const CK_UTF8CHAR *pbLabel, const char *szWanted)
+{
+    size_t cbLabel = P11_TOKEN_LABEL_LEN;
+    size_t cbWanted;
+
+    if (!pbLabel || !szWanted)
+        return FALSE;
+
+    while (cbLabel > 0 && pbLabel[cbLabel - 1] == ' ')
+        cbLabel--;
+
+    cbWanted = strlen(szWanted);
+    if (cbWanted != cbLabel)
+        return FALSE;
+
+    return memcmp(pbLabel, szWanted, cbLabel) == 0;
+}

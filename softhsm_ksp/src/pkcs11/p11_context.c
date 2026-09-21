@@ -53,12 +53,25 @@ static BOOL LoadSoftHSM2(P11_CONTEXT *pCtx)
     return TRUE;
 }
 
-/* Select the first slot with a token present */
+/* Choose the token this process will use.
+ *
+ * Order of preference:
+ *   1. SOFTHSM2_TOKEN_LABEL — matched against each slot's token label
+ *   2. SOFTHSM2_SLOT        — an explicit slot ID
+ *   3. the first slot reporting a token present (the historical default)
+ *
+ * An explicit selection that cannot be satisfied is an error rather than a
+ * silent fallback: falling back to slot 0 would sign with the wrong key and
+ * look like it worked. */
 static BOOL SelectSlot(P11_CONTEXT *pCtx)
 {
-    CK_SLOT_ID  aSlots[64];
-    CK_ULONG    ulCount = 64;
+    CK_SLOT_ID  aSlots[P11_MAX_SLOTS];
+    CK_ULONG    ulCount = P11_MAX_SLOTS;
     CK_RV       rv;
+    char        szLabel[P11_TOKEN_LABEL_LEN + 1] = {0};
+    char        szSlot[32] = {0};
+    DWORD       dwLen;
+    CK_ULONG    i;
 
     rv = pCtx->pFunctionList->C_GetSlotList(CK_TRUE, aSlots, &ulCount);
     if (rv != CKR_OK || ulCount == 0) {
@@ -66,8 +79,56 @@ static BOOL SelectSlot(P11_CONTEXT *pCtx)
         return FALSE;
     }
 
+    /* 1. By token label. */
+    dwLen = GetEnvironmentVariableA(SOFTHSM2_TOKEN_LABEL_ENV,
+                                    szLabel, sizeof(szLabel));
+    if (dwLen > 0 && dwLen < sizeof(szLabel)) {
+        for (i = 0; i < ulCount; i++) {
+            CK_TOKEN_INFO info;
+            memset(&info, 0, sizeof(info));
+            if (pCtx->pFunctionList->C_GetTokenInfo(aSlots[i], &info) != CKR_OK)
+                continue;
+            if (P11_TokenLabelMatches(info.label, szLabel)) {
+                pCtx->slotId = aSlots[i];
+                LOG_INFO("Selected slot %lu by token label '%s'",
+                         (unsigned long)pCtx->slotId, szLabel);
+                return TRUE;
+            }
+        }
+        LOG_ERROR("SelectSlot - no token matches " SOFTHSM2_TOKEN_LABEL_ENV,
+                  NTE_NO_KEY);
+        return FALSE;
+    }
+
+    /* 2. By explicit slot ID. */
+    dwLen = GetEnvironmentVariableA(SOFTHSM2_SLOT_ENV, szSlot, sizeof(szSlot));
+    if (dwLen > 0 && dwLen < sizeof(szSlot)) {
+        char     *pszEnd = NULL;
+        unsigned long ulWanted = strtoul(szSlot, &pszEnd, 10);
+
+        if (pszEnd == szSlot || (pszEnd && *pszEnd != '\0')) {
+            LOG_ERROR("SelectSlot - " SOFTHSM2_SLOT_ENV " is not a number",
+                      NTE_INVALID_PARAMETER);
+            return FALSE;
+        }
+
+        for (i = 0; i < ulCount; i++) {
+            if (aSlots[i] == (CK_SLOT_ID)ulWanted) {
+                pCtx->slotId = aSlots[i];
+                LOG_INFO("Selected slot %lu (explicit)",
+                         (unsigned long)pCtx->slotId);
+                return TRUE;
+            }
+        }
+        LOG_ERROR("SelectSlot - " SOFTHSM2_SLOT_ENV " names no present token",
+                  NTE_NO_KEY);
+        return FALSE;
+    }
+
+    /* 3. Default: first token present. */
     pCtx->slotId = aSlots[0];
-    LOG_INFO("Selected slot: %lu", (unsigned long)pCtx->slotId);
+    LOG_INFO("Selected slot %lu (first token present, of %lu)",
+             (unsigned long)pCtx->slotId, (unsigned long)ulCount);
     return TRUE;
 }
 

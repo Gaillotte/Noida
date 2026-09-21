@@ -49,6 +49,58 @@ MACRO_RE = re.compile(
     re.MULTILINE,
 )
 
+# Wide-string macros: L"..." algorithm identifiers and property names.
+# BCRYPT_SHA224_ALGORITHM was one of these, so leaving them unchecked would
+# leave the guard blind to the very family that caused the problem.
+STR_RE = re.compile(
+    r'^\s*#define\s+((?:NTE|BCRYPT|NCRYPT)_[A-Z0-9_]+)\s+L"([^"]*)"',
+    re.MULTILINE,
+)
+
+# Windows aliases heavily: ncrypt.h defines NCRYPT_INITIALIZATION_VECTOR as
+# BCRYPT_INITIALIZATION_VECTOR rather than repeating L"IV". Without
+# following these one hop, every aliased name looks like an invention, and
+# a guard that cries wolf gets its exceptions list padded until it is
+# useless.
+ALIAS_RE = re.compile(
+    r"^\s*#define\s+((?:NTE|BCRYPT|NCRYPT)_[A-Z0-9_]+)\s+"
+    r"((?:NTE|BCRYPT|NCRYPT)_[A-Z0-9_]+)\s*$",
+    re.MULTILINE,
+)
+
+
+def read_real_strings(headers_dir):
+    """Map macro -> wide-string value from the reference Windows headers.
+
+    Alias definitions are resolved transitively, so a name defined as
+    another macro reports that macro's string value.
+    """
+    real, alias = {}, {}
+    for path in glob.glob(os.path.join(headers_dir, "*.h")):
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for name, value in STR_RE.findall(text):
+            real.setdefault(name, value)
+        for name, target in ALIAS_RE.findall(text):
+            alias.setdefault(name, target)
+
+    for name, target in alias.items():
+        seen = set()
+        while target in alias and target not in seen:
+            seen.add(target)
+            target = alias[target]
+        if target in real:
+            real.setdefault(name, real[target])
+    return real
+
+
+def read_mock_strings(mock_path):
+    with open(mock_path, encoding="utf-8") as fh:
+        return dict(STR_RE.findall(fh.read()))
+
 
 def read_real(headers_dir):
     """Map macro -> int value from the reference Windows headers."""
@@ -106,12 +158,22 @@ def main():
     mock = read_mock(os.path.join(here, "mock", "windows_compat.h"))
     src = sources_text(os.path.join(root, "src"))
 
+    real_str = read_real_strings(args.headers)
+    mock_str = read_mock_strings(os.path.join(here, "mock", "windows_compat.h"))
+
     wrong_value, invented = [], []
+
+    for name, value in sorted(mock_str.items()):
+        if name in real_str and value != real_str[name]:
+            wrong_value.append((name, '"%s"' % value, '"%s"' % real_str[name]))
+        elif name not in real_str and name not in ALLOWED:
+            if re.search(r"\b%s\b" % re.escape(name), src):
+                invented.append(name)
 
     for name, value in sorted(mock.items()):
         if name in real:
             if value != real[name]:
-                wrong_value.append((name, value, real[name]))
+                wrong_value.append((name, "0x%08X" % value, "0x%08X" % real[name]))
         elif name not in ALLOWED:
             # Only a problem if the project actually depends on it: the mock
             # may carry extra names harmlessly, but src/ must never rely on
@@ -119,13 +181,14 @@ def main():
             if re.search(r"\b%s\b" % re.escape(name), src):
                 invented.append(name)
 
-    print("mock macros checked : %d" % len(mock))
+    print("mock macros checked : %d numeric, %d string"
+          % (len(mock), len(mock_str)))
     print("reference headers   : %s" % args.headers)
 
     if wrong_value:
         print("\nWRONG VALUE (%d) — the mock disagrees with Windows:" % len(wrong_value))
         for name, got, want in wrong_value:
-            print("  %-38s mock=0x%08X  windows=0x%08X" % (name, got, want))
+            print("  %-38s mock=%s  windows=%s" % (name, got, want))
 
     if invented:
         print(
