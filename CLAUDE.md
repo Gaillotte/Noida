@@ -384,6 +384,11 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 
 ## Build Instructions (Windows)
 
+**The Windows Driver Kit is required.** `ncrypt_provider.h`, which declares
+`NCRYPT_KEY_STORAGE_FUNCTION_TABLE`, ships with the WDK and not with the
+Windows SDK — confirmed by searching the Windows Kits on a clean
+`windows-latest` runner. Only `ksp_main.c` needs it.
+
 ```powershell
 # 1. Initialise submodule
 git submodule update --init --recursive
@@ -395,7 +400,9 @@ git submodule update --init --recursive
 # 3. Build the KSP DLL
 cd softhsm_ksp
 mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64 -DSOFTHSM2_DIR=..\..\softhsm2-install
+# Omit -G so CMake picks whichever Visual Studio is installed: pinning
+# "Visual Studio 17 2022" fails on runners that have moved past it.
+cmake .. -A x64 -DSOFTHSM2_DIR=..\..\softhsm2-install
 cmake --build . --config Release
 # Output: softhsm_ksp\build\Release\softhsm_ksp.dll
 ```

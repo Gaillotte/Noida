@@ -12,6 +12,7 @@ Prototype of a complete **CNG (Cryptography Next Generation) Key Storage Provide
 | SoftHSM2  | **2.7.0** (OpenSSL backend — built from submodule or installed separately) |
 | OpenSSL   | 1.1.x or 3.x (via vcpkg when building from source) |
 | Windows SDK | 10.0.19041+  |
+| **Windows Driver Kit** | **Required.** `ncrypt_provider.h`, which declares `NCRYPT_KEY_STORAGE_FUNCTION_TABLE`, ships with the WDK and **not** with the Windows SDK — confirmed by searching the Windows Kits on a clean `windows-latest` runner. Only `ksp_main.c` needs it; the other nine source files build without. [Download the WDK](https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk) |
 
 ## Getting SoftHSM2 2.7.0
 
@@ -47,11 +48,11 @@ cd softhsm_ksp
 mkdir build && cd build
 
 # Option A (submodule build — DLL path baked in at compile time):
-cmake .. -G "Visual Studio 17 2022" -A x64 `
+cmake .. -A x64 `
          -DSOFTHSM2_DIR=..\..\softhsm2-install
 
 # Option B (pre-built installer in default location):
-cmake .. -G "Visual Studio 17 2022" -A x64
+cmake .. -A x64
 
 cmake --build . --config Release
 ```

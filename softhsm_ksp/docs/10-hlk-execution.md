@@ -43,7 +43,7 @@ signed submission package.
 3. **The KSP built and registered** (Administrator):
    ```powershell
    cd softhsm_ksp
-   cmake -B build -G "Visual Studio 17 2022" -A x64 `
+   cmake -B build -A x64 `
          -DSOFTHSM2_DIR=..\softhsm2-install
    cmake --build build --config Release
    .\tools\register_ksp.ps1 -DllPath "$PWD\build\Release\softhsm_ksp.dll"

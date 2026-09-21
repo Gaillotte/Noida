@@ -72,7 +72,6 @@ New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 $cmakeArgs = @(
     "-S", $Src,
     "-B", $BuildDir,
-    "-G", "Visual Studio 17 2022",
     "-A", "x64",
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain",
     "-DCMAKE_INSTALL_PREFIX=$InstallDir",
@@ -116,7 +115,7 @@ if ($Dll) {
     Write-Host "       `$env:SOFTHSM2_LIB = '$($Dll.FullName)'"
     Write-Host "  3. Build the KSP DLL:"
     Write-Host "       cd softhsm_ksp"
-    Write-Host "       cmake -B build -G 'Visual Studio 17 2022' -A x64 -DSOFTHSM2_DIR=$InstallDir"
+    Write-Host "       cmake -B build -A x64 -DSOFTHSM2_DIR=$InstallDir"
     Write-Host "       cmake --build build --config Release"
 } else {
     Write-Warning "Build succeeded but softhsm2.dll not found under $InstallDir — check the install layout."

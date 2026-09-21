@@ -145,11 +145,24 @@ Unit tests went 780 → **903 assertions** across 14 → **15 suites**, coverage
 `test_function_table.c`, covers `ksp_main.c` — which nothing had ever
 compiled, on any platform.
 
-**What Phase 0 could not settle.** `ksp_main.c` still cannot be compiled
-here: `<ncrypt_provider.h>` ships with Windows, not with mingw-w64. The CI
-`windows` job builds it with MSVC and logs whether that header is present in
-the hosted runner's Windows Kits, which answers the question on the first
-run. Until then `BUILD-01` and `TABLE-01` stay **Partial**, not Covered.
+**What the first CI run settled.** Two things, both previously unknown:
+
+- **`ncrypt_provider.h` is not in the Windows SDK.** A recursive search of
+  the Windows Kits on a clean `windows-latest` runner found nothing. It
+  ships with the **WDK**, so building a CNG provider requires the WDK — a
+  genuine prerequisite this project had never documented. Now recorded in
+  `README.md` and `CLAUDE.md`, and installed by the CI `windows` job.
+- **`windows-latest` has moved past Visual Studio 2022.** The pinned
+  generator failed with "could not find any instance of Visual Studio". The
+  `-G` flag is gone from CI and from both build guides; CMake picks whatever
+  is installed.
+
+The Linux job — unit suite, mock-drift check and the nine-file
+cross-compile — passed on that same first run, as did the PowerShell job.
+
+**Still unsettled.** That the complete DLL builds under MSVC and loads under
+`NCryptOpenStorageProvider`. `BUILD-01` and `TABLE-01` stay **Partial**
+until a `windows` job goes green.
 
 What the phase originally called for:
 

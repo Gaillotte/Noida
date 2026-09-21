@@ -134,7 +134,7 @@ gcovr --root .. --filter '.*/src/.*' --print-summary \
 
 ```powershell
 # Build (Visual Studio x64 Developer Command Prompt):
-cmake -B build -G "Visual Studio 17 2022" -A x64 ^
+cmake -B build -A x64 ^
       -DSOFTHSM2_DIR=..\softhsm2-install
 cmake --build build --config Release
 
