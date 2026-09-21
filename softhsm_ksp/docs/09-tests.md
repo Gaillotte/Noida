@@ -24,8 +24,8 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         15 test suites · 943 assertions · gcov coverage         │
-   │         Lines: 90.2 %    Functions: 100 %                       │
+   │         16 test suites · 982 assertions · gcov coverage         │
+   │         Lines: 90.4 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,6 +73,7 @@ make syntax-check # parses the Windows-only integration test
 | Suite | File | Assertions | What is tested |
 |-------|------|:----------:|----------------|
 | CNG function table | `test_function_table.c` | 68 | `GetKeyStorageInterface`, every `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` slot, `DllMain` |
+| PKCS#11 session pool | `test_p11_session.c` | 39 | PIN override and precedence, lazy open, login states, recovery after token logout, pool lifecycle |
 | PKCS#11 error mapping | `test_p11rv_mapping.c` | 26 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
 | Logging | `test_logging.c` | 7 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
 | Mechanism resolution | `test_mechanism_resolve.c` | 35 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
@@ -87,7 +88,7 @@ make syntax-check # parses the Windows-only integration test
 | ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **943** | |
+| **Total** | | **982** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the

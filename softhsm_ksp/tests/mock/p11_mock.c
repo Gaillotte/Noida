@@ -101,7 +101,15 @@ static CK_RV mock_CloseSession(CK_SESSION_HANDLE h) {
 }
 static CK_RV mock_CloseAllSessions(CK_SLOT_ID id) { (void)id; return CKR_OK; }
 static CK_RV mock_GetSessionInfo(CK_SESSION_HANDLE h, CK_SESSION_INFO CK_PTR p) {
-    (void)h; (void)p; return CKR_OK;
+    (void)h;
+    g_calls.nGetSessionInfo++;
+    if (g_cfg.rv_GetSessionInfo != CKR_OK)
+        return g_cfg.rv_GetSessionInfo;
+    if (p) {
+        memset(p, 0, sizeof(*p));
+        p->state = g_cfg.sessionState;
+    }
+    return CKR_OK;
 }
 static CK_RV mock_GetOperationState(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
                                      CK_ULONG_PTR n) {
@@ -551,6 +559,8 @@ void P11Mock_Reset(void)
     g_cfg.rv_FindObjects     = CKR_OK;
     g_cfg.rv_GetAttributeValue = CKR_OK;
     g_cfg.rv_SignInit        = CKR_OK;
+    g_cfg.rv_GetSessionInfo  = CKR_OK;
+    g_cfg.sessionState       = CKS_RW_USER_FUNCTIONS;
     g_cfg.rv_Sign            = CKR_OK;
     g_cfg.rv_DecryptInit     = CKR_OK;
     g_cfg.rv_Decrypt         = CKR_OK;

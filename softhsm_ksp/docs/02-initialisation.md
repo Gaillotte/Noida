@@ -181,3 +181,28 @@ sequenceDiagram
 
 > **Security**: the PIN is erased from memory immediately after `C_Login()`
 > via `SecureZeroMemory()` to prevent it from lingering on the heap.
+
+---
+
+## Session recovery
+
+A pooled session is long-lived, and plenty can happen to it between one
+operation and the next: the token can be removed and reinserted, another
+process can call `C_Finalize`, or an administrator can log the token out.
+The handle stays **numerically valid** through all of that, so the first
+symptom used to be a confusing `CKR_USER_NOT_LOGGED_IN` from whatever
+operation happened to run next.
+
+`P11_AcquireSession` therefore validates a cached session before handing it
+out, with `C_GetSessionInfo` — one cheap call that answers both questions:
+
+| Result | Action |
+|--------|--------|
+| `CKR_OK`, state `CKS_RW_USER_FUNCTIONS` or `CKS_RO_USER_FUNCTIONS` | Reuse the session |
+| `CKR_OK`, any public state | Token logged out — close and reopen |
+| Any error (`CKR_SESSION_HANDLE_INVALID`, `CKR_SESSION_CLOSED`, …) | Handle is gone — discard and reopen |
+
+Reopening re-runs the full login, so the credential set through
+`NCRYPT_PIN_PROPERTY` is used again. A healthy session is **not** reopened:
+recovery that fired every time would cost a login per operation, and
+`test_p11_session.c` asserts that it does not.

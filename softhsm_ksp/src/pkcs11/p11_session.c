@@ -183,6 +183,62 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
     return ERROR_SUCCESS;
 }
 
+/* Is this pooled session still usable?
+ *
+ * A pooled session is long-lived, and plenty can happen to it between one
+ * operation and the next: the token can be removed and reinserted, another
+ * process can call C_Finalize, or an administrator can log the token out.
+ * The handle stays numerically valid through all of that, so the first
+ * symptom used to be a confusing CKR_USER_NOT_LOGGED_IN from whatever
+ * operation happened to run next.
+ *
+ * C_GetSessionInfo is cheap and answers both questions at once: whether
+ * the handle still resolves, and whether it is still logged in. */
+static BOOL SessionIsUsable(P11_SESSION_ENTRY *pEntry)
+{
+    P11_CONTEXT     *pCtx = P11_GetContext();
+    CK_SESSION_INFO  info;
+    CK_RV            rv;
+
+    if (pEntry->hSession == CK_INVALID_HANDLE)
+        return FALSE;
+
+    memset(&info, 0, sizeof(info));
+    rv = pCtx->pFunctionList->C_GetSessionInfo(pEntry->hSession, &info);
+    if (rv != CKR_OK) {
+        LOG_INFO("Session 0x%lX no longer valid (rv=0x%lX)",
+                 (unsigned long)pEntry->hSession, (unsigned long)rv);
+        return FALSE;
+    }
+
+    /* A read-write user session is what OpenAndLoginSession creates. The
+     * public states mean the token logged out underneath us. */
+    if (info.state != CKS_RW_USER_FUNCTIONS &&
+        info.state != CKS_RO_USER_FUNCTIONS) {
+        LOG_INFO("Session 0x%lX is no longer logged in (state=%lu)",
+                 (unsigned long)pEntry->hSession, (unsigned long)info.state);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* Drop a session that has gone bad, so the next acquire reopens it.
+ *
+ * C_CloseSession is attempted but its result ignored: the usual reason for
+ * being here is that the handle is already invalid, and failing to close
+ * something that is already gone is not an error worth propagating. */
+static void DiscardSession(P11_SESSION_ENTRY *pEntry)
+{
+    P11_CONTEXT *pCtx = P11_GetContext();
+
+    if (pEntry->hSession != CK_INVALID_HANDLE)
+        (void)pCtx->pFunctionList->C_CloseSession(pEntry->hSession);
+
+    pEntry->hSession  = CK_INVALID_HANDLE;
+    pEntry->bLoggedIn = FALSE;
+}
+
 /* Acquire a session from the pool */
 SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
 {
@@ -208,8 +264,13 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
             g_aPool[i].bInUse = TRUE;
             LeaveCriticalSection(&g_csPool);
 
-            /* Open the session if it does not exist yet */
+            /* Open the session if it does not exist yet, or reopen it if
+             * the one we cached has since been closed or logged out. */
             EnterCriticalSection(&g_aPool[i].cs);
+            if (g_aPool[i].hSession != CK_INVALID_HANDLE &&
+                !SessionIsUsable(&g_aPool[i])) {
+                DiscardSession(&g_aPool[i]);
+            }
             if (g_aPool[i].hSession == CK_INVALID_HANDLE) {
                 ss = OpenAndLoginSession(&g_aPool[i]);
                 if (ss != ERROR_SUCCESS) {

@@ -57,7 +57,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 15 test suites, 943 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 16 test suites, 982 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -429,8 +429,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 15 suites, 943 assertions
-make coverage      # → coverage_html/index.html (90.2 % lines, 100 % functions)
+make run           # 16 suites, 982 assertions
+make coverage      # → coverage_html/index.html (90.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

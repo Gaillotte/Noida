@@ -75,6 +75,11 @@ typedef struct _P11_MOCK_CONFIG {
     CK_MECHANISM_TYPE lastGenerateMech;
     /* Set by C_GenerateKeyPair (asymmetric keys) only. */
     CK_MECHANISM_TYPE lastGenerateKeyPairMech;
+    /* Session state reported by C_GetSessionInfo, and its return value.
+     * Used to simulate a token that logged out under the provider. */
+    CK_ULONG   sessionState;
+    CK_RV      rv_GetSessionInfo;
+
     CK_MECHANISM_TYPE lastSignMech;
     /* CK_RSA_PKCS_PSS_PARAMS captured by the last C_SignInit call. Valid
      * only when lastSignPssValid is non-zero. */
@@ -97,6 +102,7 @@ typedef struct _P11_MOCK_CALLS {
     int nFindObjects;
     int nFindObjectsFinal;
     int nGetAttributeValue;
+    int nGetSessionInfo;
     int nSignInit;
     int nSign;
     int nDecryptInit;

@@ -96,5 +96,5 @@ OPS-05,Operational,Key attestation,TPM / HSM-signed key origin proof,MS Platform
 OPS-06,Operational,Load balancing / HA,Multiple HSM members,Thales; Entrust,C,Not covered,Handled inside vendor PKCS#11 libraries. Our KSP would inherit it automatically when pointed at such a library; nothing to implement.,N/A
 OPS-07,Operational,Session pool concurrency,Concurrent NCrypt calls,All providers,A,Covered,,
 OPS-08,Operational,Re-initialisation without restart,Recover from a bad DLL path,Vendor-specific,C,Not covered,InitOnceExecuteOnce is one-shot per process even on failure. Would need a resettable init guard; a real fix requires care around in-flight sessions.,M
-OPS-09,Operational,PIN caching / re-login,Session recovery after token logout,All commercial providers,C,Partial,C_Login tolerates CKR_USER_ALREADY_LOGGED_IN but there is no re-login path if a session drops. Add a retry that reopens and re-logs in on CKR_USER_NOT_LOGGED_IN.,M
+OPS-09,Operational,PIN caching / re-login,Session recovery after token logout,All commercial providers,C,Covered,,
 OPS-10,Operational,Logging / diagnostics,Trace output for support,All providers,A,Covered,,

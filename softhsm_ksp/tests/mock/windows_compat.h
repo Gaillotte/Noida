@@ -301,6 +301,7 @@ static inline int ReleaseSemaphore(sem_t *s, long n, long *prev) {
 
 /* ── INIT_ONCE (→ pthread_once_t) ────────────────────────────────────────── */
 typedef pthread_once_t INIT_ONCE;
+typedef INIT_ONCE *PINIT_ONCE;
 #define INIT_ONCE_STATIC_INIT PTHREAD_ONCE_INIT
 typedef int (*PINIT_ONCE_FN)(INIT_ONCE*, void*, void**);
 
@@ -328,6 +329,11 @@ static inline int DisableThreadLibraryCalls(HINSTANCE h) { (void)h; return 1; }
 /* ── UNREFERENCED_PARAMETER ─────────────────────────────────────────────── */
 #define UNREFERENCED_PARAMETER(x) ((void)(x))
 #define WINAPI
+/* CALLBACK and APIENTRY are __stdcall on Windows, which is a no-op on
+ * x86-64. Defined here because p11_session.c and p11_context.c use
+ * CALLBACK for their InitOnceExecuteOnce callbacks. */
+#define CALLBACK
+#define APIENTRY
 #define __cdecl
 
 /* ── snprintf_s stubs ────────────────────────────────────────────────────── */

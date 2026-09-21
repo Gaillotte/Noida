@@ -28,6 +28,7 @@ PIN_STUB   = p11_pin_stub.c
 TESTS = \
     test_p11rv_mapping \
     test_function_table \
+    test_p11_session \
     test_ecdsa_decode \
     test_mechanism_resolve \
     test_memory \
@@ -64,6 +65,10 @@ test_function_table: test_function_table.c $(SRC)/ksp/ksp_main.c \
                      $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
                      $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_p11_session : the PKCS#11 session pool and PIN storage ───────────
+test_p11_session: test_p11_session.c $(SRC)/pkcs11/p11_session.c $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 # ── test_ecdsa_decode : P11_DecodeDerEcdsaSignature, P11_EcCoordSize ───────
 test_ecdsa_decode: test_ecdsa_decode.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)

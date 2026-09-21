@@ -348,6 +348,14 @@ typedef struct CK_TOKEN_INFO {
     CK_CHAR     utcTime[16];
 } CK_TOKEN_INFO;
 
+/* Session states (CK_SESSION_INFO.state). Values taken from the SoftHSM2
+ * submodule's own pkcs11.h, not from memory. */
+#define CKS_RO_PUBLIC_SESSION   (0UL)
+#define CKS_RO_USER_FUNCTIONS   (1UL)
+#define CKS_RW_PUBLIC_SESSION   (2UL)
+#define CKS_RW_USER_FUNCTIONS   (3UL)
+#define CKS_RW_SO_FUNCTIONS     (4UL)
+
 typedef struct CK_SESSION_INFO {
     CK_SLOT_ID  slotID;
     CK_STATE    state;
