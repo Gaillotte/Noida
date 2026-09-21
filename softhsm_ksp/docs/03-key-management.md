@@ -388,3 +388,41 @@ and secret — then frees the wrapper.
 place. The exception is an **imported public key**: `KSP_ImportKey` creates
 a session object and sets `bSessionObject = TRUE`, so `KSP_FreeKey` destroys
 it rather than leaking it into the session.
+
+---
+
+## Machine and user key scope
+
+CNG separates machine keys from user keys, selected with
+`NCRYPT_MACHINE_KEY_FLAG` on `NCryptCreatePersistedKey`, `NCryptOpenKey`
+and `NCryptEnumKeys`. PKCS#11 has no user concept inside a token, so the
+scope is encoded in `CKA_LABEL`:
+
+| Scope | Flag | `CKA_LABEL` for key `signing` |
+|-------|------|-------------------------------|
+| User (default) | none | `u/signing` |
+| Machine | `NCRYPT_MACHINE_KEY_FLAG` | `m/signing` |
+
+Before this, both scopes shared one namespace: a machine key and a user key
+of the same name were the same object, and creating one silently aliased
+the other.
+
+`NCryptEnumKeys` reports only the requested scope, and strips the prefix so
+names round-trip — a name it returns is a name `NCryptOpenKey` accepts.
+
+**Keys created before scoping** carry an unprefixed label. `NCryptOpenKey`
+tries the scoped name first and falls back to the bare name, so they keep
+working; enumeration shows them in the **user** scope, which is where the
+unflagged open finds them, so the two agree.
+
+### This is namespacing, not isolation
+
+> Anyone who can log into the token can read **either** scope. The prefix
+> keeps distinct keys distinct; it does **not** protect one caller's keys
+> from another.
+
+Real isolation needs an access-control model, and PKCS#11 offers none
+within a slot — a single user PIN grants the whole token. No amount of
+label work supplies one. If separation must be enforced rather than merely
+represented, use **separate tokens** and select between them with
+`SOFTHSM2_TOKEN_LABEL`, which gives each its own PIN.

@@ -107,6 +107,7 @@ typedef long SECURITY_STATUS;
 #define NCRYPT_CHAINING_MODE_PROPERTY   L"Chaining Mode"
 #define NCRYPT_INITIALIZATION_VECTOR    L"IV"
 #define NCRYPT_AUTH_TAG_LENGTH          L"AuthTagLength"
+#define NCRYPT_MACHINE_KEY_FLAG         0x00000020
 #define NCRYPT_PERSIST_ONLY_FLAG  0x40000000
 
 #define NCRYPT_ALLOW_SIGNING_FLAG       0x00000002
@@ -132,6 +133,16 @@ typedef long SECURITY_STATUS;
 static inline int wcscpy_s(wchar_t *dst, size_t n, const wchar_t *src) {
     if (!dst || n == 0) return 1;
     wcsncpy(dst, src, n - 1);
+    dst[n - 1] = L'\0';
+    return 0;
+}
+
+static inline int wcscat_s(wchar_t *dst, size_t n, const wchar_t *src) {
+    size_t used;
+    if (!dst || !src || n == 0) return 1;
+    used = wcslen(dst);
+    if (used >= n) return 1;
+    wcsncat(dst, src, n - used - 1);
     dst[n - 1] = L'\0';
     return 0;
 }

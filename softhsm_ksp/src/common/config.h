@@ -199,6 +199,21 @@
 /* Provider-level configuration, settable through NCryptSetProperty on the
  * provider handle. NCRYPT_PIN_PROPERTY is a standard CNG name; the token
  * selectors are this provider's own, because CNG has no notion of a slot. */
+/* Key scope prefixes applied to CKA_LABEL.
+ *
+ * CNG separates machine keys from user keys; PKCS#11 has no user concept
+ * within a token, so the scope is encoded in the label instead. A machine
+ * key named "signing" is stored as "m/signing" and a user key of the same
+ * name as "u/signing", so the two no longer collide.
+ *
+ * This is NAMESPACING, NOT ISOLATION. Anyone who can log into the token can
+ * read either namespace — the separation keeps distinct keys distinct, it
+ * does not protect one caller's keys from another. Real isolation needs an
+ * ACL model the backend does not have. See docs/03-key-management.md. */
+#define KSP_SCOPE_PREFIX_MACHINE  "m/"
+#define KSP_SCOPE_PREFIX_USER     "u/"
+#define KSP_SCOPE_PREFIX_LEN      2
+
 #define KSP_TOKEN_LABEL_PROPERTY  L"SoftHSM Token Label"
 #define KSP_SLOT_PROPERTY         L"SoftHSM Slot"
 

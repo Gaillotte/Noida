@@ -23,6 +23,7 @@ typedef struct _KSP_KEY {
     DWORD            dwKeyClass;                /* KSP_KEY_CLASS_ASYMMETRIC / _SYMMETRIC */
     CK_OBJECT_HANDLE hSecretKey;                /* Symmetric key object (AES/HMAC) */
     BOOL             bSessionObject;            /* TRUE = session object, destroy on FreeKey */
+    BOOL             bMachineKey;               /* NCRYPT_MACHINE_KEY_FLAG was set */
 
     /* Symmetric cipher state (AES) — set via NCryptSetProperty */
     WCHAR            szChainingMode[MAX_ALG_ID_LEN]; /* NCRYPT_CHAINING_MODE_PROPERTY */

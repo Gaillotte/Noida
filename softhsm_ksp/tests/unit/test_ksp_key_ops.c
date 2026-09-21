@@ -40,11 +40,27 @@ void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
  * CKO_SECRET_KEY exercises the symmetric path in KSP_OpenKey. */
 static CK_OBJECT_CLASS g_findableClass = CKO_PRIVATE_KEY;
 
+/* Labels the code under test asked for, in order, so a test can assert
+ * that the scoped name is tried before the legacy one. */
+static WCHAR g_aTried[8][128];
+static int   g_nTried = 0;
+/* When set, only this exact label resolves. NULL means any label does. */
+static const WCHAR *g_pszFindable = NULL;
+
+static void ResetFind(void) { g_nTried = 0; g_pszFindable = NULL; }
+
 CK_OBJECT_HANDLE P11_FindObjectByLabel(
     CK_SESSION_HANDLE h, CK_OBJECT_CLASS cls, LPCWSTR pszLabel)
 {
-    (void)h; (void)pszLabel;
+    (void)h;
+    if (pszLabel && g_nTried < 8) {
+        wcsncpy(g_aTried[g_nTried], pszLabel, 127);
+        g_aTried[g_nTried][127] = L'\0';
+        g_nTried++;
+    }
     if (P11Mock_GetConfig()->nKeyObjects <= 0)
+        return CK_INVALID_HANDLE;
+    if (g_pszFindable && pszLabel && wcscmp(pszLabel, g_pszFindable) != 0)
         return CK_INVALID_HANDLE;
 
     /* Public keys are always reported alongside a findable private key */
@@ -915,6 +931,110 @@ int main(void)
         n = KSP_EncodePublicExponent(0, buf);
         ASSERT_EQ("0 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
         ASSERT_EQ("0 byte 0 = 0x00", (CK_ULONG)buf[0], (CK_ULONG)0x00);
+    }
+
+    /* ── Machine vs user key scope (LIFE-08) ──────────────────────────── */
+    TEST_SUITE("Key scope — machine vs user");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* A user key's CKA_LABEL carries the "u/" prefix. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"mykey",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("Create a user-scope key", ss);
+        ASSERT_STR("Label is prefixed u/",
+            P11Mock_GetConfig()->lastLabel, "u/mykey");
+        if (h) KSP_FreeKey(hProv, h);
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* The same name in machine scope is a different object. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"mykey",
+                                    AT_SIGNATURE, NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Create a machine-scope key of the same name", ss);
+        ASSERT_STR("Label is prefixed m/",
+            P11Mock_GetConfig()->lastLabel, "m/mykey");
+        if (h) {
+            ASSERT("Key records its scope",
+                   ((KSP_KEY *)(ULONG_PTR)h)->bMachineKey);
+            KSP_FreeKey(hProv, h);
+        }
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* Symmetric keys take the same treatment. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"aeskey",
+                                    AT_KEYEXCHANGE, NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Create a machine-scope AES key", ss);
+        ASSERT_STR("AES label is prefixed m/",
+            P11Mock_GetConfig()->lastLabel, "m/aeskey");
+        if (h) KSP_FreeKey(hProv, h);
+    }
+
+    /* Lookup order: the scoped name first. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ss = KSP_OpenKey(hProv, &h, L"mykey", AT_SIGNATURE, 0);
+        ASSERT_OK("Open without the flag", ss);
+        ASSERT("A label was looked up", g_nTried > 0);
+        ASSERT_WSTR("User scope is tried first", g_aTried[0], L"u/mykey");
+        if (h) KSP_FreeKey(hProv, h);
+
+        ResetFind();
+        h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"mykey", AT_SIGNATURE,
+                         NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Open with NCRYPT_MACHINE_KEY_FLAG", ss);
+        ASSERT_WSTR("Machine scope is tried first", g_aTried[0], L"m/mykey");
+        if (h) {
+            ASSERT("Opened key records machine scope",
+                   ((KSP_KEY *)(ULONG_PTR)h)->bMachineKey);
+            KSP_FreeKey(hProv, h);
+        }
+    }
+
+    /* Keys created before scoping have no prefix and must still open. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        g_pszFindable = L"legacykey";      /* only the unprefixed label */
+
+        ss = KSP_OpenKey(hProv, &h, L"legacykey", AT_SIGNATURE, 0);
+        ASSERT_OK("Legacy unprefixed key still opens", ss);
+        ASSERT("Scoped name was tried first", g_nTried >= 2);
+        ASSERT_WSTR("  first the scoped name", g_aTried[0], L"u/legacykey");
+        ASSERT_WSTR("  then the legacy name", g_aTried[1], L"legacykey");
+        if (h) KSP_FreeKey(hProv, h);
+        g_pszFindable = NULL;
+    }
+
+    /* A name present in neither scope is still not found. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ss = KSP_OpenKey(hProv, &h, L"nosuchkey", AT_SIGNATURE, 0);
+        ASSERT_EQ("Missing key → NTE_BAD_KEYSET",
+            ss, (SECURITY_STATUS)NTE_BAD_KEYSET);
     }
 
     KSP_FreeProvider(hProv);

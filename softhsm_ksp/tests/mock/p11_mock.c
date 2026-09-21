@@ -442,10 +442,28 @@ static CK_RV mock_DecryptVerifyUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR ep,
     (void)h; (void)ep; (void)el; (void)p; (void)pl; return CKR_OK;
 }
 
+/* Record CKA_LABEL from a creation template. */
+static void capture_label(CK_ATTRIBUTE_PTR t, CK_ULONG n)
+{
+    CK_ULONG i;
+    if (!t) return;
+    for (i = 0; i < n; i++) {
+        if (t[i].type == CKA_LABEL && t[i].pValue && t[i].ulValueLen > 0) {
+            size_t cb = t[i].ulValueLen;
+            if (cb >= sizeof(g_cfg.lastLabel))
+                cb = sizeof(g_cfg.lastLabel) - 1;
+            memcpy(g_cfg.lastLabel, t[i].pValue, cb);
+            g_cfg.lastLabel[cb] = '\0';
+            return;
+        }
+    }
+}
+
 static CK_RV mock_GenerateKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     CK_ATTRIBUTE_PTR t, CK_ULONG n, CK_OBJECT_HANDLE_PTR ph) {
-    (void)h; (void)t; (void)n;
+    (void)h;
     g_calls.nGenerateKey++;
+    capture_label(t, n);
     if (m) g_cfg.lastGenerateMech = m->mechanism;
     if (g_cfg.rv_GenerateKey != CKR_OK) return g_cfg.rv_GenerateKey;
     if (ph) *ph = 0xFF;
@@ -458,8 +476,10 @@ static CK_RV mock_GenerateKeyPair(
     CK_ATTRIBUTE_PTR privT, CK_ULONG nPriv,
     CK_OBJECT_HANDLE_PTR phPub, CK_OBJECT_HANDLE_PTR phPriv)
 {
-    (void)h; (void)m; (void)pubT; (void)nPub; (void)privT; (void)nPriv;
+    (void)h;
     g_calls.nGenerateKeyPair++;
+    capture_label(privT, nPriv);
+    if (g_cfg.lastLabel[0] == '\0') capture_label(pubT, nPub);
     if (m) g_cfg.lastGenerateKeyPairMech = m->mechanism;
     if (g_cfg.rv_GenerateKeyPair != CKR_OK) return g_cfg.rv_GenerateKeyPair;
     *phPub  = 0x20;
@@ -560,6 +580,7 @@ void P11Mock_Reset(void)
     g_cfg.rv_GetAttributeValue = CKR_OK;
     g_cfg.rv_SignInit        = CKR_OK;
     g_cfg.rv_GetSessionInfo  = CKR_OK;
+    g_cfg.lastLabel[0]       = '\0';
     g_cfg.sessionState       = CKS_RW_USER_FUNCTIONS;
     g_cfg.rv_Sign            = CKR_OK;
     g_cfg.rv_DecryptInit     = CKR_OK;

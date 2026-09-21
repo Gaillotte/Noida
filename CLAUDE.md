@@ -57,7 +57,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 16 test suites, 1004 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 16 test suites, 1022 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -377,6 +377,11 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   nothing is an error, never a fallback.
 - Token selection is read-only through `NCryptSetProperty` — the session
   pool is bound to a slot by the time a provider handle exists
+- `NCRYPT_MACHINE_KEY_FLAG` scopes keys by a `CKA_LABEL` prefix (`m/`, `u/`).
+  **Namespacing, not isolation** — anyone who can log into the token reads
+  both scopes. Use separate tokens if separation must be enforced.
+- Symmetric key material can be imported (`BCRYPT_KEY_DATA_BLOB`) but never
+  exported: every key is `CKA_EXTRACTABLE=FALSE`
 - RSA sizes below `KSP_RSA_MIN_BITS` (2048 by default), above 16384, or not a
   multiple of 64 → `NTE_BAD_LEN`
 - AES sizes outside {128, 192, 256} → `NTE_BAD_LEN`
@@ -429,8 +434,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 16 suites, 1004 assertions
-make coverage      # → coverage_html/index.html (90.4 % lines, 100 % functions)
+make run           # 16 suites, 1022 assertions
+make coverage      # → coverage_html/index.html (90.0 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

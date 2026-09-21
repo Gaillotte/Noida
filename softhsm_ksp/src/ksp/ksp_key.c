@@ -24,6 +24,69 @@ static int WideToUtf8Label(LPCWSTR pwsz, char *pszBuf, int cbBuf)
     return WideCharToMultiByte(CP_UTF8, 0, pwsz, -1, pszBuf, cbBuf, NULL, NULL);
 }
 
+/* Wide-string form of the scoped label, for lookups by name.
+ * Produces L"m/name" or L"u/name". */
+static void BuildScopedNameW(LPCWSTR pszName, BOOL bMachine,
+                             LPWSTR pszOut, size_t cchOut)
+{
+    pszOut[0] = bMachine ? L'm' : L'u';
+    pszOut[1] = L'/';
+    pszOut[2] = L'\0';
+    wcscat_s(pszOut, cchOut, pszName);
+}
+
+/* Find a key object by name within a scope.
+ *
+ * Keys created before scoping existed carry an unprefixed label. Looking
+ * only for the scoped name would orphan every one of them, so an
+ * unprefixed lookup is tried as a fallback. New keys are always written
+ * with a prefix, so this path only ever finds legacy objects. */
+static CK_OBJECT_HANDLE FindScopedObject(CK_SESSION_HANDLE hSession,
+                                         CK_OBJECT_CLASS   ulClass,
+                                         LPCWSTR           pszName,
+                                         BOOL              bMachine)
+{
+    WCHAR            wszScoped[MAX_KEY_LABEL_LEN + KSP_SCOPE_PREFIX_LEN + 1];
+    CK_OBJECT_HANDLE hObj;
+
+    BuildScopedNameW(pszName, bMachine, wszScoped,
+                     sizeof(wszScoped) / sizeof(wszScoped[0]));
+
+    hObj = P11_FindObjectByLabel(hSession, ulClass, wszScoped);
+    if (hObj != CK_INVALID_HANDLE)
+        return hObj;
+
+    return P11_FindObjectByLabel(hSession, ulClass, pszName);
+}
+
+/* Build the CKA_LABEL for a key, prefixed with its scope.
+ *
+ * CNG keeps machine keys and user keys in separate stores. PKCS#11 has no
+ * user concept inside a token, so the scope lives in the label: "m/name"
+ * or "u/name". Before this, both scopes shared one namespace and a machine
+ * key silently aliased a user key of the same name.
+ *
+ * Returns the label length excluding the terminator, or -1. */
+static int BuildScopedLabel(const KSP_KEY *pKey, char *pszBuf, int cbBuf)
+{
+    const char *pszPrefix = pKey->bMachineKey ? KSP_SCOPE_PREFIX_MACHINE
+                                              : KSP_SCOPE_PREFIX_USER;
+    int n;
+
+    if (cbBuf <= KSP_SCOPE_PREFIX_LEN)
+        return -1;
+
+    memcpy(pszBuf, pszPrefix, KSP_SCOPE_PREFIX_LEN);
+
+    n = WideToUtf8Label(pKey->szKeyName,
+                        pszBuf + KSP_SCOPE_PREFIX_LEN,
+                        cbBuf - KSP_SCOPE_PREFIX_LEN);
+    if (n <= 0)
+        return -1;
+
+    return KSP_SCOPE_PREFIX_LEN + n - 1;   /* drop the terminator */
+}
+
 /* Encode an exponent as a minimal-length big-endian byte string, the form
  * CKA_PUBLIC_EXPONENT expects. 65537 becomes {01 00 01}; 3 becomes {03}.
  * Returns the number of bytes written into pbOut (at most 4). */
@@ -143,10 +206,9 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
     CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
     CK_OBJECT_CLASS   classPub  = CKO_PUBLIC_KEY;
 
-    nLabelLen = WideToUtf8Label(pKey->szKeyName, szLabel, sizeof(szLabel));
+    nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
         return NTE_INVALID_PARAMETER;
-    nLabelLen--; /* Exclude the null terminator */
 
     cbPubExp = KSP_EncodePublicExponent(pKey->dwPublicExponent
                                             ? pKey->dwPublicExponent
@@ -221,10 +283,9 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
     CK_BBOOL bDerive = KSP_IsEcdhAlg(pKey->szAlgId) ? CK_TRUE : CK_FALSE;
     CK_BBOOL bSign   = bDerive ? CK_FALSE : CK_TRUE;
 
-    nLabelLen = WideToUtf8Label(pKey->szKeyName, szLabel, sizeof(szLabel));
+    nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
         return NTE_INVALID_PARAMETER;
-    nLabelLen--;
 
     /* Select the DER OID based on the curve (P-256 / P-384 / P-521) */
     pbOid = P11_GetCurveOid(pKey->szAlgId, &cbOid);
@@ -294,10 +355,9 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
     const char       *pbOid;
     CK_ULONG          cbOid;
 
-    nLabelLen = WideToUtf8Label(pKey->szKeyName, szLabel, sizeof(szLabel));
+    nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
         return NTE_INVALID_PARAMETER;
-    nLabelLen--;
 
     pbOid = P11_GetCurveOid(pKey->szAlgId, &cbOid);
     if (!pbOid)
@@ -365,10 +425,9 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
     CK_ULONG          ulValueLen;
     BOOL              bAes = (_wcsicmp(pKey->szAlgId, ALG_AES) == 0);
 
-    nLabelLen = WideToUtf8Label(pKey->szKeyName, szLabel, sizeof(szLabel));
+    nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
         return NTE_INVALID_PARAMETER;
-    nLabelLen--;
 
     memset(&mech, 0, sizeof(mech));
 
@@ -452,7 +511,8 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
     CK_ULONG          ulModBits = 0;
     SECURITY_STATUS   ss;
 
-    UNREFERENCED_PARAMETER(dwFlags);
+    BOOL bMachine = (dwFlags & NCRYPT_MACHINE_KEY_FLAG) != 0;
+
     LOG_ENTER("KSP_OpenKey");
 
     if (!KSP_IsValidProvider(hProvider) || !phKey || !pszKeyName) {
@@ -467,11 +527,11 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
         return ss;
     }
 
-    hPriv = P11_FindObjectByLabel(hSession, CKO_PRIVATE_KEY, pszKeyName);
+    hPriv = FindScopedObject(hSession, CKO_PRIVATE_KEY, pszKeyName, bMachine);
     if (hPriv == CK_INVALID_HANDLE) {
         /* No private key — this may be a symmetric (secret) key */
         CK_OBJECT_HANDLE hSecret =
-            P11_FindObjectByLabel(hSession, CKO_SECRET_KEY, pszKeyName);
+            FindScopedObject(hSession, CKO_SECRET_KEY, pszKeyName, bMachine);
 
         if (hSecret == CK_INVALID_HANDLE) {
             P11_ReleaseSession(hSession);
@@ -493,6 +553,7 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
         pKey->bFinalized = TRUE;
         pKey->dwKeyClass = KSP_KEY_CLASS_SYMMETRIC;
         pKey->dwKeySpec  = AT_KEYEXCHANGE;
+        pKey->bMachineKey = bMachine;
         wcscpy_s(pKey->szKeyName, MAX_KEY_LABEL_LEN, pszKeyName);
 
         P11_GetUlongAttr(hSession, hSecret, CKA_KEY_TYPE, &ulKeyType);
@@ -518,7 +579,7 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
         return ERROR_SUCCESS;
     }
 
-    hPub = P11_FindObjectByLabel(hSession, CKO_PUBLIC_KEY, pszKeyName);
+    hPub = FindScopedObject(hSession, CKO_PUBLIC_KEY, pszKeyName, bMachine);
 
     /* Determine the key type */
     P11_GetUlongAttr(hSession, hPriv, CKA_KEY_TYPE, &ulKeyType);
@@ -535,6 +596,7 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
     pKey->hSecretKey = CK_INVALID_HANDLE;
     pKey->slotId    = pCtx->slotId;
     pKey->bFinalized = TRUE;
+    pKey->bMachineKey = bMachine;
     pKey->dwKeyClass = KSP_KEY_CLASS_ASYMMETRIC;
     pKey->dwKeySpec  = (dwLegacyKeySpec == AT_KEYEXCHANGE)
                        ? AT_KEYEXCHANGE : AT_SIGNATURE;
@@ -639,6 +701,9 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     pKey->hSecretKey = CK_INVALID_HANDLE;
     pKey->slotId     = pCtx->slotId;
     pKey->bFinalized = FALSE;
+    /* CNG keeps machine and user keys in separate stores; here the scope
+     * becomes a CKA_LABEL prefix. See BuildScopedLabel. */
+    pKey->bMachineKey = (dwFlags & NCRYPT_MACHINE_KEY_FLAG) != 0;
     pKey->dwKeyClass = KSP_IsSymmetricAlg(pszAlgId)
                        ? KSP_KEY_CLASS_SYMMETRIC : KSP_KEY_CLASS_ASYMMETRIC;
 
@@ -818,7 +883,6 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
     SECURITY_STATUS   ss;
 
     UNREFERENCED_PARAMETER(pszScope);
-    UNREFERENCED_PARAMETER(dwFlags);
     LOG_ENTER("KSP_EnumKeys");
 
     if (!KSP_IsValidProvider(hProvider) || !ppKeyName || !ppEnumState) {
@@ -913,6 +977,43 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
         }
 
         szLabel[attr.ulValueLen] = '\0';
+
+        /* Report only keys in the scope the caller asked for, and report
+         * them under the name the caller knows — without the prefix.
+         *
+         * A label with no prefix predates scoping. Those are shown in the
+         * user scope, which is where an unflagged NCryptOpenKey will find
+         * them, so enumeration and opening agree. */
+        {
+            const char *pszWanted = (dwFlags & NCRYPT_MACHINE_KEY_FLAG)
+                                    ? KSP_SCOPE_PREFIX_MACHINE
+                                    : KSP_SCOPE_PREFIX_USER;
+            BOOL bHasPrefix =
+                (strncmp(szLabel, KSP_SCOPE_PREFIX_MACHINE,
+                         KSP_SCOPE_PREFIX_LEN) == 0) ||
+                (strncmp(szLabel, KSP_SCOPE_PREFIX_USER,
+                         KSP_SCOPE_PREFIX_LEN) == 0);
+
+            if (bHasPrefix) {
+                if (strncmp(szLabel, pszWanted, KSP_SCOPE_PREFIX_LEN) != 0) {
+                    /* Another scope's key: skip it and let the caller ask
+                     * again rather than returning it under a name that
+                     * would not open. */
+                    LOG_LEAVE("KSP_EnumKeys", ERROR_SUCCESS);
+                    return KSP_EnumKeys(hProvider, pszScope, ppKeyName,
+                                        ppEnumState, dwFlags);
+                }
+                memmove(szLabel, szLabel + KSP_SCOPE_PREFIX_LEN,
+                        strlen(szLabel + KSP_SCOPE_PREFIX_LEN) + 1);
+            } else if (dwFlags & NCRYPT_MACHINE_KEY_FLAG) {
+                /* Legacy unprefixed key, and the caller wants machine
+                 * scope: not a match. */
+                LOG_LEAVE("KSP_EnumKeys", ERROR_SUCCESS);
+                return KSP_EnumKeys(hProvider, pszScope, ppKeyName,
+                                    ppEnumState, dwFlags);
+            }
+        }
+
         MultiByteToWideChar(CP_UTF8, 0, szLabel, -1,
                             wszLabel, MAX_KEY_LABEL_LEN);
 

@@ -77,6 +77,10 @@ typedef struct _P11_MOCK_CONFIG {
     CK_MECHANISM_TYPE lastGenerateKeyPairMech;
     /* Session state reported by C_GetSessionInfo, and its return value.
      * Used to simulate a token that logged out under the provider. */
+    /* CKA_LABEL of the last object created or generated, as a NUL
+     * terminated UTF-8 string. Lets a test assert the scope prefix. */
+    char       lastLabel[128];
+
     CK_ULONG   sessionState;
     CK_RV      rv_GetSessionInfo;
 

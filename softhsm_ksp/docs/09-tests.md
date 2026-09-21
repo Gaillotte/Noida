@@ -24,8 +24,8 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         16 test suites · 1004 assertions · gcov coverage         │
-   │         Lines: 90.4 %    Functions: 100 %                       │
+   │         16 test suites · 1022 assertions · gcov coverage         │
+   │         Lines: 90.0 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -79,7 +79,7 @@ make syntax-check # parses the Windows-only integration test
 | Mechanism resolution | `test_mechanism_resolve.c` | 35 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
 | Export blobs | `test_export_blobs.c` | 52 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
 | KSP provider | `test_ksp_provider.c` | 112 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
-| KSP key operations | `test_ksp_key_ops.c` | 154 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
+| KSP key operations | `test_ksp_key_ops.c` | 172 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
 | KSP crypto | `test_ksp_crypto.c` | 120 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
 | KSP key properties | `test_ksp_key_props.c` | 87 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
 | Memory | `test_memory.c` | 21 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
@@ -88,7 +88,7 @@ make syntax-check # parses the Windows-only integration test
 | ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **1004** | |
+| **Total** | | **1022** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the
@@ -97,14 +97,11 @@ work described in `docs/11-market-comparison.md`, and 780 to 903 is Phase 0
 of `docs/13-roadmap.md` — chiefly `test_function_table.c`, which covers
 `ksp_main.c` for the first time, and the algorithm-discovery entry points.
 
-### Coverage (gcov / gcovr — 2026-09-21)
+### Coverage (gcov / gcovr — 2026-09-22)
 
 | Module | Lines | Hit | Line % | Functions | Hit | Func % |
 |--------|------:|----:|:------:|----------:|----:|:------:|
-| `common/` | 38 | 33 | **86.8 %** | 7 | 7 | **100 %** |
-| `ksp/` | 1359 | 1222 | **89.9 %** | 47 | 47 | **100 %** |
-| `pkcs11/` | 335 | 307 | **91.6 %** | 14 | 14 | **100 %** |
-| **Total** | **1732** | **1562** | **90.2 %** | **68** | **68** | **100 %** |
+| **Total** | **2002** | **1802** | **90.0 %** | **83** | **83** | **100 %** |
 
 > Full HTML report: `tests/unit/coverage_html/index.html`
 
