@@ -137,6 +137,13 @@
 #define ALG_AES          L"AES"
 #define ALG_HMAC_SHA1    L"HMAC_SHA1"
 #define ALG_HMAC_SHA224  L"HMAC_SHA224"
+
+/* CNG defines no SHA-224 algorithm identifier — Windows has no SHA-224 at
+ * all — so there is no BCRYPT_SHA224_ALGORITHM to compare against. This is
+ * our own name for it, accepted by KSP_SignHash and KSP_Decrypt as a
+ * provider extension. No standard CNG caller will ever send it; only an
+ * application coded against this KSP can reach SHA-224. */
+#define KSP_SHA224_ALGORITHM  L"SHA224"
 #define ALG_HMAC_SHA256  L"HMAC_SHA256"
 #define ALG_HMAC_SHA384  L"HMAC_SHA384"
 #define ALG_HMAC_SHA512  L"HMAC_SHA512"

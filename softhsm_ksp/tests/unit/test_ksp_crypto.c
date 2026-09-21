@@ -209,7 +209,7 @@ int main(void)
     P11Mock_GetConfig()->cbSignature = 256;
 
     BCRYPT_PSS_PADDING_INFO pssInfoSha224;
-    pssInfoSha224.pszAlgId = BCRYPT_SHA224_ALGORITHM;
+    pssInfoSha224.pszAlgId = KSP_SHA224_ALGORITHM;
     pssInfoSha224.cbSalt   = 28;
 
     cbResult = 0;
@@ -305,12 +305,12 @@ int main(void)
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* Unfinalized key → NTE_KEY_DOES_NOT_EXIST */
+    /* Unfinalized key → NTE_INVALID_HANDLE */
     NCRYPT_KEY_HANDLE hUnfin = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, FALSE);
     ss = KSP_SignHash(hProv, hUnfin, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_EQ("Unfinalized key → NTE_KEY_DOES_NOT_EXIST",
-        ss, (SECURITY_STATUS)NTE_KEY_DOES_NOT_EXIST);
+    ASSERT_EQ("Unfinalized key → NTE_INVALID_HANDLE",
+        ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
     KSP_Free((void *)(ULONG_PTR)hUnfin);
 
     /* Unknown mechanism */
@@ -443,8 +443,8 @@ int main(void)
     NCRYPT_KEY_HANDLE hDecUnfin = make_test_key(ALG_RSA, 2048, AT_KEYEXCHANGE, FALSE);
     ss = KSP_Decrypt(hProv, hDecUnfin, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Unfinalized key → NTE_KEY_DOES_NOT_EXIST",
-        ss, (SECURITY_STATUS)NTE_KEY_DOES_NOT_EXIST);
+    ASSERT_EQ("Unfinalized key → NTE_INVALID_HANDLE",
+        ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
     KSP_Free((void *)(ULONG_PTR)hDecUnfin);
 
     /* Invalid parameters */

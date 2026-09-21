@@ -5,7 +5,8 @@ Key Storage Providers surveyed in
 [11 — CNG KSP market comparison](./11-market-comparison.md), and in what
 order the work has to happen.
 
-*Written: September 2026. Supersedes nothing; complements the gap analysis
+*Written: September 2026. **Phase 0 is done** — see §3 for what that changed
+and what it could not settle. Complements the gap analysis
 in [`feature-matrix.csv`](./feature-matrix.csv) and
 [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf).*
 
@@ -13,9 +14,12 @@ in [`feature-matrix.csv`](./feature-matrix.csv) and
 
 ## Headline
 
-**The DLL has never been compiled for Windows.**
+**The DLL had never been compiled for Windows.**
 
-Everything else in this document is downstream of that. The feature matrix
+Everything else in this document is downstream of that. Phase 0 has since
+fixed all six root causes: nine of the ten source files now cross-compile
+clean, and CI enforces it. The tenth, `ksp_main.c`, needs a header that
+only Windows has — the CI `windows` job is what will confirm it. The feature matrix
 records 49 of 99 capabilities as covered, and 780 unit assertions pass at
 89.8 % line coverage — but all of it is measured on Linux, against a
 hand-written stand-in for the Windows headers. On the platform the product
@@ -113,10 +117,41 @@ The roadmap below is ordered for those two targets.
 
 ## 3. Phases
 
-### Phase 0 — Make it real
+### Phase 0 — Make it real ✅ done
 
-**Blocks every other phase. Until this lands, no other number in the project
-is verified.**
+**Blocked every other phase. Completed September 2026.**
+
+| Done | Detail |
+|------|--------|
+| Defects 1–6 fixed | See the table below for each |
+| Function table by name | Designated initialisers; the SDK header assigns the slots |
+| `IsAlgSupported`, `EnumAlgorithms` | Implemented — closes `LIFE-06` and `LIFE-07` |
+| `VerifySignature` | Stub returning `NTE_NOT_SUPPORTED`; the slot is no longer absent |
+| SHA-224 | Kept, as the provider extension `KSP_SHA224_ALGORITHM` |
+| Mock drift guard | `tests/check_mock_drift.py`, run in CI |
+| CI | `.github/workflows/ci.yml` — three jobs |
+
+| Defect | Fix |
+|--------|-----|
+| 1 `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` | `ksp_main.h` includes `<ncrypt_provider.h>`; table uses designated initialisers |
+| 2 `BCRYPT_SHA224_ALGORITHM` | Replaced by `KSP_SHA224_ALGORITHM` in `config.h`, documented as non-CNG |
+| 3 `NTE_KEY_DOES_NOT_EXIST` | Replaced by `NTE_INVALID_HANDLE` — the same value the mock was aliasing |
+| 4 `NCRYPT_IMPL_HARDWARE_FLAG` | Corrected to `0x1`; the provider now reports `NCRYPT_IMPL_SOFTWARE_FLAG`, which is both truthful and the same value it always emitted |
+| 5 `NTE_BAD_KEYSET_PARAM` | Corrected to `0x8009001F` |
+| 6 Missing includes | New `src/common/ksp_windows.h` holds the include policy; every header uses it |
+
+Unit tests went 780 → **903 assertions** across 14 → **15 suites**, coverage
+89.8 % → **90.2 %** lines at 100 % functions. The new suite,
+`test_function_table.c`, covers `ksp_main.c` — which nothing had ever
+compiled, on any platform.
+
+**What Phase 0 could not settle.** `ksp_main.c` still cannot be compiled
+here: `<ncrypt_provider.h>` ships with Windows, not with mingw-w64. The CI
+`windows` job builds it with MSVC and logs whether that header is present in
+the hosted runner's Windows Kits, which answers the question on the first
+run. Until then `BUILD-01` and `TABLE-01` stay **Partial**, not Covered.
+
+What the phase originally called for:
 
 - Fix defects 1–6 from §1.2.
 - Build `ksp_main.c` against the real `ncrypt_provider.h` and let the
@@ -140,15 +175,16 @@ effect — both are slots in it, not registry lookups as the matrix
 originally claimed.
 
 **Exit criterion:** `softhsm_ksp.dll` builds clean at `/W3 /WX`, loads under
-`NCryptOpenStorageProvider`, and CI enforces both.
+`NCryptOpenStorageProvider`, and CI enforces both. The first two remain
+unproven until the CI `windows` job has run; the third is in place.
 
 ### Phase 1 — Interface parity
 
 The table-stakes items every commercial provider has and this one does not.
+`LIFE-06` and `LIFE-07` were on this list and closed in Phase 0.
 
 | ID | Item | Note |
 |----|------|------|
-| `LIFE-06` / `LIFE-07` | `EnumAlgorithms`, `IsAlgSupported` | Free after Phase 0 |
 | `LIFE-08` | Machine vs user key scope | All providers |
 | `OPS-04` | Multiple slots / tokens | All commercial providers; today only the first token-present slot is used |
 | `OPS-09` | PIN caching / re-login | All commercial providers |

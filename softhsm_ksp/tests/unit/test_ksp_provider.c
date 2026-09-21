@@ -71,7 +71,7 @@ int main(void)
     ss = KSP_OpenProvider(&hBad, KSP_PROVIDER_NAME, 0);
     ASSERT_EQ("P11 init fails → NTE_PROVIDER_DLL_FAIL",
         ss, (SECURITY_STATUS)NTE_PROVIDER_DLL_FAIL);
-    ASSERT_EQ("hBad reste 0", hBad, (NCRYPT_PROV_HANDLE)0);
+    ASSERT_EQ("hBad remains 0", hBad, (NCRYPT_PROV_HANDLE)0);
     g_p11InitStatus = ERROR_SUCCESS;
 
     /* ── Suite 2 : FreeProvider ─────────────────────────────────────────── */
@@ -126,8 +126,13 @@ int main(void)
     ss = KSP_GetProviderProperty(hProv, NCRYPT_IMPL_TYPE_PROPERTY,
         (PBYTE)&dwVal, sizeof dwVal, &cbResult, 0);
     ASSERT_OK("IMPL_TYPE → OK", ss);
-    ASSERT("IMPL_HARDWARE_FLAG set",
-           (dwVal & NCRYPT_IMPL_HARDWARE_FLAG) != 0);
+    /* SoftHSM2 is a software token, so the provider reports SOFTWARE.
+     * The emitted value is unchanged from before — NCRYPT_IMPL_HARDWARE_FLAG
+     * used to be mis-defined as 0x2, which is the SOFTWARE flag's value. */
+    ASSERT("IMPL_SOFTWARE_FLAG set",
+           (dwVal & NCRYPT_IMPL_SOFTWARE_FLAG) != 0);
+    ASSERT("IMPL_HARDWARE_FLAG not set",
+           (dwVal & NCRYPT_IMPL_HARDWARE_FLAG) == 0);
 
     /* Buffer too small for NAME */
     ss = KSP_GetProviderProperty(hProv, NCRYPT_NAME_PROPERTY,
@@ -192,6 +197,133 @@ int main(void)
         NULL, 0, &cbOp, 0);
     ASSERT_EQ("GetOperationProperty → NTE_NOT_SUPPORTED",
         ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+    /* ── Suite : algorithm discovery ──────────────────────────────────── */
+    TEST_SUITE("KSP_IsAlgSupported / KSP_EnumAlgorithms");
+
+    /* Only algorithms with a real CNG identifier are published. */
+    ASSERT_OK("RSA supported",
+        KSP_IsAlgSupported(hProv, ALG_RSA, 0));
+    ASSERT_OK("ECDSA_P256 supported",
+        KSP_IsAlgSupported(hProv, ALG_ECDSA_P256, 0));
+    ASSERT_OK("ECDSA_P521 supported",
+        KSP_IsAlgSupported(hProv, ALG_ECDSA_P521, 0));
+    ASSERT_OK("ECDH_P384 supported",
+        KSP_IsAlgSupported(hProv, ALG_ECDH_P384, 0));
+    ASSERT_OK("AES supported",
+        KSP_IsAlgSupported(hProv, ALG_AES, 0));
+    ASSERT_OK("Algorithm match is case-insensitive",
+        KSP_IsAlgSupported(hProv, L"rsa", 0));
+
+    /* These work through the provider, but CNG has no identifier for them,
+     * so they are deliberately not advertised. */
+    ASSERT_EQ("EDDSA_ED25519 not advertised",
+        KSP_IsAlgSupported(hProv, ALG_EDDSA_ED25519, 0),
+        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    ASSERT_EQ("HMAC_SHA256 not advertised",
+        KSP_IsAlgSupported(hProv, ALG_HMAC_SHA256, 0),
+        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    ASSERT_EQ("ECDSA_SECP256K1 not advertised",
+        KSP_IsAlgSupported(hProv, ALG_ECDSA_SECP256K1, 0),
+        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    ASSERT_EQ("Unknown algorithm → NTE_NOT_SUPPORTED",
+        KSP_IsAlgSupported(hProv, L"NOT_AN_ALGORITHM", 0),
+        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    ASSERT_EQ("pszAlgId=NULL → NTE_INVALID_PARAMETER",
+        KSP_IsAlgSupported(hProv, NULL, 0),
+        (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    ASSERT_EQ("Invalid provider → NTE_INVALID_HANDLE",
+        KSP_IsAlgSupported(0, ALG_RSA, 0),
+        (SECURITY_STATUS)NTE_INVALID_HANDLE);
+
+    {
+        NCryptAlgorithmName *pAlgs = NULL;
+        DWORD  cAlgs = 0;
+        DWORD  i;
+        BOOL   bFoundRsa = FALSE;
+        BOOL   bFoundAes = FALSE;
+
+        /* 0 means every operation class. */
+        ss = KSP_EnumAlgorithms(hProv, 0, &cAlgs, &pAlgs, 0);
+        ASSERT_OK("EnumAlgorithms(all) → OK", ss);
+        ASSERT("At least RSA, three ECDSA, three ECDH and AES", cAlgs >= 8);
+        ASSERT_NOTNULL("Algorithm list returned", pAlgs);
+
+        for (i = 0; i < cAlgs; i++) {
+            ASSERT_NOTNULL("  name is non-NULL", pAlgs[i].pszName);
+            ASSERT_EQ("  class is key storage",
+                pAlgs[i].dwClass, (DWORD)NCRYPT_KEY_STORAGE_INTERFACE);
+            ASSERT("  at least one operation set",
+                pAlgs[i].dwAlgOperations != 0);
+            if (wcscmp(pAlgs[i].pszName, ALG_RSA) == 0) bFoundRsa = TRUE;
+            if (wcscmp(pAlgs[i].pszName, ALG_AES) == 0) bFoundAes = TRUE;
+        }
+        ASSERT("RSA present in the list", bFoundRsa);
+        ASSERT("AES present in the list", bFoundAes);
+        KSP_FreeBuffer(pAlgs);
+    }
+    {
+        /* Filtering by operation class. */
+        NCryptAlgorithmName *pAlgs = NULL;
+        DWORD cAlgs = 0, i;
+
+        ss = KSP_EnumAlgorithms(hProv, NCRYPT_SECRET_AGREEMENT_OPERATION,
+                                &cAlgs, &pAlgs, 0);
+        ASSERT_OK("EnumAlgorithms(secret agreement) → OK", ss);
+        ASSERT_EQ("Exactly the three ECDH curves", cAlgs, 3U);
+        for (i = 0; i < cAlgs; i++)
+            ASSERT("  each carries the secret-agreement operation",
+                (pAlgs[i].dwAlgOperations &
+                 NCRYPT_SECRET_AGREEMENT_OPERATION) != 0);
+        KSP_FreeBuffer(pAlgs);
+
+        ss = KSP_EnumAlgorithms(hProv, NCRYPT_CIPHER_OPERATION,
+                                &cAlgs, &pAlgs, 0);
+        ASSERT_OK("EnumAlgorithms(cipher) → OK", ss);
+        ASSERT_EQ("Only AES is a cipher", cAlgs, 1U);
+        ASSERT_WSTR("  and it is AES", pAlgs[0].pszName, ALG_AES);
+        KSP_FreeBuffer(pAlgs);
+
+        /* RSA signs and decrypts, so it appears under both classes. */
+        ss = KSP_EnumAlgorithms(hProv,
+                NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION, &cAlgs, &pAlgs, 0);
+        ASSERT_OK("EnumAlgorithms(asymmetric encryption) → OK", ss);
+        ASSERT_EQ("Only RSA decrypts", cAlgs, 1U);
+        ASSERT_WSTR("  and it is RSA", pAlgs[0].pszName, ALG_RSA);
+        KSP_FreeBuffer(pAlgs);
+
+        /* An operation class this provider implements for no algorithm. */
+        ss = KSP_EnumAlgorithms(hProv, NCRYPT_RNG_OPERATION,
+                                &cAlgs, &pAlgs, 0);
+        ASSERT_OK("EnumAlgorithms(RNG) → OK", ss);
+        ASSERT_EQ("No RNG algorithms", cAlgs, 0U);
+        ASSERT_NULL("List is NULL when empty", pAlgs);
+    }
+    {
+        NCryptAlgorithmName *pAlgs = NULL;
+        DWORD cAlgs = 0;
+
+        ASSERT_EQ("pdwAlgCount=NULL → NTE_INVALID_PARAMETER",
+            KSP_EnumAlgorithms(hProv, 0, NULL, &pAlgs, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        ASSERT_EQ("ppAlgList=NULL → NTE_INVALID_PARAMETER",
+            KSP_EnumAlgorithms(hProv, 0, &cAlgs, NULL, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        ASSERT_EQ("Invalid provider → NTE_INVALID_HANDLE",
+            KSP_EnumAlgorithms(0, 0, &cAlgs, &pAlgs, 0),
+            (SECURITY_STATUS)NTE_INVALID_HANDLE);
+    }
+
+    /* ── Suite : KSP_VerifySignature ───────────────────────────────────── */
+    TEST_SUITE("KSP_VerifySignature");
+
+    /* Deliberately unimplemented: callers verify far more cheaply with
+     * BCryptVerifySignature against the exported public key. The slot is
+     * wired to this stub rather than left NULL, which ncrypt.dll would
+     * call regardless. */
+    ASSERT_EQ("VerifySignature → NTE_NOT_SUPPORTED",
+        KSP_VerifySignature(hProv, 0, NULL, (PBYTE)"h", 1, (PBYTE)"s", 1, 0),
+        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
     KSP_FreeProvider(hProv);
 

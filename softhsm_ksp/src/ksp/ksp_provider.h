@@ -2,7 +2,7 @@
 #ifndef KSP_PROVIDER_H
 #define KSP_PROVIDER_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include <ncrypt.h>
 #include "../common/config.h"
 
@@ -68,5 +68,29 @@ SECURITY_STATUS WINAPI KSP_GetOperationProperty(
 
 /* Validate a provider handle */
 BOOL KSP_IsValidProvider(NCRYPT_PROV_HANDLE hProvider);
+
+/* Algorithm discovery — both are NCRYPT_KEY_STORAGE_FUNCTION_TABLE slots */
+SECURITY_STATUS WINAPI KSP_IsAlgSupported(
+    NCRYPT_PROV_HANDLE hProvider,
+    LPCWSTR            pszAlgId,
+    DWORD              dwFlags);
+
+SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
+    NCRYPT_PROV_HANDLE    hProvider,
+    DWORD                 dwAlgOperations,
+    DWORD                *pdwAlgCount,
+    NCryptAlgorithmName **ppAlgList,
+    DWORD                 dwFlags);
+
+/* Signature verification (returns NTE_NOT_SUPPORTED) */
+SECURITY_STATUS WINAPI KSP_VerifySignature(
+    NCRYPT_PROV_HANDLE hProvider,
+    NCRYPT_KEY_HANDLE  hKey,
+    VOID              *pPaddingInfo,
+    PBYTE              pbHashValue,
+    DWORD              cbHashValue,
+    PBYTE              pbSignature,
+    DWORD              cbSignature,
+    DWORD              dwFlags);
 
 #endif /* KSP_PROVIDER_H */

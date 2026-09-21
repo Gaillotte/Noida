@@ -5,7 +5,7 @@
 #ifndef P11_CONTEXT_H
 #define P11_CONTEXT_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include "pkcs11.h"
 
 /* Global PKCS#11 context (singleton) */

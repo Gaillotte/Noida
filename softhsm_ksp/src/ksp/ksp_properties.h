@@ -2,7 +2,7 @@
 #ifndef KSP_PROPERTIES_H
 #define KSP_PROPERTIES_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include <ncrypt.h>
 
 /* Return a key property */

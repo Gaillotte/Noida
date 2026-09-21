@@ -25,6 +25,7 @@ PURE_STUBS = p11_pure_stubs.c
 
 TESTS = \
     test_p11rv_mapping \
+    test_function_table \
     test_ecdsa_decode \
     test_mechanism_resolve \
     test_memory \
@@ -54,6 +55,12 @@ syntax-check:
 
 # ── test_p11rv_mapping : P11RvToSecStatus ──────────────────────────────────
 test_p11rv_mapping: test_p11rv_mapping.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# ── test_function_table : ksp_main.c CNG function table ───────────────────
+test_function_table: test_function_table.c $(SRC)/ksp/ksp_main.c \
+                     $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
+                     $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # ── test_ecdsa_decode : P11_DecodeDerEcdsaSignature, P11_EcCoordSize ───────

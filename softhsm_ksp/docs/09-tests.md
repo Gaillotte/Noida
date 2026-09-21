@@ -24,8 +24,8 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         14 test suites · 780 assertions · gcov coverage         │
-   │         Lines: 89.8 %    Functions: 100 %                       │
+   │         15 test suites · 903 assertions · gcov coverage         │
+   │         Lines: 90.2 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,11 +72,12 @@ make syntax-check # parses the Windows-only integration test
 
 | Suite | File | Assertions | What is tested |
 |-------|------|:----------:|----------------|
+| CNG function table | `test_function_table.c` | 68 | `GetKeyStorageInterface`, every `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` slot, `DllMain` |
 | PKCS#11 error mapping | `test_p11rv_mapping.c` | 26 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
 | Logging | `test_logging.c` | 7 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
 | Mechanism resolution | `test_mechanism_resolve.c` | 35 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
 | Export blobs | `test_export_blobs.c` | 38 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
-| KSP provider | `test_ksp_provider.c` | 31 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
+| KSP provider | `test_ksp_provider.c` | 91 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
 | KSP key operations | `test_ksp_key_ops.c` | 154 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
 | KSP crypto | `test_ksp_crypto.c` | 98 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
 | KSP key properties | `test_ksp_key_props.c` | 87 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
@@ -86,21 +87,23 @@ make syntax-check # parses the Windows-only integration test
 | ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **780** | |
+| **Total** | | **903** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the
 SoftHSM2 2.7.0 mechanism work; the jump from 676 to 780 is the small-gap
-work described in `docs/11-market-comparison.md`.
+work described in `docs/11-market-comparison.md`, and 780 to 903 is Phase 0
+of `docs/13-roadmap.md` — chiefly `test_function_table.c`, which covers
+`ksp_main.c` for the first time, and the algorithm-discovery entry points.
 
-### Coverage (gcov / gcovr — 2026-09-09)
+### Coverage (gcov / gcovr — 2026-09-21)
 
 | Module | Lines | Hit | Line % | Functions | Hit | Func % |
 |--------|------:|----:|:------:|----------:|----:|:------:|
 | `common/` | 38 | 33 | **86.8 %** | 7 | 7 | **100 %** |
-| `ksp/` | 1280 | 1144 | **89.4 %** | 42 | 42 | **100 %** |
+| `ksp/` | 1359 | 1222 | **89.9 %** | 47 | 47 | **100 %** |
 | `pkcs11/` | 335 | 307 | **91.6 %** | 14 | 14 | **100 %** |
-| **Total** | **1653** | **1484** | **89.8 %** | **63** | **63** | **100 %** |
+| **Total** | **1732** | **1562** | **90.2 %** | **68** | **68** | **100 %** |
 
 > Full HTML report: `tests/unit/coverage_html/index.html`
 

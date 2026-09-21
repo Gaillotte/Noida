@@ -141,7 +141,7 @@ static void test_provider_property(void)
         (PBYTE)&dwImpl, sizeof(dwImpl), &cbResult, 0);
     ASSERT_SS("GetProviderProperty IMPL_TYPE", ss);
     ASSERT("ImplType = HARDWARE",
-           (dwImpl & NCRYPT_IMPL_HARDWARE_FLAG) != 0);
+           (dwImpl & NCRYPT_IMPL_SOFTWARE_FLAG) != 0);
 }
 
 /* ── Test 3 : CreatePersistedKey RSA ───────────────────────────────────── */

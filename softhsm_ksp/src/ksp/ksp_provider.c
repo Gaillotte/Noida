@@ -123,7 +123,12 @@ SECURITY_STATUS WINAPI KSP_GetProviderProperty(
             }
         }
     } else if (_wcsicmp(pszProperty, NCRYPT_IMPL_TYPE_PROPERTY) == 0) {
-        DWORD dwImpl = NCRYPT_IMPL_HARDWARE_FLAG;
+        /* SoftHSM2 is a software token: keys live in an encrypted SQLite
+         * file, not in tamper-resistant hardware. Report that honestly.
+         * This emits the same value the provider has always emitted —
+         * NCRYPT_IMPL_HARDWARE_FLAG was previously mis-defined as 0x2,
+         * which is NCRYPT_IMPL_SOFTWARE_FLAG — so only the name changes. */
+        DWORD dwImpl = NCRYPT_IMPL_SOFTWARE_FLAG;
         *pcbResult = sizeof(DWORD);
         if (pbOutput) {
             if (cbOutput < sizeof(DWORD)) {
@@ -215,6 +220,169 @@ SECURITY_STATUS WINAPI KSP_GetOperationProperty(
     UNREFERENCED_PARAMETER(pbOutput);
     UNREFERENCED_PARAMETER(cbOutput);
     UNREFERENCED_PARAMETER(pcbResult);
+    UNREFERENCED_PARAMETER(dwFlags);
+
+    return NTE_NOT_SUPPORTED;
+}
+
+/* ── Algorithm discovery ──────────────────────────────────────────────────
+ *
+ * IsAlgSupported and EnumAlgorithms are slots in
+ * NCRYPT_KEY_STORAGE_FUNCTION_TABLE, which is how ncrypt.dll answers
+ * NCryptIsAlgSupported and NCryptEnumAlgorithms. They are not served from
+ * the registry — an earlier version of the gap analysis said otherwise and
+ * was wrong.
+ *
+ * Only algorithms with a real CNG identifier are published. The provider
+ * also accepts EDDSA_ED25519, EDDSA_ED448, ECDSA_SECP256K1 and HMAC_SHA*,
+ * but CNG has no identifiers for those, so no standard caller could act on
+ * them if they were listed here. They stay reachable by name for an
+ * application coded against this KSP directly.
+ */
+
+typedef struct _KSP_ALG_ENTRY {
+    LPCWSTR pszName;
+    DWORD   dwOperations;
+} KSP_ALG_ENTRY;
+
+static const KSP_ALG_ENTRY g_KspAlgorithms[] = {
+    { ALG_RSA,        NCRYPT_SIGNATURE_OPERATION |
+                      NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION },
+    { ALG_ECDSA_P256, NCRYPT_SIGNATURE_OPERATION },
+    { ALG_ECDSA_P384, NCRYPT_SIGNATURE_OPERATION },
+    { ALG_ECDSA_P521, NCRYPT_SIGNATURE_OPERATION },
+    { ALG_ECDH_P256,  NCRYPT_SECRET_AGREEMENT_OPERATION },
+    { ALG_ECDH_P384,  NCRYPT_SECRET_AGREEMENT_OPERATION },
+    { ALG_ECDH_P521,  NCRYPT_SECRET_AGREEMENT_OPERATION },
+    { ALG_AES,        NCRYPT_CIPHER_OPERATION },
+};
+
+#define KSP_ALG_COUNT (sizeof(g_KspAlgorithms) / sizeof(g_KspAlgorithms[0]))
+
+SECURITY_STATUS WINAPI KSP_IsAlgSupported(
+    NCRYPT_PROV_HANDLE hProvider,
+    LPCWSTR            pszAlgId,
+    DWORD              dwFlags)
+{
+    size_t i;
+
+    UNREFERENCED_PARAMETER(dwFlags);
+
+    if (!KSP_IsValidProvider(hProvider))
+        return NTE_INVALID_HANDLE;
+
+    if (!pszAlgId)
+        return NTE_INVALID_PARAMETER;
+
+    for (i = 0; i < KSP_ALG_COUNT; i++) {
+        if (_wcsicmp(pszAlgId, g_KspAlgorithms[i].pszName) == 0)
+            return ERROR_SUCCESS;
+    }
+
+    return NTE_NOT_SUPPORTED;
+}
+
+SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
+    NCRYPT_PROV_HANDLE    hProvider,
+    DWORD                 dwAlgOperations,
+    DWORD                *pdwAlgCount,
+    NCryptAlgorithmName **ppAlgList,
+    DWORD                 dwFlags)
+{
+    NCryptAlgorithmName *pList   = NULL;
+    DWORD                cMatch  = 0;
+    size_t               i;
+
+    UNREFERENCED_PARAMETER(dwFlags);
+
+    if (!KSP_IsValidProvider(hProvider))
+        return NTE_INVALID_HANDLE;
+
+    if (!pdwAlgCount || !ppAlgList)
+        return NTE_INVALID_PARAMETER;
+
+    /* dwAlgOperations == 0 means "every operation class". */
+    for (i = 0; i < KSP_ALG_COUNT; i++) {
+        if (dwAlgOperations == 0 ||
+            (g_KspAlgorithms[i].dwOperations & dwAlgOperations) != 0)
+            cMatch++;
+    }
+
+    *pdwAlgCount = 0;
+    *ppAlgList   = NULL;
+
+    if (cMatch == 0)
+        return ERROR_SUCCESS;
+
+    /* One allocation holds the array and the names it points at, so the
+     * caller releases the whole thing with a single NCryptFreeBuffer. */
+    {
+        size_t cbNames = 0;
+        BYTE  *pbName;
+
+        for (i = 0; i < KSP_ALG_COUNT; i++) {
+            if (dwAlgOperations == 0 ||
+                (g_KspAlgorithms[i].dwOperations & dwAlgOperations) != 0)
+                cbNames += (wcslen(g_KspAlgorithms[i].pszName) + 1) *
+                           sizeof(WCHAR);
+        }
+
+        pList = (NCryptAlgorithmName *)KSP_AllocZero(
+                    cMatch * sizeof(NCryptAlgorithmName) + cbNames);
+        if (!pList)
+            return NTE_NO_MEMORY;
+
+        pbName = (BYTE *)pList + cMatch * sizeof(NCryptAlgorithmName);
+        cMatch = 0;
+
+        for (i = 0; i < KSP_ALG_COUNT; i++) {
+            size_t cb;
+
+            if (dwAlgOperations != 0 &&
+                (g_KspAlgorithms[i].dwOperations & dwAlgOperations) == 0)
+                continue;
+
+            cb = (wcslen(g_KspAlgorithms[i].pszName) + 1) * sizeof(WCHAR);
+            memcpy(pbName, g_KspAlgorithms[i].pszName, cb);
+
+            pList[cMatch].pszName         = (LPWSTR)pbName;
+            pList[cMatch].dwClass         = NCRYPT_KEY_STORAGE_INTERFACE;
+            pList[cMatch].dwAlgOperations = g_KspAlgorithms[i].dwOperations;
+            pList[cMatch].dwFlags         = 0;
+
+            pbName += cb;
+            cMatch++;
+        }
+    }
+
+    *pdwAlgCount = cMatch;
+    *ppAlgList   = pList;
+    return ERROR_SUCCESS;
+}
+
+/* Verify a signature.
+ *
+ * Not supported: SoftHSM2 can verify through C_Verify, but the public key
+ * is exportable and callers verify far more cheaply in software with
+ * BCryptVerifySignature. Returning NTE_NOT_SUPPORTED is the honest answer
+ * rather than a slot left NULL, which ncrypt.dll would call anyway. */
+SECURITY_STATUS WINAPI KSP_VerifySignature(
+    NCRYPT_PROV_HANDLE hProvider,
+    NCRYPT_KEY_HANDLE  hKey,
+    VOID              *pPaddingInfo,
+    PBYTE              pbHashValue,
+    DWORD              cbHashValue,
+    PBYTE              pbSignature,
+    DWORD              cbSignature,
+    DWORD              dwFlags)
+{
+    UNREFERENCED_PARAMETER(hProvider);
+    UNREFERENCED_PARAMETER(hKey);
+    UNREFERENCED_PARAMETER(pPaddingInfo);
+    UNREFERENCED_PARAMETER(pbHashValue);
+    UNREFERENCED_PARAMETER(cbHashValue);
+    UNREFERENCED_PARAMETER(pbSignature);
+    UNREFERENCED_PARAMETER(cbSignature);
     UNREFERENCED_PARAMETER(dwFlags);
 
     return NTE_NOT_SUPPORTED;

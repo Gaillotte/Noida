@@ -28,7 +28,7 @@ static void FillPssParams(
     if (_wcsicmp(pPssInfo->pszAlgId, BCRYPT_SHA1_ALGORITHM) == 0) {
         pPssParams->hashAlg = CKM_SHA_1;
         pPssParams->mgf     = CKG_MGF1_SHA1;
-    } else if (_wcsicmp(pPssInfo->pszAlgId, BCRYPT_SHA224_ALGORITHM) == 0) {
+    } else if (_wcsicmp(pPssInfo->pszAlgId, KSP_SHA224_ALGORITHM) == 0) {
         pPssParams->hashAlg = CKM_SHA224;
         pPssParams->mgf     = CKG_MGF1_SHA224;
     } else if (_wcsicmp(pPssInfo->pszAlgId, BCRYPT_SHA384_ALGORITHM) == 0) {
@@ -158,8 +158,8 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
     if (!pKey->bFinalized || pKey->hPrivKey == CK_INVALID_HANDLE) {
-        LOG_LEAVE("KSP_SignHash", NTE_KEY_DOES_NOT_EXIST);
-        return NTE_KEY_DOES_NOT_EXIST;
+        LOG_LEAVE("KSP_SignHash", NTE_INVALID_HANDLE);
+        return NTE_INVALID_HANDLE;
     }
 
     memset(&pssParams, 0, sizeof(pssParams));
@@ -305,8 +305,8 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
         (pKey->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC
             ? pKey->hSecretKey == CK_INVALID_HANDLE
             : pKey->hPrivKey   == CK_INVALID_HANDLE)) {
-        LOG_LEAVE("KSP_Decrypt", NTE_KEY_DOES_NOT_EXIST);
-        return NTE_KEY_DOES_NOT_EXIST;
+        LOG_LEAVE("KSP_Decrypt", NTE_INVALID_HANDLE);
+        return NTE_INVALID_HANDLE;
     }
 
     memset(&mech, 0, sizeof(mech));
@@ -703,8 +703,8 @@ SECURITY_STATUS WINAPI KSP_Encrypt(
     }
 
     if (!pKey->bFinalized || pKey->hSecretKey == CK_INVALID_HANDLE) {
-        LOG_LEAVE("KSP_Encrypt", NTE_KEY_DOES_NOT_EXIST);
-        return NTE_KEY_DOES_NOT_EXIST;
+        LOG_LEAVE("KSP_Encrypt", NTE_INVALID_HANDLE);
+        return NTE_INVALID_HANDLE;
     }
 
     ss = KspBuildAesMechanism(pKey, dwFlags, &mech, &gcmParams, &ctrParams);

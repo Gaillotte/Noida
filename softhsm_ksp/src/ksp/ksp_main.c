@@ -9,35 +9,49 @@
 #include "../common/config.h"
 #include "../common/logging.h"
 
-/* Global KSP function table */
+/* Global KSP function table.
+ *
+ * Written with designated initialisers on purpose. The slot order in
+ * NCRYPT_KEY_STORAGE_FUNCTION_TABLE is defined by the Windows SDK's
+ * <ncrypt_provider.h>, and this project does not ship that header — it
+ * comes with the WDK. Initialising by position means guessing that order,
+ * and a wrong guess does not fail loudly: Windows simply calls the wrong
+ * function pointer. Initialising by name makes the compiler do the
+ * assignment from the real header, and turns any mistake into a build
+ * error instead of memory corruption at runtime.
+ *
+ * The previous version of this table was ordered to the hand-written mock
+ * in tests/mock/windows_compat.h and displaced every slot from the
+ * thirteenth onward.
+ */
 NCRYPT_KEY_STORAGE_FUNCTION_TABLE g_KspFunctionTable = {
-    NCRYPT_KEY_STORAGE_INTERFACE_VERSION,
-    KSP_OpenProvider,
-    KSP_OpenKey,
-    KSP_CreatePersistedKey,
-    KSP_GetProviderProperty,
-    KSP_GetKeyProperty,
-    KSP_SetProviderProperty,
-    KSP_SetKeyProperty,
-    KSP_FinalizeKey,
-    KSP_DeleteKey,
-    KSP_FreeProvider,
-    KSP_FreeKey,
-    KSP_FreeBuffer,
-    KSP_EnumKeys,
-    KSP_ImportKey,
-    KSP_ExportKey,
-    KSP_SignHash,
-    KSP_Decrypt,
-    KSP_NotifyChangeKey,
-    KSP_GetOperationProperty,
-    KSP_FreeObject,
-    KSP_PromptUser,
-    /* Extended slots — symmetric encryption and ECDH key agreement */
-    KSP_Encrypt,
-    KSP_SecretAgreement,
-    KSP_DeriveKey,
-    KSP_FreeSecret
+    .Version             = NCRYPT_KEY_STORAGE_INTERFACE_VERSION,
+    .OpenProvider        = KSP_OpenProvider,
+    .OpenKey             = KSP_OpenKey,
+    .CreatePersistedKey  = KSP_CreatePersistedKey,
+    .GetProviderProperty = KSP_GetProviderProperty,
+    .GetKeyProperty      = KSP_GetKeyProperty,
+    .SetProviderProperty = KSP_SetProviderProperty,
+    .SetKeyProperty      = KSP_SetKeyProperty,
+    .FinalizeKey         = KSP_FinalizeKey,
+    .DeleteKey           = KSP_DeleteKey,
+    .FreeProvider        = KSP_FreeProvider,
+    .FreeKey             = KSP_FreeKey,
+    .FreeBuffer          = KSP_FreeBuffer,
+    .Encrypt             = KSP_Encrypt,
+    .Decrypt             = KSP_Decrypt,
+    .IsAlgSupported      = KSP_IsAlgSupported,
+    .EnumAlgorithms      = KSP_EnumAlgorithms,
+    .EnumKeys            = KSP_EnumKeys,
+    .ImportKey           = KSP_ImportKey,
+    .ExportKey           = KSP_ExportKey,
+    .SignHash            = KSP_SignHash,
+    .VerifySignature     = KSP_VerifySignature,
+    .PromptUser          = KSP_PromptUser,
+    .NotifyChangeKey     = KSP_NotifyChangeKey,
+    .SecretAgreement     = KSP_SecretAgreement,
+    .DeriveKey           = KSP_DeriveKey,
+    .FreeSecret          = KSP_FreeSecret
 };
 
 /* Exported entry point: returns the function table */

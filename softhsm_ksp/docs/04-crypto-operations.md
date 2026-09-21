@@ -117,7 +117,7 @@ sequenceDiagram
     KSP->>Session: P11_ReleaseSession(hSession)
     KSP-->>NCrypt: ERROR_SUCCESS
 
-    note over KSP: PSS hash algorithm mapping:<br/>BCRYPT_SHA1_ALGORITHM   → CKM_SHA_1  + CKG_MGF1_SHA1<br/>BCRYPT_SHA224_ALGORITHM → CKM_SHA224 + CKG_MGF1_SHA224<br/>BCRYPT_SHA256_ALGORITHM → CKM_SHA256 + CKG_MGF1_SHA256<br/>BCRYPT_SHA384_ALGORITHM → CKM_SHA384 + CKG_MGF1_SHA384<br/>BCRYPT_SHA512_ALGORITHM → CKM_SHA512 + CKG_MGF1_SHA512
+    note over KSP: PSS hash algorithm mapping:<br/>BCRYPT_SHA1_ALGORITHM   → CKM_SHA_1  + CKG_MGF1_SHA1<br/>KSP_SHA224_ALGORITHM    → CKM_SHA224 + CKG_MGF1_SHA224<br/>BCRYPT_SHA256_ALGORITHM → CKM_SHA256 + CKG_MGF1_SHA256<br/>BCRYPT_SHA384_ALGORITHM → CKM_SHA384 + CKG_MGF1_SHA384<br/>BCRYPT_SHA512_ALGORITHM → CKM_SHA512 + CKG_MGF1_SHA512
 ```
 
 ---
@@ -248,10 +248,16 @@ sequenceDiagram
 | `pszAlgId` | `hashAlg` | `mgf` |
 |-----------|-----------|-------|
 | `BCRYPT_SHA1_ALGORITHM` | `CKM_SHA_1` | `CKG_MGF1_SHA1` |
-| `BCRYPT_SHA224_ALGORITHM` | `CKM_SHA224` | `CKG_MGF1_SHA224` |
+| `KSP_SHA224_ALGORITHM` * | `CKM_SHA224` | `CKG_MGF1_SHA224` |
 | `BCRYPT_SHA256_ALGORITHM` | `CKM_SHA256` | `CKG_MGF1_SHA256` |
 | `BCRYPT_SHA384_ALGORITHM` | `CKM_SHA384` | `CKG_MGF1_SHA384` |
 | `BCRYPT_SHA512_ALGORITHM` | `CKM_SHA512` | `CKG_MGF1_SHA512` |
+
+\* `KSP_SHA224_ALGORITHM` (`L"SHA224"`) is this provider's own name. **CNG
+defines no SHA-224 algorithm identifier** — Windows has no SHA-224 at all,
+so there is no `BCRYPT_SHA224_ALGORITHM` and no standard caller can request
+it. Only an application coded against this KSP will reach the SHA-224 rows
+in this table and the PSS table above.
 
 Any other name returns `NTE_NOT_SUPPORTED`. A `NULL` padding info, or a
 `NULL` `pszAlgId`, defaults to SHA-1 — the CNG legacy behaviour.

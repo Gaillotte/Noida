@@ -117,7 +117,7 @@ SECURITY_STATUS P11_MapHashAlg(
     if (_wcsicmp(pszHashAlg, BCRYPT_SHA1_ALGORITHM) == 0) {
         *pHashMech = CKM_SHA_1;   *pMgf = CKG_MGF1_SHA1;   return ERROR_SUCCESS;
     }
-    if (_wcsicmp(pszHashAlg, BCRYPT_SHA224_ALGORITHM) == 0) {
+    if (_wcsicmp(pszHashAlg, KSP_SHA224_ALGORITHM) == 0) {
         *pHashMech = CKM_SHA224;  *pMgf = CKG_MGF1_SHA224; return ERROR_SUCCESS;
     }
     if (_wcsicmp(pszHashAlg, BCRYPT_SHA256_ALGORITHM) == 0) {

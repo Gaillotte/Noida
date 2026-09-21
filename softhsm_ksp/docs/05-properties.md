@@ -6,11 +6,19 @@
 |--------------|----------------|------|-------------|
 | `NCRYPT_NAME_PROPERTY` | `L"SoftHSM KSP"` | `WCHAR[]` | ✓ |
 | `NCRYPT_VERSION_PROPERTY` | `1` | `DWORD` | ✓ |
-| `NCRYPT_IMPL_TYPE_PROPERTY` | `NCRYPT_IMPL_HARDWARE_FLAG` | `DWORD` | ✓ |
+| `NCRYPT_IMPL_TYPE_PROPERTY` | `NCRYPT_IMPL_SOFTWARE_FLAG` | `DWORD` | ✓ |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
 
-The `NCRYPT_IMPL_HARDWARE_FLAG` flag tells Windows that this provider behaves
-like a hardware HSM (non-exportable keys, enhanced security).
+SoftHSM2 keeps keys in an encrypted SQLite file, so the provider reports
+`NCRYPT_IMPL_SOFTWARE_FLAG` rather than claiming hardware backing.
+
+The emitted value did not change when this was corrected: the project's mock
+had defined `NCRYPT_IMPL_HARDWARE_FLAG` as `0x2`, which is in fact
+`NCRYPT_IMPL_SOFTWARE_FLAG`. The provider had always been reporting software
+while the source said hardware. Only the name is now truthful.
+
+Keys remain non-exportable regardless — that is enforced by
+`CKA_EXTRACTABLE=FALSE` on the token, not by this flag.
 
 ---
 
@@ -200,5 +208,6 @@ The following properties always return `NTE_NOT_SUPPORTED`:
 
 - `SetProviderProperty` (all)
 - `SetKeyProperty` for any property other than `NCRYPT_LENGTH_PROPERTY`
-- `GetOperationProperty`
 - `PromptUser`
+- `VerifySignature` — callers verify with `BCryptVerifySignature` against
+  the exported public key, which is far cheaper than a token round trip

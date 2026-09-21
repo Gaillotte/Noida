@@ -32,6 +32,7 @@
 typedef unsigned char      BYTE;
 typedef unsigned char      BOOL;
 typedef unsigned short     WORD;
+typedef unsigned short     USHORT;
 typedef unsigned int       DWORD;
 typedef unsigned int       ULONG;
 typedef unsigned long long QWORD;
@@ -88,14 +89,12 @@ typedef long SECURITY_STATUS;
 #define NTE_PROV_TYPE_NO_MATCH    0x8009001BL
 #define NTE_SIGNATURE_FILE_BAD    0x8009001CL
 #define NTE_PROVIDER_DLL_FAIL     0x8009001DL
-#define NTE_BAD_KEYSET_PARAM      0x8009001EL
-#define NTE_BAD_KEYSET_ACCESS     0x8009001FL
+#define NTE_BAD_KEYSET_PARAM      0x8009001FL
 #define NTE_NOT_SUPPORTED         0x80090029L
 #define NTE_NO_MORE_ITEMS         0x8009002AL
 #define NTE_BUFFER_TOO_SMALL      0x80090028L
 #define NTE_INVALID_PARAMETER     0x80090027L
 #define NTE_INVALID_HANDLE        0x80090026L
-#define NTE_KEY_DOES_NOT_EXIST    0x80090026L
 
 /* ── NCrypt flags ────────────────────────────────────────────────────────── */
 #define NCRYPT_NO_PADDING_FLAG    0x00000001
@@ -114,7 +113,9 @@ typedef long SECURITY_STATUS;
 #define NCRYPT_ALLOW_DECRYPT_FLAG       0x00000001
 #define NCRYPT_ALLOW_KEY_AGREEMENT_FLAG 0x00000004
 #define NCRYPT_BLOCK_LENGTH_PROPERTY    L"Block Length"
-#define NCRYPT_IMPL_HARDWARE_FLAG  0x00000002
+#define NCRYPT_IMPL_HARDWARE_FLAG  0x00000001
+#define NCRYPT_IMPL_SOFTWARE_FLAG  0x00000002
+#define NCRYPT_IMPL_REMOVABLE_FLAG 0x00000008
 
 /* AT_KEYEXCHANGE / AT_SIGNATURE */
 #define AT_KEYEXCHANGE 1
@@ -323,7 +324,6 @@ typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER {
 #define BCRYPT_KEY_DATA_BLOB        L"KeyDataBlob"
 
 #define BCRYPT_SHA1_ALGORITHM    L"SHA1"
-#define BCRYPT_SHA224_ALGORITHM  L"SHA224"
 #define BCRYPT_SHA256_ALGORITHM  L"SHA256"
 #define BCRYPT_SHA384_ALGORITHM  L"SHA384"
 #define BCRYPT_SHA512_ALGORITHM  L"SHA512"
@@ -416,37 +416,93 @@ typedef struct _NCryptKeyName {
 typedef struct _NCryptBufferDesc { DWORD ulVersion; DWORD cBuffers; void *pBuffers; }
     NCryptBufferDesc;
 
-/* ── NCRYPT_KEY_STORAGE_FUNCTION_TABLE ───────────────────────────────────── */
-#define NCRYPT_KEY_STORAGE_INTERFACE_VERSION 1
+/* ── Algorithm enumeration ────────────────────────────────────────────────
+ * Values verified against the Windows SDK bcrypt.h / ncrypt.h: the
+ * NCRYPT_*_OPERATION names are aliases of the BCRYPT_*_OPERATION ones. */
+#define BCRYPT_CIPHER_OPERATION                 0x00000001
+#define BCRYPT_HASH_OPERATION                   0x00000002
+#define BCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION  0x00000004
+#define BCRYPT_SECRET_AGREEMENT_OPERATION       0x00000008
+#define BCRYPT_SIGNATURE_OPERATION              0x00000010
+#define BCRYPT_RNG_OPERATION                    0x00000020
+#define BCRYPT_KEY_DERIVATION_OPERATION         0x00000040
+
+#define NCRYPT_KEY_STORAGE_INTERFACE            0x00010001
+
+/* DllMain reasons */
+#define DLL_PROCESS_ATTACH  1
+#define DLL_THREAD_ATTACH   2
+#define DLL_THREAD_DETACH   3
+#define DLL_PROCESS_DETACH  0
+
+#define NCRYPT_CIPHER_OPERATION                 BCRYPT_CIPHER_OPERATION
+#define NCRYPT_HASH_OPERATION                   BCRYPT_HASH_OPERATION
+#define NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION  BCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION
+#define NCRYPT_SECRET_AGREEMENT_OPERATION       BCRYPT_SECRET_AGREEMENT_OPERATION
+#define NCRYPT_SIGNATURE_OPERATION              BCRYPT_SIGNATURE_OPERATION
+#define NCRYPT_RNG_OPERATION                    BCRYPT_RNG_OPERATION
+#define NCRYPT_KEY_DERIVATION_OPERATION         BCRYPT_KEY_DERIVATION_OPERATION
+
+typedef struct _NCryptAlgorithmName {
+    LPWSTR pszName;
+    DWORD  dwClass;
+    DWORD  dwAlgOperations;
+    DWORD  dwFlags;
+} NCryptAlgorithmName;
+
+/* ── NCRYPT_KEY_STORAGE_FUNCTION_TABLE ─────────────────────────────────────
+ *
+ * The real declaration lives in the Windows SDK's <ncrypt_provider.h>,
+ * which ships with the WDK and is not vendored here. This stand-in exists
+ * only so the Linux unit suite can link.
+ *
+ * ksp_main.c initialises the table with designated initialisers, so the
+ * field ORDER below does not affect correctness on Windows — the SDK
+ * header decides that. Only the field NAMES have to match, and a name that
+ * does not exist in the real header becomes a build error rather than a
+ * silently displaced slot. Do not reintroduce positional initialisation.
+ *
+ * Version is a two-USHORT structure in the SDK, not a DWORD.
+ */
+typedef struct _BCRYPT_INTERFACE_VERSION {
+    USHORT MajorVersion;
+    USHORT MinorVersion;
+} BCRYPT_INTERFACE_VERSION;
+
+#define BCRYPT_MAKE_INTERFACE_VERSION(major, minor) \
+    { (USHORT)(major), (USHORT)(minor) }
+
+#define NCRYPT_KEY_STORAGE_INTERFACE_VERSION \
+    BCRYPT_MAKE_INTERFACE_VERSION(1, 0)
 
 typedef struct _NCRYPT_KEY_STORAGE_FUNCTION_TABLE {
-    DWORD  dwVersion;
-    void  *OpenProvider;
-    void  *OpenKey;
-    void  *CreatePersistedKey;
-    void  *GetProviderProperty;
-    void  *GetKeyProperty;
-    void  *SetProviderProperty;
-    void  *SetKeyProperty;
-    void  *FinalizeKey;
-    void  *DeleteKey;
-    void  *FreeProvider;
-    void  *FreeKey;
-    void  *FreeBuffer;
-    void  *EnumKeys;
-    void  *ImportKey;
-    void  *ExportKey;
-    void  *SignHash;
-    void  *Decrypt;
-    void  *NotifyChangeKey;
-    void  *GetOperationProperty;
-    void  *FreeObject;
-    void  *PromptUser;
-    /* Extended slots — symmetric encryption and ECDH key agreement */
-    void  *Encrypt;
-    void  *SecretAgreement;
-    void  *DeriveKey;
-    void  *FreeSecret;
+    BCRYPT_INTERFACE_VERSION Version;
+    void *OpenProvider;
+    void *OpenKey;
+    void *CreatePersistedKey;
+    void *GetProviderProperty;
+    void *GetKeyProperty;
+    void *SetProviderProperty;
+    void *SetKeyProperty;
+    void *FinalizeKey;
+    void *DeleteKey;
+    void *FreeProvider;
+    void *FreeKey;
+    void *FreeBuffer;
+    void *Encrypt;
+    void *Decrypt;
+    void *IsAlgSupported;
+    void *EnumAlgorithms;
+    void *EnumKeys;
+    void *ImportKey;
+    void *ExportKey;
+    void *SignHash;
+    void *VerifySignature;
+    void *PromptUser;
+    void *NotifyChangeKey;
+    void *SecretAgreement;
+    void *DeriveKey;
+    void *FreeSecret;
 } NCRYPT_KEY_STORAGE_FUNCTION_TABLE;
 
 /* ── Tick count (mock) ───────────────────────────────────────────────────── */

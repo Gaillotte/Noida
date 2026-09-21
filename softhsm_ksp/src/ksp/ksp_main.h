@@ -2,8 +2,11 @@
 #ifndef KSP_MAIN_H
 #define KSP_MAIN_H
 
-#include <windows.h>
-#include <ncrypt.h>
+#include "../common/ksp_windows.h"
+
+/* NCRYPT_KEY_STORAGE_FUNCTION_TABLE is declared here, not in <ncrypt.h>.
+ * This header ships with the Windows Driver Kit / CNG provider SDK. */
+#include <ncrypt_provider.h>
 
 /* Exported KSP entry point.
  * Verifies the provider name and returns the function table. */

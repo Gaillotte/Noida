@@ -2,7 +2,7 @@
 #ifndef KSP_KEY_H
 #define KSP_KEY_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include <ncrypt.h>
 #include "../pkcs11/pkcs11.h"
 #include "../common/config.h"

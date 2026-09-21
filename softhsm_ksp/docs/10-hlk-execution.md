@@ -194,9 +194,10 @@ Two things stand between it and a real submission:
 - **SoftHSM2 is a software token.** It stores keys in an encrypted SQLite
   database on disk, so it cannot satisfy the hardware key-protection
   requirements a Platform Crypto Provider submission is judged against.
-  The KSP reports `NCRYPT_IMPL_HARDWARE_FLAG` so that CNG treats it like a
-  hardware provider during testing — that is a testing convenience, not a
-  truthful hardware claim.
+  The KSP reports `NCRYPT_IMPL_SOFTWARE_FLAG`, which is the truthful answer.
+  It previously appeared to claim hardware, but the constant was mis-defined
+  and the value actually emitted was always the software one — so nothing
+  changed on the wire when this was corrected.
 
 - **The DLL is unsigned.** A submission needs a production code-signing
   certificate; test-signing only works on a machine with testsigning

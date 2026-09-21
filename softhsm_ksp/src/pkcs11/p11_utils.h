@@ -2,7 +2,7 @@
 #ifndef P11_UTILS_H
 #define P11_UTILS_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include <ncrypt.h>
 #include <bcrypt.h>
 #include "pkcs11.h"

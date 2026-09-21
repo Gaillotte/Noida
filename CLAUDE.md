@@ -55,7 +55,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 14 test suites, 780 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 15 test suites, 903 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -93,7 +93,7 @@ noida/
 │   │   ├── 10-hlk-execution.md     Microsoft HLK execution procedure
 │   │   ├── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
 │   │   ├── 12-pkcs11-requirements.md Backend requirements: functions, mechanisms, attributes
-│   │   ├── 13-roadmap.md           Why the Windows build fails, and the phased plan to parity
+│   │   ├── 13-roadmap.md           Why the Windows build failed, and the phased plan to parity
 │   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (99 rows)
 │   ├── CMakeLists.txt
 │   ├── README.md
@@ -109,6 +109,49 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 7 — Phase 0 of the roadmap: making the Windows build real
+
+The DLL had never been compiled for Windows. Seven of ten source files
+failed a mingw-w64 cross-compile and there was no CI. All six root causes
+are now fixed; nine of ten files cross-compile clean.
+
+- **`src/common/ksp_windows.h`** (new) — the Windows include policy in one
+  place. `<windows.h>` alone does not supply `SECURITY_STATUS` (that is
+  `<ncrypt.h>`) or `AT_SIGNATURE` (that is `<wincrypt.h>`, which
+  `WIN32_LEAN_AND_MEAN` excludes).
+- **Function table by name.** `ksp_main.c` now uses designated initialisers
+  and `ksp_main.h` includes `<ncrypt_provider.h>`. The SDK header assigns
+  the slots, so a wrong name is a build error instead of a displaced slot.
+  **Never go back to positional initialisation.**
+- **`KSP_IsAlgSupported` / `KSP_EnumAlgorithms` implemented** — closes
+  `LIFE-06` and `LIFE-07`. Only algorithms with a real CNG identifier are
+  published; EdDSA, HMAC and secp256k1 are deliberately not advertised.
+- **`KSP_VerifySignature`** — stub returning `NTE_NOT_SUPPORTED`, so no slot
+  is left NULL for `ncrypt.dll` to call.
+- **SHA-224 kept as `KSP_SHA224_ALGORITHM`.** CNG has no SHA-224 identifier,
+  so `BCRYPT_SHA224_ALGORITHM` existed only in our mock. It is now an
+  explicit provider extension.
+- **`NTE_KEY_DOES_NOT_EXIST` → `NTE_INVALID_HANDLE`** — the former is not a
+  Windows constant, and the mock was aliasing it to the latter's value.
+- **Impl type now reports `NCRYPT_IMPL_SOFTWARE_FLAG`.** The emitted value
+  is unchanged: `NCRYPT_IMPL_HARDWARE_FLAG` was mis-defined as `0x2`, which
+  is the SOFTWARE flag. Only the name became truthful — SoftHSM2 is a
+  software token.
+- **`tests/check_mock_drift.py`** (new) — fails CI when the mock disagrees
+  with the real Windows headers. Verified by re-injecting both historical
+  defects and confirming it catches them.
+- **`.github/workflows/ci.yml`** (new) — first CI in the project. Linux unit
+  suite plus mingw cross-compile as the fast gate, `windows-latest` MSVC as
+  the authority, and a PowerShell job.
+- **`tests/unit/test_function_table.c`** (new) — covers `ksp_main.c`, which
+  nothing had ever compiled.
+
+Unit tests 780 → **903 assertions**, 14 → **15 suites**, coverage 89.8 % →
+**90.2 %** lines at 100 % functions.
+
+**Still unproven:** that the whole DLL builds under MSVC and loads. Only the
+CI `windows` job can answer that.
 
 ### Session 6 — Closing the small gaps
 
@@ -171,8 +214,8 @@ grew from S to M).
 - **`docs/feature-matrix.csv` + `generate_feature_matrix.py` → `SoftHSM2_KSP_Feature_Matrix.pdf`**
   — 99 capabilities observed across shipping CNG KSPs in 14 categories, each
   marked Covered / Partial / Not covered against this project with the remedy
-  and effort for every gap. Currently 49 covered, 7 partial, 43 not covered;
-  42 actionable gaps (4 S, 20 M, 18 L). The rest are deliberate positions or
+  and effort for every gap. Currently 52 covered, 9 partial, 38 not covered;
+  39 actionable gaps (4 S, 17 M, 18 L). The rest are deliberate positions or
   external blockers. Highest-value gap identified: **X25519 key agreement**,
   which unlike Ed25519 signing *is* a standard CNG curve.
 - **`docs/12-pkcs11-requirements.md`** — the PKCS#11 backend contract extracted
@@ -311,24 +354,18 @@ ECB / CBC / CBC_PAD / CTR / GCM supported; CCM and CFB return `NTE_NOT_SUPPORTED
 All keys: `CKA_TOKEN=TRUE`, `CKA_SENSITIVE=TRUE`, `CKA_EXTRACTABLE=FALSE`
 AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 
-### Known Limitations — read `docs/13-roadmap.md` first
+### Known Limitations
 
-- **The DLL has never been compiled for Windows.** A mingw-w64 cross-compile
-  fails on 7 of the 10 source files, and there is no CI. Six root causes are
-  catalogued in `docs/13-roadmap.md` §1.2, including two constants the test
-  mock invents (`BCRYPT_SHA224_ALGORITHM`, `NTE_KEY_DOES_NOT_EXIST`) and two
-  it gives wrong values (`NCRYPT_IMPL_HARDWARE_FLAG`, `NTE_BAD_KEYSET_PARAM`).
-  The unit tests cannot catch any of it: they compile against that same mock.
-  Recorded as `BUILD-01` / `BUILD-02`. **Treat every coverage figure in this
-  file as Linux-only until Phase 0 of the roadmap lands.**
-- **The CNG function table in `ksp_main.c` is very likely wrong on Windows.**
-  It is ordered to the hand-written struct in `tests/mock/windows_compat.h`,
-  not to the Windows SDK's `ncrypt_provider.h`, and it omits `IsAlgSupported`,
-  `EnumAlgorithms` and `VerifySignature` while adding `GetOperationProperty`
-  and `FreeObject`, which are not KSP entry points. `ksp_main.h` also includes
-  `<ncrypt.h>`, which does not declare the struct at all. The Linux unit tests
-  compile against the mock, so they can never catch this. Build once against
-  the real SDK header before trusting any Windows result.
+- **The Windows build is fixed but not yet proven.** Phase 0 of
+  `docs/13-roadmap.md` fixed all six reasons the DLL could not compile for
+  Windows; nine of ten source files now cross-compile clean and CI enforces
+  it. `ksp_main.c` still cannot be built here — it needs the WDK's
+  `<ncrypt_provider.h>` — so the CI `windows` job is what confirms the whole
+  DLL builds and loads. `BUILD-01` and `TABLE-01` stay Partial until then.
+- **Never hand-edit `tests/mock/windows_compat.h` values.** That mock once
+  invented two constants and mis-valued two more, and every test passed
+  because the tests read the same wrong numbers. `tests/check_mock_drift.py`
+  now fails CI on any disagreement with the real Windows headers.
 - No raw RSA (`CKM_RSA_X_509`) — SoftHSM2 limitation
 - No private key import — HSM design
 - Only first token-present slot used
@@ -365,8 +402,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 14 suites, 780 assertions
-make coverage      # → coverage_html/index.html (89.8 % lines, 100 % functions)
+make run           # 15 suites, 903 assertions
+make coverage      # → coverage_html/index.html (90.2 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

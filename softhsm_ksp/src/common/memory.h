@@ -5,7 +5,7 @@
 #ifndef MEMORY_H
 #define MEMORY_H
 
-#include <windows.h>
+#include "ksp_windows.h"
 
 /* Allocate a buffer on the process heap (compatible with CNG FreeBuffer) */
 void *KSP_Alloc(SIZE_T cbSize);

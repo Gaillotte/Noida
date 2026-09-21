@@ -26,7 +26,7 @@ int main(void)
     ASSERT_EQ("SHA-1 → CKM_SHA_1",      hashMech, (CK_MECHANISM_TYPE)CKM_SHA_1);
     ASSERT_EQ("SHA-1 → CKG_MGF1_SHA1",  mgf,      (CK_ULONG)CKG_MGF1_SHA1);
 
-    ss = P11_MapHashAlg(BCRYPT_SHA224_ALGORITHM, &hashMech, &mgf);
+    ss = P11_MapHashAlg(KSP_SHA224_ALGORITHM, &hashMech, &mgf);
     ASSERT_OK("SHA-224 accepted", ss);
     ASSERT_EQ("SHA-224 → CKM_SHA224",     hashMech, (CK_MECHANISM_TYPE)CKM_SHA224);
     ASSERT_EQ("SHA-224 → CKG_MGF1_SHA224", mgf,     (CK_ULONG)CKG_MGF1_SHA224);
@@ -103,7 +103,7 @@ int main(void)
               (CK_MECHANISM_TYPE)CKM_SHA512);
     ASSERT_EQ("mgf = CKG_MGF1_SHA512", params.mgf, (CK_ULONG)CKG_MGF1_SHA512);
 
-    oaep.pszAlgId = BCRYPT_SHA224_ALGORITHM;
+    oaep.pszAlgId = KSP_SHA224_ALGORITHM;
     ss = P11_BuildOaepParams(&oaep, &params);
     ASSERT_OK("SHA-224 OAEP built", ss);
     ASSERT_EQ("hashAlg = CKM_SHA224", params.hashAlg,

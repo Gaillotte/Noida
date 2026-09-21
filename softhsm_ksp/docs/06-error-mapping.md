@@ -65,7 +65,7 @@ The `P11RvToSecStatus()` function in `p11_utils.c` performs this mapping:
 | Condition | Return code |
 |-----------|------------|
 | `pbHashValue == NULL` | `NTE_INVALID_PARAMETER` |
-| Key not finalised | `NTE_KEY_DOES_NOT_EXIST` |
+| Key not finalised | `NTE_INVALID_HANDLE` |
 | Unsupported algorithm | `NTE_BAD_ALGID` |
 | Signature buffer too small | `NTE_BUFFER_TOO_SMALL` |
 | `C_SignInit` fails | `P11RvToSecStatus(rv)` |

@@ -5,7 +5,7 @@
 #ifndef P11_SESSION_H
 #define P11_SESSION_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include "pkcs11.h"
 
 /* Session pool entry */

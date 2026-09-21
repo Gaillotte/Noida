@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ── The fast gate ───────────────────────────────────────────────────────
+  # Unit suite plus a Windows cross-compile. mingw-w64 is not the Windows
+  # SDK, but it catches the class of defect that let seven of ten source
+  # files reach main unable to compile for Windows at all.
+  linux:
+    name: Unit tests and Windows cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 mingw-w64-common gcovr
+
+      - name: Unit tests
+        working-directory: softhsm_ksp/tests/unit
+        run: make -f ../Makefile.linux run
+
+      - name: Windows-only integration test parses
+        working-directory: softhsm_ksp/tests/unit
+        run: make -f ../Makefile.linux syntax-check
+
+      # The mock is hand-written. This fails the build if it disagrees with
+      # the real Windows headers, which is how the wrong values for
+      # NCRYPT_IMPL_HARDWARE_FLAG and NTE_BAD_KEYSET_PARAM went unnoticed.
+      - name: Mock has not drifted from the Windows headers
+        working-directory: softhsm_ksp
+        run: python3 tests/check_mock_drift.py
+
+      - name: Cross-compile for Windows
+        working-directory: softhsm_ksp
+        run: |
+          set -e
+          fail=0
+          for f in src/pkcs11/*.c src/ksp/*.c src/common/*.c; do
+            # ksp_main.c needs the WDK's ncrypt_provider.h, which mingw-w64
+            # does not ship. The windows job below is what covers it.
+            if [ "$(basename "$f")" = "ksp_main.c" ]; then
+              echo "SKIP $f (needs WDK ncrypt_provider.h)"
+              continue
+            fi
+            if x86_64-w64-mingw32-gcc -c -municode \
+                 -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN \
+                 -Isrc/pkcs11 -Isrc/ksp -Isrc/common \
+                 "$f" -o /dev/null 2>/tmp/cc.err; then
+              echo "OK   $f"
+            else
+              echo "FAIL $f"; cat /tmp/cc.err; fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Coverage
+        working-directory: softhsm_ksp/tests/unit
+        run: |
+          gcovr --root ../.. --filter '.*/src/.*' --print-summary --txt
+
+  # ── The authority ───────────────────────────────────────────────────────
+  # Only this job can answer whether the DLL actually builds. Everything
+  # above is a proxy.
+  windows:
+    name: MSVC build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # NCRYPT_KEY_STORAGE_FUNCTION_TABLE is declared in ncrypt_provider.h.
+      # Whether that header is in the Windows SDK on the hosted runner or
+      # only in the WDK has never been established for this project; this
+      # step answers it in the log either way, and does not fail the job on
+      # its own so the build error below is the one that speaks.
+      - name: Locate ncrypt_provider.h
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $roots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\Include",
+            "${env:ProgramFiles}\Windows Kits\10\Include"
+          ) | Where-Object { Test-Path $_ }
+          $hits = foreach ($r in $roots) {
+            Get-ChildItem -Path $r -Recurse -Filter ncrypt_provider.h -ErrorAction SilentlyContinue
+          }
+          if ($hits) {
+            Write-Host "Found:"; $hits | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "NOT FOUND in the installed Windows Kits."
+            Write-Host "The WDK provides it: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk"
+          }
+
+      - name: Configure
+        run: cmake -S softhsm_ksp -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Show output
+        shell: pwsh
+        run: Get-ChildItem -Recurse build\Release | Select-Object Name, Length
+
+  # ── PowerShell tooling ──────────────────────────────────────────────────
+  scripts:
+    name: PowerShell scripts parse and compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the HLK suite's embedded C#
+        shell: pwsh
+        run: ./softhsm_ksp/tools/validate_hlk_script.ps1
+
+      - name: Registration script parses and its C# compiles
+        shell: pwsh
+        working-directory: softhsm_ksp/tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'register_ksp.ps1'
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path).Path, [ref]$null, [ref]$errors)
+          if ($errors.Count) {
+              $errors | ForEach-Object {
+                  Write-Host "PARSE ERROR line $($_.Extent.StartLineNumber): $($_.Message)"
+              }
+              exit 1
+          }
+          Write-Host 'Parse OK'
+          $src   = Get-Content $path -Raw
+          $open  = $src.IndexOf('@"')
+          $close = $src.IndexOf('"@', $open)
+          Add-Type -TypeDefinition $src.Substring($open + 2, $close - $open - 2)
+          Write-Host 'C# compiles OK'

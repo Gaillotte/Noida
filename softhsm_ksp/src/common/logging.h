@@ -4,7 +4,7 @@
 #ifndef LOGGING_H
 #define LOGGING_H
 
-#include <windows.h>
+#include "ksp_windows.h"
 
 /* Initialise the logging subsystem (reads KSP_DEBUG) */
 void Log_Initialize(void);

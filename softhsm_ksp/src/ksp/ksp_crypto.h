@@ -2,7 +2,7 @@
 #ifndef KSP_CRYPTO_H
 #define KSP_CRYPTO_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include <ncrypt.h>
 
 /* Sign a hash with the private key */
