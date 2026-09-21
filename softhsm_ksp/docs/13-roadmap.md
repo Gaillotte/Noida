@@ -169,9 +169,27 @@ compiled, on any platform.
 The Linux job — unit suite, mock-drift check and the nine-file
 cross-compile — passed on that same first run, as did the PowerShell job.
 
-**Still unsettled.** That the complete DLL builds under MSVC and loads under
-`NCryptOpenStorageProvider`. `BUILD-01` and `TABLE-01` stay **Partial**
-until a `windows` job goes green.
+**Settled by the fifth run: the header is not obtainable in hosted CI.**
+A `dir /s /b` across both drives of a `windows-latest` runner returned
+exactly one `ncrypt_provider.h` — this repository's own test mock — and that
+was *after* `choco install windowsdriverkit11` reported success. No
+`bcrypt_provider.h` either. The WDK step has been removed from CI: it cost
+three minutes a run and never supplied the header.
+
+CI therefore builds what MSVC can build. When the header is absent CMake
+skips the `softhsm_ksp` target instead of emitting a DLL without its entry
+point, and the job posts a warning so a green run is never mistaken for a
+built DLL.
+
+**Still unsettled, and now bounded.** That the complete DLL builds and loads
+under `NCryptOpenStorageProvider`. This needs a machine that has
+`ncrypt_provider.h` — a self-hosted runner, or a one-off developer build.
+`BUILD-01` and `TABLE-01` stay **Partial**.
+
+The alternative, vendoring a hand-written declaration of the table, is
+deliberately **not** taken. It would reintroduce exactly the failure this
+phase existed to remove: a layout nobody can verify, failing silently by
+calling the wrong function pointer.
 
 What the phase originally called for:
 

@@ -48,10 +48,16 @@ if(WIN32)
         get_filename_component(_npdir "${NCRYPT_PROVIDER_H}" DIRECTORY)
         message(STATUS "ncrypt_provider.h: ${NCRYPT_PROVIDER_H}")
         include_directories("${_npdir}")
+        set(KSP_HAVE_ENTRY_POINT TRUE)
     else()
-        message(FATAL_ERROR
+        # Deliberately not a fatal error. The nine source files that do not
+        # need this header are still worth compiling, and skipping the DLL
+        # target outright is safer than building one without its entry
+        # point: there is nothing to mistake for a working provider.
+        set(KSP_HAVE_ENTRY_POINT FALSE)
+        message(WARNING
             "\n"
-            "ncrypt_provider.h was not found.\n"
+            "ncrypt_provider.h was not found — the KSP DLL will NOT be built.\n"
             "\n"
             "It declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE, the CNG function\n"
             "table this provider exports, and only src/ksp/ksp_main.c needs\n"
@@ -62,8 +68,14 @@ if(WIN32)
             "windows-latest runner. If you have a copy, point the build at\n"
             "the directory holding it:\n"
             "\n"
-            "    cmake .. -A x64 -DCPDK_INCLUDE_DIR=<directory>\n")
+            "    cmake .. -A x64 -DCPDK_INCLUDE_DIR=<directory>\n"
+            "\n"
+            "Targets still built: test_p11_layer.\n"
+            "Targets skipped:     softhsm_ksp, test_ksp_integration.\n")
     endif()
+else()
+    # Non-Windows configure (syntax checking only); no entry point either.
+    set(KSP_HAVE_ENTRY_POINT FALSE)
 endif()
 
 # MSVC: /W3 warning level, treat warnings as errors
@@ -89,7 +101,8 @@ set(KSP_SOURCES
     src/common/memory.c
 )
 
-# Main KSP DLL
+# Main KSP DLL — needs ksp_main.c, hence ncrypt_provider.h
+if(KSP_HAVE_ENTRY_POINT)
 add_library(softhsm_ksp SHARED
     ${KSP_SOURCES}
     softhsm_ksp.def
@@ -106,6 +119,7 @@ target_link_libraries(softhsm_ksp PRIVATE
     ncrypt
     bcrypt
 )
+endif()
 
 # ── PKCS#11 layer unit tests ─────────────────────────────────────────────────
 add_executable(test_p11_layer
@@ -132,6 +146,7 @@ if(MSVC)
 endif()
 
 # ── KSP integration tests (tests 1-14 + HLK scenarios 15-21) ─────────────────
+if(KSP_HAVE_ENTRY_POINT)
 add_executable(test_ksp_integration
     tests/test_ksp_integration.c
     ${KSP_SOURCES}
@@ -144,6 +159,7 @@ target_include_directories(test_ksp_integration PRIVATE
 )
 
 target_link_libraries(test_ksp_integration PRIVATE ncrypt bcrypt)
+endif()
 
 if(MSVC)
     target_compile_options(test_ksp_integration PRIVATE /W3 /WX)
@@ -152,7 +168,9 @@ if(MSVC)
 endif()
 
 # Installation (optional)
-install(TARGETS softhsm_ksp
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-)
+if(KSP_HAVE_ENTRY_POINT)
+    install(TARGETS softhsm_ksp
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+    )
+endif()

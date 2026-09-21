@@ -387,11 +387,16 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 **`ncrypt_provider.h` is required for `ksp_main.c`** — it declares
 `NCRYPT_KEY_STORAGE_FUNCTION_TABLE`.
 
-Verified: it is *not* in the Windows SDK, and installing the WDK on a clean
-`windows-latest` runner did not supply it. **Where it does come from is not
-established** — it is associated with the Cryptographic Provider Development
-Kit, but that has not been confirmed here, and two guesses at its location
-have already been wrong. Pass `-DCPDK_INCLUDE_DIR=<dir>` if you have it.
+**It does not exist on a GitHub-hosted Windows runner.** A `dir /s /b`
+across both drives found exactly one copy — this repository's own test mock
+— and that was after `choco install windowsdriverkit11` reported success.
+It is not in the Windows SDK either. Where it *does* come from is still
+unestablished; it is associated with the Cryptographic Provider Development
+Kit, but that is unconfirmed and two guesses at its location were wrong.
+Pass `-DCPDK_INCLUDE_DIR=<dir>` if you have it.
+
+Without it, CMake **skips** the `softhsm_ksp` and `test_ksp_integration`
+targets and warns, rather than emitting a DLL with no entry point.
 
 The other nine source files build without it: MSVC compiles all nine clean
 at `/W3 /WX`, and `test_p11_layer.exe` links.

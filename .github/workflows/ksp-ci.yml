@@ -88,73 +88,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # NCRYPT_KEY_STORAGE_FUNCTION_TABLE is declared in ncrypt_provider.h,
-      # which the first CI run proved is NOT in the hosted runner's Windows
-      # Kits. It ships with the WDK. Building a CNG provider therefore
-      # requires the WDK, which is a genuine prerequisite this project had
-      # never written down.
-      - name: Install the WDK
-        continue-on-error: true
-        run: choco install windowsdriverkit11 --no-progress -y
-
-      # The first attempt searched only Windows Kits\10\Include and found
-      # nothing even after the WDK installed. The CPDK puts its headers in a
-      # sibling directory, not inside Include, so search the whole tree.
-      # Three searches have failed: Windows Kits\10\Include, the whole
-      # Windows Kits tree, then every drive. The third was written with
-      # Get-ChildItem -Include -Recurse, which walks every file on the disk
-      # and ran for over thirteen minutes without finishing. cmd's dir is
-      # dramatically faster for a filename lookup, so use that instead.
-      - name: Locate ncrypt_provider.h
-        id: findhdr
-        shell: cmd
-        timeout-minutes: 5
-        run: |
-          @echo off
-          echo Searching all drives for ncrypt_provider.h and bcrypt_provider.h
-          for %%D in (C D) do (
-            if exist %%D:\ (
-              dir /s /b %%D:\ncrypt_provider.h 2>nul >> "%RUNNER_TEMP%\hits.txt"
-              dir /s /b %%D:\bcrypt_provider.h 2>nul >> "%RUNNER_TEMP%\hits.txt"
-            )
-          )
-          if exist "%RUNNER_TEMP%\hits.txt" (
-            echo Found:
-            type "%RUNNER_TEMP%\hits.txt"
-          ) else (
-            echo Neither header exists on this machine, despite the WDK
-            echo reporting a successful install.
-          )
-          for /f "delims=" %%F in ('dir /s /b C:\ncrypt_provider.h 2^>nul') do (
-            echo dir=%%~dpF>> "%GITHUB_OUTPUT%"
-            echo found=yes>> "%GITHUB_OUTPUT%"
-            goto :done
-          )
-          echo found=no>> "%GITHUB_OUTPUT%"
-          :done
-
+      # ncrypt_provider.h, which declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE,
+      # does not exist on a GitHub-hosted Windows runner. Established, not
+      # assumed: a dir /s /b across C: and D: returned exactly one hit, this
+      # repository's own test mock, and that was after `choco install
+      # windowsdriverkit11` reported success. The WDK install step is gone
+      # because it cost three minutes a run and never supplied the header.
+      #
+      # So this job builds what MSVC can build — nine of the ten source
+      # files, plus test_p11_layer — and CMake skips the DLL target rather
+      # than emitting one without its entry point. TABLE-01 and BUILD-01
+      # stay open in the feature matrix until a machine with the header
+      # proves the whole DLL builds.
       - name: Configure
-        run: >
-          cmake -S softhsm_ksp -B build -A x64
-          "-DCPDK_INCLUDE_DIR=${{ steps.findhdr.outputs.dir }}"
+        run: cmake -S softhsm_ksp -B build -A x64
 
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Report a missing WDK clearly
-        if: failure() && steps.findhdr.outputs.found == 'no'
+      # A green job here must not be mistaken for "the DLL builds".
+      - name: Confirm the DLL was not silently produced
         shell: pwsh
         run: |
-          Write-Host "::error::ncrypt_provider.h is not on this machine."
-          Write-Host "It declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE and is not in the"
-          Write-Host "Windows SDK; installing the WDK did not supply it either. Only"
-          Write-Host "ksp_main.c needs it — the other nine files compile clean here."
-          Write-Host "Pass -DCPDK_INCLUDE_DIR=<dir> if you have it elsewhere."
-          exit 1
+          $dll = Get-ChildItem -Path build -Recurse -Filter softhsm_ksp.dll -ErrorAction SilentlyContinue
+          if ($dll) {
+            Write-Host "softhsm_ksp.dll was built: $($dll[0].FullName)"
+            "### KSP DLL built" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          } else {
+            Write-Host "::warning::softhsm_ksp.dll was NOT built - ncrypt_provider.h is unavailable on hosted runners. Nine of ten sources compiled; the DLL target was skipped by design."
+            @(
+              "### KSP DLL not built"
+              ""
+              "``ncrypt_provider.h`` is not available on GitHub-hosted Windows"
+              "runners, so CMake skipped the ``softhsm_ksp`` target rather than"
+              "produce a DLL without its entry point."
+              ""
+              "MSVC did compile the other nine source files and ``test_p11_layer``."
+              "See ``softhsm_ksp/docs/13-roadmap.md`` (BUILD-01, TABLE-01)."
+            ) | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
 
       - name: Show output
         shell: pwsh
-        run: Get-ChildItem -Recurse build\Release | Select-Object Name, Length
+        run: Get-ChildItem -Recurse build\Release -ErrorAction SilentlyContinue | Select-Object Name, Length
 
   # ── PowerShell tooling ──────────────────────────────────────────────────
   scripts:
