@@ -21,12 +21,13 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [10 — Running the Microsoft HLK tests](./10-hlk-execution.md) | The in-repo HLK suite, the official HLK Studio procedure, code-signing reality (Microsoft does not sign providers), and what blocks a real certification submission |
 | [11 — CNG KSP market comparison](./11-market-comparison.md) | Capability audit against Microsoft, AWS, Utimaco, Thales, Entrust and Securosys providers, with evidence grades on every claim |
 | [12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) | Every function, mechanism, attribute and parameter a token must provide, in capability tiers, with a backend evaluation checklist |
+| [13 — Roadmap to market parity](./13-roadmap.md) | Why the Windows build has never worked, the six defects behind it, and the phased plan to interface parity |
 
 ### Generated deliverables
 
 | Artefact | Source of truth | Regenerate with |
 |----------|-----------------|-----------------|
-| [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf) — 96 market capabilities, our coverage, and the gap remedy for each | [`feature-matrix.csv`](./feature-matrix.csv) | `python3 generate_feature_matrix.py` |
+| [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf) — 99 market capabilities, our coverage, and the gap remedy for each | [`feature-matrix.csv`](./feature-matrix.csv) | `python3 generate_feature_matrix.py` |
 | `SoftHSM2_KSP_Algorithm_Reference.docx` | `generate_algo_ref.py` | `python3 generate_algo_ref.py` |
 | `SoftHSM2_KSP_Complete_Developer_Guide.docx` | `generate_guide.py` | `python3 generate_guide.py` |
 

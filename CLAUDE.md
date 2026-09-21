@@ -93,7 +93,8 @@ noida/
 │   │   ├── 10-hlk-execution.md     Microsoft HLK execution procedure
 │   │   ├── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
 │   │   ├── 12-pkcs11-requirements.md Backend requirements: functions, mechanisms, attributes
-│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (96 rows)
+│   │   ├── 13-roadmap.md           Why the Windows build fails, and the phased plan to parity
+│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (99 rows)
 │   ├── CMakeLists.txt
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
@@ -168,10 +169,10 @@ grew from S to M).
   the ECB/CBC/GCM chaining modes *are* standard; `ChainingModeCTR` is not.
 - Every other surveyed provider exposes only RSA + ECDSA + ECDH on NIST curves
 - **`docs/feature-matrix.csv` + `generate_feature_matrix.py` → `SoftHSM2_KSP_Feature_Matrix.pdf`**
-  — 97 capabilities observed across shipping CNG KSPs in 14 categories, each
+  — 99 capabilities observed across shipping CNG KSPs in 14 categories, each
   marked Covered / Partial / Not covered against this project with the remedy
-  and effort for every gap. Currently 49 covered, 7 partial, 41 not covered;
-  40 actionable gaps (3 S, 19 M, 18 L). The rest are deliberate positions or
+  and effort for every gap. Currently 49 covered, 7 partial, 43 not covered;
+  42 actionable gaps (4 S, 20 M, 18 L). The rest are deliberate positions or
   external blockers. Highest-value gap identified: **X25519 key agreement**,
   which unlike Ed25519 signing *is* a standard CNG curve.
 - **`docs/12-pkcs11-requirements.md`** — the PKCS#11 backend contract extracted
@@ -310,8 +311,16 @@ ECB / CBC / CBC_PAD / CTR / GCM supported; CCM and CFB return `NTE_NOT_SUPPORTED
 All keys: `CKA_TOKEN=TRUE`, `CKA_SENSITIVE=TRUE`, `CKA_EXTRACTABLE=FALSE`
 AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 
-### Known Limitations — read TABLE-01 first
+### Known Limitations — read `docs/13-roadmap.md` first
 
+- **The DLL has never been compiled for Windows.** A mingw-w64 cross-compile
+  fails on 7 of the 10 source files, and there is no CI. Six root causes are
+  catalogued in `docs/13-roadmap.md` §1.2, including two constants the test
+  mock invents (`BCRYPT_SHA224_ALGORITHM`, `NTE_KEY_DOES_NOT_EXIST`) and two
+  it gives wrong values (`NCRYPT_IMPL_HARDWARE_FLAG`, `NTE_BAD_KEYSET_PARAM`).
+  The unit tests cannot catch any of it: they compile against that same mock.
+  Recorded as `BUILD-01` / `BUILD-02`. **Treat every coverage figure in this
+  file as Linux-only until Phase 0 of the roadmap lands.**
 - **The CNG function table in `ksp_main.c` is very likely wrong on Windows.**
   It is ordered to the hand-written struct in `tests/mock/windows_compat.h`,
   not to the Windows SDK's `ncrypt_provider.h`, and it omits `IsAlgSupported`,
