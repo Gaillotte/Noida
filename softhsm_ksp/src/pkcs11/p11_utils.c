@@ -665,3 +665,35 @@ BOOL P11_TokenLabelMatches(const CK_UTF8CHAR *pbLabel, const char *szWanted)
 
     return memcmp(pbLabel, szWanted, cbLabel) == 0;
 }
+
+/* Map a CNG curve name to this provider's identifier. See the header. */
+LPCWSTR P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement)
+{
+    if (!pszCurveName)
+        return NULL;
+
+    /* NIST curves exist in both signing and agreement forms. */
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP256) == 0)
+        return bAgreement ? ALG_ECDH_P256 : ALG_ECDSA_P256;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP384) == 0)
+        return bAgreement ? ALG_ECDH_P384 : ALG_ECDSA_P384;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP521) == 0)
+        return bAgreement ? ALG_ECDH_P521 : ALG_ECDSA_P521;
+
+    /* X25519 is agreement-only; asking to sign with it is a mismatch the
+     * caller should hear about rather than have quietly reinterpreted. */
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_25519) == 0)
+        return bAgreement ? ALG_ECDH_X25519 : NULL;
+
+    /* These are signing curves in this provider; no ECDH form is wired. */
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_SECP256K1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_SECP256K1;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP256R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP256;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP384R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP384;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP512R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP512;
+
+    return NULL;
+}

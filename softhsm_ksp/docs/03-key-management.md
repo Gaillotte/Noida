@@ -429,3 +429,39 @@ within a slot — a single user PIN grants the whole token. No amount of
 label work supplies one. If separation must be enforced rather than merely
 represented, use **separate tokens** and select between them with
 `SOFTHSM2_TOKEN_LABEL`, which gives each its own PIN.
+
+---
+
+## Choosing a curve the standard CNG way
+
+Every curve this provider supports is reachable without naming anything
+provider-specific. Create the key with the generic algorithm, set the
+curve, then finalise:
+
+```c
+NCryptCreatePersistedKey(hProv, &hKey, BCRYPT_ECDSA_ALGORITHM, L"mykey", 0, 0);
+NCryptSetProperty(hKey, BCRYPT_ECC_CURVE_NAME,
+                  (PBYTE)BCRYPT_ECC_CURVE_BRAINPOOLP384R1,
+                  sizeof(BCRYPT_ECC_CURVE_BRAINPOOLP384R1), 0);
+NCryptFinalizeKey(hKey, 0);
+```
+
+| Curve name | Generic `ECDSA` | Generic `ECDH` |
+|------------|-----------------|----------------|
+| `nistP256` / `nistP384` / `nistP521` | `ECDSA_P*` | `ECDH_P*` |
+| `secP256k1` | `ECDSA_SECP256K1` | — |
+| `brainpoolP256r1` / `P384r1` / `P512r1` | `ECDSA_BRAINPOOLP*` | — |
+| `curve25519` | — | `ECDH_X25519` |
+
+Names are matched **case-insensitively**: CNG spells one of them
+`secP256k1`, and an exact comparison would be fragile.
+
+A dash means that combination is refused with `NTE_NOT_SUPPORTED` rather
+than reinterpreted — X25519 cannot sign, and no ECDH form of secp256k1 or
+Brainpool is wired here. A generic key that reaches `NCryptFinalizeKey`
+without a curve returns `NTE_BAD_ALGID`, which is clearer than whatever the
+token would report about empty curve parameters.
+
+The provider's own identifiers (`ECDSA_SECP256K1`, `ECDH_X25519`, …) still
+work and remain the only route for EdDSA and HMAC, which CNG has no
+identifiers for at all.

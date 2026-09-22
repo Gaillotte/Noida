@@ -46,3 +46,44 @@ BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId)
             _wcsicmp(pszAlgId, ALG_HMAC_SHA384) == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA512) == 0);
 }
+
+/* The curve-name property resolves a generic ECC key through these two.
+ * Mirrors the real mapping for the curves this suite exercises. */
+DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return 0;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P256)  == 0) return 256;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0) return 384;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0) return 521;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) return 256;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0)     return 256;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0)     return 384;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0)     return 512;
+    if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)     return 255;
+    return 2048;
+}
+
+LPCWSTR P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement)
+{
+    if (!pszCurveName) return NULL;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP256) == 0)
+        return bAgreement ? ALG_ECDH_P256 : ALG_ECDSA_P256;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP384) == 0)
+        return bAgreement ? ALG_ECDH_P384 : ALG_ECDSA_P384;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP521) == 0)
+        return bAgreement ? ALG_ECDH_P521 : ALG_ECDSA_P521;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_25519) == 0)
+        return bAgreement ? ALG_ECDH_X25519 : NULL;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_SECP256K1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_SECP256K1;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP256R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP256;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP384R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP384;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP512R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP512;
+    return NULL;
+}

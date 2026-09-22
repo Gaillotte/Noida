@@ -243,68 +243,62 @@ so none of its code appeared in the coverage report, despite holding the
 token credential and every session the provider uses. It is now covered by
 `test_p11_session.c`.
 
-### Phase 2 — Standard-CNG reach ✅ done, with one blocker named
-
-Every item that could be built here is built. What remains is blocked by a
-single external constraint, described at the end.
+### Phase 2 — Standard-CNG reach ✅ done
 
 | Item | Result |
 |------|--------|
 | `ECDH-04` — `BCRYPT_KDF_HASH` | **Covered** |
 | `ECDH-05` — HKDF, HMAC, TLS PRF | **Covered** |
-| `EDDSA-03` — X25519 key agreement | Partial — works, own identifier |
-| `ECDSA-04` — Brainpool P256r1/P384r1/P512r1 | Partial — works, own identifier |
-| `ECDSA-05` — secp256k1 | Partial — works, own identifier |
+| `EDDSA-03` — X25519 key agreement | **Covered** |
+| `ECDSA-04` — Brainpool P256r1/P384r1/P512r1 | **Covered** |
+| `ECDSA-05` — secp256k1 | **Covered** |
 
-**Key derivation is complete.** `NCryptDeriveKey` now implements every CNG
-KDF: the raw secret, `BCRYPT_KDF_HASH`, `BCRYPT_KDF_HKDF`,
-`BCRYPT_KDF_HMAC` (including `KDF_USE_SECRET_AS_HMAC_KEY_FLAG`) and
-`BCRYPT_KDF_TLS_PRF` for TLS 1.2. TLS 1.0 and 1.1 are refused deliberately:
-their PRF is the MD5/SHA-1 split construction, both versions are deprecated
-by RFC 8996, and adding MD5-based key derivation to a new codebase is the
-wrong default. PKCS#11 has no keyless HMAC call, so each HMAC is a
-`C_CreateObject` / `C_SignInit` / `C_Sign` / `C_DestroyObject` cycle, and
-the suite asserts no key object leaks across a multi-block expansion.
+**Key derivation is complete.** Every CNG KDF: the raw secret,
+`BCRYPT_KDF_HASH`, `BCRYPT_KDF_HKDF`, `BCRYPT_KDF_HMAC` (including
+`KDF_USE_SECRET_AS_HMAC_KEY_FLAG`) and `BCRYPT_KDF_TLS_PRF` for TLS 1.2.
+TLS 1.0 and 1.1 are refused deliberately: their PRF is the MD5/SHA-1 split
+construction and both versions are deprecated by RFC 8996.
 
-**Three curves work but are not reachable the standard way.** X25519,
-secp256k1 and the three Brainpool curves all generate and sign or agree.
-Each is reachable only through this provider's own identifier
-(`ECDH_X25519`, `ECDSA_SECP256K1`, `ECDSA_BRAINPOOLP*`), not through the
-CNG route of a generic `ECDSA` / `ECDH` algorithm plus a
-`BCRYPT_ECC_CURVE_NAME` property.
+**Every curve is reachable the standard CNG way.** A key created with the
+generic `BCRYPT_ECDSA_ALGORITHM` or `BCRYPT_ECDH_ALGORITHM` takes its curve
+from `BCRYPT_ECC_CURVE_NAME` before finalising — the route a portable
+application uses, naming nothing provider-specific:
 
-#### The one blocker
+```c
+NCryptCreatePersistedKey(hProv, &hKey, BCRYPT_ECDSA_ALGORITHM, ...);
+NCryptSetProperty(hKey, BCRYPT_ECC_CURVE_NAME,
+                  (PBYTE)BCRYPT_ECC_CURVE_BRAINPOOLP384R1, ..., 0);
+NCryptFinalizeKey(hKey, 0);
+```
 
-That route needs four names, and **none of them exists in any header
-available in this workspace** — not mingw-w64 11, not mingw-w64 master:
+Resolving the name rewrites the key's algorithm to this provider's specific
+identifier, after which generation, OID lookup, coordinate size and
+signature length all work unchanged. A curve that cannot do what the chosen
+generic algorithm asks is refused rather than reinterpreted: X25519 cannot
+sign, and no ECDH form of secp256k1 or Brainpool is wired here.
 
-| Name | Purpose |
-|------|---------|
-| `BCRYPT_ECDSA_ALGORITHM` | The generic ECDSA algorithm identifier |
-| `BCRYPT_ECDH_ALGORITHM` | The generic ECDH algorithm identifier |
-| `BCRYPT_ECC_CURVE_NAME` | The property that selects the curve |
-| `BCRYPT_ECC_CURVE_*` | The curve name values themselves |
+#### A blocker I declared too early
 
-Writing this route would mean inventing all four and shipping code that
-cannot be compile-checked against a real header. That is precisely the
-pattern that produced `BCRYPT_SHA224_ALGORITHM` and
-`NTE_KEY_DOES_NOT_EXIST` — constants this project invented, which passed
-every test and could not build on Windows. So it is **not** implemented,
-and the three rows stay Partial rather than being closed on an assumption.
+This route was reported as blocked because none of `BCRYPT_ECDSA_ALGORITHM`,
+`BCRYPT_ECDH_ALGORITHM`, `BCRYPT_ECC_CURVE_NAME` or the `BCRYPT_ECC_CURVE_*`
+values appears in mingw-w64, in 11 or master. That was true, and the
+conclusion drawn from it — that the values could not be established here —
+was wrong. **One header set is not the same as every available source.**
 
-Note also that `NTDDI_VERSION` was unset until Phase 2, which hid
-version-gated declarations. It is now `NTDDI_WIN10_RS4`, so a build against
-a real Windows SDK is a better place to discover whether these names exist
-than it was before. **That is the check that unblocks all three rows**, and
-it needs a machine with the SDK — the same machine `BUILD-01` and
-`TABLE-01` need.
+Two independent sources have them and agree exactly: Wine's
+`include/bcrypt.h` and the Rust `winapi` crate's `shared/bcrypt.rs`. The
+crate had already been downloaded, for an unrelated search, before the
+blocker was declared.
 
-#### Still open from the audit
+The values are defined in `config.h` behind `#ifndef`, so a real SDK wins
+wherever it has them, and curve names are compared case-insensitively —
+which matters, because CNG spells one of them `secP256k1` and a guess would
+have used a lowercase `p`.
 
-`EDDSA_ED25519`, `EDDSA_ED448` and `HMAC_SHA*` are private extensions no
-standard CNG caller can reach. `README.md` now says so; the
-`SoftHSM2_KSP_Algorithm_Reference.docx` still presents them as plain
-algorithm support and should be regenerated to match.
+The caution that produced the wrong call was itself sound: this project has
+shipped invented constants before, and `BCRYPT_SHA224_ALGORITHM` really did
+break the Windows build. The error was stopping at "I cannot verify this"
+without exhausting what was to hand.
 
 ### Phase 3 — Assurance
 

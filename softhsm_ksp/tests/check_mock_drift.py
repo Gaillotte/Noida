@@ -35,10 +35,6 @@ import sys
 # Names the mock may define even though mingw-w64 does not know them.
 # Each needs a reason, so the list cannot quietly become a dumping ground.
 ALLOWED = {
-    # Real Windows API, but newer than the mingw-w64 version we read.
-    "BCRYPT_ECC_CURVE_NAME":       "Windows 10+; absent from mingw-w64 11",
-    "BCRYPT_ECC_CURVE_SECP256K1":  "Windows 10+; absent from mingw-w64 11",
-    # Declared by the WDK's ncrypt_provider.h, which mingw-w64 does not ship.
     "NCRYPT_KEY_STORAGE_INTERFACE_VERSION": "WDK ncrypt_provider.h",
     "BCRYPT_MAKE_INTERFACE_VERSION":        "WDK ncrypt_provider.h",
 }

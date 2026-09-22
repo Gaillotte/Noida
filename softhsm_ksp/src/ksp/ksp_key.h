@@ -24,6 +24,7 @@ typedef struct _KSP_KEY {
     CK_OBJECT_HANDLE hSecretKey;                /* Symmetric key object (AES/HMAC) */
     BOOL             bSessionObject;            /* TRUE = session object, destroy on FreeKey */
     BOOL             bMachineKey;               /* NCRYPT_MACHINE_KEY_FLAG was set */
+    BOOL             bCurvePending;             /* generic ECDSA/ECDH awaiting BCRYPT_ECC_CURVE_NAME */
 
     /* Symmetric cipher state (AES) — set via NCryptSetProperty */
     WCHAR            szChainingMode[MAX_ALG_ID_LEN]; /* NCRYPT_CHAINING_MODE_PROPERTY */
@@ -113,6 +114,15 @@ BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId);
 
 /* X25519 — a Montgomery curve generated with the Edwards mechanism */
 BOOL KSP_IsMontgomeryAlg(LPCWSTR pszAlgId);
+
+/* The generic CNG ECC identifiers, whose curve arrives later through the
+ * BCRYPT_ECC_CURVE_NAME property. Returns TRUE for BCRYPT_ECDSA_ALGORITHM
+ * and BCRYPT_ECDH_ALGORITHM. */
+BOOL KSP_IsGenericEccAlg(LPCWSTR pszAlgId);
+
+/* Default key length in bits for an algorithm identifier. Exposed so the
+ * curve-name property can set it when it resolves a generic ECC key. */
+DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId);
 
 /* Return TRUE when pszAlgId names a symmetric algorithm (AES or HMAC) */
 BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId);

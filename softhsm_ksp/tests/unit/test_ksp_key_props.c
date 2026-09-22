@@ -387,6 +387,105 @@ int main(void)
         KSP_Free((void *)(ULONG_PTR)hFin);
     }
 
+    /* ── BCRYPT_ECC_CURVE_NAME: the standard CNG route to a curve ─────── */
+    TEST_SUITE("SetKeyProperty — BCRYPT_ECC_CURVE_NAME");
+    {
+        /* A portable application creates a key with the generic ECDSA or
+         * ECDH identifier and names the curve here, never mentioning
+         * anything provider-specific. */
+        struct { const WCHAR *generic; const WCHAR *curve;
+                 const WCHAR *expect;  DWORD bits; } ok[] = {
+            { BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_NISTP256,
+              ALG_ECDSA_P256, 256 },
+            { BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_NISTP521,
+              ALG_ECDSA_P521, 521 },
+            { BCRYPT_ECDH_ALGORITHM,  BCRYPT_ECC_CURVE_NISTP384,
+              ALG_ECDH_P384,  384 },
+            { BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_SECP256K1,
+              ALG_ECDSA_SECP256K1, 256 },
+            { BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_BRAINPOOLP256R1,
+              ALG_ECDSA_BP256, 256 },
+            { BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_BRAINPOOLP512R1,
+              ALG_ECDSA_BP512, 512 },
+            { BCRYPT_ECDH_ALGORITHM,  BCRYPT_ECC_CURVE_25519,
+              ALG_ECDH_X25519, 255 },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+            NCRYPT_KEY_HANDLE h =
+                make_test_key(ok[i].generic, 0, AT_SIGNATURE, FALSE);
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            char name[96];
+
+            k->bCurvePending = TRUE;
+            ss = KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                    (PBYTE)ok[i].curve,
+                    (DWORD)(wcslen(ok[i].curve) * sizeof(WCHAR)), 0);
+            sprintf(name, "%ls resolves", ok[i].curve);
+            ASSERT_EQ(name, ss, (SECURITY_STATUS)ERROR_SUCCESS);
+            ASSERT_WSTR("  ...to the right algorithm", k->szAlgId, ok[i].expect);
+            ASSERT_EQ("  ...with the right length", k->dwKeyBitLen, ok[i].bits);
+            ASSERT("  ...and the curve is no longer pending",
+                   !k->bCurvePending);
+            KSP_Free((void *)(ULONG_PTR)h);
+        }
+    }
+    {
+        /* Curve names are compared case-insensitively. CNG spells one of
+         * them "secP256k1", so an exact match would be fragile. */
+        NCRYPT_KEY_HANDLE h =
+            make_test_key(BCRYPT_ECDSA_ALGORITHM, 0, AT_SIGNATURE, FALSE);
+        KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+        k->bCurvePending = TRUE;
+        ss = KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                (PBYTE)L"SECP256K1", (DWORD)(9 * sizeof(WCHAR)), 0);
+        ASSERT_OK("Curve name is case-insensitive", ss);
+        ASSERT_WSTR("  still resolves", k->szAlgId, ALG_ECDSA_SECP256K1);
+        KSP_Free((void *)(ULONG_PTR)h);
+    }
+    {
+        /* A curve that cannot do what the generic algorithm asks must be
+         * refused, not quietly reinterpreted: X25519 cannot sign, and no
+         * ECDH form of secp256k1 is wired here. */
+        NCRYPT_KEY_HANDLE h =
+            make_test_key(BCRYPT_ECDSA_ALGORITHM, 0, AT_SIGNATURE, FALSE);
+        ASSERT_EQ("X25519 under generic ECDSA → NTE_NOT_SUPPORTED",
+            KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                (PBYTE)BCRYPT_ECC_CURVE_25519,
+                (DWORD)(wcslen(BCRYPT_ECC_CURVE_25519) * sizeof(WCHAR)), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        KSP_Free((void *)(ULONG_PTR)h);
+
+        h = make_test_key(BCRYPT_ECDH_ALGORITHM, 0, AT_KEYEXCHANGE, FALSE);
+        ASSERT_EQ("secp256k1 under generic ECDH → NTE_NOT_SUPPORTED",
+            KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                (PBYTE)BCRYPT_ECC_CURVE_SECP256K1,
+                (DWORD)(wcslen(BCRYPT_ECC_CURVE_SECP256K1) * sizeof(WCHAR)), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        KSP_Free((void *)(ULONG_PTR)h);
+
+        h = make_test_key(BCRYPT_ECDSA_ALGORITHM, 0, AT_SIGNATURE, FALSE);
+        ASSERT_EQ("Unknown curve → NTE_NOT_SUPPORTED",
+            KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                (PBYTE)L"nistP192", (DWORD)(8 * sizeof(WCHAR)), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        ASSERT_EQ("Empty buffer → NTE_INVALID_PARAMETER",
+            KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                (PBYTE)L"", 0, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        KSP_Free((void *)(ULONG_PTR)h);
+
+        /* The curve cannot change after the key exists on the token. */
+        h = make_test_key(ALG_ECDSA_P256, 256, AT_SIGNATURE, TRUE);
+        ASSERT_EQ("After Finalize → NTE_INVALID_HANDLE",
+            KSP_SetKeyProperty(hProv, h, BCRYPT_ECC_CURVE_NAME,
+                (PBYTE)BCRYPT_ECC_CURVE_NISTP384,
+                (DWORD)(wcslen(BCRYPT_ECC_CURVE_NISTP384) * sizeof(WCHAR)), 0),
+            (SECURITY_STATUS)NTE_INVALID_HANDLE);
+        KSP_Free((void *)(ULONG_PTR)h);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

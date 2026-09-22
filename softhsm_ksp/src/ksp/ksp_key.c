@@ -137,6 +137,17 @@ BOOL KSP_IsEcdhAlg(LPCWSTR pszAlgId)
             _wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0);
 }
 
+/* The generic CNG ECC identifiers. A key created with one of these has no
+ * curve yet: the caller supplies it through BCRYPT_ECC_CURVE_NAME before
+ * FinalizeKey. This is how a portable application reaches secp256k1,
+ * Brainpool or X25519 without naming anything provider-specific. */
+BOOL KSP_IsGenericEccAlg(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return FALSE;
+    return (_wcsicmp(pszAlgId, BCRYPT_ECDSA_ALGORITHM) == 0 ||
+            _wcsicmp(pszAlgId, BCRYPT_ECDH_ALGORITHM)  == 0);
+}
+
 /* X25519 is a Montgomery curve. SoftHSM2 generates it with the Edwards
  * mechanism and CKK_EC_EDWARDS, but the key is for agreement, not signing,
  * so it needs CKA_DERIVE where Ed25519 needs CKA_SIGN. */
@@ -165,7 +176,7 @@ BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId)
 }
 
 /* Default key length in bits for a given algorithm */
-static DWORD DefaultKeyBits(LPCWSTR pszAlgId)
+DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId)
 {
     if (_wcsicmp(pszAlgId, ALG_RSA) == 0)            return RSA_DEFAULT_KEY_BITS;
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
@@ -197,6 +208,15 @@ static SECURITY_STATUS GenerateForAlg(KSP_KEY *pKey)
 {
     if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0)
         return KSP_GenerateRsaKeyPair(pKey);
+    /* A generic ECDSA/ECDH key that never received BCRYPT_ECC_CURVE_NAME
+     * has no curve to generate on. Refusing here is far clearer than
+     * whatever the token would say about an empty CKA_EC_PARAMS. */
+    if (pKey->bCurvePending) {
+        LOG_ERROR("FinalizeKey - generic ECC key has no curve; set "
+                  "BCRYPT_ECC_CURVE_NAME before finalising", NTE_BAD_ALGID);
+        return NTE_BAD_ALGID;
+    }
+
     if (KSP_IsEddsaAlg(pKey->szAlgId) || KSP_IsMontgomeryAlg(pKey->szAlgId))
         return KSP_GenerateEddsaKeyPair(pKey);
     if (KSP_IsSymmetricAlg(pKey->szAlgId))
@@ -712,7 +732,8 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
         !KSP_IsEcdsaAlg(pszAlgId)   &&
         !KSP_IsEcdhAlg(pszAlgId)    &&
         !KSP_IsEddsaAlg(pszAlgId)   &&
-        !KSP_IsSymmetricAlg(pszAlgId)) {
+        !KSP_IsSymmetricAlg(pszAlgId) &&
+        !KSP_IsGenericEccAlg(pszAlgId)) {
         LOG_LEAVE("KSP_CreatePersistedKey", NTE_BAD_ALGID);
         return NTE_BAD_ALGID;
     }
@@ -732,6 +753,8 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     /* CNG keeps machine and user keys in separate stores; here the scope
      * becomes a CKA_LABEL prefix. See BuildScopedLabel. */
     pKey->bMachineKey = (dwFlags & NCRYPT_MACHINE_KEY_FLAG) != 0;
+    /* A generic ECDSA/ECDH key has no curve until the caller sets one. */
+    pKey->bCurvePending = KSP_IsGenericEccAlg(pszAlgId);
     pKey->dwKeyClass = KSP_IsSymmetricAlg(pszAlgId)
                        ? KSP_KEY_CLASS_SYMMETRIC : KSP_KEY_CLASS_ASYMMETRIC;
 
@@ -747,7 +770,7 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     if (pszKeyName)
         wcscpy_s(pKey->szKeyName, MAX_KEY_LABEL_LEN, pszKeyName);
 
-    pKey->dwKeyBitLen      = DefaultKeyBits(pszAlgId);
+    pKey->dwKeyBitLen      = KSP_DefaultKeyBits(pszAlgId);
     pKey->dwPublicExponent = RSA_DEFAULT_PUBEXP;
 
     bPersistOnly = (dwFlags & NCRYPT_PERSIST_ONLY_FLAG) != 0;

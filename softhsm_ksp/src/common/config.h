@@ -186,6 +186,56 @@
  * accepts any named curve OpenSSL knows — so they pass straight through.
  * Verified by reading OSSLUtil.cpp, not assumed from the absence of the
  * word "brainpool" in the source. */
+/* ── Generic ECC algorithms and named curves ─────────────────────────────
+ *
+ * Real Windows names, defined here only as a fallback: the guards mean the
+ * SDK's definitions win wherever they exist. mingw-w64 has none of them,
+ * in 11 or master, so without these the project cannot be cross-compiled.
+ *
+ * The values were taken from two independent sources that agree exactly —
+ * Wine's include/bcrypt.h and the Rust winapi crate's shared/bcrypt.rs —
+ * not guessed. Curve names are compared with _wcsicmp, so CNG's mixed
+ * capitalisation ("secP256k1") cannot cause a mismatch. */
+#ifndef BCRYPT_ECDSA_ALGORITHM
+#  define BCRYPT_ECDSA_ALGORITHM            L"ECDSA"
+#endif
+#ifndef BCRYPT_ECDH_ALGORITHM
+#  define BCRYPT_ECDH_ALGORITHM             L"ECDH"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NAME
+#  define BCRYPT_ECC_CURVE_NAME             L"ECCCurveName"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NISTP256
+#  define BCRYPT_ECC_CURVE_NISTP256         L"nistP256"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NISTP384
+#  define BCRYPT_ECC_CURVE_NISTP384         L"nistP384"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NISTP521
+#  define BCRYPT_ECC_CURVE_NISTP521         L"nistP521"
+#endif
+#ifndef BCRYPT_ECC_CURVE_25519
+#  define BCRYPT_ECC_CURVE_25519            L"curve25519"
+#endif
+#ifndef BCRYPT_ECC_CURVE_SECP256K1
+#  define BCRYPT_ECC_CURVE_SECP256K1        L"secP256k1"
+#endif
+#ifndef BCRYPT_ECC_CURVE_BRAINPOOLP256R1
+#  define BCRYPT_ECC_CURVE_BRAINPOOLP256R1  L"brainpoolP256r1"
+#endif
+#ifndef BCRYPT_ECC_CURVE_BRAINPOOLP384R1
+#  define BCRYPT_ECC_CURVE_BRAINPOOLP384R1  L"brainpoolP384r1"
+#endif
+#ifndef BCRYPT_ECC_CURVE_BRAINPOOLP512R1
+#  define BCRYPT_ECC_CURVE_BRAINPOOLP512R1  L"brainpoolP512r1"
+#endif
+
+/* CNG's standard route to any curve: create a key with the generic
+ * BCRYPT_ECDSA_ALGORITHM or BCRYPT_ECDH_ALGORITHM identifier, then set
+ * BCRYPT_ECC_CURVE_NAME before finalising. This is how a portable
+ * application reaches secp256k1, Brainpool or X25519 without knowing
+ * anything provider-specific. */
+
 #define ALG_ECDSA_BP256 L"ECDSA_BRAINPOOLP256R1"
 #define ALG_ECDSA_BP384 L"ECDSA_BRAINPOOLP384R1"
 #define ALG_ECDSA_BP512 L"ECDSA_BRAINPOOLP512R1"

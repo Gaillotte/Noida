@@ -113,4 +113,15 @@ SECURITY_STATUS P11_BuildEcPointDer(
  * pbLabel must point at P11_TOKEN_LABEL_LEN bytes. */
 BOOL P11_TokenLabelMatches(const CK_UTF8CHAR *pbLabel, const char *szWanted);
 
+/* Map a CNG curve name (BCRYPT_ECC_CURVE_*) to this provider's algorithm
+ * identifier for that curve, for the generic-ECDSA/ECDH route.
+ *
+ * bAgreement selects the ECDH form where one exists: "nistP256" is
+ * ECDSA_P256 for signing and ECDH_P256 for agreement, and the caller's
+ * choice of generic algorithm is what distinguishes them.
+ *
+ * Returns NULL if the curve is not supported. Comparison is
+ * case-insensitive: CNG spells one of these "secP256k1". */
+LPCWSTR P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement);
+
 #endif /* P11_UTILS_H */

@@ -12,6 +12,7 @@ SECURITY_STATUS P11_ResolveMechanism(
     CK_MECHANISM *pMechanism, CK_RSA_PKCS_PSS_PARAMS *pPssParams);
 DWORD       P11_EcCoordSize(LPCWSTR pszAlgId);
 const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid);
+LPCWSTR     P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement);
 
 int main(void)
 {
@@ -176,6 +177,59 @@ int main(void)
         ASSERT("P384r1 and P512r1 differ",
                memcmp(P11_GetCurveOid(ALG_ECDSA_BP384, &cbOid),
                       P11_GetCurveOid(ALG_ECDSA_BP512, &cbOid), 11) != 0);
+    }
+
+    /* ── CNG curve names → provider identifiers ───────────────────────── */
+    TEST_SUITE("P11_CurveNameToAlgId");
+    {
+        /* A NIST curve is ECDSA or ECDH depending on which generic
+         * algorithm the caller started from. */
+        ASSERT_WSTR("nistP256 signing", 
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_NISTP256, FALSE),
+            ALG_ECDSA_P256);
+        ASSERT_WSTR("nistP256 agreement",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_NISTP256, TRUE),
+            ALG_ECDH_P256);
+        ASSERT_WSTR("nistP384 agreement",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_NISTP384, TRUE),
+            ALG_ECDH_P384);
+        ASSERT_WSTR("nistP521 signing",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_NISTP521, FALSE),
+            ALG_ECDSA_P521);
+
+        ASSERT_WSTR("secp256k1 signing",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_SECP256K1, FALSE),
+            ALG_ECDSA_SECP256K1);
+        ASSERT_WSTR("brainpoolP256r1",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_BRAINPOOLP256R1, FALSE),
+            ALG_ECDSA_BP256);
+        ASSERT_WSTR("brainpoolP384r1",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_BRAINPOOLP384R1, FALSE),
+            ALG_ECDSA_BP384);
+        ASSERT_WSTR("brainpoolP512r1",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_BRAINPOOLP512R1, FALSE),
+            ALG_ECDSA_BP512);
+        ASSERT_WSTR("curve25519 agreement",
+            P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_25519, TRUE),
+            ALG_ECDH_X25519);
+
+        /* Case-insensitive, because CNG spells one "secP256k1". */
+        ASSERT_WSTR("Mixed case still matches",
+            P11_CurveNameToAlgId(L"BrAiNpOoLp384R1", FALSE),
+            ALG_ECDSA_BP384);
+
+        /* A curve that cannot do what was asked returns NULL rather than
+         * silently giving back something that can. */
+        ASSERT_NULL("curve25519 cannot sign",
+            (void *)P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_25519, FALSE));
+        ASSERT_NULL("secp256k1 has no ECDH form here",
+            (void *)P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_SECP256K1, TRUE));
+        ASSERT_NULL("brainpool has no ECDH form here",
+            (void *)P11_CurveNameToAlgId(BCRYPT_ECC_CURVE_BRAINPOOLP256R1, TRUE));
+
+        ASSERT_NULL("Unknown curve",
+            (void *)P11_CurveNameToAlgId(L"nistP192", FALSE));
+        ASSERT_NULL("NULL name", (void *)P11_CurveNameToAlgId(NULL, FALSE));
     }
 
     TEST_REPORT();

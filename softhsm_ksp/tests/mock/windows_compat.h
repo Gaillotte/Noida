@@ -534,6 +534,7 @@ typedef BCryptBufferDesc *PNCryptBufferDesc;
 #define BCRYPT_KDF_SP80056A_CONCAT   L"SP800_56A_CONCAT"
 #define BCRYPT_KDF_HKDF              L"HKDF"
 
+
 /* ── Algorithm enumeration ────────────────────────────────────────────────
  * Values verified against the Windows SDK bcrypt.h / ncrypt.h: the
  * NCRYPT_*_OPERATION names are aliases of the BCRYPT_*_OPERATION ones. */

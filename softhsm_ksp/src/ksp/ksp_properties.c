@@ -2,6 +2,7 @@
 #include "ksp_properties.h"
 #include "ksp_key.h"
 #include "ksp_provider.h"
+#include "../pkcs11/p11_utils.h"
 #include "../common/config.h"
 #include "../common/logging.h"
 #include <string.h>
@@ -222,7 +223,52 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
     /* Key length — settable before FinalizeKey only */
-    if (_wcsicmp(pszProperty, NCRYPT_LENGTH_PROPERTY) == 0) {
+    /* BCRYPT_ECC_CURVE_NAME — the standard CNG way to pick a curve.
+     *
+     * The caller creates the key with the generic BCRYPT_ECDSA_ALGORITHM or
+     * BCRYPT_ECDH_ALGORITHM and names the curve here, before finalising.
+     * Resolving it rewrites the key's algorithm to this provider's specific
+     * identifier, after which every existing path — key generation, OID
+     * lookup, coordinate size, signature length — works unchanged. */
+    if (_wcsicmp(pszProperty, BCRYPT_ECC_CURVE_NAME) == 0) {
+        WCHAR   wszCurve[64];
+        DWORD   cchCurve;
+        LPCWSTR pszResolved;
+        BOOL    bAgreement;
+
+        if (pKey->bFinalized) {
+            ss = NTE_INVALID_HANDLE;
+        } else if (!pbInput || cbInput < sizeof(WCHAR)) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            cchCurve = cbInput / sizeof(WCHAR);
+            if (cchCurve >= (sizeof(wszCurve) / sizeof(wszCurve[0]))) {
+                ss = NTE_INVALID_PARAMETER;
+            } else {
+                memcpy(wszCurve, pbInput, cchCurve * sizeof(WCHAR));
+                wszCurve[cchCurve] = L'\0';
+
+                /* Which generic algorithm the key was created with decides
+                 * whether a NIST curve becomes ECDSA or ECDH. */
+                bAgreement =
+                    (_wcsicmp(pKey->szAlgId, BCRYPT_ECDH_ALGORITHM) == 0) ||
+                    KSP_IsEcdhAlg(pKey->szAlgId);
+
+                pszResolved = P11_CurveNameToAlgId(wszCurve, bAgreement);
+                if (!pszResolved) {
+                    /* Either an unknown curve, or one that cannot do what
+                     * the chosen generic algorithm asks — X25519 cannot
+                     * sign, secp256k1 has no ECDH form here. */
+                    ss = NTE_NOT_SUPPORTED;
+                } else {
+                    wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, pszResolved);
+                    pKey->dwKeyBitLen   = KSP_DefaultKeyBits(pszResolved);
+                    pKey->bCurvePending = FALSE;
+                    ss = ERROR_SUCCESS;
+                }
+            }
+        }
+    } else if (_wcsicmp(pszProperty, NCRYPT_LENGTH_PROPERTY) == 0) {
         if (!pbInput || cbInput < sizeof(DWORD)) {
             ss = NTE_INVALID_PARAMETER;
         } else if (pKey->bFinalized) {
