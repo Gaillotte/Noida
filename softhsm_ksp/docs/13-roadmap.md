@@ -5,8 +5,8 @@ Key Storage Providers surveyed in
 [11 — CNG KSP market comparison](./11-market-comparison.md), and in what
 order the work has to happen.
 
-*Written: September 2026. **Phase 0 is done** — see §3 for what that changed
-and what it could not settle. Complements the gap analysis
+*Written: September 2026. **Phases 0, 1 and 2 are done** — see §3 for what
+each changed and what it could not settle. Complements the gap analysis
 in [`feature-matrix.csv`](./feature-matrix.csv) and
 [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf).*
 
@@ -222,41 +222,89 @@ originally claimed.
 `NCryptOpenStorageProvider`, and CI enforces both. The first two remain
 unproven until the CI `windows` job has run; the third is in place.
 
-### Phase 1 — Interface parity
+### Phase 1 — Interface parity ✅ done
 
-The table-stakes items every commercial provider has and this one does not.
-`LIFE-06` and `LIFE-07` were on this list and closed in Phase 0.
+The table-stakes items every commercial provider has. `LIFE-06` and
+`LIFE-07` were on this list and closed in Phase 0.
 
-| ID | Item | Note |
-|----|------|------|
-| `LIFE-08` | Machine vs user key scope | All providers |
-| `OPS-04` | Multiple slots / tokens | All commercial providers; today only the first token-present slot is used |
-| `OPS-09` | PIN caching / re-login | All commercial providers |
-| `FMT-08` | `BCRYPT_KEY_DATA_BLOB` | Microsoft Software KSP |
-| `IFACE-04` | `SetProviderProperty` | Currently stubbed `NTE_NOT_SUPPORTED` |
+| Item | Result |
+|------|--------|
+| `OPS-04` — multiple slots / tokens | **Covered** — `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; an unmatched selection is an error, never a fallback |
+| `OPS-09` — session recovery | **Covered** — `C_GetSessionInfo` validates a pooled session before reuse |
+| `IFACE-04` — `SetProviderProperty` | Partial — `NCRYPT_PIN_PROPERTY` works; token selection is read-only by design |
+| `FMT-08` — `BCRYPT_KEY_DATA_BLOB` | Partial — import works; export refused because every key is `CKA_EXTRACTABLE=FALSE` |
+| `LIFE-08` — machine vs user scope | Partial — `CKA_LABEL` prefixes give namespacing, **not isolation** |
 
-### Phase 2 — Standard-CNG reach
+Each Partial is a deliberate stopping point, not unfinished work, and the
+matrix records the reason on the row rather than implying a remedy exists.
 
-Converting invented identifiers into ones real callers can reach, highest
-value first.
+`p11_session.c` had no tests at all before this phase — it was in no suite,
+so none of its code appeared in the coverage report, despite holding the
+token credential and every session the provider uses. It is now covered by
+`test_p11_session.c`.
 
-- **`EDDSA-03` — X25519 key agreement.** The single highest-value gap in the
-  matrix. Unlike Ed25519 *signing*, X25519 **is** a standard CNG curve, so
-  this is reachable by ordinary applications.
-- **`ECDSA-05` — secp256k1 the standard way.** It works today only through
-  this project's own `ECDSA_SECP256K1` identifier. The standard route is the
-  generic ECDSA algorithm with `BCRYPT_ECC_CURVE_NAME` set to
-  `BCRYPT_ECC_CURVE_SECP256K1`.
-- **`ECDSA-04` — Brainpool curves**, same mechanism.
-- **`ECDH-04` / `ECDH-05` — the ECDH KDFs** (`BCRYPT_KDF_HASH`,
-  `BCRYPT_KDF_HMAC`, `TLS_PRF`, `HKDF`). The Microsoft Software KSP supports
-  these; today all hash KDFs return `NTE_NOT_SUPPORTED`.
+### Phase 2 — Standard-CNG reach ✅ done, with one blocker named
 
-This phase should also settle the standing question about how
-`EDDSA_ED25519`, `EDDSA_ED448` and `HMAC_SHA*` are described. They are
-private extensions no standard CNG caller can reach, and `README.md` and
-`SoftHSM2_KSP_Algorithm_Reference.docx` still present them as plain
-algorithm support. Convert what is convertible; relabel the rest.
+Every item that could be built here is built. What remains is blocked by a
+single external constraint, described at the end.
+
+| Item | Result |
+|------|--------|
+| `ECDH-04` — `BCRYPT_KDF_HASH` | **Covered** |
+| `ECDH-05` — HKDF, HMAC, TLS PRF | **Covered** |
+| `EDDSA-03` — X25519 key agreement | Partial — works, own identifier |
+| `ECDSA-04` — Brainpool P256r1/P384r1/P512r1 | Partial — works, own identifier |
+| `ECDSA-05` — secp256k1 | Partial — works, own identifier |
+
+**Key derivation is complete.** `NCryptDeriveKey` now implements every CNG
+KDF: the raw secret, `BCRYPT_KDF_HASH`, `BCRYPT_KDF_HKDF`,
+`BCRYPT_KDF_HMAC` (including `KDF_USE_SECRET_AS_HMAC_KEY_FLAG`) and
+`BCRYPT_KDF_TLS_PRF` for TLS 1.2. TLS 1.0 and 1.1 are refused deliberately:
+their PRF is the MD5/SHA-1 split construction, both versions are deprecated
+by RFC 8996, and adding MD5-based key derivation to a new codebase is the
+wrong default. PKCS#11 has no keyless HMAC call, so each HMAC is a
+`C_CreateObject` / `C_SignInit` / `C_Sign` / `C_DestroyObject` cycle, and
+the suite asserts no key object leaks across a multi-block expansion.
+
+**Three curves work but are not reachable the standard way.** X25519,
+secp256k1 and the three Brainpool curves all generate and sign or agree.
+Each is reachable only through this provider's own identifier
+(`ECDH_X25519`, `ECDSA_SECP256K1`, `ECDSA_BRAINPOOLP*`), not through the
+CNG route of a generic `ECDSA` / `ECDH` algorithm plus a
+`BCRYPT_ECC_CURVE_NAME` property.
+
+#### The one blocker
+
+That route needs four names, and **none of them exists in any header
+available in this workspace** — not mingw-w64 11, not mingw-w64 master:
+
+| Name | Purpose |
+|------|---------|
+| `BCRYPT_ECDSA_ALGORITHM` | The generic ECDSA algorithm identifier |
+| `BCRYPT_ECDH_ALGORITHM` | The generic ECDH algorithm identifier |
+| `BCRYPT_ECC_CURVE_NAME` | The property that selects the curve |
+| `BCRYPT_ECC_CURVE_*` | The curve name values themselves |
+
+Writing this route would mean inventing all four and shipping code that
+cannot be compile-checked against a real header. That is precisely the
+pattern that produced `BCRYPT_SHA224_ALGORITHM` and
+`NTE_KEY_DOES_NOT_EXIST` — constants this project invented, which passed
+every test and could not build on Windows. So it is **not** implemented,
+and the three rows stay Partial rather than being closed on an assumption.
+
+Note also that `NTDDI_VERSION` was unset until Phase 2, which hid
+version-gated declarations. It is now `NTDDI_WIN10_RS4`, so a build against
+a real Windows SDK is a better place to discover whether these names exist
+than it was before. **That is the check that unblocks all three rows**, and
+it needs a machine with the SDK — the same machine `BUILD-01` and
+`TABLE-01` need.
+
+#### Still open from the audit
+
+`EDDSA_ED25519`, `EDDSA_ED448` and `HMAC_SHA*` are private extensions no
+standard CNG caller can reach. `README.md` now says so; the
+`SoftHSM2_KSP_Algorithm_Reference.docx` still presents them as plain
+algorithm support and should be regenerated to match.
 
 ### Phase 3 — Assurance
 
