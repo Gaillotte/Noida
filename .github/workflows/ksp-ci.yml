@@ -154,6 +154,69 @@ jobs:
               Remove-Item $pfx -Force -ErrorAction SilentlyContinue
           }
 
+      # sign_ksp.ps1 has never actually signed anything — it only parsed.
+      # That is the failure mode this project keeps hitting: tooling that
+      # looks right and was never run. A self-signed certificate exercises
+      # the whole path against the real signtool: sign, timestamp, verify,
+      # and the verification parsing that decides whether a timestamp was
+      # applied.
+      #
+      # This proves the TOOLING, not the product. A self-signed certificate
+      # is not a code-signing identity; OPS-03 still needs one bought by a
+      # verified legal entity, and the artefact this job publishes stays
+      # unsigned.
+      - name: Signing pipeline self-test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # test_p11_layer.exe builds even without ncrypt_provider.h, so
+          # there is always a real PE file to sign.
+          $target = 'build/Release/test_p11_layer.exe'
+          if (-not (Test-Path $target)) {
+              Write-Host "::warning::$target not built; cannot self-test signing."
+              exit 0
+          }
+
+          $work = Join-Path $env:RUNNER_TEMP 'signtest'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Copy-Item $target (Join-Path $work 'subject.exe')
+          $subject = Join-Path $work 'subject.exe'
+
+          $cert = New-SelfSignedCertificate `
+              -Subject 'CN=KSP CI Signing Self-Test' `
+              -Type CodeSigningCert `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -NotAfter (Get-Date).AddDays(1)
+          Write-Host "Test certificate: $($cert.Thumbprint)"
+
+          $pfx = Join-Path $work 'selftest.pfx'
+          $pw  = [Guid]::NewGuid().ToString()
+          $sec = ConvertTo-SecureString -String $pw -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $sec | Out-Null
+
+          # signtool verify checks the chain, so the throwaway root has to
+          # be trusted for the verification half to mean anything. The
+          # runner is destroyed after the job.
+          Import-Certificate -FilePath (Export-Certificate -Cert $cert `
+              -FilePath (Join-Path $work 'selftest.cer')).FullName `
+              -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+
+          try {
+              $env:KSP_SIGN_PFX_PASSWORD = $pw
+              ./softhsm_ksp/tools/sign_ksp.ps1 -PfxPath $pfx -DllPath $subject
+              Write-Host ''
+              Write-Host 'Re-checking with -VerifyOnly:'
+              ./softhsm_ksp/tools/sign_ksp.ps1 -VerifyOnly -DllPath $subject
+              Write-Host ''
+              Write-Host 'Signing pipeline works end to end.'
+          } finally {
+              $env:KSP_SIGN_PFX_PASSWORD = $null
+              Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+              Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              Remove-Item "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+          }
+
       # Reported either way. An unsigned DLL is the expected state today;
       # what matters is that the state is visible rather than assumed.
       - name: Report signature state

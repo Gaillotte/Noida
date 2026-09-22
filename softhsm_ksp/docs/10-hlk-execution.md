@@ -347,6 +347,23 @@ written to `RUNNER_TEMP` and deleted in a `finally` block.
 A separate step reports the signature state on every run, whether or not
 signing happened, so "unsigned" is visible rather than assumed.
 
+### The tooling is tested, not just written
+
+CI generates a throwaway self-signed certificate, trusts it on the runner,
+and runs `sign_ksp.ps1` against `test_p11_layer.exe` — the one PE file that
+builds without `ncrypt_provider.h`. That exercises signing, timestamping,
+verification, and the output parsing that decides whether a timestamp was
+applied.
+
+It proves the **pipeline**, not the product. A self-signed certificate is
+not a code-signing identity: it gives no chain of trust off the machine
+that made it, and no SmartScreen reputation. The artefact CI publishes
+remains unsigned.
+
+This step exists because a script that only parses is exactly how this
+project ended up shipping `BCRYPT_SHA224_ALGORITHM` — something that looked
+right everywhere except where it ran.
+
 ### What is actually left
 
 Buying the certificate. It requires a verified legal entity — a registered

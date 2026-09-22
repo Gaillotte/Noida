@@ -306,7 +306,8 @@ without exhausting what was to hand.
 Neither item can be **completed** in this repository, and saying so plainly
 matters more than showing progress. What could be built has been.
 
-**`OPS-03` — Authenticode signing. Tooling complete; certificate missing.**
+**`OPS-03` — Authenticode signing. Tooling complete and proven; certificate
+missing.**
 
 `tools/sign_ksp.ps1` signs, timestamps and verifies in one checked step,
 taking a certificate from the Windows store, a PFX (password from the
@@ -315,6 +316,14 @@ job signs automatically the moment a `KSP_SIGN_PFX_BASE64` secret exists,
 and reports the signature state on every run either way, so "unsigned" is
 visible rather than assumed. `*.pfx` is in `.gitignore`: a certificate
 committed by accident is a certificate that must be revoked.
+
+The tooling is **exercised, not merely written**. A CI step generates a
+throwaway self-signed certificate, trusts it on the runner, and runs
+`sign_ksp.ps1` against `test_p11_layer.exe` — sign, timestamp, verify, and
+the verification parsing that decides whether a timestamp was applied. That
+proves the pipeline; it does not produce a distributable signature, and the
+artefact stays unsigned. A script that only parses is how this project got
+`BCRYPT_SHA224_ALGORITHM`.
 
 What remains is **not engineering**. An OV or EV code-signing certificate
 must be bought by a verified legal entity — a registered company whose
@@ -330,7 +339,11 @@ on every CI run, but it has never executed against a real build. It cannot
 be, in order:
 
 1. `BUILD-01` — the DLL does not build in CI, for want of
-   `ncrypt_provider.h`.
+   `ncrypt_provider.h`. Unlike the `BCRYPT_ECC_CURVE_*` names, which Wine
+   and the Rust `winapi` crate both carry, this header is reachable from no
+   source available here: Wine, ReactOS and `winapi` all implement the
+   *consumer* side of CNG and have no need of the provider function table.
+   Checked, not assumed.
 2. `OPS-03` — a provider must be signed to be loaded and exercised
    meaningfully.
 3. A Windows machine with the HLK controller installed.
