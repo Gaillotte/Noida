@@ -96,6 +96,13 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey);
 /* Generate an Edwards-curve key pair in SoftHSM2 (Ed25519 / Ed448) */
 SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey);
 
+/* Generate an ML-DSA key pair (FIPS 204).
+ *
+ * Needs a PKCS#11 v3.2 token that implements CKM_ML_DSA_KEY_PAIR_GEN and
+ * CKM_ML_DSA, which SoftHSM2 2.7.0 does not; returns NTE_NOT_SUPPORTED
+ * when the capability probe says the mechanisms are absent. */
+SECURITY_STATUS KSP_GenerateMlDsaKeyPair(KSP_KEY *pKey);
+
 /* Generate a symmetric key in SoftHSM2 (AES / HMAC generic secret) */
 SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey);
 
@@ -126,6 +133,10 @@ DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId);
 
 /* Return TRUE when pszAlgId names a symmetric algorithm (AES or HMAC) */
 BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId);
+
+/* TRUE for ALG_MLDSA_44 / _65 / _87. Says nothing about whether the token
+ * implements the mechanisms — see P11_HasMechanism. */
+BOOL KSP_IsMlDsaAlg(LPCWSTR pszAlgId);
 
 /* Internal enumeration state */
 typedef struct _KSP_ENUM_STATE {

@@ -7,6 +7,10 @@
 #include "windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"
 
+/* Room for a mechanism list larger than P11_MAX_MECHANISMS would allow, so
+ * a test can present a token that overflows the provider's own bound. */
+#define P11_MOCK_MAX_MECHS  600
+
 /* ── Mock configuration ─────────────────────────────────────────────────── */
 
 /* Injectable error codes (CKR_OK = normal behaviour) */
@@ -29,6 +33,20 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_DeriveKey;
     CK_RV rv_EncryptInit;
     CK_RV rv_Encrypt;
+    CK_RV rv_GetInfo;
+    CK_RV rv_GetMechanismList;
+    CK_RV rv_GetMechanismInfo;
+
+    /* What the token claims to implement, for the capability probe.
+     * P11Mock_SetMechanisms fills these; the default is the SoftHSM2 2.7.0
+     * subset this provider maps, with no post-quantum mechanism. */
+    CK_MECHANISM_TYPE mechList[P11_MOCK_MAX_MECHS];
+    CK_ULONG          nMechs;
+    /* Flags reported for every mechanism in the list. */
+    CK_FLAGS          mechFlags;
+    /* Cryptoki version reported by C_GetInfo. Default 2.40. */
+    CK_BYTE           ckMajor;
+    CK_BYTE           ckMinor;
 
     /* Number of simulated slots */
     int nSlots;
@@ -137,6 +155,9 @@ typedef struct _P11_MOCK_CALLS {
     int nDeriveKey;
     int nEncryptInit;
     int nEncrypt;
+    int nGetInfo;
+    int nGetMechanismList;
+    int nGetMechanismInfo;
 } P11_MOCK_CALLS;
 
 /* Reset mock configuration (all CKR_OK, default behaviour) */
@@ -155,5 +176,14 @@ P11_MOCK_CALLS *P11Mock_GetCalls(void);
 
 /* Return the PKCS#11 mock function list */
 CK_FUNCTION_LIST *P11Mock_GetFunctionList(void);
+
+/* Replace the advertised mechanism list.
+ *
+ * Passing NULL/0 makes the token advertise nothing, which is how a test
+ * checks that the provider stops claiming algorithms it cannot deliver. */
+void P11Mock_SetMechanisms(const CK_MECHANISM_TYPE *pMechs, CK_ULONG nMechs);
+
+/* Set the Cryptoki version reported by C_GetInfo. */
+void P11Mock_SetCryptokiVersion(CK_BYTE bMajor, CK_BYTE bMinor);
 
 #endif /* P11_MOCK_H */

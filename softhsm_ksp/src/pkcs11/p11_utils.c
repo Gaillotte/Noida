@@ -35,6 +35,59 @@ SECURITY_STATUS P11RvToSecStatus(CK_RV rv)
     }
 }
 
+/* ── ML-DSA parameter sets ───────────────────────────────────────────────
+ *
+ * One table drives the mechanism resolution, the key-generation attribute
+ * and the two sizes, so a parameter set cannot be half-added. Returning 0
+ * for "not an ML-DSA identifier" is safe: CKP_ML_DSA_44 is 1 and PKCS#11
+ * assigns no parameter set the value 0. */
+typedef struct _MLDSA_PARAM_SET {
+    LPCWSTR  pszAlgId;
+    CK_ULONG ulParamSet;
+    DWORD    cbSignature;
+    DWORD    cbPublicKey;
+} MLDSA_PARAM_SET;
+
+static const MLDSA_PARAM_SET g_MlDsaSets[] = {
+    { ALG_MLDSA_44, CKP_ML_DSA_44, MLDSA_44_SIG_SIZE, MLDSA_44_PUBKEY_SIZE },
+    { ALG_MLDSA_65, CKP_ML_DSA_65, MLDSA_65_SIG_SIZE, MLDSA_65_PUBKEY_SIZE },
+    { ALG_MLDSA_87, CKP_ML_DSA_87, MLDSA_87_SIG_SIZE, MLDSA_87_PUBKEY_SIZE },
+};
+
+#define MLDSA_SET_COUNT (sizeof(g_MlDsaSets) / sizeof(g_MlDsaSets[0]))
+
+static const MLDSA_PARAM_SET *MlDsaLookup(LPCWSTR pszAlgId)
+{
+    size_t i;
+
+    if (!pszAlgId)
+        return NULL;
+
+    for (i = 0; i < MLDSA_SET_COUNT; i++) {
+        if (_wcsicmp(pszAlgId, g_MlDsaSets[i].pszAlgId) == 0)
+            return &g_MlDsaSets[i];
+    }
+    return NULL;
+}
+
+CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId)
+{
+    const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
+    return p ? p->ulParamSet : 0;
+}
+
+DWORD P11_MlDsaSignatureSize(LPCWSTR pszAlgId)
+{
+    const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
+    return p ? p->cbSignature : 0;
+}
+
+DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId)
+{
+    const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
+    return p ? p->cbPublicKey : 0;
+}
+
 /* Resolve the PKCS#11 mechanism from algorithm identifier and CNG flags */
 SECURITY_STATUS P11_ResolveMechanism(
     LPCWSTR          pszAlgId,
@@ -80,6 +133,14 @@ SECURITY_STATUS P11_ResolveMechanism(
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0 ||
         _wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0) {
         pMechanism->mechanism = CKM_EDDSA;
+        return ERROR_SUCCESS;
+    }
+
+    /* ML-DSA: like EdDSA, no padding and no parameters on the mechanism.
+     * The parameter set belongs to the key, not to the signature, so it is
+     * set as CKA_PARAMETER_SET at generation and never repeated here. */
+    if (P11_MlDsaParameterSet(pszAlgId) != 0) {
+        pMechanism->mechanism = CKM_ML_DSA;
         return ERROR_SUCCESS;
     }
 

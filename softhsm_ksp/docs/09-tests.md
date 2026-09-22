@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         16 test suites · 1163 assertions · gcov coverage         │
+   │         17 test suites · 1289 assertions · gcov coverage         │
    │         Lines: 88.9 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -88,7 +88,8 @@ make syntax-check # parses the Windows-only integration test
 | ECDH agreement | `test_ecdh.c` | 133 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **1163** | |
+| Capability probe and ML-DSA | `test_mldsa.c` | 102 | `P11_ProbeCapabilities` against tokens that vary by mechanism list and Cryptoki version; `EnumAlgorithms` / `IsAlgSupported` tracking the token; ML-DSA parameter sets, mechanism resolution, gated key generation, refused export; ML-KEM recognised and deliberately not offered |
+| **Total** | | **1289** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the

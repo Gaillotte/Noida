@@ -156,6 +156,53 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKM_EC_EDWARDS_KEY_PAIR_GEN 0x00001055UL
 #define CKM_EDDSA                 0x00001057UL
 
+/* CK_MECHANISM_INFO.flags — what a token says a mechanism may be used for.
+ * Values copied from the vendored OASIS header, as with everything below. */
+#define CKF_HW                    (1UL << 0)
+#define CKF_ENCRYPT               (1UL << 8)
+#define CKF_DECRYPT               (1UL << 9)
+#define CKF_SIGN                  (1UL << 11)
+#define CKF_VERIFY                (1UL << 13)
+#define CKF_GENERATE              (1UL << 15)
+#define CKF_GENERATE_KEY_PAIR     (1UL << 16)
+#define CKF_WRAP                  (1UL << 17)
+#define CKF_DERIVE                (1UL << 19)
+
+/* Post-quantum (PKCS#11 v3.2): ML-DSA (FIPS 204) and ML-KEM (FIPS 203).
+ *
+ * Every value below is copied from the OASIS v3.2 header vendored in the
+ * SoftHSM2 submodule at softhsm2/src/lib/pkcs11/pkcs11.h — not transcribed
+ * from a specification and not guessed. Check them against that file rather
+ * than against this comment.
+ *
+ * SoftHSM2 2.7.0 defines these constants and implements none of them: the
+ * names appear in its header and nowhere in its src/. They are declared here
+ * so the provider can recognise a backend that DOES implement them, which is
+ * the whole point of the capability probe in p11_caps.c. Nothing reaches
+ * these mechanisms unless C_GetMechanismList says the token has them. */
+#define CKM_ML_KEM_KEY_PAIR_GEN   0x0000000FUL
+#define CKM_ML_KEM                0x00000017UL
+#define CKM_ML_DSA_KEY_PAIR_GEN   0x0000001CUL
+#define CKM_ML_DSA                0x0000001DUL
+
+#define CKK_ML_KEM                0x00000049UL
+#define CKK_ML_DSA                0x0000004AUL
+
+/* CKA_PARAMETER_SET carries the parameter set of a PQC key, and replaces
+ * the key-size attributes used by RSA and EC: an ML-DSA key has no
+ * modulus bits and no curve. */
+#define CKA_PARAMETER_SET      0x0000061DUL
+
+/* CK_ML_DSA_PARAMETER_SET_TYPE */
+#define CKP_ML_DSA_44          0x00000001UL
+#define CKP_ML_DSA_65          0x00000002UL
+#define CKP_ML_DSA_87          0x00000003UL
+
+/* CK_ML_KEM_PARAMETER_SET_TYPE */
+#define CKP_ML_KEM_512         0x00000001UL
+#define CKP_ML_KEM_768         0x00000002UL
+#define CKP_ML_KEM_1024        0x00000003UL
+
 /* AES */
 #define CKM_AES_KEY_GEN           0x00001080UL
 #define CKM_AES_ECB               0x00001081UL

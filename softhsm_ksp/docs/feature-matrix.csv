@@ -38,9 +38,9 @@ EDDSA-01,Asymmetric EdDSA,Ed25519 signing,64-byte raw signature,None,A,Partial,W
 EDDSA-02,Asymmetric EdDSA,Ed448 signing,114-byte raw signature,None,A,Partial,Same constraint as EDDSA-01.,N/A
 EDDSA-03,Asymmetric EdDSA,X25519 key agreement,Curve25519 ECDH,MS CNG has BCRYPT_ECC_CURVE_25519,B,Covered,,
 DSA-01,Asymmetric DSA,DSA signing,512-1024 bits,MS Software KSP,B,Not covered,Deliberately out of scope. Deprecated in modern Windows PKI and absent from every HSM KSP surveyed.,L
-PQC-01,Post-quantum,ML-DSA (Dilithium),FIPS 204,Thales Luna (device claim),C,Not covered,SoftHSM2 2.7.0 has no PQC mechanisms so this is blocked at the backend. CNG gained PQC identifiers in recent Windows builds; revisit when both sides support it.,L
-PQC-02,Post-quantum,ML-KEM (Kyber),FIPS 203,Thales Luna (device claim),C,Not covered,Same blocker as PQC-01.,L
-PQC-03,Post-quantum,LMS / XMSS,Stateful hash-based signatures,Thales Luna (device claim),C,Not covered,Same blocker as PQC-01. Stateful schemes also need key-state persistence the KSP has no model for.,L
+PQC-01,Post-quantum,ML-DSA (Dilithium),FIPS 204,Thales Luna (device claim),A,Partial,"ML-DSA is wired through the KSP and gated on the capability probe: mechanism resolution, CKA_PARAMETER_SET key generation for all three parameter sets, and signing. Unreachable on SoftHSM2 2.7.0, which defines the mechanisms and implements none of them; reachable on a PKCS#11 v3.2 token with no rebuild. Partial because public key export is refused — the CNG post-quantum key blob layout is in a Windows SDK header not available here — and because no PQC token was available to test against.",M
+PQC-02,Post-quantum,ML-KEM (Kyber),FIPS 203,Thales Luna (device claim),A,Not covered,"NOT the same blocker as PQC-01. The probe recognises CKM_ML_KEM, so the backend is not what stops this: encapsulation and decapsulation have no slot in the NCRYPT_KEY_STORAGE_FUNCTION_TABLE this provider implements, so a KSP can hold an ML-KEM key with no entry point to use it. Whether a newer ncrypt_provider.h adds such slots cannot be determined here — same missing header as BUILD-01.",L
+PQC-03,Post-quantum,LMS / XMSS,Stateful hash-based signatures,Thales Luna (device claim),C,Not covered,"Blocked at the backend, unlike PQC-01: no PKCS#11 v3.2 token surveyed implements LMS or XMSS. Stateful schemes also need one-time-key state persistence the KSP has no model for, and a lost state update forges signatures.",L
 AES-01,Symmetric AES,AES key generation,128 / 192 / 256 bits,None via KSP,A,Covered,,
 AES-02,Symmetric AES,AES-ECB,No IV,None via KSP,A,Covered,,
 AES-03,Symmetric AES,AES-CBC,16-byte IV,None via KSP,A,Covered,,
@@ -98,3 +98,5 @@ OPS-07,Operational,Session pool concurrency,Concurrent NCrypt calls,All provider
 OPS-08,Operational,Re-initialisation without restart,Recover from a bad DLL path,Vendor-specific,C,Not covered,InitOnceExecuteOnce is one-shot per process even on failure. Would need a resettable init guard; a real fix requires care around in-flight sessions.,M
 OPS-09,Operational,PIN caching / re-login,Session recovery after token logout,All commercial providers,C,Covered,,
 OPS-10,Operational,Logging / diagnostics,Trace output for support,All providers,A,Covered,,
+OPS-13,Operational,Runtime capability discovery,"Advertised algorithms reflect what the token implements, not a compiled-in list",All commercial providers (implicit — each ships for its own device),A,Covered,,
+OPS-14,Operational,Backend portability,Any PKCS#11 v2.40+ module can back the provider (KSP_PKCS11_LIB),Not offered — commercial providers are bound to their own hardware,A,Covered,,

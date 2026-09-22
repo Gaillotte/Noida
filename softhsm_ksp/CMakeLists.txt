@@ -89,6 +89,7 @@ endif()
 
 # KSP source files
 set(KSP_SOURCES
+    src/pkcs11/p11_caps.c
     src/pkcs11/p11_context.c
     src/pkcs11/p11_session.c
     src/pkcs11/p11_utils.c
@@ -124,6 +125,7 @@ endif()
 # ── PKCS#11 layer unit tests ─────────────────────────────────────────────────
 add_executable(test_p11_layer
     tests/test_p11_layer.c
+    src/pkcs11/p11_caps.c
     src/pkcs11/p11_context.c
     src/pkcs11/p11_session.c
     src/pkcs11/p11_utils.c

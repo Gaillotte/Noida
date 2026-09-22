@@ -28,9 +28,9 @@ library exposed via the standard **PKCS#11 v2.40** interface.
 │  │  ksp_main.c          │   │  p11_context.c  (singleton)          │ │
 │  │  ksp_provider.c      │──▶│  p11_session.c  (session pool)       │ │
 │  │  ksp_key.c           │   │  p11_utils.c    (mechanisms, attrs)  │ │
-│  │  ksp_crypto.c        │   └──────────────────┬───────────────────┘ │
-│  │  ksp_properties.c    │                      │ C_XXX()             │
-│  └─────────────────────┘                      │                     │
+│  │  ksp_crypto.c        │   │  p11_caps.c     (token capabilities) │ │
+│  │  ksp_properties.c    │   └──────────────────┬───────────────────┘ │
+│  └─────────────────────┘                      │ C_XXX()             │
 │  ┌─────────────────────┐                      │                     │
 │  │    Common            │                      │                     │
 │  │  config.h            │                      │                     │
@@ -66,8 +66,9 @@ library exposed via the standard **PKCS#11 v2.40** interface.
 
 | File | Responsibility |
 |------|---------------|
-| `pkcs11.h` | Standard OASIS v2.40 header (types, constants, `CK_FUNCTION_LIST`) |
-| `p11_context.c` | Singleton — DLL loading, `C_Initialize`, slot selection |
+| `pkcs11.h` | OASIS header subset — v2.40 types and constants, plus the v3.2 post-quantum mechanisms, copied from the header vendored in the SoftHSM2 submodule |
+| `p11_context.c` | Singleton — module loading, `C_Initialize`, slot selection, capability probe |
+| `p11_caps.c` | Capability probe. `C_GetMechanismList` once at startup; the provider advertises the intersection of what it can map and what the token implements |
 | `p11_session.c` | Session pool with Windows semaphore |
 | `p11_utils.c` | Mechanism resolution, curve OIDs, hash mapping, OAEP parameters, DER encode/decode, key export |
 

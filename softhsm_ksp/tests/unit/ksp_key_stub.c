@@ -37,6 +37,14 @@ BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId)
             _wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0);
 }
 
+BOOL KSP_IsMlDsaAlg(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return FALSE;
+    return (_wcsicmp(pszAlgId, ALG_MLDSA_44) == 0 ||
+            _wcsicmp(pszAlgId, ALG_MLDSA_65) == 0 ||
+            _wcsicmp(pszAlgId, ALG_MLDSA_87) == 0);
+}
+
 BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return FALSE;

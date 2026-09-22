@@ -41,6 +41,9 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 | `C_Initialize` | `p11_context.c` | One-shot init with `CKF_OS_LOCKING_OK` | **Always** |
 | `C_Finalize` | `p11_context.c` | Process detach | **Always** |
 | `C_GetSlotList` | `p11_context.c` | Slot discovery, `tokenPresent = CK_TRUE` | **Always** |
+| `C_GetMechanismList` | `p11_caps.c` | Capability probe at startup — what the provider advertises | Recommended |
+| `C_GetMechanismInfo` | `p11_caps.c` | Per-mechanism `CKF_*` flags, for diagnostics | Optional |
+| `C_GetInfo` | `p11_caps.c` | Cryptoki version; gates the v3.2 mechanisms | Optional |
 | `C_OpenSession` | `p11_session.c` | Pool of 16 R/W serial sessions | **Always** |
 | `C_CloseSession` | `p11_session.c` | Pool teardown | **Always** |
 | `C_Login` | `p11_session.c` | `CKU_USER` with the PIN | **Always** |
@@ -306,10 +309,40 @@ application coded against this KSP's `AES` key handles.
 | Mechanisms | `CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA`, `CKM_GENERIC_SECRET_KEY_GEN`, `CKM_SHA_1_HMAC`, `CKM_SHA224_HMAC`, `CKM_SHA256_HMAC`, `CKM_SHA384_HMAC`, `CKM_SHA512_HMAC` |
 | Key types | `CKK_EC_EDWARDS`, `CKK_GENERIC_SECRET` |
 
-> **Tiers 4 and 5 use CNG algorithm identifiers this project defined itself.**
-> `EDDSA_ED25519`, `EDDSA_ED448`, `HMAC_SHA*` and `ChainingModeCTR` are not
-> CNG standards, so no stock Windows application will request them. See
-> [11 — CNG KSP market comparison](./11-market-comparison.md), finding 2.
+### Tier 6 — Post-quantum signatures (PKCS#11 v3.2)
+
+| Requirement | Items |
+|-------------|-------|
+| Mechanisms | `CKM_ML_DSA_KEY_PAIR_GEN`, `CKM_ML_DSA` |
+| Key type | `CKK_ML_DSA` |
+| Attributes | `CKA_PARAMETER_SET` carrying `CKP_ML_DSA_44` / `_65` / `_87` |
+| Cryptoki version | 3.2 or later from `C_GetInfo` |
+
+SoftHSM2 2.7.0 does **not** meet this tier: it defines every one of these
+constants in its bundled header and implements none of them, so
+`C_GetMechanismList` never returns them and the provider never offers
+ML-DSA. SoftHSMv3 and Kryoptic both claim the mechanisms; neither has been
+tested against this provider.
+
+Public key export is refused for ML-DSA keys regardless of the token — the
+CNG post-quantum key blob layout is not available in this workspace, and a
+guessed one would fail on Windows while passing every test here.
+
+**ML-KEM is out of scope, and not because of the backend.** Encapsulation
+and decapsulation have no slot in the `NCRYPT_KEY_STORAGE_FUNCTION_TABLE`
+this provider implements, so a token offering `CKM_ML_KEM` still gives the
+provider no entry point to serve. A token that implements it loses nothing
+by doing so; the provider simply does not advertise a key-encapsulation
+algorithm no caller could reach.
+
+> **Tiers 4, 5 and 6 use CNG algorithm identifiers this project defined
+> itself.** `EDDSA_ED25519`, `EDDSA_ED448`, `HMAC_SHA*`, `ChainingModeCTR`
+> and `ML-DSA-44/65/87` are not CNG standards, so no stock Windows
+> application will request them. For the first four this is because CNG
+> defines no identifier at all; for ML-DSA it is because CNG's identifiers
+> could not be confirmed from any source reachable here. See
+> [11 — CNG KSP market comparison](./11-market-comparison.md), finding 2,
+> and [13 — Roadmap](./13-roadmap.md), Phase 4.
 
 ---
 
@@ -325,6 +358,8 @@ application coded against this KSP's `AES` key handles.
 | Login | `C_Login(CKU_USER, pin)` per session | SO login is never used |
 | `CKR_USER_ALREADY_LOGGED_IN` | Tolerated | Login state is often per-token, not per-session |
 | PIN source | `SOFTHSM2_PIN` environment variable | Zeroed with `SecureZeroMemory` after login |
+| Module path | `KSP_PKCS11_LIB`, falling back to `SOFTHSM2_LIB` | Any v2.40+ module; nothing in the provider is SoftHSM2-specific |
+| Capability probe | `C_GetMechanismList` at startup | A token that refuses it keeps every algorithm the provider can map; nothing is lost, but nothing is verified either |
 
 ---
 
@@ -334,6 +369,8 @@ Work down this list against a candidate token's `C_GetMechanismList` output
 and its documentation.
 
 - [ ] `C_GetFunctionList` exported from a loadable library
+- [ ] `C_GetMechanismList` answers — without it the provider cannot verify
+      any of the boxes below against the token itself
 - [ ] `C_Initialize` accepts `CKF_OS_LOCKING_OK`
 - [ ] At least one slot reports a token present
 - [ ] 16 concurrent R/W sessions supported

@@ -19,6 +19,7 @@ PROP_SRC = $(SRC)/ksp/ksp_properties.c
 KEY_SRC  = $(SRC)/ksp/ksp_key.c
 CRYPT_SRC= $(SRC)/ksp/ksp_crypto.c
 P11U_SRC = $(SRC)/pkcs11/p11_utils.c
+CAPS_SRC = $(SRC)/pkcs11/p11_caps.c
 MOCK_SRC = $(MOCK)/p11_mock.c
 
 PURE_STUBS = p11_pure_stubs.c
@@ -41,7 +42,8 @@ TESTS = \
     test_oaep_params \
     test_ecdh \
     test_eddsa \
-    test_aes_keys
+    test_aes_keys \
+    test_mldsa
 
 .PHONY: all clean run coverage syntax-check
 
@@ -63,7 +65,7 @@ test_p11rv_mapping: test_p11rv_mapping.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
 # ── test_function_table : ksp_main.c CNG function table ───────────────────
 test_function_table: test_function_table.c $(SRC)/ksp/ksp_main.c \
                      $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
-                     $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
+                     $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # ── test_p11_session : the PKCS#11 session pool and PIN storage ───────────
@@ -93,23 +95,23 @@ test_export_blobs: test_export_blobs.c $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
 # ── test_ksp_provider: KSP_OpenProvider, KSP_FreeProvider, properties ───
 # ksp_properties.c is not needed here (provider-only test)
 test_ksp_provider: test_ksp_provider.c \
-    $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC)
+    $(PROV_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # ── test_ksp_key_props : KSP_GetKeyProperty, KSP_SetKeyProperty ───────────
 # ksp_key_stub.c provides KSP_IsValidKey without linking the full ksp_key.c
 test_ksp_key_props: test_ksp_key_props.c ksp_key_stub.c \
-    $(PROV_SRC) $(PROP_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
+    $(PROV_SRC) $(PROP_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # ── test_ksp_key_ops : OpenKey, CreatePersistedKey, FinalizeKey, … ────────
 test_ksp_key_ops: test_ksp_key_ops.c \
-    $(KEY_SRC) $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
+    $(KEY_SRC) $(PROV_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # ── test_ksp_crypto : SignHash, Decrypt, ExportKey, ImportKey ─────────────
 test_ksp_crypto: test_ksp_crypto.c \
-    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
+    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 # ── test_oaep_params : P11_MapHashAlg, P11_BuildOaepParams (Phase 2) ──────
@@ -118,18 +120,24 @@ test_oaep_params: test_oaep_params.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
 
 # ── test_ecdh : SecretAgreement, DeriveKey, FreeSecret (Phase 4) ──────────
 test_ecdh: test_ecdh.c \
-    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 # ── test_eddsa : Ed25519 / Ed448 keygen, sign, export (Phase 5) ───────────
 test_eddsa: test_eddsa.c \
-    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(LOG_SRC) \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(LOG_SRC) \
     $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 # ── test_aes_keys : AES keygen, Encrypt/Decrypt, HMAC (Phase 6) ───────────
 test_aes_keys: test_aes_keys.c \
     $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) \
+    $(CAPS_SRC) $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+# ── test_mldsa : capability probe + post-quantum gating (Phase 4) ─────────
+test_mldsa: test_mldsa.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) $(CAPS_SRC) \
     $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 

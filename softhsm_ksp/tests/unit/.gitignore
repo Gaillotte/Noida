@@ -1,4 +1,11 @@
-# Test binaries
+# Test binaries.
+# Listed individually because they have no extension and sit beside the
+# sources. Two of them (test_function_table, test_p11_session) were added
+# without being listed here and got committed as binaries; add every new
+# suite to this list when you add it to Makefile.linux.
+test_function_table
+test_p11_session
+test_mldsa
 test_p11rv_mapping
 test_ecdsa_decode
 test_mechanism_resolve

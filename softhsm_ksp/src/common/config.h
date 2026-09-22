@@ -14,7 +14,22 @@
 # define SOFTHSM2_LIB_DEFAULT  L"C:\\Program Files\\SoftHSM2\\lib\\softhsm2-x64.dll"
 #endif
 
-/* Environment variable to override the library path */
+/* Environment variables naming the PKCS#11 module to load.
+ *
+ * KSP_PKCS11_LIB is the name to use. Nothing in this provider is specific
+ * to SoftHSM2 — the KSP talks to a CK_FUNCTION_LIST, and which module
+ * supplies it has always been a matter of this one path. Calling the
+ * variable SOFTHSM2_LIB made a general mechanism look like a debug hook for
+ * one backend, and that misreading is what left "use a different PKCS#11
+ * token" looking like unstarted work when it was a matter of configuration.
+ *
+ * SOFTHSM2_LIB keeps working and is read when KSP_PKCS11_LIB is unset, so
+ * no existing deployment has to change. If both are set the new name wins.
+ *
+ * What the module must provide is in docs/12-pkcs11-requirements.md. The
+ * provider no longer assumes: it asks the token through C_GetMechanismList
+ * at startup and advertises the intersection — see p11_caps.c. */
+#define KSP_PKCS11_LIB_ENV     "KSP_PKCS11_LIB"
 #define SOFTHSM2_LIB_ENV       "SOFTHSM2_LIB"
 
 /* Default user PIN */
@@ -253,6 +268,56 @@
  * referenced by name here. Reaching X25519 the standard way needs
  * BCRYPT_ECC_CURVE_NAME handling and a header that declares the constant. */
 #define ALG_ECDH_X25519 L"ECDH_X25519"
+
+/* ── Post-quantum: ML-DSA (FIPS 204) ─────────────────────────────────────
+ *
+ * Reachable only on a PKCS#11 v3.2 token that implements CKM_ML_DSA.
+ * SoftHSM2 2.7.0 is not such a token — it defines the constants and
+ * implements none of them — so on the default backend none of this is ever
+ * advertised or accepted. The capability probe decides at runtime; see
+ * p11_caps.c.
+ *
+ * THE IDENTIFIERS BELOW ARE THIS PROVIDER'S OWN, not CNG's.
+ *
+ * That is a deliberate choice, and the reason is worth stating. CNG is
+ * documented to name the algorithm L"ML-DSA" and to select a parameter set
+ * through a property on it — the same shape as BCRYPT_ECC_CURVE_NAME. But
+ * every primary source for the exact spellings is Microsoft Learn, which
+ * the network policy in this workspace blocks, and the names are absent
+ * from mingw-w64 (11 and master), from Wine's bcrypt.h and from the Rust
+ * winapi crate: all three were checked and none carries a post-quantum
+ * name at all. That leaves search-result summaries, which is grade B.
+ *
+ * The BCRYPT_ECC_CURVE_* constants above were added only because two
+ * independent sources agreed on them character for character. Nothing here
+ * meets that bar, so no BCRYPT_* name is declared — a wrong one would be
+ * exactly the BCRYPT_SHA224_ALGORITHM failure again, invented in one
+ * header and believed by every test that read it.
+ *
+ * Naming the parameter sets outright keeps them reachable by an
+ * application coded against this KSP, in the same way EdDSA and HMAC
+ * already are, and asserts nothing about Windows. Reaching them the
+ * standard CNG way needs the SDK constants confirmed first. */
+#define ALG_MLDSA_44   L"ML-DSA-44"
+#define ALG_MLDSA_65   L"ML-DSA-65"
+#define ALG_MLDSA_87   L"ML-DSA-87"
+
+#define ALG_GROUP_MLDSA  L"ML-DSA"
+
+/* ML-DSA signature and public key sizes in bytes. Fixed per parameter set,
+ * and the signature is raw — there is no DER wrapper to strip, as with
+ * EdDSA and unlike ECDSA.
+ *
+ * Taken from liboqs src/sig/ml_dsa/sig_ml_dsa.h (OQS_SIG_ml_dsa_*_length_*),
+ * which is generated from the reference implementation. The local OpenSSL
+ * is 3.0.13 and has no ML-DSA, so these could not be measured here. */
+#define MLDSA_44_SIG_SIZE   2420
+#define MLDSA_65_SIG_SIZE   3309
+#define MLDSA_87_SIG_SIZE   4627
+
+#define MLDSA_44_PUBKEY_SIZE  1312
+#define MLDSA_65_PUBKEY_SIZE  1952
+#define MLDSA_87_PUBKEY_SIZE  2592
 
 #define ALG_ECDH_P256  L"ECDH_P256"
 #define ALG_ECDH_P384  L"ECDH_P384"

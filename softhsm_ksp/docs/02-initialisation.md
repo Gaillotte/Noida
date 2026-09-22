@@ -29,7 +29,7 @@ sequenceDiagram
     KSP->>P11Ctx: P11_Initialize()
     note over P11Ctx: InitOnceExecuteOnce<br/>(one-shot, thread-safe)
 
-    P11Ctx->>P11Ctx: GetEnvironmentVariable("SOFTHSM2_LIB")
+    P11Ctx->>P11Ctx: GetEnvironmentVariable("KSP_PKCS11_LIB", then "SOFTHSM2_LIB")
     note over P11Ctx: Fallback: C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll
 
     P11Ctx->>HSM: LoadLibrary(wszLibPath)
@@ -52,6 +52,17 @@ sequenceDiagram
     HSM-->>P11Ctx: [slotId0, slotId1, …]
 
     P11Ctx->>P11Ctx: slotId = slots[0]  ← first available slot
+
+    P11Ctx->>HSM: C_GetInfo(&info)
+    HSM-->>P11Ctx: cryptokiVersion
+
+    P11Ctx->>HSM: C_GetMechanismList(slotId, NULL, &n)
+    HSM-->>P11Ctx: ulCount = M
+
+    P11Ctx->>HSM: C_GetMechanismList(slotId, mechs[], &n)
+    HSM-->>P11Ctx: [CKM_…, CKM_…, …]
+    note over P11Ctx: p11_caps.c keeps the answer.<br/>EnumAlgorithms and IsAlgSupported<br/>report the intersection with what<br/>the KSP can map. A refusal here is<br/>not fatal — the provider falls back<br/>to its full compiled-in list.
+
     P11Ctx-->>KSP: ERROR_SUCCESS
 
     KSP->>Pool: P11_SessionPool_Initialize()
@@ -175,7 +186,8 @@ sequenceDiagram
 
 | Variable | Default | Usage |
 |----------|---------|-------|
-| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Full path to the DLL |
+| `KSP_PKCS11_LIB` | — | Full path to the PKCS#11 module. Read first; any v2.40+ module works |
+| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | The older name for the same setting, read when `KSP_PKCS11_LIB` is unset |
 | `SOFTHSM2_PIN` | `1234` | Token user PIN |
 | `KSP_DEBUG` | `0` | `1` = enables `OutputDebugString` |
 

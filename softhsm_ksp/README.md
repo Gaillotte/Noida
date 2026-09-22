@@ -69,7 +69,8 @@ The DLL `Release\softhsm_ksp.dll` is built in `softhsm_ksp\build\Release\`.
 
 | Environment variable | Default value | Description |
 |----------------------|---------------|-------------|
-| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Path to the SoftHSM2 DLL |
+| `KSP_PKCS11_LIB` | — | Path to the PKCS#11 module. Any v2.40+ module works; the provider asks it what it implements at startup and advertises only that |
+| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | The older name for the same path, still honoured when `KSP_PKCS11_LIB` is unset |
 | `SOFTHSM2_PIN` | `1234` | Token user PIN |
 | `KSP_DEBUG` | `0` | Enable logging (`1` = enabled) |
 
@@ -125,11 +126,11 @@ Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full
 cd tests/unit && make run
 ```
 
-16 test suites · 1163 assertions · **88.9 % line coverage, 100 % function coverage** (gcov).
+17 test suites · 1289 assertions · **89.0 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
 ```bash
-make run           # build and run all 16 suites
+make run           # build and run all 17 suites
 make coverage      # plus an HTML coverage report
 make syntax-check  # parse the Windows-only integration test
 ```

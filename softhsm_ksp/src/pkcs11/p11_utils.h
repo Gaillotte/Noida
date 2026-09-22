@@ -10,6 +10,21 @@
 /* Convert a CK_RV code to SECURITY_STATUS */
 SECURITY_STATUS P11RvToSecStatus(CK_RV rv);
 
+/* ML-DSA (FIPS 204) parameter set for an algorithm identifier.
+ *
+ * Returns the CKP_ML_DSA_* value for ALG_MLDSA_44 / _65 / _87, or 0 for
+ * anything else — which doubles as the "is this ML-DSA?" test, since
+ * PKCS#11 assigns no parameter set the value 0.
+ *
+ * Whether the token can act on it is a separate question, answered by
+ * P11_HasMechanism(CKM_ML_DSA). This function only maps the name. */
+CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId);
+
+/* Fixed ML-DSA signature and public key sizes in bytes, or 0 if the
+ * identifier is not an ML-DSA one. */
+DWORD P11_MlDsaSignatureSize(LPCWSTR pszAlgId);
+DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId);
+
 /* Resolve the PKCS#11 mechanism from the CNG algorithm and flags */
 SECURITY_STATUS P11_ResolveMechanism(
     LPCWSTR          pszAlgId,

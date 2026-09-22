@@ -101,6 +101,31 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
     return NULL;
 }
 
+/* ML-DSA parameter sets — mirrors the real table in p11_utils.c.
+ *
+ * This suite stubs p11_utils.c rather than linking it, so the mapping is
+ * repeated here. The real table is what test_mldsa.c exercises; these
+ * stubs exist only so ksp_key.c links, and they are kept deliberately
+ * dumb — if they ever disagree with the real ones, test_mldsa is the
+ * suite that will say so. */
+CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return 0;
+    if (wcscmp(pszAlgId, ALG_MLDSA_44) == 0) return CKP_ML_DSA_44;
+    if (wcscmp(pszAlgId, ALG_MLDSA_65) == 0) return CKP_ML_DSA_65;
+    if (wcscmp(pszAlgId, ALG_MLDSA_87) == 0) return CKP_ML_DSA_87;
+    return 0;
+}
+
+DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return 0;
+    if (wcscmp(pszAlgId, ALG_MLDSA_44) == 0) return MLDSA_44_PUBKEY_SIZE;
+    if (wcscmp(pszAlgId, ALG_MLDSA_65) == 0) return MLDSA_65_PUBKEY_SIZE;
+    if (wcscmp(pszAlgId, ALG_MLDSA_87) == 0) return MLDSA_87_PUBKEY_SIZE;
+    return 0;
+}
+
 CK_RV P11_GetUlongAttr(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
     CK_ATTRIBUTE_TYPE t, CK_ULONG *pv)
 {

@@ -1,6 +1,7 @@
 /* ksp_provider.c — Provider management function implementation */
 #include "ksp_provider.h"
 #include "../pkcs11/p11_context.h"
+#include "../pkcs11/p11_caps.h"
 #include "../pkcs11/p11_session.h"
 #include "../common/config.h"
 #include "../common/logging.h"
@@ -314,26 +315,87 @@ SECURITY_STATUS WINAPI KSP_GetOperationProperty(
  * but CNG has no identifiers for those, so no standard caller could act on
  * them if they were listed here. They stay reachable by name for an
  * application coded against this KSP directly.
+ *
+ * The list below is what this provider knows how to map. What it publishes
+ * is that list intersected with what the token actually implements, which
+ * p11_caps.c learns from C_GetMechanismList at startup. Before that
+ * intersection existed, pointing KSP_PKCS11_LIB at a different module left
+ * the provider claiming AES and P-521 on a token that might have neither,
+ * and the lie only surfaced when key generation failed — long after the
+ * application had committed to the algorithm on the provider's word.
+ *
+ * Each entry names the mechanisms the operation needs. Generation and use
+ * are listed separately because a token can have one without the other:
+ * CKM_EC_KEY_PAIR_GEN without CKM_ECDH1_DERIVE is a signing-only EC token,
+ * and it should not be advertising key agreement.
  */
 
 typedef struct _KSP_ALG_ENTRY {
-    LPCWSTR pszName;
-    DWORD   dwOperations;
+    LPCWSTR           pszName;
+    DWORD             dwOperations;
+    CK_MECHANISM_TYPE genMech;   /* key generation */
+    CK_MECHANISM_TYPE useMech;   /* sign / derive / encrypt */
 } KSP_ALG_ENTRY;
 
 static const KSP_ALG_ENTRY g_KspAlgorithms[] = {
     { ALG_RSA,        NCRYPT_SIGNATURE_OPERATION |
-                      NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION },
-    { ALG_ECDSA_P256, NCRYPT_SIGNATURE_OPERATION },
-    { ALG_ECDSA_P384, NCRYPT_SIGNATURE_OPERATION },
-    { ALG_ECDSA_P521, NCRYPT_SIGNATURE_OPERATION },
-    { ALG_ECDH_P256,  NCRYPT_SECRET_AGREEMENT_OPERATION },
-    { ALG_ECDH_P384,  NCRYPT_SECRET_AGREEMENT_OPERATION },
-    { ALG_ECDH_P521,  NCRYPT_SECRET_AGREEMENT_OPERATION },
-    { ALG_AES,        NCRYPT_CIPHER_OPERATION },
+                      NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION,
+                      CKM_RSA_PKCS_KEY_PAIR_GEN, CKM_RSA_PKCS },
+    { ALG_ECDSA_P256, NCRYPT_SIGNATURE_OPERATION,
+                      CKM_EC_KEY_PAIR_GEN, CKM_ECDSA },
+    { ALG_ECDSA_P384, NCRYPT_SIGNATURE_OPERATION,
+                      CKM_EC_KEY_PAIR_GEN, CKM_ECDSA },
+    { ALG_ECDSA_P521, NCRYPT_SIGNATURE_OPERATION,
+                      CKM_EC_KEY_PAIR_GEN, CKM_ECDSA },
+    { ALG_ECDH_P256,  NCRYPT_SECRET_AGREEMENT_OPERATION,
+                      CKM_EC_KEY_PAIR_GEN, CKM_ECDH1_DERIVE },
+    { ALG_ECDH_P384,  NCRYPT_SECRET_AGREEMENT_OPERATION,
+                      CKM_EC_KEY_PAIR_GEN, CKM_ECDH1_DERIVE },
+    { ALG_ECDH_P521,  NCRYPT_SECRET_AGREEMENT_OPERATION,
+                      CKM_EC_KEY_PAIR_GEN, CKM_ECDH1_DERIVE },
+    { ALG_AES,        NCRYPT_CIPHER_OPERATION,
+                      CKM_AES_KEY_GEN, CKM_AES_CBC },
+
+    /* Post-quantum. Unreachable on SoftHSM2 2.7.0, which defines these
+     * mechanisms and implements none of them, and therefore never lists
+     * them. A PKCS#11 v3.2 token that does implement them makes these
+     * entries appear with no change to this provider. */
+    { ALG_MLDSA_44,   NCRYPT_SIGNATURE_OPERATION,
+                      CKM_ML_DSA_KEY_PAIR_GEN, CKM_ML_DSA },
+    { ALG_MLDSA_65,   NCRYPT_SIGNATURE_OPERATION,
+                      CKM_ML_DSA_KEY_PAIR_GEN, CKM_ML_DSA },
+    { ALG_MLDSA_87,   NCRYPT_SIGNATURE_OPERATION,
+                      CKM_ML_DSA_KEY_PAIR_GEN, CKM_ML_DSA },
 };
 
 #define KSP_ALG_COUNT (sizeof(g_KspAlgorithms) / sizeof(g_KspAlgorithms[0]))
+
+/* TRUE when the token can actually do what this entry promises.
+ *
+ * With no successful probe, P11_HasMechanism answers TRUE for everything
+ * and this degrades to the unfiltered list the provider published before —
+ * a token that refuses C_GetMechanismList loses no functionality. */
+static BOOL KspAlgAvailable(const KSP_ALG_ENTRY *pEntry)
+{
+    if (!P11_HasMechanism(pEntry->genMech))
+        return FALSE;
+    if (pEntry->useMech != 0 && !P11_HasMechanism(pEntry->useMech))
+        return FALSE;
+    return TRUE;
+}
+
+/* The single predicate EnumAlgorithms filters on. It is one function
+ * because the answer is needed three times — to count, to size the name
+ * block, and to fill the array — and three copies of the same condition is
+ * how the count and the contents drift apart. */
+static BOOL KspAlgMatches(const KSP_ALG_ENTRY *pEntry, DWORD dwAlgOperations)
+{
+    /* dwAlgOperations == 0 means "every operation class". */
+    if (dwAlgOperations != 0 &&
+        (pEntry->dwOperations & dwAlgOperations) == 0)
+        return FALSE;
+    return KspAlgAvailable(pEntry);
+}
 
 SECURITY_STATUS WINAPI KSP_IsAlgSupported(
     NCRYPT_PROV_HANDLE hProvider,
@@ -351,7 +413,8 @@ SECURITY_STATUS WINAPI KSP_IsAlgSupported(
         return NTE_INVALID_PARAMETER;
 
     for (i = 0; i < KSP_ALG_COUNT; i++) {
-        if (_wcsicmp(pszAlgId, g_KspAlgorithms[i].pszName) == 0)
+        if (_wcsicmp(pszAlgId, g_KspAlgorithms[i].pszName) == 0 &&
+            KspAlgAvailable(&g_KspAlgorithms[i]))
             return ERROR_SUCCESS;
     }
 
@@ -377,10 +440,8 @@ SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
     if (!pdwAlgCount || !ppAlgList)
         return NTE_INVALID_PARAMETER;
 
-    /* dwAlgOperations == 0 means "every operation class". */
     for (i = 0; i < KSP_ALG_COUNT; i++) {
-        if (dwAlgOperations == 0 ||
-            (g_KspAlgorithms[i].dwOperations & dwAlgOperations) != 0)
+        if (KspAlgMatches(&g_KspAlgorithms[i], dwAlgOperations))
             cMatch++;
     }
 
@@ -397,8 +458,7 @@ SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
         BYTE  *pbName;
 
         for (i = 0; i < KSP_ALG_COUNT; i++) {
-            if (dwAlgOperations == 0 ||
-                (g_KspAlgorithms[i].dwOperations & dwAlgOperations) != 0)
+            if (KspAlgMatches(&g_KspAlgorithms[i], dwAlgOperations))
                 cbNames += (wcslen(g_KspAlgorithms[i].pszName) + 1) *
                            sizeof(WCHAR);
         }
@@ -414,8 +474,7 @@ SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
         for (i = 0; i < KSP_ALG_COUNT; i++) {
             size_t cb;
 
-            if (dwAlgOperations != 0 &&
-                (g_KspAlgorithms[i].dwOperations & dwAlgOperations) == 0)
+            if (!KspAlgMatches(&g_KspAlgorithms[i], dwAlgOperations))
                 continue;
 
             cb = (wcslen(g_KspAlgorithms[i].pszName) + 1) * sizeof(WCHAR);

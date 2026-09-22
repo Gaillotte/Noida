@@ -431,6 +431,29 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
         return NTE_NOT_SUPPORTED;
     }
 
+    /* ML-DSA public keys are not exported, deliberately.
+     *
+     * The key material is available — CKA_VALUE on the public object — and
+     * the sizes are fixed and known (P11_MlDsaPublicKeySize). What is not
+     * known here is the layout CNG expects: the PQC public key blob and its
+     * magic are declared in a Windows SDK bcrypt.h that this workspace has
+     * no copy of, and no other source carries them. Wine, ReactOS and the
+     * Rust winapi crate have no post-quantum names at all.
+     *
+     * Emitting a blob with a guessed header would be worse than refusing.
+     * It would be accepted by our own tests, which read the same guess, and
+     * rejected by Windows — which is precisely the failure this project
+     * already had once, with BCRYPT_SHA224_ALGORITHM. Signing works without
+     * export; verification against a CNG-side public key does not, and says
+     * so here rather than at the point of a confusing parse error. */
+    if (P11_MlDsaParameterSet(pKey->szAlgId) != 0) {
+        LOG_ERROR("KSP_ExportKey - ML-DSA public key export needs the CNG "
+                  "PQC blob layout, which is not available in this build",
+                  NTE_NOT_SUPPORTED);
+        LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
+        return NTE_NOT_SUPPORTED;
+    }
+
     if (pKey->hPubKey == CK_INVALID_HANDLE) {
         LOG_LEAVE("KSP_ExportKey", NTE_BAD_KEY);
         return NTE_BAD_KEY;

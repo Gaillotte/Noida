@@ -37,7 +37,15 @@ static CK_RV mock_Finalize(CK_VOID_PTR p) {
 }
 
 static CK_RV mock_GetInfo(CK_INFO CK_PTR p) {
-    (void)p; return CKR_OK;
+    g_calls.nGetInfo++;
+    if (g_cfg.rv_GetInfo != CKR_OK) return g_cfg.rv_GetInfo;
+    if (!p) return CKR_ARGUMENTS_BAD;
+    /* This used to return CKR_OK and fill nothing, which let a caller read
+     * an uninitialised cryptokiVersion and believe it. */
+    memset(p, 0, sizeof(*p));
+    p->cryptokiVersion.major = g_cfg.ckMajor;
+    p->cryptokiVersion.minor = g_cfg.ckMinor;
+    return CKR_OK;
 }
 
 static CK_RV mock_GetFunctionList(CK_FUNCTION_LIST_PTR CK_PTR pp) {
@@ -65,13 +73,44 @@ static CK_RV mock_GetSlotInfo(CK_SLOT_ID id, CK_SLOT_INFO CK_PTR p) {
 static CK_RV mock_GetTokenInfo(CK_SLOT_ID id, CK_TOKEN_INFO CK_PTR p) {
     (void)id; (void)p; return CKR_OK;
 }
+/* The mechanism list the token claims. Configured per test so a suite can
+ * present a v2.40 SoftHSM2, a v3.2 token with ML-DSA, or a token that
+ * refuses to answer at all. */
 static CK_RV mock_GetMechanismList(CK_SLOT_ID id, CK_MECHANISM_TYPE_PTR p,
                                     CK_ULONG_PTR n) {
-    (void)id; (void)p; if (n) *n = 0; return CKR_OK;
+    CK_ULONG i;
+    (void)id;
+    g_calls.nGetMechanismList++;
+    if (g_cfg.rv_GetMechanismList != CKR_OK) return g_cfg.rv_GetMechanismList;
+    if (!n) return CKR_ARGUMENTS_BAD;
+
+    /* Two-call idiom: a NULL buffer asks for the count only. */
+    if (!p) { *n = g_cfg.nMechs; return CKR_OK; }
+
+    if (*n < g_cfg.nMechs) { *n = g_cfg.nMechs; return CKR_BUFFER_TOO_SMALL; }
+
+    for (i = 0; i < g_cfg.nMechs; i++) p[i] = g_cfg.mechList[i];
+    *n = g_cfg.nMechs;
+    return CKR_OK;
 }
+
 static CK_RV mock_GetMechanismInfo(CK_SLOT_ID id, CK_MECHANISM_TYPE t,
                                     CK_MECHANISM_INFO CK_PTR p) {
-    (void)id; (void)t; (void)p; return CKR_OK;
+    CK_ULONG i;
+    (void)id;
+    g_calls.nGetMechanismInfo++;
+    if (g_cfg.rv_GetMechanismInfo != CKR_OK) return g_cfg.rv_GetMechanismInfo;
+    if (!p) return CKR_ARGUMENTS_BAD;
+
+    for (i = 0; i < g_cfg.nMechs; i++) {
+        if (g_cfg.mechList[i] == t) {
+            p->ulMinKeySize = 0;
+            p->ulMaxKeySize = 0;
+            p->flags        = g_cfg.mechFlags;
+            return CKR_OK;
+        }
+    }
+    return CKR_MECHANISM_INVALID;
 }
 static CK_RV mock_InitToken(CK_SLOT_ID id, CK_UTF8CHAR_PTR pin, CK_ULONG n,
                               CK_UTF8CHAR_PTR label) {
@@ -661,7 +700,53 @@ void P11Mock_Reset(void)
     g_cfg.pbEcPoint  = g_ecPoint256;
     g_cfg.cbEcPoint  = 67;
 
+    g_cfg.rv_GetInfo           = CKR_OK;
+    g_cfg.rv_GetMechanismList  = CKR_OK;
+    g_cfg.rv_GetMechanismInfo  = CKR_OK;
+
+    /* Default token: SoftHSM2 2.7.0 as this provider sees it — every
+     * mechanism the KSP maps, and no post-quantum one, because SoftHSM2
+     * defines those constants and implements none of them. A suite that
+     * wants a different token calls P11Mock_SetMechanisms. */
+    {
+        static const CK_MECHANISM_TYPE softhsm[] = {
+            CKM_RSA_PKCS_KEY_PAIR_GEN, CKM_RSA_PKCS, CKM_RSA_PKCS_PSS,
+            CKM_RSA_PKCS_OAEP,
+            CKM_EC_KEY_PAIR_GEN, CKM_ECDSA, CKM_ECDH1_DERIVE,
+            CKM_EC_EDWARDS_KEY_PAIR_GEN, CKM_EDDSA,
+            CKM_AES_KEY_GEN, CKM_AES_ECB, CKM_AES_CBC, CKM_AES_CBC_PAD,
+            CKM_AES_CTR, CKM_AES_GCM,
+            CKM_GENERIC_SECRET_KEY_GEN,
+            CKM_SHA_1_HMAC, CKM_SHA224_HMAC, CKM_SHA256_HMAC,
+            CKM_SHA384_HMAC, CKM_SHA512_HMAC,
+        };
+        P11Mock_SetMechanisms(softhsm,
+                              sizeof(softhsm) / sizeof(softhsm[0]));
+    }
+    g_cfg.mechFlags = CKF_SIGN | CKF_VERIFY | CKF_GENERATE_KEY_PAIR;
+    g_cfg.ckMajor   = 2;
+    g_cfg.ckMinor   = 40;
+
     g_findCallCount = 0;
+}
+
+void P11Mock_SetMechanisms(const CK_MECHANISM_TYPE *pMechs, CK_ULONG nMechs)
+{
+    CK_ULONG i;
+
+    if (nMechs > P11_MOCK_MAX_MECHS)
+        nMechs = P11_MOCK_MAX_MECHS;
+
+    for (i = 0; i < nMechs; i++)
+        g_cfg.mechList[i] = pMechs ? pMechs[i] : 0;
+
+    g_cfg.nMechs = pMechs ? nMechs : 0;
+}
+
+void P11Mock_SetCryptokiVersion(CK_BYTE bMajor, CK_BYTE bMinor)
+{
+    g_cfg.ckMajor = bMajor;
+    g_cfg.ckMinor = bMinor;
 }
 
 P11_MOCK_CONFIG *P11Mock_GetConfig(void) { return &g_cfg; }

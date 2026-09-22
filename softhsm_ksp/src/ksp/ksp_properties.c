@@ -113,6 +113,8 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
             pszGroup = ALG_GROUP_ECDH;
         else if (KSP_IsEddsaAlg(pKey->szAlgId))
             pszGroup = ALG_GROUP_EDDSA;
+        else if (KSP_IsMlDsaAlg(pKey->szAlgId))
+            pszGroup = ALG_GROUP_MLDSA;
         else if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0)
             pszGroup = ALG_GROUP_AES;
         else if (KSP_IsSymmetricAlg(pKey->szAlgId))

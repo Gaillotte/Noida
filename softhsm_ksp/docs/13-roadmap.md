@@ -5,9 +5,9 @@ Key Storage Providers surveyed in
 [11 — CNG KSP market comparison](./11-market-comparison.md), and in what
 order the work has to happen.
 
-*Written: September 2026. **Phases 0, 1 and 2 are done**; Phase 3 is tooled
-as far as it can be here — see §3 for what each changed and what it could
-not settle. Complements the gap analysis
+*Written: September 2026. **Phases 0, 1, 2 and 4 are done**; Phase 3 is
+tooled as far as it can be here — see §3 for what each changed and what it
+could not settle. Complements the gap analysis
 in [`feature-matrix.csv`](./feature-matrix.csv) and
 [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf).*
 
@@ -20,11 +20,12 @@ in [`feature-matrix.csv`](./feature-matrix.csv) and
 Everything else in this document is downstream of that. Phase 0 has since
 fixed all six root causes: nine of the ten source files now cross-compile
 clean, and CI enforces it. The tenth, `ksp_main.c`, needs a header that
-only Windows has — the CI `windows` job is what will confirm it. The feature matrix
-records 49 of 99 capabilities as covered, and 780 unit assertions pass at
-89.8 % line coverage — but all of it is measured on Linux, against a
-hand-written stand-in for the Windows headers. On the platform the product
-actually targets, nothing has been demonstrated to work at all.
+only Windows has — the CI `windows` job is what will confirm it. The feature
+matrix now records 61 of 101 capabilities as covered, and 1289 unit
+assertions pass at 89.0 % line coverage — but all of it is measured on
+Linux, against a hand-written stand-in for the Windows headers. On the
+platform the product actually targets, nothing has been demonstrated to
+work at all.
 
 That is the real distance between this project and a shipping provider. It
 is not a matter of missing algorithms; by algorithm count this project
@@ -359,27 +360,86 @@ here. The PKCS#11 abstraction already allows pointing the provider at a
 real HSM, and that — not code in this repository — is what would close
 them.
 
-### Phase 4 — Post-quantum, and the backend question
+### Phase 4 — Post-quantum, and the backend question — **done, with one
+half deliberately left closed**
 
 PQC is the genuine "top line" in 2026: Windows CNG now ships ML-DSA and
 ML-KEM, and Thales Luna claims them at the device level (`PQC-01`,
 `PQC-02`, `PQC-03`).
 
-**This is blocked by the backend, not by the KSP.** SoftHSM2 2.7.0 carries
-`CKM_ML_KEM_KEY_PAIR_GEN`, `CKM_ML_KEM`, `CKM_ML_DSA_KEY_PAIR_GEN` and
-`CKM_ML_DSA` **as constants in `pkcs11.h` with no implementation anywhere in
-`src/`**. No amount of KSP work reaches them.
+The earlier framing of this phase was a strategic choice between forking
+SoftHSM2 and adopting a second backend. **That framing was wrong, and
+recognising why is most of the phase.** The KSP has always loaded whatever
+PKCS#11 module a path points at — but it then advertised a fixed list of
+algorithms compiled into the DLL, describing SoftHSM2 2.7.0 and nothing
+else. So "support a second backend" was never a porting job. It was a
+correctness bug: point the provider at a different module and it would
+still claim AES, ECDH and P-521 whether or not the token had them, and the
+claim would only come apart at key generation, long after the application
+had committed to the algorithm on the provider's word.
 
-Two options, and this is a strategic decision rather than a coding task:
+#### What changed
 
-| Option | Cost | Consequence |
-|--------|------|-------------|
-| Patch SoftHSM2 to implement the PQC mechanisms | Large; a cryptographic implementation in a fork | Keeps one backend, but the fork must be maintained |
-| Support a second PKCS#11 v3.1 backend alongside SoftHSM2 | Moderate; the KSP already isolates the backend behind `p11_*` | Needs `OPS-04` (multi-token) from Phase 1 first |
+**The provider now asks the token.** `src/pkcs11/p11_caps.c` calls
+`C_GetMechanismList` and `C_GetInfo` once at initialisation.
+`NCryptEnumAlgorithms` and `NCryptIsAlgSupported` answer from the
+intersection of what the KSP can map and what the token implements.
+Generation and use are checked separately, so a token with
+`CKM_EC_KEY_PAIR_GEN` but no `CKM_ECDH1_DERIVE` advertises ECDSA and not
+ECDH.
 
-The second is better aligned with the existing architecture, and
-[12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) already
-documents the contract a replacement token must satisfy.
+A token that refuses `C_GetMechanismList` loses nothing: with no probe,
+`P11_HasMechanism` answers permissively and the provider behaves exactly as
+it did before. A token reporting an implausible mechanism count abandons
+the probe rather than truncating it — half a capability view would make the
+provider refuse algorithms the token really has, which is worse than no
+view at all.
+
+**`KSP_PKCS11_LIB`** replaces `SOFTHSM2_LIB` as the name for the module
+path. `SOFTHSM2_LIB` still works. Nothing in the provider is
+SoftHSM2-specific; the old name made a general mechanism look like a debug
+hook for one backend.
+
+**ML-DSA is wired through**, gated on the probe: mechanism resolution,
+`CKA_PARAMETER_SET` key generation for all three parameter sets, and
+signing. Signing needed no new code — ML-DSA signatures are raw, like
+EdDSA's, so the existing non-ECDSA path carries them unchanged.
+
+On SoftHSM2 2.7.0 none of it is reachable, and that is asserted rather than
+assumed: the mechanisms appear in its header and in none of its `src/`, so
+the token never lists them and the provider never offers them. On a
+PKCS#11 v3.2 token that does implement them, the same binary reaches them
+with no rebuild. `tests/unit/test_mldsa.c` drives both directions — a gate
+that never opens and a gate that never closes both pass a one-sided test.
+
+#### ML-KEM: recognised, deliberately not offered
+
+ML-KEM is **not** blocked by the backend. It is blocked by the CNG
+interface this project builds against.
+
+Encapsulation and decapsulation have no slot in the
+`NCRYPT_KEY_STORAGE_FUNCTION_TABLE` this provider implements. A KSP can
+hold an ML-KEM key and has no entry point through which anyone could use
+it. Whether a newer `ncrypt_provider.h` adds such slots cannot be
+determined here — that header is not available in this workspace, which is
+the same blocker as `BUILD-01`.
+
+So the provider recognises `CKM_ML_KEM` during the probe and offers no
+ML-KEM algorithm. Advertising a key-encapsulation algorithm a caller
+cannot then use would be worse than silence.
+
+#### What this leaves
+
+| Item | State |
+|------|-------|
+| ML-DSA through a v3.2 token | Implemented and gated; untested against a real PQC token, because none is available here |
+| ML-DSA public key export | **Refused on purpose.** The CNG post-quantum key blob layout and magic are in a Windows SDK `bcrypt.h` this workspace has no copy of, and no other source carries them — Wine, ReactOS and the Rust winapi crate have no PQC names at all. A guessed blob would pass our own tests and fail on Windows, which is precisely the `BCRYPT_SHA224_ALGORITHM` failure again |
+| CNG's own PQC identifiers | Not declared. Microsoft Learn is blocked by this workspace's network policy, so the spellings rest on search-result summaries — grade B, below the bar the `BCRYPT_ECC_CURVE_*` constants had to clear. The parameter sets are named as KSP extensions instead, as EdDSA and HMAC already are |
+| ML-KEM | Unreachable through the key-storage contract; same missing header as `BUILD-01` |
+| Forking SoftHSM2 | No longer needed for PQC. A v3.2 token — SoftHSMv3 and Kryoptic both claim the mechanisms — is now a configuration change |
+
+[12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) documents
+the contract a replacement token must satisfy.
 
 ---
 
@@ -393,12 +453,14 @@ Phase 0  Make it real ─────────────────┐  bl
 Phase 1  Interface parity     Phase 2  Standard-CNG   Phase 3  Assurance
          │                             reach             (OPS-03 needs a
          │                                                legal entity)
-         └──────────► Phase 4  PQC (needs OPS-04, and a backend decision)
+         └──────────► Phase 4  PQC + capability probe
 ```
 
 Phases 1 and 2 are independent of each other and can run in parallel.
 Phase 3's Authenticode item is procurement, not engineering, and can start
-at any time. Phase 4 depends on Phase 1's multi-token work.
+at any time. Phase 4 turned out not to need a backend decision at all: the
+capability probe makes a different PKCS#11 module a configuration change,
+so the fork that looked unavoidable is not.
 
 ---
 

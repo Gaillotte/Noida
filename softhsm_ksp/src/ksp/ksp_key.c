@@ -2,6 +2,7 @@
 #include "ksp_key.h"
 #include "ksp_provider.h"
 #include "../pkcs11/p11_context.h"
+#include "../pkcs11/p11_caps.h"
 #include "../pkcs11/p11_session.h"
 #include "../pkcs11/p11_utils.h"
 #include "../common/config.h"
@@ -164,6 +165,13 @@ BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId)
             _wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0);
 }
 
+/* ML-DSA, by name only. Whether the token can act on it is a separate
+ * question, asked of the capability probe at the point of use. */
+BOOL KSP_IsMlDsaAlg(LPCWSTR pszAlgId)
+{
+    return (P11_MlDsaParameterSet(pszAlgId) != 0);
+}
+
 BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return FALSE;
@@ -194,6 +202,12 @@ DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId)
     if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)     return 255;
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)  return 255;
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0)  return 448;
+    /* ML-DSA has no key size in the sense RSA and EC do — the parameter set
+     * fixes everything. The public key length in bits is reported so callers
+     * asking NCRYPT_LENGTH_PROPERTY get something meaningful rather than
+     * zero, which they would read as an error. */
+    if (P11_MlDsaPublicKeySize(pszAlgId) != 0)
+        return P11_MlDsaPublicKeySize(pszAlgId) * 8;
     if (_wcsicmp(pszAlgId, ALG_AES) == 0)            return 256;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1)   == 0)    return 160;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0)    return 224;
@@ -217,6 +231,8 @@ static SECURITY_STATUS GenerateForAlg(KSP_KEY *pKey)
         return NTE_BAD_ALGID;
     }
 
+    if (KSP_IsMlDsaAlg(pKey->szAlgId))
+        return KSP_GenerateMlDsaKeyPair(pKey);
     if (KSP_IsEddsaAlg(pKey->szAlgId) || KSP_IsMontgomeryAlg(pKey->szAlgId))
         return KSP_GenerateEddsaKeyPair(pKey);
     if (KSP_IsSymmetricAlg(pKey->szAlgId))
@@ -449,6 +465,98 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
 
     LOG_INFO("EdDSA generated: alg=%ls priv=0x%lX pub=0x%lX",
              pKey->szAlgId,
+             (unsigned long)pKey->hPrivKey,
+             (unsigned long)pKey->hPubKey);
+    return ERROR_SUCCESS;
+}
+
+/* Generate an ML-DSA key pair (FIPS 204).
+ *
+ * The shape is EdDSA's: one generation mechanism, a signature-only key, and
+ * no padding anywhere. What differs is that the variant is not a curve in
+ * CKA_EC_PARAMS but a parameter set in CKA_PARAMETER_SET, a PKCS#11 v3.2
+ * attribute — so an older token will not merely refuse the mechanism, it
+ * will not recognise the attribute either.
+ *
+ * Reachable only on a token that advertises both mechanisms. SoftHSM2 2.7.0
+ * never does: it defines them in its header and implements neither. The
+ * check is here rather than only in the advertisement path because
+ * NCryptCreatePersistedKey takes an algorithm name from the caller, who is
+ * free not to have asked what was supported. */
+SECURITY_STATUS KSP_GenerateMlDsaKeyPair(KSP_KEY *pKey)
+{
+    P11_CONTEXT      *pCtx = P11_GetContext();
+    CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
+    SECURITY_STATUS   ss;
+    CK_RV             rv;
+    CK_MECHANISM      mech = { CKM_ML_DSA_KEY_PAIR_GEN, NULL, 0 };
+    char              szLabel[MAX_KEY_LABEL_LEN];
+    int               nLabelLen;
+    CK_BBOOL          bTrue  = CK_TRUE;
+    CK_BBOOL          bFalse = CK_FALSE;
+    CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
+    CK_OBJECT_CLASS   classPub  = CKO_PUBLIC_KEY;
+    CK_KEY_TYPE       keyType   = CKK_ML_DSA;
+    CK_ULONG          ulParamSet;
+
+    ulParamSet = P11_MlDsaParameterSet(pKey->szAlgId);
+    if (ulParamSet == 0)
+        return NTE_BAD_ALGID;
+
+    if (!P11_HasMechanism(CKM_ML_DSA_KEY_PAIR_GEN) ||
+        !P11_HasMechanism(CKM_ML_DSA)) {
+        LOG_ERROR("FinalizeKey - the token does not implement ML-DSA",
+                  NTE_NOT_SUPPORTED);
+        return NTE_NOT_SUPPORTED;
+    }
+
+    nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
+    if (nLabelLen <= 0)
+        return NTE_INVALID_PARAMETER;
+
+    {
+        CK_ATTRIBUTE aPubTemplate[] = {
+            { CKA_CLASS,         &classPub,   sizeof(classPub)    },
+            { CKA_KEY_TYPE,      &keyType,    sizeof(keyType)     },
+            { CKA_TOKEN,         &bTrue,      sizeof(bTrue)       },
+            { CKA_LABEL,         szLabel,     (CK_ULONG)nLabelLen },
+            { CKA_PARAMETER_SET, &ulParamSet, sizeof(ulParamSet)  },
+            { CKA_VERIFY,        &bTrue,      sizeof(bTrue)       },
+        };
+
+        CK_ATTRIBUTE aPrivTemplate[] = {
+            { CKA_CLASS,         &classPriv,  sizeof(classPriv)   },
+            { CKA_KEY_TYPE,      &keyType,    sizeof(keyType)     },
+            { CKA_TOKEN,         &bTrue,      sizeof(bTrue)       },
+            { CKA_LABEL,         szLabel,     (CK_ULONG)nLabelLen },
+            { CKA_PARAMETER_SET, &ulParamSet, sizeof(ulParamSet)  },
+            { CKA_SENSITIVE,     &bTrue,      sizeof(bTrue)       },
+            { CKA_EXTRACTABLE,   &bFalse,     sizeof(bFalse)      },
+            { CKA_SIGN,          &bTrue,      sizeof(bTrue)       },
+        };
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS)
+            return ss;
+
+        rv = pCtx->pFunctionList->C_GenerateKeyPair(
+            hSession, &mech,
+            aPubTemplate,
+            (CK_ULONG)(sizeof(aPubTemplate)  / sizeof(CK_ATTRIBUTE)),
+            aPrivTemplate,
+            (CK_ULONG)(sizeof(aPrivTemplate) / sizeof(CK_ATTRIBUTE)),
+            &pKey->hPubKey, &pKey->hPrivKey);
+
+        P11_ReleaseSession(hSession);
+    }
+
+    if (rv != CKR_OK) {
+        LOG_ERROR("C_GenerateKeyPair ML-DSA", P11RvToSecStatus(rv));
+        return P11RvToSecStatus(rv);
+    }
+
+    LOG_INFO("ML-DSA generated: alg=%ls paramset=%lu priv=0x%lX pub=0x%lX",
+             pKey->szAlgId, (unsigned long)ulParamSet,
              (unsigned long)pKey->hPrivKey,
              (unsigned long)pKey->hPubKey);
     return ERROR_SUCCESS;
@@ -733,6 +841,7 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
         !KSP_IsEcdhAlg(pszAlgId)    &&
         !KSP_IsEddsaAlg(pszAlgId)   &&
         !KSP_IsSymmetricAlg(pszAlgId) &&
+        !KSP_IsMlDsaAlg(pszAlgId)   &&
         !KSP_IsGenericEccAlg(pszAlgId)) {
         LOG_LEAVE("KSP_CreatePersistedKey", NTE_BAD_ALGID);
         return NTE_BAD_ALGID;

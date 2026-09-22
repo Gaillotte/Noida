@@ -1,5 +1,6 @@
 /* p11_context.c — PKCS#11 context singleton implementation */
 #include "p11_context.h"
+#include "p11_caps.h"
 #include "p11_utils.h"
 #include "../common/config.h"
 #include "../common/logging.h"
@@ -11,16 +12,22 @@ static P11_CONTEXT  g_ctx;
 static INIT_ONCE    g_initOnce = INIT_ONCE_STATIC_INIT;
 static SECURITY_STATUS g_initStatus = NTE_PROVIDER_DLL_FAIL;
 
-/* Load softhsm2.dll and retrieve the function list */
-static BOOL LoadSoftHSM2(P11_CONTEXT *pCtx)
+/* Load the PKCS#11 module and retrieve its function list.
+ *
+ * KSP_PKCS11_LIB names the module; SOFTHSM2_LIB is the older name for the
+ * same thing and is honoured when the new one is unset. With neither, the
+ * SoftHSM2 path baked in at build time is used. */
+static BOOL LoadP11Module(P11_CONTEXT *pCtx)
 {
     WCHAR   wszLibPath[MAX_PATH];
     char    szLibPath[MAX_PATH];
     DWORD   dwLen;
     CK_C_GetFunctionList pfnGetFunctionList;
 
-    /* Read the path from the environment variable */
-    dwLen = GetEnvironmentVariableA(SOFTHSM2_LIB_ENV, szLibPath, MAX_PATH);
+    dwLen = GetEnvironmentVariableA(KSP_PKCS11_LIB_ENV, szLibPath, MAX_PATH);
+    if (dwLen == 0 || dwLen >= MAX_PATH)
+        dwLen = GetEnvironmentVariableA(SOFTHSM2_LIB_ENV, szLibPath, MAX_PATH);
+
     if (dwLen == 0 || dwLen >= MAX_PATH) {
         /* Use the default path */
         wcscpy_s(wszLibPath, MAX_PATH, SOFTHSM2_LIB_DEFAULT);
@@ -28,7 +35,7 @@ static BOOL LoadSoftHSM2(P11_CONTEXT *pCtx)
         MultiByteToWideChar(CP_ACP, 0, szLibPath, -1, wszLibPath, MAX_PATH);
     }
 
-    LOG_INFO("Loading SoftHSM2: %ls", wszLibPath);
+    LOG_INFO("Loading PKCS#11 module: %ls", wszLibPath);
 
     pCtx->hModule = LoadLibraryW(wszLibPath);
     if (!pCtx->hModule) {
@@ -147,7 +154,7 @@ static BOOL CALLBACK InitOnceCallback(
 
     memset(&g_ctx, 0, sizeof(g_ctx));
 
-    if (!LoadSoftHSM2(&g_ctx)) {
+    if (!LoadP11Module(&g_ctx)) {
         g_initStatus = NTE_PROVIDER_DLL_FAIL;
         return TRUE;
     }
@@ -174,7 +181,14 @@ static BOOL CALLBACK InitOnceCallback(
     }
 
     g_ctx.bInitialized = TRUE;
-    g_initStatus       = ERROR_SUCCESS;
+
+    /* Ask the token what it implements, so the provider advertises the
+     * intersection rather than a list describing one particular backend.
+     * A refusal is not fatal — see P11_ProbeCapabilities — so the return
+     * value is deliberately not propagated into g_initStatus. */
+    (void)P11_ProbeCapabilities();
+
+    g_initStatus = ERROR_SUCCESS;
     LOG_INFO("P11_Initialize: success, slot=%lu", (unsigned long)g_ctx.slotId);
     return TRUE;
 }
@@ -189,6 +203,8 @@ SECURITY_STATUS P11_Initialize(void)
 /* Free the PKCS#11 context */
 void P11_Finalize(void)
 {
+    P11_ReleaseCapabilities();
+
     if (g_ctx.bInitialized && g_ctx.pFunctionList) {
         g_ctx.pFunctionList->C_Finalize(NULL);
         g_ctx.bInitialized = FALSE;
