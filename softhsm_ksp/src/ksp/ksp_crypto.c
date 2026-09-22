@@ -1076,6 +1076,92 @@ static SECURITY_STATUS KdfFindHashMech(NCryptBufferDesc *pParams,
     return ERROR_SUCCESS;
 }
 
+/* The HMAC mechanism matching a digest mechanism. */
+static CK_MECHANISM_TYPE KdfHmacMech(CK_MECHANISM_TYPE digest)
+{
+    switch (digest) {
+    case CKM_SHA_1:  return CKM_SHA_1_HMAC;
+    case CKM_SHA224: return CKM_SHA224_HMAC;
+    case CKM_SHA256: return CKM_SHA256_HMAC;
+    case CKM_SHA384: return CKM_SHA384_HMAC;
+    case CKM_SHA512: return CKM_SHA512_HMAC;
+    default:         return 0;
+    }
+}
+
+/* Find the first buffer of a type; returns FALSE when absent. */
+static BOOL KdfFindBuffer(NCryptBufferDesc *pParams, ULONG ulType,
+                          BYTE **ppb, DWORD *pcb)
+{
+    ULONG i;
+    if (!pParams || !pParams->pBuffers)
+        return FALSE;
+    for (i = 0; i < pParams->cBuffers; i++) {
+        if (pParams->pBuffers[i].BufferType == ulType) {
+            *ppb = (BYTE *)pParams->pBuffers[i].pvBuffer;
+            *pcb = (DWORD)pParams->pBuffers[i].cbBuffer;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* One HMAC, with the key supplied as raw bytes.
+ *
+ * PKCS#11 has no "HMAC these bytes with that key" call: the key has to be
+ * an object first. So each HMAC here is C_CreateObject, C_SignInit,
+ * C_Sign, C_DestroyObject. The object is a session object and is destroyed
+ * even when signing fails, or a long HKDF expansion would litter the token
+ * with one generic secret per iteration. */
+static CK_RV KdfHmac(P11_CONTEXT *pCtx, CK_SESSION_HANDLE hSession,
+                     CK_MECHANISM_TYPE hmacMech,
+                     const BYTE *pbKey, DWORD cbKey,
+                     const BYTE *pbData, DWORD cbData,
+                     BYTE *pbOut, CK_ULONG *pcbOut)
+{
+    CK_OBJECT_CLASS  cls     = CKO_SECRET_KEY;
+    CK_KEY_TYPE      keyType = CKK_GENERIC_SECRET;
+    CK_BBOOL         bTrue   = CK_TRUE;
+    CK_BBOOL         bFalse  = CK_FALSE;
+    CK_OBJECT_HANDLE hKey    = CK_INVALID_HANDLE;
+    CK_MECHANISM     mech;
+    CK_RV            rv;
+    BYTE             abEmpty[1] = { 0 };
+
+    CK_ATTRIBUTE aTemplate[] = {
+        { CKA_CLASS,     &cls,     sizeof(cls)     },
+        { CKA_KEY_TYPE,  &keyType, sizeof(keyType) },
+        { CKA_TOKEN,     &bFalse,  sizeof(bFalse)  },
+        { CKA_SIGN,      &bTrue,   sizeof(bTrue)   },
+        { CKA_VALUE,     (CK_VOID_PTR)pbKey, cbKey },
+    };
+
+    /* A zero-length HMAC key is legal in RFC 5869 (an absent salt), but
+     * PKCS#11 tokens differ on whether they accept CKA_VALUE of length 0.
+     * One zero byte is the same key under HMAC's padding rules. */
+    if (cbKey == 0) {
+        aTemplate[4].pValue     = abEmpty;
+        aTemplate[4].ulValueLen = 1;
+    }
+
+    rv = pCtx->pFunctionList->C_CreateObject(
+            hSession, aTemplate,
+            (CK_ULONG)(sizeof(aTemplate) / sizeof(CK_ATTRIBUTE)), &hKey);
+    if (rv != CKR_OK)
+        return rv;
+
+    memset(&mech, 0, sizeof(mech));
+    mech.mechanism = hmacMech;
+
+    rv = pCtx->pFunctionList->C_SignInit(hSession, &mech, hKey);
+    if (rv == CKR_OK)
+        rv = pCtx->pFunctionList->C_Sign(hSession,
+                (CK_BYTE_PTR)pbData, cbData, pbOut, pcbOut);
+
+    (void)pCtx->pFunctionList->C_DestroyObject(hSession, hKey);
+    return rv;
+}
+
 /* Feed every buffer of one type into the running digest, in order. */
 static CK_RV KdfDigestBuffers(P11_CONTEXT *pCtx, CK_SESSION_HANDLE hSession,
                               NCryptBufferDesc *pParams, ULONG ulType)
@@ -1208,9 +1294,129 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
         return ERROR_SUCCESS;
     }
 
-    /* Anything else: only the raw secret is available. HMAC, TLS_PRF and
-     * HKDF need a keyed primitive over the Z value, which is more than a
-     * digest chain — see ECDH-05 in the feature matrix. */
+    /* BCRYPT_KDF_HKDF — RFC 5869.
+     *
+     *   PRK    = HMAC(salt, Z)                               extract
+     *   T(i)   = HMAC(PRK, T(i-1) || info || byte(i))        expand
+     *   OKM    = T(1) || T(2) || ... truncated to the request
+     *
+     * Unlike the hash KDF this is keyed, so every step goes through
+     * KdfHmac and its create/sign/destroy cycle. */
+    if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_HKDF) == 0) {
+        P11_CONTEXT      *pCtx = P11_GetContext();
+        CK_MECHANISM_TYPE digestMech, hmacMech;
+        DWORD             cbDigest = 0;
+        BYTE             *pbSalt = NULL, *pbInfo = NULL;
+        DWORD             cbSalt = 0,    cbInfo = 0;
+        BYTE              abPrk[64];
+        BYTE              abT[64];
+        BYTE              abBlock[64 + 256 + 1];
+        CK_ULONG          ulOut;
+        DWORD             cbDone = 0;
+        BYTE              nCounter;
+        CK_RV             rv;
+
+        ss = KdfFindHashMech(pParameterList, &digestMech, &cbDigest);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+        hmacMech = KdfHmacMech(digestMech);
+
+        (void)KdfFindBuffer(pParameterList, KDF_HKDF_SALT, &pbSalt, &cbSalt);
+        (void)KdfFindBuffer(pParameterList, KDF_HKDF_INFO, &pbInfo, &cbInfo);
+
+        /* RFC 5869 allows any output length up to 255 * HashLen. */
+        if (cbInfo > 256) {
+            LOG_LEAVE("KSP_DeriveKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        /* Size query: HKDF produces whatever the caller asks for, so
+         * without a buffer there is no length to report beyond one block. */
+        if (pbDerivedKey == NULL) {
+            *pcbResult = cbDigest;
+            LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+            return ERROR_SUCCESS;
+        }
+        if (cbDerivedKey > 255 * cbDigest) {
+            LOG_LEAVE("KSP_DeriveKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        if (P11_GetBinaryAttr(hSession, pSecret->hSecretObj, CKA_VALUE,
+                              &pbValue, &cbValue) != CKR_OK) {
+            P11_ReleaseSession(hSession);
+            LOG_LEAVE("KSP_DeriveKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        /* Extract. An absent salt is HashLen zero bytes per RFC 5869; a
+         * zero-length CKA_VALUE is handled inside KdfHmac. */
+        ulOut = sizeof(abPrk);
+        rv = KdfHmac(pCtx, hSession, hmacMech, pbSalt, cbSalt,
+                     pbValue, cbValue, abPrk, &ulOut);
+
+        SecureZeroMemory(pbValue, cbValue);
+        KSP_Free(pbValue);
+        pbValue = NULL;
+
+        /* Expand. */
+        nCounter = 1;
+        while (rv == CKR_OK && cbDone < cbDerivedKey) {
+            DWORD cbBlock = 0;
+            DWORD cbCopy;
+
+            /* T(i-1) is empty on the first round. */
+            if (cbDone > 0) {
+                memcpy(abBlock, abT, cbDigest);
+                cbBlock = cbDigest;
+            }
+            if (cbInfo && pbInfo) {
+                memcpy(abBlock + cbBlock, pbInfo, cbInfo);
+                cbBlock += cbInfo;
+            }
+            abBlock[cbBlock++] = nCounter;
+
+            ulOut = sizeof(abT);
+            rv = KdfHmac(pCtx, hSession, hmacMech, abPrk, cbDigest,
+                         abBlock, cbBlock, abT, &ulOut);
+            if (rv != CKR_OK)
+                break;
+
+            cbCopy = cbDerivedKey - cbDone;
+            if (cbCopy > cbDigest)
+                cbCopy = cbDigest;
+            memcpy(pbDerivedKey + cbDone, abT, cbCopy);
+            cbDone += cbCopy;
+            nCounter++;
+        }
+
+        P11_ReleaseSession(hSession);
+        SecureZeroMemory(abPrk,   sizeof(abPrk));
+        SecureZeroMemory(abT,     sizeof(abT));
+        SecureZeroMemory(abBlock, sizeof(abBlock));
+
+        if (rv != CKR_OK) {
+            SecureZeroMemory(pbDerivedKey, cbDerivedKey);
+            ss = P11RvToSecStatus(rv);
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        *pcbResult = cbDone;
+        LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+    }
+
+    /* Anything else: only the raw secret is available. HMAC and TLS_PRF
+     * still need work — see ECDH-05 in the feature matrix. */
     if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_RAW_SECRET) != 0) {
         LOG_LEAVE("KSP_DeriveKey", NTE_NOT_SUPPORTED);
         return NTE_NOT_SUPPORTED;

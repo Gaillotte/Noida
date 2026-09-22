@@ -131,8 +131,16 @@ static CK_RV mock_Logout(CK_SESSION_HANDLE h) { (void)h; return CKR_OK; }
 
 static CK_RV mock_CreateObject(CK_SESSION_HANDLE h, CK_ATTRIBUTE_PTR tmpl,
                                 CK_ULONG n, CK_OBJECT_HANDLE_PTR phObj) {
-    (void)h; (void)tmpl; (void)n;
+    CK_ULONG i;
+    (void)h;
     g_calls.nCreateObject++;
+    for (i = 0; tmpl && i < n; i++) {
+        if (tmpl[i].type == CKA_VALUE && tmpl[i].pValue &&
+            tmpl[i].ulValueLen <= sizeof(g_cfg.lastCreateValue)) {
+            memcpy(g_cfg.lastCreateValue, tmpl[i].pValue, tmpl[i].ulValueLen);
+            g_cfg.cbLastCreateValue = tmpl[i].ulValueLen;
+        }
+    }
     if (g_cfg.rv_CreateObject != CKR_OK) return g_cfg.rv_CreateObject;
     *phObj = 0x100;
     return CKR_OK;
@@ -401,8 +409,12 @@ static CK_RV mock_SignInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
 
 static CK_RV mock_Sign(CK_SESSION_HANDLE h, CK_BYTE_PTR data, CK_ULONG dlen,
                         CK_BYTE_PTR sig, CK_ULONG_PTR siglen) {
-    (void)h; (void)data; (void)dlen;
+    (void)h;
     g_calls.nSign++;
+    if (data && dlen && dlen <= sizeof(g_cfg.lastSignData)) {
+        memcpy(g_cfg.lastSignData, data, dlen);
+        g_cfg.cbLastSignData = dlen;
+    }
     if (g_cfg.rv_Sign != CKR_OK) return g_cfg.rv_Sign;
     if (!sig) { *siglen = g_cfg.cbSignature; return CKR_OK; }
     if (*siglen < g_cfg.cbSignature) {
@@ -589,6 +601,15 @@ static CK_FUNCTION_LIST g_fnList = {
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
+void P11Mock_ResetCalls(void)
+{
+    memset(&g_calls, 0, sizeof(g_calls));
+    g_cfg.cbLastSignData    = 0;
+    g_cfg.cbLastCreateValue = 0;
+    g_cfg.cbDigestFed       = 0;
+    g_findCallCount         = 0;
+}
+
 void P11Mock_Reset(void)
 {
     memset(&g_cfg, 0, sizeof g_cfg);
@@ -605,6 +626,8 @@ void P11Mock_Reset(void)
     g_cfg.rv_GetSessionInfo  = CKR_OK;
     g_cfg.lastLabel[0]       = '\0';
     g_cfg.cbDigestFed        = 0;
+    g_cfg.cbLastSignData     = 0;
+    g_cfg.cbLastCreateValue  = 0;
     g_cfg.cbDigestOut        = 20;
     g_cfg.sessionState       = CKS_RW_USER_FUNCTIONS;
     g_cfg.rv_Sign            = CKR_OK;

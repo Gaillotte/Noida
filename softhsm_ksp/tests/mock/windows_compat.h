@@ -522,6 +522,8 @@ typedef BCryptBufferDesc *PNCryptBufferDesc;
 #define KDF_PARTYUINFO       0x9
 #define KDF_PARTYVINFO       0xa
 #define KDF_LABEL            0xd
+#define KDF_HKDF_SALT        0x13
+#define KDF_HKDF_INFO        0x14
 #define KDF_CONTEXT          0xe
 
 #define BCRYPT_KDF_HASH              L"HASH"

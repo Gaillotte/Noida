@@ -125,7 +125,7 @@ Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full
 cd tests/unit && make run
 ```
 
-16 test suites · 1053 assertions · **89.7 % line coverage, 100 % function coverage** (gcov).
+16 test suites · 1074 assertions · **89.4 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
 ```bash

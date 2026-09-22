@@ -89,6 +89,15 @@ typedef struct _P11_MOCK_CONFIG {
     CK_ULONG      cbDigestOut;
     CK_MECHANISM_TYPE lastDigestMech;
 
+    /* Bytes handed to the last C_Sign, so an HKDF test can verify the
+     * T(i-1) || info || counter block the KSP assembled. */
+    unsigned char lastSignData[512];
+    CK_ULONG      cbLastSignData;
+    /* CKA_VALUE of the last object created — the HMAC key in each HKDF
+     * step, so the salt and PRK can be checked. */
+    unsigned char lastCreateValue[128];
+    CK_ULONG      cbLastCreateValue;
+
     CK_ULONG   sessionState;
     CK_RV      rv_GetSessionInfo;
 
@@ -132,6 +141,11 @@ typedef struct _P11_MOCK_CALLS {
 
 /* Reset mock configuration (all CKR_OK, default behaviour) */
 void P11Mock_Reset(void);
+
+/* Zero the call counters and the captured buffers, leaving the configured
+ * behaviour alone. A full reset would also clear pbSecretValue, cbSignature
+ * and the rest, which a test in the middle of a scenario still needs. */
+void P11Mock_ResetCalls(void);
 
 /* Return the mutable config */
 P11_MOCK_CONFIG *P11Mock_GetConfig(void);

@@ -606,7 +606,8 @@ it. Callers that need the bytes back should keep their own copy.
 |-----|--------|
 | `BCRYPT_KDF_RAW_SECRET` (`L"TRUNCATE"`) | Returns the raw Z |
 | `BCRYPT_KDF_HASH` (`L"HASH"`) | `Hash(prepend ‖ Z ‖ append)` |
-| `BCRYPT_KDF_HMAC`, `BCRYPT_KDF_TLS_PRF`, `BCRYPT_KDF_HKDF` | `NTE_NOT_SUPPORTED` |
+| `BCRYPT_KDF_HKDF` (`L"HKDF"`) | RFC 5869 extract-and-expand |
+| `BCRYPT_KDF_HMAC`, `BCRYPT_KDF_TLS_PRF` | `NTE_NOT_SUPPORTED` |
 
 ### `BCRYPT_KDF_HASH`
 
@@ -634,10 +635,36 @@ Output is exactly one digest. A shorter buffer returns
 \* SHA-224 uses this provider's own `KSP_SHA224_ALGORITHM`; CNG has no
 SHA-224 identifier.
 
-### Why the others are harder
+### `BCRYPT_KDF_HKDF`
 
-`HMAC`, `TLS_PRF` and `HKDF` are not longer digest chains — each needs a
-**keyed** primitive over Z. Through PKCS#11 that means creating an HMAC key
-object from caller-supplied material with `C_CreateObject` and running
-`C_Sign` per iteration, which is a different shape of work from the one
-above. Tracked as `ECDH-05`; HKDF is the one worth doing first, for TLS 1.3.
+RFC 5869, in two stages:
+
+```
+PRK  = HMAC(salt, Z)                          extract
+T(i) = HMAC(PRK, T(i-1) ‖ info ‖ byte(i))     expand
+OKM  = T(1) ‖ T(2) ‖ … truncated to the request
+```
+
+| Buffer type | Meaning |
+|-------------|---------|
+| `KDF_HASH_ALGORITHM` | Hash name; SHA-1 when absent |
+| `KDF_HKDF_SALT` | Optional. Absent is the RFC's "no salt" case |
+| `KDF_HKDF_INFO` | Optional context |
+
+Output may be any length up to 255 × HashLen, as the RFC allows; beyond that
+returns `NTE_INVALID_PARAMETER`.
+
+**Why this is more than a longer digest chain.** HKDF is *keyed*, and
+PKCS#11 has no "HMAC these bytes with that key" call — the key must be an
+object first. Every HMAC here is therefore `C_CreateObject`, `C_SignInit`,
+`C_Sign`, `C_DestroyObject`. The destroy runs even when signing fails; a
+long expansion that leaked one generic secret per round would fill the
+token. The test suite asserts creates and destroys stay equal, and fault
+injection confirms it notices when they do not.
+
+### What remains
+
+`BCRYPT_KDF_HMAC` is a single HMAC over `prepend ‖ Z ‖ append` and is small
+now the keyed machinery exists. `BCRYPT_KDF_TLS_PRF` needs the TLS 1.0/1.2
+dual-hash construction, which is a different shape again. Both tracked as
+`ECDH-05`.

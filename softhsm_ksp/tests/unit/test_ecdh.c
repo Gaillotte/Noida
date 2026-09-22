@@ -230,10 +230,7 @@ int main(void)
                        buf, sizeof buf, &cbResult, 0);
     ASSERT_EQ("TLS_PRF KDF → NTE_NOT_SUPPORTED", ss,
               (SECURITY_STATUS)NTE_NOT_SUPPORTED);
-    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HKDF, NULL,
-                       buf, sizeof buf, &cbResult, 0);
-    ASSERT_EQ("HKDF → NTE_NOT_SUPPORTED", ss,
-              (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
 
     /* Buffer too small reports the required size */
     cbResult = 0;
@@ -261,10 +258,16 @@ int main(void)
     ASSERT_EQ("Invalid handle → NTE_INVALID_HANDLE", ss,
               (SECURITY_STATUS)NTE_INVALID_HANDLE);
 
-    ss = KSP_FreeSecret(hProv, hSecret);
-    ASSERT_OK("Free succeeds", ss);
-    ASSERT_EQ("Secret object destroyed",
-              P11Mock_GetCalls()->nDestroyObject, 1);
+    {
+        /* Count only the destroy caused by FreeSecret. Earlier KDF work in
+         * this suite creates and destroys temporary HMAC keys, so an
+         * absolute count would drift every time a KDF is added. */
+        int before = P11Mock_GetCalls()->nDestroyObject;
+        ss = KSP_FreeSecret(hProv, hSecret);
+        ASSERT_OK("Free succeeds", ss);
+        ASSERT_EQ("Secret object destroyed",
+                  P11Mock_GetCalls()->nDestroyObject - before, 1);
+    }
 
     /* ── Suite 5 : P-384 and P-521 ──────────────────────────────────────── */
     TEST_SUITE("KSP_SecretAgreement — P-384 and P-521");
@@ -577,6 +580,130 @@ int main(void)
         ASSERT_EQ("Short buffer → NTE_BUFFER_TOO_SMALL",
                   ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
         ASSERT_EQ("Reports the digest size", cb, 32U);
+    }
+
+    /* ── BCRYPT_KDF_HKDF, RFC 5869 (ECDH-05) ──────────────────────────── */
+    TEST_SUITE("KSP_DeriveKey — BCRYPT_KDF_HKDF");
+    {
+        static const BYTE salt[] = { 0x51, 0x52, 0x53, 0x54 };
+        static const BYTE info[] = { 0x61, 0x62, 0x63 };
+        NCryptBuffer     bufs[3];
+        NCryptBufferDesc desc;
+        BYTE             out[128];
+        DWORD            cb = 0;
+        NCRYPT_SECRET_HANDLE hSec2 = 0;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbEcPoint = (const char *)g_point256;
+        P11Mock_GetConfig()->cbEcPoint = sizeof g_point256;
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&privKey,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&pubKey,
+                                 &hSec2, 0);
+        ASSERT_OK("Agree a secret for HKDF", ss);
+
+        P11Mock_GetConfig()->pbSecretValue = g_secret32;
+        P11Mock_GetConfig()->cbSecretValue = sizeof g_secret32;
+        /* Each HMAC returns 32 bytes, as SHA-256 would. */
+        P11Mock_GetConfig()->cbSignature = 32;
+
+        desc.ulVersion = 0;
+        desc.cBuffers  = 3;
+        desc.pBuffers  = bufs;
+        bufs[0].BufferType = KDF_HASH_ALGORITHM;
+        bufs[0].pvBuffer   = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        bufs[0].cbBuffer   = (ULONG)((wcslen(BCRYPT_SHA256_ALGORITHM) + 1) * sizeof(WCHAR));
+        bufs[1].BufferType = KDF_HKDF_SALT;
+        bufs[1].pvBuffer   = (PVOID)salt;
+        bufs[1].cbBuffer   = (ULONG)sizeof salt;
+        bufs[2].BufferType = KDF_HKDF_INFO;
+        bufs[2].pvBuffer   = (PVOID)info;
+        bufs[2].cbBuffer   = (ULONG)sizeof info;
+
+        /* One block: extract + a single expand round. */
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec2, BCRYPT_KDF_HKDF, &desc,
+                           out, 32, &cb, 0);
+        ASSERT_OK("HKDF, 32 bytes → OK", ss);
+        ASSERT_EQ("Exactly 32 bytes returned", cb, 32U);
+        ASSERT_EQ("CKM_SHA256_HMAC used",
+                  P11Mock_GetConfig()->lastSignMech,
+                  (CK_MECHANISM_TYPE)CKM_SHA256_HMAC);
+        ASSERT_EQ("Two HMACs: one extract, one expand",
+                  P11Mock_GetCalls()->nSign, 2);
+
+        /* Every HMAC key is created and destroyed — an expansion that
+         * leaked one object per round would fill the token. */
+        ASSERT_EQ("Every temporary HMAC key was destroyed",
+                  P11Mock_GetCalls()->nCreateObject,
+                  P11Mock_GetCalls()->nDestroyObject);
+
+        /* The final expand block is T(0) || info || 0x01, and T(0) is
+         * empty on the first round, so it is info || 0x01. */
+        ASSERT_EQ("First expand block is info || counter",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)4);
+        ASSERT_MEM("  info first",
+                   P11Mock_GetConfig()->lastSignData, info, 3);
+        ASSERT_EQ("  counter 1 last",
+                  (CK_ULONG)P11Mock_GetConfig()->lastSignData[3], (CK_ULONG)1);
+
+        /* Three blocks: 65 bytes needs ceil(65/32) = 3 expand rounds. */
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec2, BCRYPT_KDF_HKDF, &desc,
+                           out, 65, &cb, 0);
+        ASSERT_OK("HKDF, 65 bytes → OK", ss);
+        ASSERT_EQ("Exactly 65 bytes returned", cb, 65U);
+        ASSERT_EQ("Four HMACs: one extract, three expand",
+                  P11Mock_GetCalls()->nSign, 4);
+        ASSERT_EQ("Last block is T(2) || info || counter",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)(32 + 3 + 1));
+        ASSERT_EQ("  counter reached 3",
+                  (CK_ULONG)P11Mock_GetConfig()->lastSignData[35], (CK_ULONG)3);
+        ASSERT_EQ("No temporary key leaked",
+                  P11Mock_GetCalls()->nCreateObject,
+                  P11Mock_GetCalls()->nDestroyObject);
+
+        /* Salt is optional; RFC 5869 treats it as absent. */
+        desc.cBuffers = 1;
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec2, BCRYPT_KDF_HKDF, &desc,
+                           out, 32, &cb, 0);
+        ASSERT_OK("HKDF without salt or info → OK", ss);
+        ASSERT_EQ("Still 32 bytes", cb, 32U);
+        ASSERT_EQ("Expand block is just the counter",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)1);
+
+        /* An unusable hash is refused before any token work. */
+        desc.cBuffers = 1;
+        bufs[0].pvBuffer = (PVOID)L"NOPE";
+        ASSERT_EQ("Unknown hash → NTE_BAD_ALGID",
+            KSP_DeriveKey(hProv, hSec2, BCRYPT_KDF_HKDF, &desc,
+                          out, 32, &cb, 0),
+            (SECURITY_STATUS)NTE_BAD_ALGID);
+
+        /* RFC 5869 caps output at 255 * HashLen. */
+        bufs[0].pvBuffer = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        ASSERT_EQ("Over 255 blocks → NTE_INVALID_PARAMETER",
+            KSP_DeriveKey(hProv, hSec2, BCRYPT_KDF_HKDF, &desc,
+                          out, 255 * 32 + 1, &cb, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        /* A failing HMAC must not leave a partly-filled buffer behind. */
+        memset(out, 0x7E, sizeof out);
+        P11Mock_ResetCalls();
+        P11Mock_GetConfig()->rv_Sign = CKR_DEVICE_ERROR;
+        ss = KSP_DeriveKey(hProv, hSec2, BCRYPT_KDF_HKDF, &desc,
+                           out, 32, &cb, 0);
+        ASSERT_ERR("HMAC failure propagates", ss);
+        ASSERT_EQ("Output buffer was cleared, not left partial",
+                  (DWORD)out[0], 0U);
+        P11Mock_GetConfig()->rv_Sign = CKR_OK;
+
+        if (hSec2) KSP_FreeSecret(hProv, hSec2);
     }
 
     KSP_FreeProvider(hProv);

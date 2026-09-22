@@ -19,6 +19,24 @@
 #ifndef KSP_WINDOWS_H
 #define KSP_WINDOWS_H
 
+/* Target Windows version.
+ *
+ * Large parts of bcrypt.h are gated on NTDDI_VERSION, and without setting
+ * it the build silently takes whatever the toolchain defaults to — which
+ * is how BCRYPT_KDF_HKDF, KDF_HKDF_SALT and KDF_HKDF_INFO came to be
+ * invisible even though the header declares them. They need
+ * NTDDI_WIN10_RS4 (Windows 10 1803).
+ *
+ * This project already states Windows 10/11 as its target, so declaring it
+ * here makes that real rather than implied. Set before <windows.h>, which
+ * is why it lives in the include-policy header. */
+#ifndef _WIN32_WINNT
+#  define _WIN32_WINNT   0x0A00        /* _WIN32_WINNT_WIN10 */
+#endif
+#ifndef NTDDI_VERSION
+#  define NTDDI_VERSION  0x0A000005    /* NTDDI_WIN10_RS4 */
+#endif
+
 #include <windows.h>
 #include <wincrypt.h>   /* AT_SIGNATURE, AT_KEYEXCHANGE */
 #include <bcrypt.h>     /* BCRYPT_* identifiers, BCRYPT_*_BLOB structures */
