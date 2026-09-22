@@ -5,8 +5,9 @@ Key Storage Providers surveyed in
 [11 — CNG KSP market comparison](./11-market-comparison.md), and in what
 order the work has to happen.
 
-*Written: September 2026. **Phases 0, 1 and 2 are done** — see §3 for what
-each changed and what it could not settle. Complements the gap analysis
+*Written: September 2026. **Phases 0, 1 and 2 are done**; Phase 3 is tooled
+as far as it can be here — see §3 for what each changed and what it could
+not settle. Complements the gap analysis
 in [`feature-matrix.csv`](./feature-matrix.csv) and
 [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf).*
 
@@ -300,15 +301,50 @@ shipped invented constants before, and `BCRYPT_SHA224_ALGORITHM` really did
 break the Windows build. The error was stopping at "I cannot verify this"
 without exhausting what was to hand.
 
-### Phase 3 — Assurance
+### Phase 3 — Assurance ⚠️ tooled, not achievable here
 
-- **`OPS-03` — Authenticode signing.** Not a code change: it needs a
-  purchased code-signing certificate and a legal entity. Microsoft does not
-  sign cryptographic providers — see
-  [10 — Running the HLK tests](./10-hlk-execution.md).
-- **Actually execute the HLK suite.** The ~150-test PowerShell suite is
-  written and its C# validated, but it has never been run against a real
-  build, for the reason in §1.
+Neither item can be **completed** in this repository, and saying so plainly
+matters more than showing progress. What could be built has been.
+
+**`OPS-03` — Authenticode signing. Tooling complete; certificate missing.**
+
+`tools/sign_ksp.ps1` signs, timestamps and verifies in one checked step,
+taking a certificate from the Windows store, a PFX (password from the
+environment, never a parameter) or Azure Trusted Signing. The CI `windows`
+job signs automatically the moment a `KSP_SIGN_PFX_BASE64` secret exists,
+and reports the signature state on every run either way, so "unsigned" is
+visible rather than assumed. `*.pfx` is in `.gitignore`: a certificate
+committed by accident is a certificate that must be revoked.
+
+What remains is **not engineering**. An OV or EV code-signing certificate
+must be bought by a verified legal entity — a registered company whose
+registration, address and telephone a CA can check independently. Nothing
+in this repository can supply that, so the row stays **Not covered**. The
+binary is unsigned, and calling the gap closed because the tooling exists
+would be the same error as calling it closed because a plan exists.
+
+**Running the HLK suite. Blocked, and behind two other things.**
+
+The ~150-test PowerShell suite is written and its embedded C# is validated
+on every CI run, but it has never executed against a real build. It cannot
+be, in order:
+
+1. `BUILD-01` — the DLL does not build in CI, for want of
+   `ncrypt_provider.h`.
+2. `OPS-03` — a provider must be signed to be loaded and exercised
+   meaningfully.
+3. A Windows machine with the HLK controller installed.
+
+Each is a prerequisite for the next, so this is the last thing in the
+project to become possible, not something to attempt earlier.
+
+**What Phase 3 cannot change at all.** `OPS-01` (hardware key protection)
+and `OPS-02` (FIPS validation) are graded N/A because they are properties
+of the *backend*, not this KSP. A software token storing keys in an
+encrypted SQLite file cannot be made tamper-resistant by any amount of work
+here. The PKCS#11 abstraction already allows pointing the provider at a
+real HSM, and that — not code in this repository — is what would close
+them.
 
 ### Phase 4 — Post-quantum, and the backend question
 

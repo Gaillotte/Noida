@@ -300,3 +300,68 @@ hardware-backed provider.
 - [09 — Test suite](./09-tests.md) — the four-layer test pyramid
 - [04 — Cryptographic operations](./04-crypto-operations.md) — mechanism mapping
 - [06 — Error mapping](./06-error-mapping.md) — `CK_RV` → `SECURITY_STATUS`
+
+---
+
+## Signing the DLL
+
+`tools/sign_ksp.ps1` does the signing, timestamping and verification in one
+checked step. It does **not** obtain a certificate — nothing can automate
+that — but it means the day one arrives there is no procedure left to work
+out.
+
+```powershell
+# A certificate already in the Windows store (an EV token appears this way)
+.\tools\sign_ksp.ps1 -Thumbprint A1B2C3...
+
+# A PFX. The password comes from the environment, never the command line,
+# so it does not land in shell history or a process listing.
+$env:KSP_SIGN_PFX_PASSWORD = '...'
+.\tools\sign_ksp.ps1 -PfxPath .\codesign.pfx
+
+# Azure Trusted Signing — how most CI signs now, because EV certificates
+# live on hardware tokens a build agent cannot hold
+.\tools\sign_ksp.ps1 -AzureTrustedSigning -AzureMetadata .\ats.json
+
+# What does this build already carry?
+.\tools\sign_ksp.ps1 -VerifyOnly
+```
+
+**Timestamping is not optional here.** A signature without one stops
+validating the day the certificate expires, taking every deployed copy with
+it. The script always passes `/tr`, and treats a missing timestamp in the
+verification output as a failure rather than a warning — as it does a
+`signtool` that reports success but leaves an unusable signature.
+
+`*.pfx`, `*.p12` and `*.snk` are in `.gitignore`. A certificate committed by
+accident is a certificate that must be revoked, so they are excluded before
+one exists rather than after.
+
+### In CI
+
+The `windows` job signs automatically when the repository has a
+`KSP_SIGN_PFX_BASE64` secret (with `KSP_SIGN_PFX_PASSWORD`), and skips the
+step silently when it does not — which is the state today. The PFX is
+written to `RUNNER_TEMP` and deleted in a `finally` block.
+
+A separate step reports the signature state on every run, whether or not
+signing happened, so "unsigned" is visible rather than assumed.
+
+### What is actually left
+
+Buying the certificate. It requires a verified legal entity — a registered
+company, with the registration, address and phone the CA can check
+independently. An individual developer can obtain an OV certificate in some
+jurisdictions; EV generally requires a company.
+
+| | OV | EV |
+|---|---|---|
+| Typical cost | £200–400/year | £400–800/year |
+| Issuance | 1–3 business days | 3–7 business days |
+| Key storage | File or token | Hardware token, mandatory |
+| SmartScreen | Reputation builds over time | Immediate |
+
+No part of this is a code change, which is why `OPS-03` is graded **N/A**
+for effort and stays **Not covered**: the binary is unsigned, and saying
+otherwise because the tooling exists would be the same mistake as calling a
+gap closed because a plan for it exists.

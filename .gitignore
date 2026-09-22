@@ -164,3 +164,10 @@ softhsm2-install/
 softhsm2-build-linux/
 softhsm2-build-win/
 vcpkg/
+
+# Code-signing material. A certificate committed by accident is a
+# certificate that must be revoked, so it is excluded before one exists
+# rather than after.
+*.pfx
+*.p12
+*.snk

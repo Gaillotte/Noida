@@ -77,6 +77,7 @@ noida/
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
+│   │   ├── sign_ksp.ps1            Authenticode sign + timestamp + verify
 │   │   ├── register_ksp.reg        Alternative registry import file
 │   │   ├── test_ksp.ps1            Layer 3a — 9 scenarios / 17 checks (PowerShell)
 │   │   ├── test_cng_hlk.ps1        Layer 3b — ~150-test HLK-conformant PowerShell suite
@@ -488,6 +489,8 @@ See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure
 
 - **Language**: all comments and identifiers in **English**
 - **Warnings**: zero at `/W3` MSVC
+- **Never commit certificate material.** `*.pfx`, `*.p12` and `*.snk` are
+  gitignored; a certificate committed by accident must be revoked
 - **Windows target**: `NTDDI_WIN10_RS4` / `_WIN32_WINNT_WIN10`, set in
   `src/common/ksp_windows.h`. Much of `bcrypt.h` is version-gated, and
   leaving it unset silently hides declarations such as `BCRYPT_KDF_HKDF`.
