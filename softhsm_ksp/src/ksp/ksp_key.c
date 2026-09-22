@@ -128,9 +128,19 @@ BOOL KSP_IsEcdsaAlg(LPCWSTR pszAlgId)
 BOOL KSP_IsEcdhAlg(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return FALSE;
-    return (_wcsicmp(pszAlgId, ALG_ECDH_P256) == 0 ||
-            _wcsicmp(pszAlgId, ALG_ECDH_P384) == 0 ||
-            _wcsicmp(pszAlgId, ALG_ECDH_P521) == 0);
+    return (_wcsicmp(pszAlgId, ALG_ECDH_P256)  == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0);
+}
+
+/* X25519 is a Montgomery curve. SoftHSM2 generates it with the Edwards
+ * mechanism and CKK_EC_EDWARDS, but the key is for agreement, not signing,
+ * so it needs CKA_DERIVE where Ed25519 needs CKA_SIGN. */
+BOOL KSP_IsMontgomeryAlg(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return FALSE;
+    return (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0);
 }
 
 BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId)
@@ -162,6 +172,9 @@ static DWORD DefaultKeyBits(LPCWSTR pszAlgId)
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0)     return 521;
     if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) return 256;
+    /* X25519 keys are 255-bit scalars in a 32-byte field, reported as 255
+     * for consistency with Ed25519. */
+    if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)     return 255;
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)  return 255;
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0)  return 448;
     if (_wcsicmp(pszAlgId, ALG_AES) == 0)            return 256;
@@ -178,7 +191,7 @@ static SECURITY_STATUS GenerateForAlg(KSP_KEY *pKey)
 {
     if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0)
         return KSP_GenerateRsaKeyPair(pKey);
-    if (KSP_IsEddsaAlg(pKey->szAlgId))
+    if (KSP_IsEddsaAlg(pKey->szAlgId) || KSP_IsMontgomeryAlg(pKey->szAlgId))
         return KSP_GenerateEddsaKeyPair(pKey);
     if (KSP_IsSymmetricAlg(pKey->szAlgId))
         return KSP_GenerateSymmetricKey(pKey);
@@ -335,9 +348,13 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
     return ERROR_SUCCESS;
 }
 
-/* Generate an Edwards-curve key pair (Ed25519 / Ed448) in SoftHSM2.
- * Uses CKM_EC_EDWARDS_KEY_PAIR_GEN with the Edwards curve OID in
- * CKA_EC_PARAMS. EdDSA keys are signature-only (no key agreement). */
+/* Generate an Edwards or Montgomery curve key pair in SoftHSM2.
+ *
+ * Both use CKM_EC_EDWARDS_KEY_PAIR_GEN and CKK_EC_EDWARDS; the curve in
+ * CKA_EC_PARAMS is what distinguishes them. The usage attribute differs:
+ * Ed25519 and Ed448 are signature-only, X25519 is agreement-only, and
+ * setting the wrong one makes the token refuse the operation later with an
+ * error that does not point back here. */
 SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
 {
     P11_CONTEXT      *pCtx = P11_GetContext();
@@ -354,6 +371,7 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
     CK_KEY_TYPE       keyType   = CKK_EC_EDWARDS;
     const char       *pbOid;
     CK_ULONG          cbOid;
+    BOOL              bAgreement;
 
     nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
@@ -363,13 +381,16 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
     if (!pbOid)
         return NTE_BAD_ALGID;
 
+    /* X25519 derives; Ed25519 and Ed448 sign. */
+    bAgreement = KSP_IsMontgomeryAlg(pKey->szAlgId);
+
     CK_ATTRIBUTE aPubTemplate[] = {
         { CKA_CLASS,     &classPub,          sizeof(classPub)    },
         { CKA_KEY_TYPE,  &keyType,           sizeof(keyType)     },
         { CKA_TOKEN,     &bTrue,             sizeof(bTrue)       },
         { CKA_LABEL,     szLabel,            (CK_ULONG)nLabelLen },
         { CKA_EC_PARAMS, (CK_VOID_PTR)pbOid, cbOid               },
-        { CKA_VERIFY,    &bTrue,             sizeof(bTrue)       },
+        { CKA_VERIFY,    bAgreement ? &bFalse : &bTrue, sizeof(bTrue) },
     };
 
     CK_ATTRIBUTE aPrivTemplate[] = {
@@ -379,7 +400,8 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
         { CKA_LABEL,       szLabel,    (CK_ULONG)nLabelLen },
         { CKA_SENSITIVE,   &bTrue,     sizeof(bTrue)       },
         { CKA_EXTRACTABLE, &bFalse,    sizeof(bFalse)      },
-        { CKA_SIGN,        &bTrue,     sizeof(bTrue)       },
+        { CKA_SIGN,        bAgreement ? &bFalse : &bTrue, sizeof(bTrue) },
+        { CKA_DERIVE,      bAgreement ? &bTrue : &bFalse, sizeof(bTrue) },
     };
 
     ss = P11_AcquireSession(&hSession);

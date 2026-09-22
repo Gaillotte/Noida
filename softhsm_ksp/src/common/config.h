@@ -103,6 +103,15 @@
     "\x06\x05\x2b\x81\x04\x00\x22"
 #define EC_OID_P384_LEN  7
 
+/* X25519: OID 1.3.101.110. SoftHSM2 also accepts the PKCS#11 3.0
+ * PrintableString form ("curve25519"); the OID is used here because it is
+ * the same shape as every other curve this provider sends, and SoftHSM2
+ * handles both — see OSSLUtil.cpp byteString2oid in the submodule. */
+#define EC_OID_X25519 \
+    "\x06\x03\x2b\x65\x6e"
+#define EC_OID_X25519_LEN     5
+#define EC_X25519_COORD_SIZE  32
+
 /* secp256k1: OID 1.3.132.0.10 — note the final byte is the only thing
  * separating it from P-384 (0x22) and P-521 (0x23); all three are 7 bytes. */
 #define EC_OID_SECP256K1 \
@@ -152,6 +161,21 @@
  * BCRYPT_ECC_CURVE_NAME; this per-curve identifier is a KSP extension, in
  * keeping with how the NIST curves are already named here. */
 #define ALG_ECDSA_SECP256K1 L"ECDSA_SECP256K1"
+/* X25519 key agreement.
+ *
+ * SoftHSM2 2.7.0 supports this through its OpenSSL backend: keys are
+ * generated with CKM_EC_EDWARDS_KEY_PAIR_GEN and CKK_EC_EDWARDS carrying
+ * the curve25519 parameters, and CKM_ECDH1_DERIVE on such a key routes to
+ * SoftHSM's deriveEDDSA. Verified by reading the submodule, not assumed.
+ *
+ * The identifier below is this provider's own. CNG is documented to have
+ * BCRYPT_ECC_CURVE_25519 for the generic ECDH algorithm (evidence grade B
+ * in docs/11), but no header available in this workspace defines it — not
+ * the mingw-w64 we check against, nor mingw-w64 master — so it cannot be
+ * referenced by name here. Reaching X25519 the standard way needs
+ * BCRYPT_ECC_CURVE_NAME handling and a header that declares the constant. */
+#define ALG_ECDH_X25519 L"ECDH_X25519"
+
 #define ALG_ECDH_P256  L"ECDH_P256"
 #define ALG_ECDH_P384  L"ECDH_P384"
 #define ALG_ECDH_P521  L"ECDH_P521"

@@ -417,6 +417,10 @@ DWORD P11_EcCoordSize(LPCWSTR pszAlgId)
         return EC_P521_COORD_SIZE;
     if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0)
         return EC_SECP256K1_COORD_SIZE;
+    /* X25519: a 32-byte scalar field. The public key is these 32 bytes
+     * raw — there is no second coordinate and no 0x04 prefix. */
+    if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
+        return EC_X25519_COORD_SIZE;
     return 0;
 }
 
@@ -440,6 +444,9 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
     }
     if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
         *pcbOid = EC_OID_SECP256K1_LEN; return EC_OID_SECP256K1;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0) {
+        *pcbOid = EC_OID_X25519_LEN; return EC_OID_X25519;
     }
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
         *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;

@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         16 test suites · 1022 assertions · gcov coverage         │
+   │         16 test suites · 1029 assertions · gcov coverage         │
    │         Lines: 90.0 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -85,10 +85,10 @@ make syntax-check # parses the Windows-only integration test
 | Memory | `test_memory.c` | 21 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
 | ECDSA DER decode | `test_ecdsa_decode.c` | 47 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
 | OAEP parameters | `test_oaep_params.c` | 49 | `P11_MapHashAlg()` and `P11_BuildOaepParams()` across SHA-1/224/256/384/512, label pass-through, unsupported-hash rejection |
-| ECDH agreement | `test_ecdh.c` | 41 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
+| ECDH agreement | `test_ecdh.c` | 48 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| **Total** | | **1022** | |
+| **Total** | | **1029** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the

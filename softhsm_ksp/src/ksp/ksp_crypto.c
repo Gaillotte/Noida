@@ -948,15 +948,26 @@ SECURITY_STATUS WINAPI KSP_SecretAgreement(
         return NTE_BAD_KEY;
     }
 
-    /* CKM_ECDH1_DERIVE takes the raw point, not the DER OCTET STRING */
+    /* CKM_ECDH1_DERIVE takes the raw point, not the DER OCTET STRING.
+     *
+     * Stripping on a leading 0x04 alone is not safe. For a Montgomery
+     * curve the public key is 32 raw bytes with no wrapper at all, and
+     * those bytes are effectively random — roughly one X25519 key in 256
+     * begins with 0x04, and two of its own key bytes would then be eaten
+     * as a tag and length. So the declared DER length has to agree with
+     * what is actually there before anything is removed. */
     pbRaw = pbPeerPoint;
     cbRaw = cbPeerPoint;
     if (cbRaw >= 2 && pbRaw[0] == 0x04) {
-        if (pbRaw[1] == 0x81 && cbRaw >= 3) {
+        if (pbRaw[1] == 0x81 && cbRaw >= 3 &&
+            (DWORD)pbRaw[2] == cbRaw - 3) {
+            /* Long form: 0x04 0x81 <len>, used by P-521. */
             pbRaw += 3; cbRaw -= 3;
-        } else if (pbRaw[1] < 128) {
+        } else if (pbRaw[1] < 128 && (DWORD)pbRaw[1] == cbRaw - 2) {
+            /* Short form: 0x04 <len>. */
             pbRaw += 2; cbRaw -= 2;
         }
+        /* Otherwise the leading 0x04 is key material, not a tag. */
     }
 
     memset(&ecdhParams, 0, sizeof(ecdhParams));

@@ -125,7 +125,7 @@ Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full
 cd tests/unit && make run
 ```
 
-16 test suites · 1022 assertions · **90.0 % line coverage, 100 % function coverage** (gcov).
+16 test suites · 1029 assertions · **90.0 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
 ```bash
@@ -207,11 +207,13 @@ Windows Application
 | ECDSA P-256/P-384/P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
 | ECDSA secp256k1 | ✓ | ✓ (r‖s) | — | — | ✓ |
 | ECDH P-256/P-384/P-521 | ✓ | — | — | ✓ | ✓ |
+| X25519 | ✓ | — | — | ✓ | ✓ |
 | EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |
 | AES 128/192/256 | ✓ | — | ECB, CBC, CTR, GCM | — | — |
 | HMAC SHA-1/224/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
 
-`EDDSA_ED25519`, `EDDSA_ED448`, `HMAC_SHA*` and `ECDSA_SECP256K1` are this
+`EDDSA_ED25519`, `EDDSA_ED448`, `HMAC_SHA*`, `ECDSA_SECP256K1` and
+`ECDH_X25519` are this
 provider's own identifiers, not standard CNG ones, so only an application
 written against this KSP will reach them. CNG has no EdDSA algorithm
 identifier at all; it does know secp256k1, but as a curve selected through

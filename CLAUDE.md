@@ -57,7 +57,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 16 test suites, 1022 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 16 test suites, 1029 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -315,6 +315,7 @@ softhsm2-x64.dll          PKCS#11 v2.40 — encrypted SQLite storage
 | RSA | `RSA` | 2048–16384 bits, step 64 | `CKM_RSA_PKCS_KEY_PAIR_GEN` |
 | ECDSA | `ECDSA_P256/384/521`, `ECDSA_SECP256K1` | 256, 384, 521 bits | `CKM_EC_KEY_PAIR_GEN` |
 | ECDH | `ECDH_P256/384/521` | 256, 384, 521 bits | `CKM_EC_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) |
+| X25519 | `ECDH_X25519` | 255 bits | `CKM_EC_EDWARDS_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) |
 | EdDSA | `EDDSA_ED25519/ED448` | 255, 448 bits | `CKM_EC_EDWARDS_KEY_PAIR_GEN` |
 | AES | `AES` | 128, 192, 256 bits | `CKM_AES_KEY_GEN` |
 | HMAC | `HMAC_SHA1/224/256/384/512` | 160–512 bits | `CKM_GENERIC_SECRET_KEY_GEN` |
@@ -434,7 +435,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 16 suites, 1022 assertions
+make run           # 16 suites, 1029 assertions
 make coverage      # → coverage_html/index.html (90.0 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```

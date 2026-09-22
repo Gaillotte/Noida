@@ -111,6 +111,9 @@ BOOL KSP_IsEcdhAlg(LPCWSTR pszAlgId);
 /* Return TRUE when pszAlgId names an Edwards curve */
 BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId);
 
+/* X25519 — a Montgomery curve generated with the Edwards mechanism */
+BOOL KSP_IsMontgomeryAlg(LPCWSTR pszAlgId);
+
 /* Return TRUE when pszAlgId names a symmetric algorithm (AES or HMAC) */
 BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId);
 

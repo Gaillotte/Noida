@@ -363,6 +363,87 @@ int main(void)
                KSP_IsValidSecret((NCRYPT_SECRET_HANDLE)(ULONG_PTR)&bogus));
     }
 
+    /* ── X25519 key agreement (EDDSA-03) ──────────────────────────────── */
+    TEST_SUITE("KSP_SecretAgreement — X25519");
+    {
+        /* An X25519 public key is 32 RAW bytes with no DER wrapper, and
+         * those bytes are effectively random. This one deliberately starts
+         * with 0x04, which is also the DER OCTET STRING tag: stripping on
+         * the tag alone would eat two bytes of real key material. */
+        static const BYTE x25519Raw[32] = {
+            0x04, 0x20, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+            0x99, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+            0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E
+        };
+        KSP_KEY xPriv, xPub;
+
+        MakeKey(&xPriv, ALG_ECDH_X25519, 255, 0x10, CK_INVALID_HANDLE);
+        MakeKey(&xPub,  ALG_ECDH_X25519, 255, CK_INVALID_HANDLE, 0x20);
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbEcPoint = (const char *)x25519Raw;
+        P11Mock_GetConfig()->cbEcPoint = sizeof x25519Raw;
+
+        hSecret = 0;
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&xPriv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&xPub,
+                                 &hSecret, 0);
+        ASSERT_OK("X25519 agreement succeeds", ss);
+        ASSERT_EQ("CKM_ECDH1_DERIVE used",
+                  P11Mock_GetConfig()->lastDeriveMech,
+                  (CK_MECHANISM_TYPE)CKM_ECDH1_DERIVE);
+
+        /* The whole 32 bytes must reach the token. 30 would mean the
+         * leading 0x04 0x20 was mistaken for a DER header. */
+        ASSERT_EQ("All 32 raw bytes passed through, nothing stripped",
+                  P11Mock_GetConfig()->lastEcdhPublicDataLen, (CK_ULONG)32);
+
+        if (hSecret) {
+            KSP_SECRET *pS = (KSP_SECRET *)(ULONG_PTR)hSecret;
+            ASSERT_EQ("Secret length = 32", pS->dwSecretLen, 32U);
+            KSP_FreeSecret(hProv, hSecret);
+            hSecret = 0;
+        }
+    }
+    {
+        /* A genuine DER-wrapped P-256 point must still be unwrapped: the
+         * stricter check must not break the case it was guarding. */
+        KSP_KEY p1, p2;
+        MakeKey(&p1, ALG_ECDH_P256, 256, 0x10, CK_INVALID_HANDLE);
+        MakeKey(&p2, ALG_ECDH_P256, 256, CK_INVALID_HANDLE, 0x20);
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbEcPoint = (const char *)g_point256;
+        P11Mock_GetConfig()->cbEcPoint = sizeof g_point256;
+
+        hSecret = 0;
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&p1,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&p2,
+                                 &hSecret, 0);
+        ASSERT_OK("P-256 still agrees", ss);
+        ASSERT_EQ("DER wrapper still stripped",
+                  P11Mock_GetConfig()->lastEcdhPublicDataLen, (CK_ULONG)65);
+        if (hSecret) { KSP_FreeSecret(hProv, hSecret); hSecret = 0; }
+    }
+    {
+        /* X25519 cannot agree with a NIST curve: the coordinate sizes
+         * differ, so the existing curve check rejects it. */
+        KSP_KEY xPriv, pPub;
+        MakeKey(&xPriv, ALG_ECDH_X25519, 255, 0x10, CK_INVALID_HANDLE);
+        MakeKey(&pPub,  ALG_ECDH_P384,   384, CK_INVALID_HANDLE, 0x20);
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&xPriv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&pPub,
+                                 &hSecret, 0);
+        ASSERT_EQ("X25519 with P-384 → NTE_BAD_ALGID",
+                  ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();
