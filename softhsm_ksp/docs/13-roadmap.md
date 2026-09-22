@@ -478,3 +478,172 @@ Recorded so the limits of the analysis are visible.
 
 Both of the first two are answered the moment CI exists, which is why it is
 in Phase 0 rather than treated as tooling polish.
+
+---
+
+## 6. Phases 5–7 — what is left, and what is actually reachable
+
+*Added after the phase-4 refresh of
+[11 — CNG KSP market comparison](./11-market-comparison.md), from the 30
+actionable gaps in [`feature-matrix.csv`](./feature-matrix.csv).*
+
+Thirty gaps is a misleading headline. Sorted by what actually stands in the
+way rather than by effort, they fall into five groups, and only two of those
+are work this repository can do.
+
+| Group | Count | Blocker |
+|-------|-------|---------|
+| A — closable here, now | 5 | Nothing. Code and tests on Linux |
+| B — closable here, dark until the token supports it | 3 | Nothing, since phase 4 |
+| C — needs a second real backend standing up | 1 | Build time, plus OpenSSL 3.5+ |
+| D — blocked on something not obtainable here | 6 | A Windows SDK header, a machine, or a certificate |
+| E — should stay open on purpose | 15 | A decision, already taken |
+
+### Phase 5 — The five that are simply work
+
+Every one of these was re-checked against the real headers before being
+listed, because the feature matrix had two of them mis-graded.
+
+| Gap | Why it is worth doing | Note |
+|-----|----------------------|------|
+| **PROP-14** `NCRYPT_CERTIFICATE_PROPERTY` | Certificate enrolment expects a KSP to hold the issued certificate beside the key. Without it this provider cannot fully participate in the flow it exists to serve | Both halves standard: `L"SmartCardKeyCertificate"` confirmed in mingw-w64, and SoftHSM2 has `CKO_CERTIFICATE` |
+| **AES-10** AES-CMAC | **Re-graded L → S.** The matrix claimed this would need a private identifier like HMAC. It does not: `BCRYPT_AES_CMAC_ALGORITHM` is `L"AES-CMAC"`, confirmed in mingw-w64 | Routes through `KSP_SignHash` exactly as HMAC already does; SoftHSM2 has `CKM_AES_CMAC` |
+| **AES-09** AES key wrap | **Re-graded L → M.** `KSP_ExportKey` already takes `hExportKey`, CNG defines `BCRYPT_AES_WRAP_KEY_BLOB` (`L"Rfc3565KeyWrapBlob"`), SoftHSM2 has `CKM_AES_KEY_WRAP` and `_PAD` | The only legitimate route for key material to leave a token where every key is `CKA_EXTRACTABLE=FALSE`. Partly answers FMT-06 and FMT-07 without breaking the HSM posture |
+| **OPS-08** Re-initialisation without restart | `InitOnceExecuteOnce` is one-shot per process *even on failure*, so one bad module path poisons the provider until the host restarts | Needs a resettable guard and care around in-flight sessions |
+| **PROP-13** Per-key PIN | Provider-wide PIN works; per-key needs a per-handle credential cache and re-login per operation | Smallest value of the five; listed for completeness |
+
+All five are testable on Linux against the mock, and three of them extend
+the standard CNG surface rather than this provider's private one — which is
+the criticism finding 2 of the market comparison has levelled since the
+first audit.
+
+### Phase 6 — The three that phase 4 quietly unblocked
+
+`RSA-12` (raw RSA, `CKM_RSA_X_509`), `AES-07` (CCM) and `AES-08` (CFB) are
+all recorded as backend blockers: SoftHSM2 2.7.0 implements none of them.
+
+**That stopped being a reason not to implement them.** The capability probe
+means a mechanism can be wired, gated on the token advertising it, and left
+dark on SoftHSM2 — which is exactly how ML-DSA is handled today. The work is
+the same shape as phase 4's and the tests are the same shape as
+`test_mldsa.c`: assert the gate closed on a SoftHSM2-like token and open on
+a capable one.
+
+Whether this is worth doing depends on whether anyone will point this
+provider at a token that has those mechanisms. It is cheap, and it is honest
+— but three more dark code paths with no backend to exercise them is a real
+cost, and the answer may reasonably be "not yet".
+
+### Phase 7 — Stand up a second backend, and finally verify phase 4
+
+This is the highest-value item on the list, and it is a verification task
+rather than a feature.
+
+Two claims currently rest on a mock and nothing else:
+
+- **OPS-13 / OPS-14** — that any PKCS#11 v2.40+ module can back this
+  provider, and that the probe correctly narrows what it advertises.
+- **PQC-01** — that ML-DSA works on a v3.2 token. The gating is proven; the
+  mechanism plumbing has never met a real implementation.
+
+**Kryoptic** answers both. It is a PKCS#11 soft token in Rust with `mldsa`,
+`mlkem` and `slhdsa` feature flags, and a Rust toolchain is already present
+in this environment. Two things were checked and one of them bites:
+
+| Check | Result |
+|-------|--------|
+| Rust toolchain available | ✓ `cargo` and `rustc` present |
+| Kryoptic has ML-DSA | ✓ `mldsa = ["hash", "ossl/ossl350"]` |
+| OpenSSL new enough | ✗ **the catch.** The PQC features need OpenSSL 3.5+; this image has 3.0.13 and Ubuntu Noble ships nothing newer |
+
+So the phase splits cleanly, and the cheaper half is worth doing on its own:
+
+1. **Build Kryoptic with default features** and add a CI job that runs the
+   PKCS#11 layer against it. That alone turns "any module works" from an
+   assertion into a tested claim, and it will find whatever this provider
+   has quietly assumed about SoftHSM2's behaviour.
+2. **Build OpenSSL 3.5+ from source**, rebuild Kryoptic with `pqc`, and run
+   the ML-DSA path end to end. This is the only route visible from here to
+   moving `PQC-01` from Partial to Covered.
+
+Step 1 is the one to do first: it is bounded, it validates the architectural
+claim phase 4 was built on, and it does not depend on step 2.
+
+### Group D — real, and not reachable from this repository
+
+Listing these as backlog items would be dishonest; they need something this
+environment cannot supply.
+
+| Gap | What it actually needs |
+|-----|------------------------|
+| **BUILD-01**, **TABLE-01** | `ncrypt_provider.h` and a Windows machine. **This is the highest-leverage item in the whole analysis** — until the DLL builds and loads, every other claim here is measured on Linux against a hand-written mock. `TABLE-01` is graded S because the *fix* is small; getting into a position to apply it is not |
+| **PQC-01** (export half) | The CNG post-quantum key blob layout, from a Windows SDK `bcrypt.h`. Refusing to guess it is the current position and should stay so |
+| **PQC-02** ML-KEM | Function-table slots for encapsulation that this project's header does not have. No backend fixes it |
+| **OPS-03** Authenticode | A purchased OV/EV certificate and a legal entity. The tooling is written and CI-exercised; nothing else can be done here |
+| **OPS-05** Key attestation | No PKCS#11 standard mechanism exists. Unreachable through a portable PKCS#11 layer, whatever the device does |
+
+The single most useful thing anyone with access could do is establish where
+`ncrypt_provider.h` actually comes from. Two guesses at its location have
+already been wrong, a WDK install that reported success did not supply it,
+and a whole-disk search of a `windows-latest` runner found only this
+repository's own mock.
+
+### Group E — the fifteen that should stay open
+
+Recorded so nobody reopens a settled question. Three kinds:
+
+**Already answered correctly by refusing.** `IFACE-06`
+(`GetOperationProperty`) reports async operation state; PKCS#11 is
+synchronous, so there is nothing to report and `NTE_NOT_SUPPORTED` is the
+right answer, not a gap. `IFACE-05` (`NotifyChangeKey`) is a no-op for the
+same class of reason.
+
+**Deliberate positions.** `RSA-02` (RSA below 2048), `ECDH-06` (finite-field
+DH), `DSA-01`, `3DES-01`, `FMT-07` and `FMT-09` (private key import and
+PKCS#8 — both contradict a non-extractable-key posture). `LIFE-08` is as
+closed as it can get: the machine/user scope is namespacing, and real
+isolation needs an ACL model PKCS#11 does not have within a slot.
+
+**Would be worse than the gap.** These deserve naming, because each is a
+place where implementing the feature would make the provider *less*
+truthful:
+
+- **PROP-11** `NCRYPT_SECURITY_DESCR_PROPERTY` — a per-key ACL over a
+  side-channel store the token does not enforce. Anyone who can log into the
+  token still reads every key. That is the `m/` `u/` namespacing trap again,
+  except this time the property's name promises access control outright.
+- **PROP-16** `NCRYPT_USE_COUNT_PROPERTY` — SoftHSM2 has no atomic counter
+  primitive, so the count would be racy. A usage counter that undercounts
+  under load is worse than no counter, because it will be believed.
+- **PQC-03** LMS / XMSS — stateful hash-based signatures need one-time-key
+  state persisted without fail. A lost state update forges signatures. No
+  surveyed v3.2 token implements them, and this provider has no state model
+  that would make it safe. This one should probably never be built here.
+- **IFACE-07** / **PROP-12** / **PROP-15** — the `PromptUser` cluster needs
+  a UI thread and a window handle. This is a server-side software token; the
+  feature has no user to prompt, and none of it is testable here.
+- **FMT-10** `OPAQUETRANSPORT` — there is no standard to follow, so
+  implementing it means inventing a wrapping format and calling it
+  interoperable. If key transport is wanted, `AES-09` above is the standard
+  answer.
+
+### Suggested order
+
+```
+Phase 7 step 1  Kryoptic in CI ──────► validates phase 4's central claim
+      │                                 (do this first — it is verification,
+      │                                  not features, and everything else
+      │                                  rests on it)
+      ▼
+Phase 5  The five that are work ─────► PROP-14 and AES-09 first: both extend
+      │                                 the standard CNG surface
+      ▼
+Phase 7 step 2  OpenSSL 3.5 + PQC ───► the only route to closing PQC-01
+      │
+      ▼
+Phase 6  The three dark mechanisms ──► cheap, but only if a token will use them
+
+Group D  runs in parallel and is not engineering: a header, a machine, a
+         certificate. BUILD-01 outranks everything above it in value and
+         cannot be started from here.
+```
