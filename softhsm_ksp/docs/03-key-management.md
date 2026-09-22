@@ -50,6 +50,9 @@ for `AT_SIGNATURE`, because a derive-only key cannot sign.
 | `RSA` | 2048 | any multiple of 64 from 2048 to 16384 |
 | `ECDSA_*` / `ECDH_*` | fixed by curve | curve value only |
 | `ECDSA_SECP256K1` | 256 | fixed |
+| `ECDSA_BRAINPOOLP256R1` | 256 | fixed |
+| `ECDSA_BRAINPOOLP384R1` | 384 | fixed |
+| `ECDSA_BRAINPOOLP512R1` | 512 | fixed |
 | `EDDSA_ED25519` | 255 | fixed |
 | `EDDSA_ED448` | 448 | fixed |
 | `AES` | 256 | 128 / 192 / 256 |

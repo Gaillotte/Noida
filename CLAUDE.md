@@ -57,7 +57,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 16 test suites, 1095 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 16 test suites, 1128 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -313,7 +313,7 @@ softhsm2-x64.dll          PKCS#11 v2.40 — encrypted SQLite storage
 | Key Type | CNG Alg ID | Sizes | PKCS#11 Gen Mechanism |
 |---|---|---|---|
 | RSA | `RSA` | 2048–16384 bits, step 64 | `CKM_RSA_PKCS_KEY_PAIR_GEN` |
-| ECDSA | `ECDSA_P256/384/521`, `ECDSA_SECP256K1` | 256, 384, 521 bits | `CKM_EC_KEY_PAIR_GEN` |
+| ECDSA | `ECDSA_P256/384/521`, `ECDSA_SECP256K1`, `ECDSA_BRAINPOOLP256R1/384R1/512R1` | 256–521 bits | `CKM_EC_KEY_PAIR_GEN` |
 | ECDH | `ECDH_P256/384/521` | 256, 384, 521 bits | `CKM_EC_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) |
 | X25519 | `ECDH_X25519` | 255 bits | `CKM_EC_EDWARDS_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) |
 | EdDSA | `EDDSA_ED25519/ED448` | 255, 448 bits | `CKM_EC_EDWARDS_KEY_PAIR_GEN` |
@@ -340,8 +340,9 @@ EdDSA signatures are already raw — no DER conversion.
 `KSP_DeriveKey` supports `BCRYPT_KDF_RAW_SECRET`, `BCRYPT_KDF_HASH`
 (Hash(prepend ‖ Z ‖ append), SHA-1 by default per CNG) and
 `BCRYPT_KDF_HKDF` (RFC 5869, optional salt and info) and
-`BCRYPT_KDF_HMAC` (including `KDF_USE_SECRET_AS_HMAC_KEY_FLAG`).
-Only `BCRYPT_KDF_TLS_PRF` returns `NTE_NOT_SUPPORTED`.
+`BCRYPT_KDF_HMAC` (including `KDF_USE_SECRET_AS_HMAC_KEY_FLAG`) and
+`BCRYPT_KDF_TLS_PRF` (**TLS 1.2 only** — 1.0 and 1.1 use the MD5/SHA-1
+split PRF and are refused, per RFC 8996).
 Both keys must be on the same curve or the call returns `NTE_BAD_ALGID`.
 
 ### Symmetric Encryption (AES)
@@ -391,8 +392,9 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   multiple of 64 → `NTE_BAD_LEN`
 - AES sizes outside {128, 192, 256} → `NTE_BAD_LEN`
 - AES-CCM and AES-CFB → `NTE_NOT_SUPPORTED` (no SoftHSM2 mechanism wired)
-- `NCryptDeriveKey` supports `BCRYPT_KDF_RAW_SECRET`, `BCRYPT_KDF_HASH`,
-  `BCRYPT_KDF_HKDF` and `BCRYPT_KDF_HMAC`; `TLS_PRF` → `NTE_NOT_SUPPORTED`
+- `NCryptDeriveKey` supports every CNG KDF except the TLS 1.0/1.1 PRF,
+  which is refused deliberately: it is the MD5/SHA-1 split construction and
+  both versions are deprecated by RFC 8996
 - DES/3DES, DSA, PKCS#3 DH, GOST — deliberately out of scope
 - Raw-hash and sign-with-integrated-hash mechanisms are unreachable by design
   (CNG always supplies a pre-computed digest to `NCryptSignHash`)
@@ -440,8 +442,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 16 suites, 1095 assertions
-make coverage      # → coverage_html/index.html (89.0 % lines, 100 % functions)
+make run           # 16 suites, 1128 assertions
+make coverage      # → coverage_html/index.html (88.8 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

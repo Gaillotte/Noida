@@ -222,10 +222,6 @@ int main(void)
 
     /* KDFs still without an implementation. HMAC, TLS_PRF and HKDF need a
      * keyed primitive over Z, not a digest chain — ECDH-05. */
-    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_TLS_PRF, NULL,
-                       buf, sizeof buf, &cbResult, 0);
-    ASSERT_EQ("TLS_PRF KDF → NTE_NOT_SUPPORTED", ss,
-              (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
 
     /* Buffer too small reports the required size */
@@ -826,13 +822,126 @@ int main(void)
             desc.cBuffers = 1;
         }
 
-        /* TLS_PRF is the one KDF still unimplemented. */
-        ASSERT_EQ("TLS_PRF → NTE_NOT_SUPPORTED",
-            KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_TLS_PRF, &desc,
-                          out, sizeof out, &cb, 0),
-            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
         if (hSec3) KSP_FreeSecret(hProv, hSec3);
+    }
+
+    /* ── BCRYPT_KDF_TLS_PRF, TLS 1.2 (ECDH-05) ────────────────────────── */
+    TEST_SUITE("KSP_DeriveKey — BCRYPT_KDF_TLS_PRF");
+    {
+        static const BYTE lbl[]  = { 'k','e','y',' ','e','x' };
+        static const BYTE sd[]   = { 0xC1, 0xC2, 0xC3, 0xC4 };
+        static const BYTE tls10[] = { 0x01, 0x03 };   /* 0x0301 LE */
+        static const BYTE tls11[] = { 0x02, 0x03 };
+        static const BYTE tls12[] = { 0x03, 0x03 };
+        NCryptBuffer     bufs[4];
+        NCryptBufferDesc desc;
+        BYTE             out[128];
+        DWORD            cb = 0;
+        NCRYPT_SECRET_HANDLE hSec4 = 0;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbEcPoint = (const char *)g_point256;
+        P11Mock_GetConfig()->cbEcPoint = sizeof g_point256;
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&privKey,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&pubKey,
+                                 &hSec4, 0);
+        ASSERT_OK("Agree a secret for TLS_PRF", ss);
+
+        P11Mock_GetConfig()->pbSecretValue = g_secret32;
+        P11Mock_GetConfig()->cbSecretValue = sizeof g_secret32;
+        P11Mock_GetConfig()->cbSignature   = 32;
+
+        desc.ulVersion = 0;
+        desc.cBuffers  = 3;
+        desc.pBuffers  = bufs;
+        bufs[0].BufferType = KDF_HASH_ALGORITHM;
+        bufs[0].pvBuffer   = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        bufs[0].cbBuffer   = (ULONG)((wcslen(BCRYPT_SHA256_ALGORITHM) + 1) * sizeof(WCHAR));
+        bufs[1].BufferType = KDF_TLS_PRF_LABEL;
+        bufs[1].pvBuffer   = (PVOID)lbl;
+        bufs[1].cbBuffer   = (ULONG)sizeof lbl;
+        bufs[2].BufferType = KDF_TLS_PRF_SEED;
+        bufs[2].pvBuffer   = (PVOID)sd;
+        bufs[2].cbBuffer   = (ULONG)sizeof sd;
+
+        /* One block: A(1) plus one output HMAC = 2 signs. */
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec4, BCRYPT_KDF_TLS_PRF, &desc,
+                           out, 32, &cb, 0);
+        ASSERT_OK("TLS 1.2 PRF, 32 bytes → OK", ss);
+        ASSERT_EQ("Exactly 32 bytes", cb, 32U);
+        ASSERT_EQ("Two HMACs: A(1) and one output block",
+                  P11Mock_GetCalls()->nSign, 2);
+        ASSERT_EQ("CKM_SHA256_HMAC used",
+                  P11Mock_GetConfig()->lastSignMech,
+                  (CK_MECHANISM_TYPE)CKM_SHA256_HMAC);
+
+        /* The output HMAC runs over A(i) || label || seed. */
+        ASSERT_EQ("Block is 32 + 6 + 4 bytes",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)42);
+        ASSERT_MEM("  label follows A(i)",
+                   P11Mock_GetConfig()->lastSignData + 32, lbl, 6);
+        ASSERT_MEM("  then the seed",
+                   P11Mock_GetConfig()->lastSignData + 38, sd, 4);
+
+        /* The HMAC key is the secret throughout. */
+        ASSERT_EQ("Key is the agreed secret",
+                  P11Mock_GetConfig()->cbLastCreateValue, (CK_ULONG)32);
+        ASSERT_MEM("  and its bytes match",
+                   P11Mock_GetConfig()->lastCreateValue, g_secret32, 32);
+        ASSERT_EQ("No temporary key leaked",
+                  P11Mock_GetCalls()->nCreateObject,
+                  P11Mock_GetCalls()->nDestroyObject);
+
+        /* 80 bytes needs three output blocks, plus A(1), A(2), A(3). */
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec4, BCRYPT_KDF_TLS_PRF, &desc,
+                           out, 80, &cb, 0);
+        ASSERT_OK("TLS 1.2 PRF, 80 bytes → OK", ss);
+        ASSERT_EQ("Exactly 80 bytes", cb, 80U);
+        /* A(1), A(2), A(3) and one output HMAC per block = 6. */
+        ASSERT_EQ("Six HMACs: three A values and three output blocks",
+                  P11Mock_GetCalls()->nSign, 6);
+        ASSERT_EQ("Still no leak",
+                  P11Mock_GetCalls()->nCreateObject,
+                  P11Mock_GetCalls()->nDestroyObject);
+
+        /* An explicit TLS 1.2 protocol buffer is accepted. */
+        desc.cBuffers      = 4;
+        bufs[3].BufferType = KDF_TLS_PRF_PROTOCOL;
+        bufs[3].pvBuffer   = (PVOID)tls12;
+        bufs[3].cbBuffer   = 2;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec4, BCRYPT_KDF_TLS_PRF, &desc,
+                           out, 32, &cb, 0);
+        ASSERT_OK("Explicit TLS 1.2 → OK", ss);
+
+        /* 1.0 and 1.1 are refused: their PRF is the MD5/SHA-1 split, and
+         * both versions are deprecated by RFC 8996. */
+        bufs[3].pvBuffer = (PVOID)tls10;
+        ASSERT_EQ("TLS 1.0 → NTE_NOT_SUPPORTED",
+            KSP_DeriveKey(hProv, hSec4, BCRYPT_KDF_TLS_PRF, &desc,
+                          out, 32, &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        bufs[3].pvBuffer = (PVOID)tls11;
+        ASSERT_EQ("TLS 1.1 → NTE_NOT_SUPPORTED",
+            KSP_DeriveKey(hProv, hSec4, BCRYPT_KDF_TLS_PRF, &desc,
+                          out, 32, &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        desc.cBuffers = 3;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec4, BCRYPT_KDF_TLS_PRF, &desc,
+                           NULL, 0, &cb, 0);
+        ASSERT_OK("Size query → OK", ss);
+        ASSERT_EQ("Reports one digest", cb, 32U);
+
+        if (hSec4) KSP_FreeSecret(hProv, hSec4);
     }
 
     KSP_FreeProvider(hProv);

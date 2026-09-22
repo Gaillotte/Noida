@@ -68,7 +68,10 @@ SECURITY_STATUS P11_ResolveMechanism(
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
+        _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0) {
         pMechanism->mechanism = CKM_ECDSA;
         return ERROR_SUCCESS;
     }
@@ -417,6 +420,12 @@ DWORD P11_EcCoordSize(LPCWSTR pszAlgId)
         return EC_P521_COORD_SIZE;
     if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0)
         return EC_SECP256K1_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0)
+        return EC_BP256_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0)
+        return EC_BP384_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0)
+        return EC_BP512_COORD_SIZE;
     /* X25519: a 32-byte scalar field. The public key is these 32 bytes
      * raw — there is no second coordinate and no 0x04 prefix. */
     if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
@@ -447,6 +456,15 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
     }
     if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0) {
         *pcbOid = EC_OID_X25519_LEN; return EC_OID_X25519;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0) {
+        *pcbOid = EC_OID_BP_LEN; return EC_OID_BP256;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0) {
+        *pcbOid = EC_OID_BP_LEN; return EC_OID_BP384;
+    }
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0) {
+        *pcbOid = EC_OID_BP_LEN; return EC_OID_BP512;
     }
     if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
         *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;

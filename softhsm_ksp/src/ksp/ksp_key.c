@@ -122,7 +122,10 @@ BOOL KSP_IsEcdsaAlg(LPCWSTR pszAlgId)
     return (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
             _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
             _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
-            _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0);
+            _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0 ||
+            _wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0);
 }
 
 BOOL KSP_IsEcdhAlg(LPCWSTR pszAlgId)
@@ -172,6 +175,9 @@ static DWORD DefaultKeyBits(LPCWSTR pszAlgId)
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
         _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0)     return 521;
     if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) return 256;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0)     return 256;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0)     return 384;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0)     return 512;
     /* X25519 keys are 255-bit scalars in a 32-byte field, reported as 255
      * for consistency with Ed25519. */
     if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)     return 255;

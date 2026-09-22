@@ -112,6 +112,25 @@
 #define EC_OID_X25519_LEN     5
 #define EC_X25519_COORD_SIZE  32
 
+/* Brainpool curve OIDs, taken from `openssl ecparam -name <curve>
+ * -outform DER` rather than transcribed:
+ *   brainpoolP256r1  1.3.36.3.3.2.8.1.1.7
+ *   brainpoolP384r1  1.3.36.3.3.2.8.1.1.11
+ *   brainpoolP512r1  1.3.36.3.3.2.8.1.1.13
+ * All three are 11 bytes and differ only in the last, so they are compared
+ * in full like every other curve here. */
+#define EC_OID_BP256 \
+    "\x06\x09\x2b\x24\x03\x03\x02\x08\x01\x01\x07"
+#define EC_OID_BP384 \
+    "\x06\x09\x2b\x24\x03\x03\x02\x08\x01\x01\x0b"
+#define EC_OID_BP512 \
+    "\x06\x09\x2b\x24\x03\x03\x02\x08\x01\x01\x0d"
+#define EC_OID_BP_LEN         11
+
+#define EC_BP256_COORD_SIZE   32
+#define EC_BP384_COORD_SIZE   48
+#define EC_BP512_COORD_SIZE   64
+
 /* secp256k1: OID 1.3.132.0.10 — note the final byte is the only thing
  * separating it from P-384 (0x22) and P-521 (0x23); all three are 7 bytes. */
 #define EC_OID_SECP256K1 \
@@ -161,6 +180,15 @@
  * BCRYPT_ECC_CURVE_NAME; this per-curve identifier is a KSP extension, in
  * keeping with how the NIST curves are already named here. */
 #define ALG_ECDSA_SECP256K1 L"ECDSA_SECP256K1"
+
+/* Brainpool (RFC 5639). SoftHSM2 never mentions these curves by name, but
+ * its OpenSSL backend decodes CKA_EC_PARAMS with d2i_ECPKParameters, which
+ * accepts any named curve OpenSSL knows — so they pass straight through.
+ * Verified by reading OSSLUtil.cpp, not assumed from the absence of the
+ * word "brainpool" in the source. */
+#define ALG_ECDSA_BP256 L"ECDSA_BRAINPOOLP256R1"
+#define ALG_ECDSA_BP384 L"ECDSA_BRAINPOOLP384R1"
+#define ALG_ECDSA_BP512 L"ECDSA_BRAINPOOLP512R1"
 /* X25519 key agreement.
  *
  * SoftHSM2 2.7.0 supports this through its OpenSSL backend: keys are

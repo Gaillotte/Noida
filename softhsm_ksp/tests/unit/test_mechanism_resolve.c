@@ -3,11 +3,15 @@
  */
 #include "../mock/windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"
+#include "../../src/common/config.h"
 #include "test_framework.h"
+#include <string.h>
 
 SECURITY_STATUS P11_ResolveMechanism(
     LPCWSTR pszAlgId, DWORD dwFlags,
     CK_MECHANISM *pMechanism, CK_RSA_PKCS_PSS_PARAMS *pPssParams);
+DWORD       P11_EcCoordSize(LPCWSTR pszAlgId);
+const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid);
 
 int main(void)
 {
@@ -122,6 +126,57 @@ int main(void)
     ss = P11_ResolveMechanism(L"HMAC_SHA256", 0, &mech, NULL);
     ASSERT_EQ("HMAC-SHA256 unaffected", mech.mechanism,
               (CK_MECHANISM_TYPE)CKM_SHA256_HMAC);
+
+    /* ── Brainpool curves (ECDSA-04) ──────────────────────────────────── */
+    TEST_SUITE("Brainpool curves");
+    {
+        CK_MECHANISM mech;
+        CK_ULONG     cbOid = 0;
+        const char  *pbOid;
+
+        memset(&mech, 0, sizeof mech);
+        ASSERT_OK("brainpoolP256r1 resolves",
+            P11_ResolveMechanism(ALG_ECDSA_BP256, 0, &mech, NULL));
+        ASSERT_EQ("→ CKM_ECDSA", (CK_ULONG)mech.mechanism,
+                  (CK_ULONG)CKM_ECDSA);
+        ASSERT_OK("brainpoolP384r1 resolves",
+            P11_ResolveMechanism(ALG_ECDSA_BP384, 0, &mech, NULL));
+        ASSERT_OK("brainpoolP512r1 resolves",
+            P11_ResolveMechanism(ALG_ECDSA_BP512, 0, &mech, NULL));
+
+        /* Coordinate sizes drive signature length, so a wrong one would
+         * truncate every signature on that curve. */
+        ASSERT_EQ("P256r1 coordinate is 32 bytes",
+                  P11_EcCoordSize(ALG_ECDSA_BP256), 32U);
+        ASSERT_EQ("P384r1 coordinate is 48 bytes",
+                  P11_EcCoordSize(ALG_ECDSA_BP384), 48U);
+        ASSERT_EQ("P512r1 coordinate is 64 bytes",
+                  P11_EcCoordSize(ALG_ECDSA_BP512), 64U);
+
+        /* OIDs taken from `openssl ecparam -outform DER`. All three are
+         * 11 bytes and differ only in the final byte, so the full string
+         * is compared — the same trap P-384 and P-521 pose. */
+        pbOid = P11_GetCurveOid(ALG_ECDSA_BP256, &cbOid);
+        ASSERT_NOTNULL("P256r1 has an OID", (void *)pbOid);
+        ASSERT_EQ("  11 bytes", (CK_ULONG)cbOid, (CK_ULONG)11);
+        ASSERT_EQ("  final byte 0x07", (CK_ULONG)(BYTE)pbOid[10], (CK_ULONG)0x07);
+
+        pbOid = P11_GetCurveOid(ALG_ECDSA_BP384, &cbOid);
+        ASSERT_EQ("P384r1 final byte 0x0B",
+                  (CK_ULONG)(BYTE)pbOid[10], (CK_ULONG)0x0B);
+
+        pbOid = P11_GetCurveOid(ALG_ECDSA_BP512, &cbOid);
+        ASSERT_EQ("P512r1 final byte 0x0D",
+                  (CK_ULONG)(BYTE)pbOid[10], (CK_ULONG)0x0D);
+
+        /* The three must be distinct, not aliases of one another. */
+        ASSERT("P256r1 and P384r1 differ",
+               memcmp(P11_GetCurveOid(ALG_ECDSA_BP256, &cbOid),
+                      P11_GetCurveOid(ALG_ECDSA_BP384, &cbOid), 11) != 0);
+        ASSERT("P384r1 and P512r1 differ",
+               memcmp(P11_GetCurveOid(ALG_ECDSA_BP384, &cbOid),
+                      P11_GetCurveOid(ALG_ECDSA_BP512, &cbOid), 11) != 0);
+    }
 
     TEST_REPORT();
     TEST_EXIT();

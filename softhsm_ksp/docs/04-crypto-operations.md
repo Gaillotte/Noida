@@ -608,7 +608,7 @@ it. Callers that need the bytes back should keep their own copy.
 | `BCRYPT_KDF_HASH` (`L"HASH"`) | `Hash(prepend ‖ Z ‖ append)` |
 | `BCRYPT_KDF_HKDF` (`L"HKDF"`) | RFC 5869 extract-and-expand |
 | `BCRYPT_KDF_HMAC` (`L"HMAC"`) | `HMAC(key, prepend ‖ Z ‖ append)` |
-| `BCRYPT_KDF_TLS_PRF` | `NTE_NOT_SUPPORTED` |
+| `BCRYPT_KDF_TLS_PRF` (`L"TLS_PRF"`) | TLS **1.2** PRF (RFC 5246 §5) |
 
 ### `BCRYPT_KDF_HASH`
 
@@ -675,8 +675,30 @@ With it set, **Z becomes the key** and leaves the message, so the result is
 alternative is silently computing something different from what the caller
 asked for, and the two results share no structure.
 
-### What remains
+### `BCRYPT_KDF_TLS_PRF`
 
-`BCRYPT_KDF_TLS_PRF` needs the TLS 1.0/1.2 dual-hash construction — MD5 and
-SHA-1 halves for 1.0, a single PRF for 1.2 — which is a different shape from
-either KDF above. Tracked as `ECDH-05`.
+```
+A(0)   = label ‖ seed
+A(i)   = HMAC(secret, A(i-1))
+output = HMAC(secret, A(1) ‖ label ‖ seed) ‖
+         HMAC(secret, A(2) ‖ label ‖ seed) ‖ …
+```
+
+| Buffer type | Meaning |
+|-------------|---------|
+| `KDF_TLS_PRF_LABEL` | The PRF label |
+| `KDF_TLS_PRF_SEED` | The seed |
+| `KDF_TLS_PRF_PROTOCOL` | Optional; little-endian version word |
+| `KDF_HASH_ALGORITHM` | Hash for the 1.2 PRF; SHA-1 when absent |
+
+**TLS 1.0 and 1.1 are refused**, returning `NTE_NOT_SUPPORTED`. Their PRF is
+a different construction — the secret split in half, `P_MD5` of one half
+XORed with `P_SHA1` of the other — which exists only to use MD5. Both
+protocol versions are deprecated by **RFC 8996**, so this provider does not
+implement the primitive rather than adding MD5-based key derivation to a new
+codebase. A caller that asks gets a clear refusal instead of a silently
+different key.
+
+All KDFs share the same keyed machinery, so each HMAC is still a
+create/sign/destroy cycle and the suite asserts no key object leaks across a
+multi-block expansion.

@@ -125,7 +125,7 @@ Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full
 cd tests/unit && make run
 ```
 
-16 test suites · 1095 assertions · **89.0 % line coverage, 100 % function coverage** (gcov).
+16 test suites · 1128 assertions · **88.8 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
 ```bash
@@ -206,6 +206,7 @@ Windows Application
 | RSA 2048–16384 (step 64) | ✓ | PKCS1, PSS (SHA-1/224/256/384/512) | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
 | ECDSA P-256/P-384/P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
 | ECDSA secp256k1 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDSA brainpoolP256r1/P384r1/P512r1 | ✓ | ✓ (r‖s) | — | — | ✓ |
 | ECDH P-256/P-384/P-521 | ✓ | — | — | ✓ | ✓ |
 | X25519 | ✓ | — | — | ✓ | ✓ |
 | EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |

@@ -518,6 +518,7 @@ typedef BCryptBufferDesc *PNCryptBufferDesc;
 #define KDF_HMAC_KEY         0x3
 #define KDF_TLS_PRF_LABEL    0x4
 #define KDF_TLS_PRF_SEED     0x5
+#define KDF_TLS_PRF_PROTOCOL 0x7
 #define KDF_ALGORITHMID      0x8
 #define KDF_PARTYUINFO       0x9
 #define KDF_PARTYVINFO       0xa

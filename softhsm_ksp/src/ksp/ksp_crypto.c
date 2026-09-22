@@ -1549,8 +1549,147 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
         return ERROR_SUCCESS;
     }
 
-    /* Anything else: only the raw secret is available. TLS_PRF still needs
-     * the TLS 1.0/1.2 dual-hash construction — see ECDH-05. */
+    /* BCRYPT_KDF_TLS_PRF — the TLS 1.2 PRF (RFC 5246 §5).
+     *
+     *   A(0)   = label || seed
+     *   A(i)   = HMAC(secret, A(i-1))
+     *   output = HMAC(secret, A(1) || label || seed) ||
+     *            HMAC(secret, A(2) || label || seed) || ...
+     *
+     * TLS 1.0 and 1.1 used a different construction: the secret split in
+     * half, P_MD5 of one half XORed with P_SHA1 of the other. That is NOT
+     * implemented, and deliberately so — both protocol versions are
+     * deprecated by RFC 8996, and the construction exists only to use MD5.
+     * A caller asking for them gets NTE_NOT_SUPPORTED rather than a
+     * silently different key. */
+    if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_TLS_PRF) == 0) {
+        P11_CONTEXT      *pCtx = P11_GetContext();
+        CK_MECHANISM_TYPE digestMech, hmacMech;
+        DWORD             cbDigest = 0;
+        BYTE             *pbLabel = NULL, *pbSeed = NULL, *pbProto = NULL;
+        DWORD             cbLabel = 0,    cbSeed = 0,     cbProto = 0;
+        BYTE              abSeed[256];      /* label || seed */
+        DWORD             cbFullSeed = 0;
+        BYTE              abA[64];
+        CK_ULONG          ulA;
+        BYTE              abBlock[64 + 256];
+        BYTE              abOut[64];
+        CK_ULONG          ulOut;
+        DWORD             cbDone = 0;
+        CK_RV             rv;
+
+        ss = KdfFindHashMech(pParameterList, &digestMech, &cbDigest);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+        hmacMech = KdfHmacMech(digestMech);
+
+        /* Refuse the legacy versions explicitly. The protocol buffer is a
+         * little-endian USHORT: 0x0303 is TLS 1.2, below that is older. */
+        if (KdfFindBuffer(pParameterList, KDF_TLS_PRF_PROTOCOL,
+                          &pbProto, &cbProto) &&
+            pbProto && cbProto >= 2) {
+            DWORD dwProto = (DWORD)pbProto[0] | ((DWORD)pbProto[1] << 8);
+            if (dwProto < 0x0303) {
+                LOG_ERROR("KSP_DeriveKey - TLS below 1.2 uses the MD5/SHA-1 "
+                          "split PRF and is not implemented (RFC 8996)",
+                          NTE_NOT_SUPPORTED);
+                LOG_LEAVE("KSP_DeriveKey", NTE_NOT_SUPPORTED);
+                return NTE_NOT_SUPPORTED;
+            }
+        }
+
+        (void)KdfFindBuffer(pParameterList, KDF_TLS_PRF_LABEL,
+                            &pbLabel, &cbLabel);
+        (void)KdfFindBuffer(pParameterList, KDF_TLS_PRF_SEED,
+                            &pbSeed, &cbSeed);
+
+        if (cbLabel + cbSeed > sizeof(abSeed)) {
+            LOG_LEAVE("KSP_DeriveKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        if (pbDerivedKey == NULL) {
+            *pcbResult = cbDigest;
+            LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+            return ERROR_SUCCESS;
+        }
+
+        if (pbLabel && cbLabel) {
+            memcpy(abSeed, pbLabel, cbLabel);
+            cbFullSeed = cbLabel;
+        }
+        if (pbSeed && cbSeed) {
+            memcpy(abSeed + cbFullSeed, pbSeed, cbSeed);
+            cbFullSeed += cbSeed;
+        }
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        if (P11_GetBinaryAttr(hSession, pSecret->hSecretObj, CKA_VALUE,
+                              &pbValue, &cbValue) != CKR_OK) {
+            P11_ReleaseSession(hSession);
+            LOG_LEAVE("KSP_DeriveKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        /* A(1) = HMAC(secret, A(0)) where A(0) is label || seed. */
+        ulA = sizeof(abA);
+        rv = KdfHmac(pCtx, hSession, hmacMech, pbValue, cbValue,
+                     abSeed, cbFullSeed, abA, &ulA);
+
+        while (rv == CKR_OK && cbDone < cbDerivedKey) {
+            DWORD cbCopy;
+
+            memcpy(abBlock, abA, cbDigest);
+            memcpy(abBlock + cbDigest, abSeed, cbFullSeed);
+
+            ulOut = sizeof(abOut);
+            rv = KdfHmac(pCtx, hSession, hmacMech, pbValue, cbValue,
+                         abBlock, cbDigest + cbFullSeed, abOut, &ulOut);
+            if (rv != CKR_OK)
+                break;
+
+            cbCopy = cbDerivedKey - cbDone;
+            if (cbCopy > cbDigest)
+                cbCopy = cbDigest;
+            memcpy(pbDerivedKey + cbDone, abOut, cbCopy);
+            cbDone += cbCopy;
+
+            if (cbDone < cbDerivedKey) {
+                /* A(i+1) = HMAC(secret, A(i)) */
+                ulA = sizeof(abA);
+                rv = KdfHmac(pCtx, hSession, hmacMech, pbValue, cbValue,
+                             abA, cbDigest, abA, &ulA);
+            }
+        }
+
+        P11_ReleaseSession(hSession);
+        SecureZeroMemory(pbValue, cbValue);
+        KSP_Free(pbValue);
+        SecureZeroMemory(abA,     sizeof(abA));
+        SecureZeroMemory(abBlock, sizeof(abBlock));
+        SecureZeroMemory(abOut,   sizeof(abOut));
+        SecureZeroMemory(abSeed,  sizeof(abSeed));
+
+        if (rv != CKR_OK) {
+            SecureZeroMemory(pbDerivedKey, cbDerivedKey);
+            ss = P11RvToSecStatus(rv);
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        *pcbResult = cbDone;
+        LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+    }
+
+    /* Anything else: only the raw secret is available. */
     if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_RAW_SECRET) != 0) {
         LOG_LEAVE("KSP_DeriveKey", NTE_NOT_SUPPORTED);
         return NTE_NOT_SUPPORTED;
