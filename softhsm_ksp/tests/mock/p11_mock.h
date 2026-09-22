@@ -81,6 +81,14 @@ typedef struct _P11_MOCK_CONFIG {
      * terminated UTF-8 string. Lets a test assert the scope prefix. */
     char       lastLabel[128];
 
+    /* Digest chain: every byte passed to C_DigestUpdate is accumulated
+     * here so a KDF test can assert exactly what was hashed and in what
+     * order. C_DigestFinal returns the first cbDigestOut bytes of it. */
+    unsigned char digestFed[512];
+    CK_ULONG      cbDigestFed;
+    CK_ULONG      cbDigestOut;
+    CK_MECHANISM_TYPE lastDigestMech;
+
     CK_ULONG   sessionState;
     CK_RV      rv_GetSessionInfo;
 
@@ -107,6 +115,9 @@ typedef struct _P11_MOCK_CALLS {
     int nFindObjectsFinal;
     int nGetAttributeValue;
     int nGetSessionInfo;
+    int nDigestInit;
+    int nDigestUpdate;
+    int nDigestFinal;
     int nSignInit;
     int nSign;
     int nDecryptInit;

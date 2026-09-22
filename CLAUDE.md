@@ -57,7 +57,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 16 test suites, 1029 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 16 test suites, 1053 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -337,7 +337,10 @@ EdDSA signatures are already raw — no DER conversion.
 ### Key Agreement (ECDH)
 
 `KSP_SecretAgreement` → `CKM_ECDH1_DERIVE` with `CKD_NULL` (raw Z).
-`KSP_DeriveKey` supports `BCRYPT_KDF_RAW_SECRET` only; hash KDFs return `NTE_NOT_SUPPORTED`.
+`KSP_DeriveKey` supports `BCRYPT_KDF_RAW_SECRET` and `BCRYPT_KDF_HASH`
+(Hash(prepend ‖ Z ‖ append), SHA-1 by default per CNG). `BCRYPT_KDF_HMAC`,
+`TLS_PRF` and `HKDF` return `NTE_NOT_SUPPORTED` — they need a keyed
+primitive over Z, not a digest chain.
 Both keys must be on the same curve or the call returns `NTE_BAD_ALGID`.
 
 ### Symmetric Encryption (AES)
@@ -387,7 +390,8 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   multiple of 64 → `NTE_BAD_LEN`
 - AES sizes outside {128, 192, 256} → `NTE_BAD_LEN`
 - AES-CCM and AES-CFB → `NTE_NOT_SUPPORTED` (no SoftHSM2 mechanism wired)
-- Hash-based KDFs in `NCryptDeriveKey` → `NTE_NOT_SUPPORTED`
+- `NCryptDeriveKey` supports `BCRYPT_KDF_RAW_SECRET` and `BCRYPT_KDF_HASH`;
+  HMAC, TLS_PRF and HKDF → `NTE_NOT_SUPPORTED`
 - DES/3DES, DSA, PKCS#3 DH, GOST — deliberately out of scope
 - Raw-hash and sign-with-integrated-hash mechanisms are unreachable by design
   (CNG always supplies a pre-computed digest to `NCryptSignHash`)
@@ -435,8 +439,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 16 suites, 1029 assertions
-make coverage      # → coverage_html/index.html (90.0 % lines, 100 % functions)
+make run           # 16 suites, 1053 assertions
+make coverage      # → coverage_html/index.html (89.7 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

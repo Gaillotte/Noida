@@ -1031,6 +1031,76 @@ SECURITY_STATUS WINAPI KSP_SecretAgreement(
  * Supports BCRYPT_KDF_RAW_SECRET, which returns the raw Z value. Hash-based
  * KDFs (SP 800-56A concatenation, HKDF) are not implemented — callers should
  * request the raw secret and run the KDF with BCrypt. */
+/* ── BCRYPT_KDF_HASH ─────────────────────────────────────────────────────
+ *
+ * CNG's hash KDF is Hash(prepend || Z || append). The hash algorithm comes
+ * from a KDF_HASH_ALGORITHM buffer and defaults to SHA-1 when absent, which
+ * is the documented CNG default rather than a choice made here. A caller
+ * may supply several KDF_SECRET_PREPEND or KDF_SECRET_APPEND buffers; they
+ * concatenate in the order given.
+ *
+ * The digest runs on the token through C_Digest*, not in the KSP. That is
+ * not a security boundary — CKD_NULL already handed us the raw Z — but it
+ * keeps the KSP free of its own crypto and reuses mechanisms SoftHSM2
+ * certainly has. */
+static SECURITY_STATUS KdfFindHashMech(NCryptBufferDesc *pParams,
+                                       CK_MECHANISM_TYPE *pMech,
+                                       DWORD *pcbDigest)
+{
+    LPCWSTR pszAlg = BCRYPT_SHA1_ALGORITHM;   /* CNG default */
+    ULONG   i;
+
+    if (pParams && pParams->pBuffers) {
+        for (i = 0; i < pParams->cBuffers; i++) {
+            if (pParams->pBuffers[i].BufferType == KDF_HASH_ALGORITHM &&
+                pParams->pBuffers[i].pvBuffer != NULL) {
+                pszAlg = (LPCWSTR)pParams->pBuffers[i].pvBuffer;
+                break;
+            }
+        }
+    }
+
+    if (_wcsicmp(pszAlg, BCRYPT_SHA1_ALGORITHM) == 0) {
+        *pMech = CKM_SHA_1;  *pcbDigest = 20;
+    } else if (_wcsicmp(pszAlg, KSP_SHA224_ALGORITHM) == 0) {
+        *pMech = CKM_SHA224; *pcbDigest = 28;
+    } else if (_wcsicmp(pszAlg, BCRYPT_SHA256_ALGORITHM) == 0) {
+        *pMech = CKM_SHA256; *pcbDigest = 32;
+    } else if (_wcsicmp(pszAlg, BCRYPT_SHA384_ALGORITHM) == 0) {
+        *pMech = CKM_SHA384; *pcbDigest = 48;
+    } else if (_wcsicmp(pszAlg, BCRYPT_SHA512_ALGORITHM) == 0) {
+        *pMech = CKM_SHA512; *pcbDigest = 64;
+    } else {
+        return NTE_BAD_ALGID;
+    }
+    return ERROR_SUCCESS;
+}
+
+/* Feed every buffer of one type into the running digest, in order. */
+static CK_RV KdfDigestBuffers(P11_CONTEXT *pCtx, CK_SESSION_HANDLE hSession,
+                              NCryptBufferDesc *pParams, ULONG ulType)
+{
+    ULONG i;
+    CK_RV rv;
+
+    if (!pParams || !pParams->pBuffers)
+        return CKR_OK;
+
+    for (i = 0; i < pParams->cBuffers; i++) {
+        if (pParams->pBuffers[i].BufferType != ulType)
+            continue;
+        if (!pParams->pBuffers[i].pvBuffer || pParams->pBuffers[i].cbBuffer == 0)
+            continue;
+        rv = pCtx->pFunctionList->C_DigestUpdate(
+                hSession,
+                (CK_BYTE_PTR)pParams->pBuffers[i].pvBuffer,
+                (CK_ULONG)pParams->pBuffers[i].cbBuffer);
+        if (rv != CKR_OK)
+            return rv;
+    }
+    return CKR_OK;
+}
+
 SECURITY_STATUS WINAPI KSP_DeriveKey(
     NCRYPT_PROV_HANDLE   hProvider,
     NCRYPT_SECRET_HANDLE hSharedSecret,
@@ -1047,7 +1117,6 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
     DWORD             cbValue = 0;
     SECURITY_STATUS   ss;
 
-    UNREFERENCED_PARAMETER(pParameterList);
     UNREFERENCED_PARAMETER(dwFlags);
     LOG_ENTER("KSP_DeriveKey");
 
@@ -1057,13 +1126,95 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
         return NTE_INVALID_PARAMETER;
     }
 
-    /* Only the raw-secret KDF is supported */
+    pSecret = (KSP_SECRET *)(ULONG_PTR)hSharedSecret;
+
+    /* BCRYPT_KDF_HASH — Hash(prepend || Z || append). */
+    if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_HASH) == 0) {
+        P11_CONTEXT      *pCtx = P11_GetContext();
+        CK_MECHANISM      mech;
+        CK_MECHANISM_TYPE mechType;
+        DWORD             cbDigest = 0;
+        BYTE              abDigest[64];
+        CK_ULONG          ulDigest = sizeof(abDigest);
+        CK_RV             rv;
+
+        ss = KdfFindHashMech(pParameterList, &mechType, &cbDigest);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        /* Size-only query: the output is exactly one digest. */
+        if (pbDerivedKey == NULL) {
+            *pcbResult = cbDigest;
+            LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+            return ERROR_SUCCESS;
+        }
+        if (cbDerivedKey < cbDigest) {
+            *pcbResult = cbDigest;
+            LOG_LEAVE("KSP_DeriveKey", NTE_BUFFER_TOO_SMALL);
+            return NTE_BUFFER_TOO_SMALL;
+        }
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        if (P11_GetBinaryAttr(hSession, pSecret->hSecretObj, CKA_VALUE,
+                              &pbValue, &cbValue) != CKR_OK) {
+            P11_ReleaseSession(hSession);
+            LOG_LEAVE("KSP_DeriveKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        memset(&mech, 0, sizeof(mech));
+        mech.mechanism = mechType;
+
+        rv = pCtx->pFunctionList->C_DigestInit(hSession, &mech);
+        if (rv == CKR_OK)
+            rv = KdfDigestBuffers(pCtx, hSession, pParameterList,
+                                  KDF_SECRET_PREPEND);
+        if (rv == CKR_OK)
+            rv = pCtx->pFunctionList->C_DigestUpdate(hSession, pbValue,
+                                                     (CK_ULONG)cbValue);
+        if (rv == CKR_OK)
+            rv = KdfDigestBuffers(pCtx, hSession, pParameterList,
+                                  KDF_SECRET_APPEND);
+        if (rv == CKR_OK)
+            rv = pCtx->pFunctionList->C_DigestFinal(hSession, abDigest,
+                                                    &ulDigest);
+
+        P11_ReleaseSession(hSession);
+        SecureZeroMemory(pbValue, cbValue);
+        KSP_Free(pbValue);
+
+        if (rv != CKR_OK) {
+            SecureZeroMemory(abDigest, sizeof(abDigest));
+            ss = P11RvToSecStatus(rv);
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        if (ulDigest > cbDigest)
+            ulDigest = cbDigest;
+
+        memcpy(pbDerivedKey, abDigest, ulDigest);
+        *pcbResult = (DWORD)ulDigest;
+        SecureZeroMemory(abDigest, sizeof(abDigest));
+
+        LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+    }
+
+    /* Anything else: only the raw secret is available. HMAC, TLS_PRF and
+     * HKDF need a keyed primitive over the Z value, which is more than a
+     * digest chain — see ECDH-05 in the feature matrix. */
     if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_RAW_SECRET) != 0) {
         LOG_LEAVE("KSP_DeriveKey", NTE_NOT_SUPPORTED);
         return NTE_NOT_SUPPORTED;
     }
-
-    pSecret = (KSP_SECRET *)(ULONG_PTR)hSharedSecret;
 
     /* Size-only query */
     if (pbDerivedKey == NULL) {

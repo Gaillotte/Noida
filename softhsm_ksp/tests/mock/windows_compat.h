@@ -490,8 +490,45 @@ typedef struct _NCryptKeyName {
     DWORD  dwFlags;
 } NCryptKeyName;
 
-typedef struct _NCryptBufferDesc { DWORD ulVersion; DWORD cBuffers; void *pBuffers; }
-    NCryptBufferDesc;
+/* Real Windows shape: NCryptBuffer and NCryptBufferDesc are typedefs of
+ * BCryptBuffer / BCryptBufferDesc, and pBuffers is a typed pointer, not
+ * void*. The previous stand-in used void* and DWORD, which compiled but
+ * would not have caught a caller indexing the array wrongly. */
+typedef struct _BCryptBuffer {
+    ULONG cbBuffer;
+    ULONG BufferType;
+    PVOID pvBuffer;
+} BCryptBuffer, *PBCryptBuffer;
+
+typedef struct _BCryptBufferDesc {
+    ULONG          ulVersion;
+    ULONG          cBuffers;
+    PBCryptBuffer  pBuffers;
+} BCryptBufferDesc, *PBCryptBufferDesc;
+
+typedef BCryptBuffer      NCryptBuffer;
+typedef BCryptBuffer     *PNCryptBuffer;
+typedef BCryptBufferDesc  NCryptBufferDesc;
+typedef BCryptBufferDesc *PNCryptBufferDesc;
+
+/* KDF parameter buffer types (bcrypt.h) */
+#define KDF_HASH_ALGORITHM   0x0
+#define KDF_SECRET_PREPEND   0x1
+#define KDF_SECRET_APPEND    0x2
+#define KDF_HMAC_KEY         0x3
+#define KDF_TLS_PRF_LABEL    0x4
+#define KDF_TLS_PRF_SEED     0x5
+#define KDF_ALGORITHMID      0x8
+#define KDF_PARTYUINFO       0x9
+#define KDF_PARTYVINFO       0xa
+#define KDF_LABEL            0xd
+#define KDF_CONTEXT          0xe
+
+#define BCRYPT_KDF_HASH              L"HASH"
+#define BCRYPT_KDF_HMAC              L"HMAC"
+#define BCRYPT_KDF_TLS_PRF           L"TLS_PRF"
+#define BCRYPT_KDF_SP80056A_CONCAT   L"SP800_56A_CONCAT"
+#define BCRYPT_KDF_HKDF              L"HKDF"
 
 /* ── Algorithm enumeration ────────────────────────────────────────────────
  * Values verified against the Windows SDK bcrypt.h / ncrypt.h: the

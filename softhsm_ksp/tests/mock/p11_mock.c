@@ -345,19 +345,42 @@ static CK_RV mock_DecryptFinal(CK_SESSION_HANDLE h, CK_BYTE_PTR lp,
 }
 
 static CK_RV mock_DigestInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m) {
-    (void)h; (void)m; return CKR_OK;
+    (void)h;
+    g_calls.nDigestInit++;
+    if (m) g_cfg.lastDigestMech = m->mechanism;
+    g_cfg.cbDigestFed = 0;            /* a new chain */
+    return CKR_OK;
 }
 static CK_RV mock_Digest(CK_SESSION_HANDLE h, CK_BYTE_PTR d, CK_ULONG dl,
     CK_BYTE_PTR dg, CK_ULONG_PTR dgl) {
     (void)h; (void)d; (void)dl; (void)dg; (void)dgl; return CKR_OK;
 }
 static CK_RV mock_DigestUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
-    CK_ULONG pl) { (void)h; (void)p; (void)pl; return CKR_OK; }
+    CK_ULONG pl) {
+    (void)h;
+    g_calls.nDigestUpdate++;
+    if (p && pl && g_cfg.cbDigestFed + pl <= sizeof(g_cfg.digestFed)) {
+        memcpy(g_cfg.digestFed + g_cfg.cbDigestFed, p, pl);
+        g_cfg.cbDigestFed += pl;
+    }
+    return CKR_OK;
+}
 static CK_RV mock_DigestKey(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE k) {
     (void)h; (void)k; return CKR_OK;
 }
 static CK_RV mock_DigestFinal(CK_SESSION_HANDLE h, CK_BYTE_PTR dg,
-    CK_ULONG_PTR dgl) { (void)h; (void)dg; (void)dgl; return CKR_OK; }
+    CK_ULONG_PTR dgl) {
+    CK_ULONG n = g_cfg.cbDigestOut;
+    (void)h;
+    g_calls.nDigestFinal++;
+    /* Not a real hash: returns the first n bytes of what was fed, which is
+     * enough to prove the KSP assembled prepend || Z || append correctly
+     * and asked for the right digest length. */
+    if (n > g_cfg.cbDigestFed) n = g_cfg.cbDigestFed;
+    if (dg) memcpy(dg, g_cfg.digestFed, n);
+    if (dgl) *dgl = g_cfg.cbDigestOut;
+    return CKR_OK;
+}
 
 static CK_RV mock_SignInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                             CK_OBJECT_HANDLE k) {
@@ -581,6 +604,8 @@ void P11Mock_Reset(void)
     g_cfg.rv_SignInit        = CKR_OK;
     g_cfg.rv_GetSessionInfo  = CKR_OK;
     g_cfg.lastLabel[0]       = '\0';
+    g_cfg.cbDigestFed        = 0;
+    g_cfg.cbDigestOut        = 20;
     g_cfg.sessionState       = CKS_RW_USER_FUNCTIONS;
     g_cfg.rv_Sign            = CKR_OK;
     g_cfg.rv_DecryptInit     = CKR_OK;

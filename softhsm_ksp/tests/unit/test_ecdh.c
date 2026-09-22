@@ -220,10 +220,19 @@ int main(void)
                        buf, sizeof buf, &cbResult, 0);
     ASSERT_OK("NULL KDF accepted as raw", ss);
 
-    /* Unsupported KDF */
-    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, NULL,
+    /* KDFs still without an implementation. HMAC, TLS_PRF and HKDF need a
+     * keyed primitive over Z, not a digest chain — ECDH-05. */
+    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HMAC, NULL,
                        buf, sizeof buf, &cbResult, 0);
-    ASSERT_EQ("Hash KDF → NTE_NOT_SUPPORTED", ss,
+    ASSERT_EQ("HMAC KDF → NTE_NOT_SUPPORTED", ss,
+              (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_TLS_PRF, NULL,
+                       buf, sizeof buf, &cbResult, 0);
+    ASSERT_EQ("TLS_PRF KDF → NTE_NOT_SUPPORTED", ss,
+              (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HKDF, NULL,
+                       buf, sizeof buf, &cbResult, 0);
+    ASSERT_EQ("HKDF → NTE_NOT_SUPPORTED", ss,
               (SECURITY_STATUS)NTE_NOT_SUPPORTED);
 
     /* Buffer too small reports the required size */
@@ -442,6 +451,132 @@ int main(void)
                                  &hSecret, 0);
         ASSERT_EQ("X25519 with P-384 → NTE_BAD_ALGID",
                   ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+    }
+
+    /* ── BCRYPT_KDF_HASH (ECDH-04) ────────────────────────────────────── */
+    TEST_SUITE("KSP_DeriveKey — BCRYPT_KDF_HASH");
+    {
+        static const BYTE pre[]  = { 0xA0, 0xA1, 0xA2, 0xA3 };
+        static const BYTE post[] = { 0xB0, 0xB1 };
+        NCryptBuffer     bufs[4];
+        NCryptBufferDesc desc;
+        BYTE             out[80];
+        DWORD            cb = 0;
+
+        /* Earlier suites freed hSecret; agree a fresh one. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbEcPoint = (const char *)g_point256;
+        P11Mock_GetConfig()->cbEcPoint = sizeof g_point256;
+        hSecret = 0;
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&privKey,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&pubKey,
+                                 &hSecret, 0);
+        ASSERT_OK("Agree a secret for the KDF tests", ss);
+
+        P11Mock_GetConfig()->pbSecretValue = g_secret32;
+        P11Mock_GetConfig()->cbSecretValue = sizeof g_secret32;
+
+        /* No parameters at all: CNG's documented default is SHA-1. */
+        P11Mock_GetConfig()->cbDigestOut = 20;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, NULL,
+                           NULL, 0, &cb, 0);
+        ASSERT_OK("Size query with no parameters → OK", ss);
+        ASSERT_EQ("Defaults to SHA-1, 20 bytes", cb, 20U);
+
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, NULL,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("Derive with no parameters → OK", ss);
+        ASSERT_EQ("CKM_SHA_1 used",
+                  P11Mock_GetConfig()->lastDigestMech,
+                  (CK_MECHANISM_TYPE)CKM_SHA_1);
+        ASSERT_EQ("Only Z was hashed",
+                  P11Mock_GetConfig()->cbDigestFed, (CK_ULONG)32);
+        ASSERT_MEM("...and it was the agreed secret",
+                   P11Mock_GetConfig()->digestFed, g_secret32, 32);
+
+        /* Hash algorithm selection. */
+        desc.ulVersion = 0;
+        desc.cBuffers  = 1;
+        desc.pBuffers  = bufs;
+        bufs[0].BufferType = KDF_HASH_ALGORITHM;
+        bufs[0].pvBuffer   = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        bufs[0].cbBuffer   = (ULONG)((wcslen(BCRYPT_SHA256_ALGORITHM) + 1) * sizeof(WCHAR));
+
+        P11Mock_GetConfig()->cbDigestOut = 32;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("SHA-256 requested → OK", ss);
+        ASSERT_EQ("CKM_SHA256 used",
+                  P11Mock_GetConfig()->lastDigestMech,
+                  (CK_MECHANISM_TYPE)CKM_SHA256);
+        ASSERT_EQ("32 bytes returned", cb, 32U);
+
+        bufs[0].pvBuffer = (PVOID)BCRYPT_SHA512_ALGORITHM;
+        P11Mock_GetConfig()->cbDigestOut = 64;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("SHA-512 requested → OK", ss);
+        ASSERT_EQ("64 bytes returned", cb, 64U);
+
+        bufs[0].pvBuffer = (PVOID)L"NOT_A_HASH";
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_EQ("Unknown hash → NTE_BAD_ALGID",
+                  ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+
+        /* prepend || Z || append, in that order. This is the assertion
+         * that would catch the buffers being concatenated backwards. */
+        desc.cBuffers      = 3;
+        bufs[0].BufferType = KDF_HASH_ALGORITHM;
+        bufs[0].pvBuffer   = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        bufs[1].BufferType = KDF_SECRET_PREPEND;
+        bufs[1].pvBuffer   = (PVOID)pre;
+        bufs[1].cbBuffer   = (ULONG)sizeof pre;
+        bufs[2].BufferType = KDF_SECRET_APPEND;
+        bufs[2].pvBuffer   = (PVOID)post;
+        bufs[2].cbBuffer   = (ULONG)sizeof post;
+
+        P11Mock_GetConfig()->cbDigestOut = 32;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("prepend + Z + append → OK", ss);
+        ASSERT_EQ("Hashed 4 + 32 + 2 bytes",
+                  P11Mock_GetConfig()->cbDigestFed, (CK_ULONG)38);
+        ASSERT_MEM("Prepend came first",
+                   P11Mock_GetConfig()->digestFed, pre, 4);
+        ASSERT_MEM("Z came next",
+                   P11Mock_GetConfig()->digestFed + 4, g_secret32, 32);
+        ASSERT_MEM("Append came last",
+                   P11Mock_GetConfig()->digestFed + 36, post, 2);
+
+        /* Several buffers of one type concatenate in order. */
+        desc.cBuffers      = 4;
+        bufs[3].BufferType = KDF_SECRET_PREPEND;
+        bufs[3].pvBuffer   = (PVOID)post;
+        bufs[3].cbBuffer   = (ULONG)sizeof post;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("Two prepend buffers → OK", ss);
+        ASSERT_EQ("Both prepends hashed, 4 + 2 + 32 + 2",
+                  P11Mock_GetConfig()->cbDigestFed, (CK_ULONG)40);
+
+        /* A buffer too small reports the digest size and derives nothing. */
+        desc.cBuffers = 1;
+        bufs[0].pvBuffer = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, &desc,
+                           out, 8, &cb, 0);
+        ASSERT_EQ("Short buffer → NTE_BUFFER_TOO_SMALL",
+                  ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
+        ASSERT_EQ("Reports the digest size", cb, 32U);
     }
 
     KSP_FreeProvider(hProv);

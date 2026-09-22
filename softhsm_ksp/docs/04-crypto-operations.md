@@ -597,3 +597,47 @@ This is not a gap waiting to be filled. Making export work would mean
 creating keys `CKA_EXTRACTABLE=TRUE` — weakening every deployment to
 satisfy one blob type. Material goes in; from then on only the token uses
 it. Callers that need the bytes back should keep their own copy.
+
+---
+
+## Key derivation (`NCryptDeriveKey`)
+
+| KDF | Status |
+|-----|--------|
+| `BCRYPT_KDF_RAW_SECRET` (`L"TRUNCATE"`) | Returns the raw Z |
+| `BCRYPT_KDF_HASH` (`L"HASH"`) | `Hash(prepend ‖ Z ‖ append)` |
+| `BCRYPT_KDF_HMAC`, `BCRYPT_KDF_TLS_PRF`, `BCRYPT_KDF_HKDF` | `NTE_NOT_SUPPORTED` |
+
+### `BCRYPT_KDF_HASH`
+
+Parameters come from the `NCryptBufferDesc`:
+
+| Buffer type | Meaning |
+|-------------|---------|
+| `KDF_HASH_ALGORITHM` | Hash name. **Absent means SHA-1** — the documented CNG default, not a choice made here |
+| `KDF_SECRET_PREPEND` | Bytes hashed before Z |
+| `KDF_SECRET_APPEND` | Bytes hashed after Z |
+
+SHA-1, SHA-224\*, SHA-256, SHA-384 and SHA-512 are accepted; any other name
+returns `NTE_BAD_ALGID`. Several `PREPEND` or `APPEND` buffers may be given
+and are concatenated in the order they appear, which the test suite asserts
+directly rather than inferring from the output length.
+
+The digest runs on the token via `C_DigestInit` / `C_DigestUpdate` /
+`C_DigestFinal`. That is **not** a security boundary — `CKD_NULL` has
+already handed the raw Z to the provider — but it keeps the KSP free of its
+own crypto implementation and reuses mechanisms SoftHSM2 certainly has.
+
+Output is exactly one digest. A shorter buffer returns
+`NTE_BUFFER_TOO_SMALL` with the required size, and derives nothing.
+
+\* SHA-224 uses this provider's own `KSP_SHA224_ALGORITHM`; CNG has no
+SHA-224 identifier.
+
+### Why the others are harder
+
+`HMAC`, `TLS_PRF` and `HKDF` are not longer digest chains — each needs a
+**keyed** primitive over Z. Through PKCS#11 that means creating an HMAC key
+object from caller-supplied material with `C_CreateObject` and running
+`C_Sign` per iteration, which is a different shape of work from the one
+above. Tracked as `ECDH-05`; HKDF is the one worth doing first, for TLS 1.3.
