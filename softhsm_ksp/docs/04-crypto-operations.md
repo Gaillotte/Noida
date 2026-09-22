@@ -607,7 +607,8 @@ it. Callers that need the bytes back should keep their own copy.
 | `BCRYPT_KDF_RAW_SECRET` (`L"TRUNCATE"`) | Returns the raw Z |
 | `BCRYPT_KDF_HASH` (`L"HASH"`) | `Hash(prepend ‖ Z ‖ append)` |
 | `BCRYPT_KDF_HKDF` (`L"HKDF"`) | RFC 5869 extract-and-expand |
-| `BCRYPT_KDF_HMAC`, `BCRYPT_KDF_TLS_PRF` | `NTE_NOT_SUPPORTED` |
+| `BCRYPT_KDF_HMAC` (`L"HMAC"`) | `HMAC(key, prepend ‖ Z ‖ append)` |
+| `BCRYPT_KDF_TLS_PRF` | `NTE_NOT_SUPPORTED` |
 
 ### `BCRYPT_KDF_HASH`
 
@@ -662,9 +663,20 @@ long expansion that leaked one generic secret per round would fill the
 token. The test suite asserts creates and destroys stay equal, and fault
 injection confirms it notices when they do not.
 
+### `BCRYPT_KDF_HMAC`
+
+A single `HMAC(key, prepend ‖ Z ‖ append)`. The key comes from a
+`KDF_HMAC_KEY` buffer; absent means an empty key, which HMAC's padding
+rules make well defined.
+
+CNG also defines `KDF_USE_SECRET_AS_HMAC_KEY_FLAG`, passed in `dwFlags`.
+With it set, **Z becomes the key** and leaves the message, so the result is
+`HMAC(Z, prepend ‖ append)`. That flag is honoured rather than ignored: the
+alternative is silently computing something different from what the caller
+asked for, and the two results share no structure.
+
 ### What remains
 
-`BCRYPT_KDF_HMAC` is a single HMAC over `prepend ‖ Z ‖ append` and is small
-now the keyed machinery exists. `BCRYPT_KDF_TLS_PRF` needs the TLS 1.0/1.2
-dual-hash construction, which is a different shape again. Both tracked as
-`ECDH-05`.
+`BCRYPT_KDF_TLS_PRF` needs the TLS 1.0/1.2 dual-hash construction — MD5 and
+SHA-1 halves for 1.0, a single PRF for 1.2 — which is a different shape from
+either KDF above. Tracked as `ECDH-05`.

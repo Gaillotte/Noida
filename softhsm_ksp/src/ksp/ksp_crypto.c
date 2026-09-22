@@ -1106,6 +1106,33 @@ static BOOL KdfFindBuffer(NCryptBufferDesc *pParams, ULONG ulType,
     return FALSE;
 }
 
+/* Concatenate every buffer of one type into pbOut, in the order given.
+ * Returns FALSE if they do not fit. */
+static BOOL KdfConcatBuffers(NCryptBufferDesc *pParams, ULONG ulType,
+                             BYTE *pbOut, DWORD cbOut, DWORD *pcbUsed)
+{
+    ULONG i;
+
+    if (!pParams || !pParams->pBuffers)
+        return TRUE;
+
+    for (i = 0; i < pParams->cBuffers; i++) {
+        DWORD cb;
+        if (pParams->pBuffers[i].BufferType != ulType)
+            continue;
+        if (!pParams->pBuffers[i].pvBuffer)
+            continue;
+        cb = (DWORD)pParams->pBuffers[i].cbBuffer;
+        if (cb == 0)
+            continue;
+        if (*pcbUsed + cb > cbOut)
+            return FALSE;
+        memcpy(pbOut + *pcbUsed, pParams->pBuffers[i].pvBuffer, cb);
+        *pcbUsed += cb;
+    }
+    return TRUE;
+}
+
 /* One HMAC, with the key supplied as raw bytes.
  *
  * PKCS#11 has no "HMAC these bytes with that key" call: the key has to be
@@ -1294,6 +1321,113 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
         return ERROR_SUCCESS;
     }
 
+    /* BCRYPT_KDF_HMAC — HMAC(key, prepend || Z || append).
+     *
+     * The key comes from a KDF_HMAC_KEY buffer. CNG also defines
+     * KDF_USE_SECRET_AS_HMAC_KEY_FLAG, which makes Z the key and removes it
+     * from the message; that is honoured here because the alternative is
+     * silently computing something different from what the caller asked
+     * for. */
+    if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_HMAC) == 0) {
+        P11_CONTEXT      *pCtx = P11_GetContext();
+        CK_MECHANISM_TYPE digestMech, hmacMech;
+        DWORD             cbDigest = 0;
+        BYTE             *pbHmacKey = NULL;
+        DWORD             cbHmacKey = 0;
+        BYTE              abMsg[1024];
+        DWORD             cbMsg = 0;
+        BYTE              abMac[64];
+        CK_ULONG          ulMac = sizeof(abMac);
+        BOOL              bSecretAsKey;
+        CK_RV             rv;
+
+        ss = KdfFindHashMech(pParameterList, &digestMech, &cbDigest);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+        hmacMech = KdfHmacMech(digestMech);
+
+        bSecretAsKey = (dwFlags & KDF_USE_SECRET_AS_HMAC_KEY_FLAG) != 0;
+        (void)KdfFindBuffer(pParameterList, KDF_HMAC_KEY,
+                            &pbHmacKey, &cbHmacKey);
+
+        if (pbDerivedKey == NULL) {
+            *pcbResult = cbDigest;
+            LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+            return ERROR_SUCCESS;
+        }
+        if (cbDerivedKey < cbDigest) {
+            *pcbResult = cbDigest;
+            LOG_LEAVE("KSP_DeriveKey", NTE_BUFFER_TOO_SMALL);
+            return NTE_BUFFER_TOO_SMALL;
+        }
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        if (P11_GetBinaryAttr(hSession, pSecret->hSecretObj, CKA_VALUE,
+                              &pbValue, &cbValue) != CKR_OK) {
+            P11_ReleaseSession(hSession);
+            LOG_LEAVE("KSP_DeriveKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        /* Message: prepend || Z || append, with Z omitted when it is
+         * serving as the key instead. */
+        if (!KdfConcatBuffers(pParameterList, KDF_SECRET_PREPEND,
+                              abMsg, sizeof(abMsg), &cbMsg)) {
+            goto hmac_too_long;
+        }
+        if (!bSecretAsKey) {
+            if (cbMsg + cbValue > sizeof(abMsg))
+                goto hmac_too_long;
+            memcpy(abMsg + cbMsg, pbValue, cbValue);
+            cbMsg += cbValue;
+        }
+        if (!KdfConcatBuffers(pParameterList, KDF_SECRET_APPEND,
+                              abMsg, sizeof(abMsg), &cbMsg)) {
+            goto hmac_too_long;
+        }
+
+        rv = KdfHmac(pCtx, hSession, hmacMech,
+                     bSecretAsKey ? pbValue : pbHmacKey,
+                     bSecretAsKey ? cbValue : cbHmacKey,
+                     abMsg, cbMsg, abMac, &ulMac);
+
+        P11_ReleaseSession(hSession);
+        SecureZeroMemory(pbValue, cbValue);
+        KSP_Free(pbValue);
+        SecureZeroMemory(abMsg, sizeof(abMsg));
+
+        if (rv != CKR_OK) {
+            SecureZeroMemory(abMac, sizeof(abMac));
+            ss = P11RvToSecStatus(rv);
+            LOG_LEAVE("KSP_DeriveKey", ss);
+            return ss;
+        }
+
+        if (ulMac > cbDigest)
+            ulMac = cbDigest;
+        memcpy(pbDerivedKey, abMac, ulMac);
+        *pcbResult = (DWORD)ulMac;
+        SecureZeroMemory(abMac, sizeof(abMac));
+
+        LOG_LEAVE("KSP_DeriveKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+
+    hmac_too_long:
+        P11_ReleaseSession(hSession);
+        SecureZeroMemory(pbValue, cbValue);
+        KSP_Free(pbValue);
+        SecureZeroMemory(abMsg, sizeof(abMsg));
+        LOG_LEAVE("KSP_DeriveKey", NTE_INVALID_PARAMETER);
+        return NTE_INVALID_PARAMETER;
+    }
+
     /* BCRYPT_KDF_HKDF — RFC 5869.
      *
      *   PRK    = HMAC(salt, Z)                               extract
@@ -1415,8 +1549,8 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
         return ERROR_SUCCESS;
     }
 
-    /* Anything else: only the raw secret is available. HMAC and TLS_PRF
-     * still need work — see ECDH-05 in the feature matrix. */
+    /* Anything else: only the raw secret is available. TLS_PRF still needs
+     * the TLS 1.0/1.2 dual-hash construction — see ECDH-05. */
     if (pwszKDF && _wcsicmp(pwszKDF, BCRYPT_KDF_RAW_SECRET) != 0) {
         LOG_LEAVE("KSP_DeriveKey", NTE_NOT_SUPPORTED);
         return NTE_NOT_SUPPORTED;

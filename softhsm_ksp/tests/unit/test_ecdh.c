@@ -222,10 +222,6 @@ int main(void)
 
     /* KDFs still without an implementation. HMAC, TLS_PRF and HKDF need a
      * keyed primitive over Z, not a digest chain — ECDH-05. */
-    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HMAC, NULL,
-                       buf, sizeof buf, &cbResult, 0);
-    ASSERT_EQ("HMAC KDF → NTE_NOT_SUPPORTED", ss,
-              (SECURITY_STATUS)NTE_NOT_SUPPORTED);
     ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_TLS_PRF, NULL,
                        buf, sizeof buf, &cbResult, 0);
     ASSERT_EQ("TLS_PRF KDF → NTE_NOT_SUPPORTED", ss,
@@ -704,6 +700,139 @@ int main(void)
         P11Mock_GetConfig()->rv_Sign = CKR_OK;
 
         if (hSec2) KSP_FreeSecret(hProv, hSec2);
+    }
+
+    /* ── BCRYPT_KDF_HMAC (ECDH-05) ────────────────────────────────────── */
+    TEST_SUITE("KSP_DeriveKey — BCRYPT_KDF_HMAC");
+    {
+        static const BYTE hmacKey[] = { 0x71, 0x72 };
+        static const BYTE pre2[]    = { 0x81, 0x82 };
+        static const BYTE post2[]   = { 0x91, 0x92 };
+        NCryptBuffer     bufs[4];
+        NCryptBufferDesc desc;
+        BYTE             out[80];
+        DWORD            cb = 0;
+        NCRYPT_SECRET_HANDLE hSec3 = 0;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbEcPoint = (const char *)g_point256;
+        P11Mock_GetConfig()->cbEcPoint = sizeof g_point256;
+        ss = KSP_SecretAgreement(hProv,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&privKey,
+                                 (NCRYPT_KEY_HANDLE)(ULONG_PTR)&pubKey,
+                                 &hSec3, 0);
+        ASSERT_OK("Agree a secret for the HMAC KDF", ss);
+
+        P11Mock_GetConfig()->pbSecretValue = g_secret32;
+        P11Mock_GetConfig()->cbSecretValue = sizeof g_secret32;
+        P11Mock_GetConfig()->cbSignature   = 32;
+
+        desc.ulVersion = 0;
+        desc.cBuffers  = 4;
+        desc.pBuffers  = bufs;
+        bufs[0].BufferType = KDF_HASH_ALGORITHM;
+        bufs[0].pvBuffer   = (PVOID)BCRYPT_SHA256_ALGORITHM;
+        bufs[0].cbBuffer   = (ULONG)((wcslen(BCRYPT_SHA256_ALGORITHM) + 1) * sizeof(WCHAR));
+        bufs[1].BufferType = KDF_HMAC_KEY;
+        bufs[1].pvBuffer   = (PVOID)hmacKey;
+        bufs[1].cbBuffer   = (ULONG)sizeof hmacKey;
+        bufs[2].BufferType = KDF_SECRET_PREPEND;
+        bufs[2].pvBuffer   = (PVOID)pre2;
+        bufs[2].cbBuffer   = (ULONG)sizeof pre2;
+        bufs[3].BufferType = KDF_SECRET_APPEND;
+        bufs[3].pvBuffer   = (PVOID)post2;
+        bufs[3].cbBuffer   = (ULONG)sizeof post2;
+
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_HMAC, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("HMAC KDF → OK", ss);
+        ASSERT_EQ("One digest returned", cb, 32U);
+        ASSERT_EQ("Exactly one HMAC", P11Mock_GetCalls()->nSign, 1);
+        ASSERT_EQ("CKM_SHA256_HMAC used",
+                  P11Mock_GetConfig()->lastSignMech,
+                  (CK_MECHANISM_TYPE)CKM_SHA256_HMAC);
+
+        /* Message is prepend || Z || append. */
+        ASSERT_EQ("Message is 2 + 32 + 2 bytes",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)36);
+        ASSERT_MEM("  prepend first",
+                   P11Mock_GetConfig()->lastSignData, pre2, 2);
+        ASSERT_MEM("  Z in the middle",
+                   P11Mock_GetConfig()->lastSignData + 2, g_secret32, 32);
+        ASSERT_MEM("  append last",
+                   P11Mock_GetConfig()->lastSignData + 34, post2, 2);
+
+        /* The HMAC key is the one the caller supplied, not Z. */
+        ASSERT_EQ("HMAC key is the caller's, 2 bytes",
+                  P11Mock_GetConfig()->cbLastCreateValue, (CK_ULONG)2);
+        ASSERT_MEM("  and its bytes match",
+                   P11Mock_GetConfig()->lastCreateValue, hmacKey, 2);
+        ASSERT_EQ("Temporary key destroyed",
+                  P11Mock_GetCalls()->nCreateObject,
+                  P11Mock_GetCalls()->nDestroyObject);
+
+        /* KDF_USE_SECRET_AS_HMAC_KEY_FLAG swaps the roles: Z becomes the
+         * key and leaves the message. */
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_HMAC, &desc,
+                           out, sizeof out, &cb,
+                           KDF_USE_SECRET_AS_HMAC_KEY_FLAG);
+        ASSERT_OK("Secret-as-key flag → OK", ss);
+        ASSERT_EQ("Message is only prepend || append",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)4);
+        ASSERT_EQ("Key is now Z, 32 bytes",
+                  P11Mock_GetConfig()->cbLastCreateValue, (CK_ULONG)32);
+        ASSERT_MEM("  and it is the agreed secret",
+                   P11Mock_GetConfig()->lastCreateValue, g_secret32, 32);
+
+        /* No HMAC key buffer at all is legal — an empty key. */
+        desc.cBuffers = 1;
+        P11Mock_ResetCalls();
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_HMAC, &desc,
+                           out, sizeof out, &cb, 0);
+        ASSERT_OK("No HMAC key buffer → OK", ss);
+        ASSERT_EQ("Message is just Z",
+                  P11Mock_GetConfig()->cbLastSignData, (CK_ULONG)32);
+
+        cb = 0;
+        ss = KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_HMAC, &desc,
+                           NULL, 0, &cb, 0);
+        ASSERT_OK("Size query → OK", ss);
+        ASSERT_EQ("Reports one digest", cb, 32U);
+
+        ss = KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_HMAC, &desc,
+                           out, 4, &cb, 0);
+        ASSERT_EQ("Short buffer → NTE_BUFFER_TOO_SMALL",
+                  ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
+
+        /* A prepend larger than the assembly buffer is refused rather
+         * than truncated or overflowed. */
+        {
+            static BYTE huge[2048];
+            memset(huge, 0x5A, sizeof huge);
+            desc.cBuffers      = 2;
+            bufs[1].BufferType = KDF_SECRET_PREPEND;
+            bufs[1].pvBuffer   = (PVOID)huge;
+            bufs[1].cbBuffer   = (ULONG)sizeof huge;
+            ASSERT_EQ("Oversized prepend → NTE_INVALID_PARAMETER",
+                KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_HMAC, &desc,
+                              out, sizeof out, &cb, 0),
+                (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+            desc.cBuffers = 1;
+        }
+
+        /* TLS_PRF is the one KDF still unimplemented. */
+        ASSERT_EQ("TLS_PRF → NTE_NOT_SUPPORTED",
+            KSP_DeriveKey(hProv, hSec3, BCRYPT_KDF_TLS_PRF, &desc,
+                          out, sizeof out, &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        if (hSec3) KSP_FreeSecret(hProv, hSec3);
     }
 
     KSP_FreeProvider(hProv);
