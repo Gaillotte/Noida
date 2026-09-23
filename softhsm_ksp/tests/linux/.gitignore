@@ -1,0 +1,11 @@
+# Fetched and built by `make kryoptic` — a second PKCS#11 module to test
+# the provider against. Never committed: it is someone else's project, and
+# the build is large.
+.kryoptic/
+
+# Token database and config created by `make token`.
+.token/
+
+# Binaries
+test_real_backend
+p11_init_token

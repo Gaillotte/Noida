@@ -6,6 +6,10 @@
 test_function_table
 test_p11_session
 test_mldsa
+test_certificate
+test_keywrap
+test_p11_context
+test_key_pin
 test_p11rv_mapping
 test_ecdsa_decode
 test_mechanism_resolve

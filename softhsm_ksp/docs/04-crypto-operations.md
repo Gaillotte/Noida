@@ -186,7 +186,30 @@ sequenceDiagram
     NCrypt-->>App: ERROR_SUCCESS
 ```
 
-### DER → r‖s decoding algorithm
+### ECDSA signature format
+
+**A conformant PKCS#11 token already returns what CNG wants.** PKCS#11 v2.40
+§2.3.1 specifies that `CKM_ECDSA` produces `r‖s`, each padded to the length
+of the curve order — not DER. SoftHSM2 follows it: `OSSLECDSA.cpp` sizes the
+buffer at `2 * len` and fills it with `BN_bn2bin(r)` then `BN_bn2bin(s)`.
+
+So the normal path is a length check and a copy. `KSP_SignHash` compares the
+signature length against `2 × P11_EcCoordSize()`; if they match, the bytes
+pass through untouched.
+
+> **This was wrong until session 10.** The provider decoded DER
+> unconditionally, on the documented-but-false premise that SoftHSM2 returns
+> DER. Every ECDSA signature was parsed as a structure it never was. No unit
+> test caught it because the mock returned whatever DER the test itself had
+> constructed; it surfaced the first time the provider ran against a second
+> token (Kryoptic), as `NTE_INVALID_PARAMETER`. See
+> [13 — Roadmap](./13-roadmap.md), phase 7.
+
+The decoder below is retained as a **fallback**, selected only when the
+signature length does not match the curve, for a token that returns the
+OpenSSL EVP form instead.
+
+### DER → r‖s decoding algorithm (fallback only)
 
 ```
 Input:  SEQUENCE { INTEGER r, INTEGER s }  (DER format)

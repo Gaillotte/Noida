@@ -96,6 +96,9 @@ int main(void)
 
     NCRYPT_KEY_HANDLE hRsa = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
     BYTE hash[32]; memset(hash, 0xAA, sizeof hash);
+    /* PSS parameters are captured from C_SignInit, so those tests must
+     * sign for real — a size query no longer reaches the token. */
+    BYTE sigbuf[512];
 
     /* Size-only mode (pbSignature=NULL) */
     cbResult = 0;
@@ -103,8 +106,14 @@ int main(void)
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
     ASSERT_OK("SignHash RSA PKCS1 size → OK", ss);
     ASSERT_EQ("cbResult = 256", cbResult, 256U);
-    ASSERT_EQ("SignInit called", P11Mock_GetCalls()->nSignInit, 1);
-    ASSERT_EQ("Sign called (size)", P11Mock_GetCalls()->nSign, 1);
+    /* A size query must NOT start a token operation. It used to, and the
+     * abandoned operation stayed active on a POOLED session — the next
+     * caller to draw that session got CKR_OPERATION_ACTIVE from its own
+     * C_SignInit. SoftHSM2 tolerates re-init over an active operation so
+     * the bug was invisible until the provider met a stricter token. */
+    ASSERT_EQ("Size query does not call C_SignInit",
+        P11Mock_GetCalls()->nSignInit, 0);
+    ASSERT_EQ("nor C_Sign", P11Mock_GetCalls()->nSign, 0);
 
     /* Actual signing mode */
     P11Mock_Reset();
@@ -154,7 +163,7 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha1, hash, 20,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA1 size → OK", ss);
     ASSERT_EQ("PSS SHA-1 → hashAlg CKM_SHA_1",
         (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA_1);
@@ -174,7 +183,7 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha512, hash, 32,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA512 size → OK", ss);
     ASSERT_EQ("PSS SHA-512 → hashAlg CKM_SHA512",
         (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA512);
@@ -194,7 +203,7 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha384, hash, 32,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA384 size → OK", ss);
     ASSERT_EQ("PSS SHA-384 → hashAlg CKM_SHA384",
         (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA384);
@@ -214,7 +223,7 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha224, hash, 28,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA224 size → OK", ss);
     ASSERT_EQ("PSS SHA-224 → hashAlg CKM_SHA224",
         (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA224);
@@ -230,7 +239,7 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, NULL, hash, sizeof hash,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS without info → OK (default SHA256)", ss);
     ASSERT_EQ("PSS default → hashAlg CKM_SHA256",
         (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA256);
@@ -269,6 +278,39 @@ int main(void)
     /* r = 0x11 * 32 bytes */
     ASSERT_EQ("r[0] = 0x11", ecSigBuf[0], (BYTE)0x11);
     ASSERT_EQ("s[0] = 0x22", ecSigBuf[32], (BYTE)0x22);
+
+    /* The conformant case, which is what a PKCS#11 token actually returns.
+     *
+     * PKCS#11 v2.40 section 2.3.1: CKM_ECDSA produces r||s, each padded to
+     * the length of the curve order. It is NOT DER. This provider decoded
+     * DER unconditionally — including from SoftHSM2, whose OSSLECDSA.cpp
+     * writes BN_bn2bin(r) then BN_bn2bin(s) into a 2*len buffer — so every
+     * ECDSA signature was parsed as a structure it never was. The mock hid
+     * it by returning whatever DER these tests supplied; a run against
+     * Kryoptic returned NTE_INVALID_PARAMETER on the first real signature.
+     *
+     * The DER path above is kept as a fallback for a non-conformant token,
+     * so both shapes are pinned here. */
+    {
+        static BYTE abRawSig[64];
+        DWORD i;
+        for (i = 0; i < 32; i++)  abRawSig[i]      = 0xA1;
+        for (i = 0; i < 32; i++)  abRawSig[32 + i] = 0xB2;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbSignature = abRawSig;
+        P11Mock_GetConfig()->cbSignature = 64;    /* raw r||s, 2 * 32 */
+
+        memset(ecSigBuf, 0, sizeof ecSigBuf);
+        cbResult = 0;
+        ss = KSP_SignHash(hProv, hEc, NULL, hash, sizeof hash,
+            ecSigBuf, sizeof ecSigBuf, &cbResult, 0);
+        ASSERT_OK("A raw r||s signature is accepted as-is", ss);
+        ASSERT_EQ("still 64 bytes", cbResult, 64U);
+        ASSERT_EQ("r passed through unaltered", ecSigBuf[0],  (BYTE)0xA1);
+        ASSERT_EQ("s passed through unaltered", ecSigBuf[32], (BYTE)0xB2);
+    }
 
     KSP_Free((void *)(ULONG_PTR)hEc); hEc = 0;
 
@@ -327,8 +369,15 @@ int main(void)
     P11Mock_GetConfig()->cbSignature = 256;
     P11Mock_GetConfig()->rv_SignInit  = CKR_FUNCTION_FAILED;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
-        NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
     ASSERT_ERR("C_SignInit fails → error", ss);
+    /* The same failure is invisible to a size query, and that is correct:
+     * the query is answered from the key, not from the token. */
+    cbResult = 0;
+    ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
+        NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
+    ASSERT_OK("but a size query still answers", ss);
+    ASSERT_EQ("with the modulus length", cbResult, 256U);
 
     /* C_Sign (size) fails */
     P11Mock_Reset();
@@ -336,8 +385,8 @@ int main(void)
     P11Mock_GetConfig()->cbSignature = 256;
     P11Mock_GetConfig()->rv_Sign     = CKR_FUNCTION_FAILED;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
-        NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_ERR("C_Sign (size) fails → error", ss);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
+    ASSERT_ERR("C_Sign fails → error", ss);
 
     /* Output buffer too small (RSA) */
     P11Mock_Reset();
@@ -367,7 +416,12 @@ int main(void)
     ss = KSP_Decrypt(hProv, hDecRsa, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
     ASSERT_OK("Decrypt RSA PKCS1 size → OK", ss);
-    ASSERT_EQ("cbResult = 32 (mock)", cbResult, 32U);
+    /* The plaintext length is not known until the padding comes off, so the
+     * query reports the modulus as an upper bound rather than starting a
+     * decryption and abandoning it on a pooled session. */
+    ASSERT_EQ("cbResult is the modulus length", cbResult, 256U);
+    ASSERT_EQ("and the token was never asked",
+        P11Mock_GetCalls()->nDecryptInit, 0);
 
     /* Actual decryption */
     P11Mock_Reset();
@@ -471,9 +525,12 @@ int main(void)
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_DecryptInit = CKR_FUNCTION_FAILED;
-    ss = KSP_Decrypt(hProv, hDecErr, ciphertext, sizeof ciphertext,
-        NULL, NULL, 0, &cbResult, 0);
-    ASSERT_ERR("C_DecryptInit fails → error", ss);
+    {
+        BYTE abPlain[256];
+        ss = KSP_Decrypt(hProv, hDecErr, ciphertext, sizeof ciphertext,
+            NULL, abPlain, sizeof abPlain, &cbResult, 0);
+        ASSERT_ERR("C_DecryptInit fails → error", ss);
+    }
 
     /* C_Decrypt fails */
     P11Mock_Reset();

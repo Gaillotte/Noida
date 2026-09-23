@@ -5,8 +5,8 @@ Key Storage Providers surveyed in
 [11 — CNG KSP market comparison](./11-market-comparison.md), and in what
 order the work has to happen.
 
-*Written: September 2026. **Phases 0, 1, 2, 4 and 5 are done**; Phase 3 is
-tooled as far as it can be here — see §3 for what each changed and what it
+*Written: September 2026. **Phases 0, 1, 2, 4, 5 and 7 step 1 are done**;
+Phase 3 is tooled as far as it can be here — see §3 for what each changed and what it
 could not settle. Complements the gap analysis
 in [`feature-matrix.csv`](./feature-matrix.csv) and
 [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf).*
@@ -601,6 +601,46 @@ So the phase splits cleanly, and the cheaper half is worth doing on its own:
 
 Step 1 is the one to do first: it is bounded, it validates the architectural
 claim phase 4 was built on, and it does not depend on step 2.
+
+#### Step 1 ✅ done — and it earned its keep immediately
+
+`tests/linux/` builds Kryoptic, initialises a token in it, and runs the real
+`p11_*` and `ksp_*` sources against it. The only substitution is the loader:
+`LoadLibraryW` becomes `dlopen`. Everything else is the same source the
+Windows DLL compiles.
+
+**It found two defects on the first run, both of which had survived 1434
+assertions against the mock.** That is the entire argument for this phase,
+made better than any reasoning could have.
+
+**One: a size query poisoned the session pool.** `NCryptSignHash` and its
+siblings are called twice — once with a NULL buffer to learn the length,
+then again to do the work. The provider answered the first call by starting
+a token operation, reading the length, and returning *without finishing it*.
+The session went back into the pool with that operation still active, and
+the next caller to draw it — any key, any thread — got
+`CKR_OPERATION_ACTIVE` from its own `C_SignInit`. PKCS#11 v2.40 §5.2 is
+explicit that this is the correct token behaviour, and it offers no way to
+cancel an operation, so the only portable fix is not to start one: every
+size is now computed from the key and the mechanism. SoftHSM2 permits
+re-initialising over an active operation, which is why nine sessions of work
+never saw it.
+
+**Two: ECDSA signing had never worked against a conformant token.** The
+provider DER-decoded every ECDSA signature, on the documented premise that
+SoftHSM2 returns DER. It does not, and neither does anything else: PKCS#11
+v2.40 §2.3.1 mandates raw `r‖s`, and SoftHSM2's own `OSSLECDSA.cpp` writes
+`BN_bn2bin(r)` then `BN_bn2bin(s)` into a `2*len` buffer. The decoder was
+parsing a raw signature as a structure and rejecting it. The mock hid this
+perfectly, because the mock returned whatever DER the test had just built.
+The conformant shape now passes through and the decoder is kept as a
+fallback for a token returning the OpenSSL EVP form.
+
+Neither bug is exotic. Both sit on the main path of the two most-used
+operations in the provider. Both were invisible to a test suite that only
+ever asked a mock whether the provider agreed with itself.
+
+The suite runs in CI as the `second-backend` job.
 
 ### Group D — real, and not reachable from this repository
 

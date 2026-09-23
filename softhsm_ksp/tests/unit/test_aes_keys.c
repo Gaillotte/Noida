@@ -325,12 +325,19 @@ int main(void)
               (CK_MECHANISM_TYPE)CKM_AES_GCM);
 
     /* Size query returns the required length without writing output */
+    P11Mock_ResetCalls();
     cbResult = 0;
     ss = KSP_Encrypt(hProv, hKey, plain, sizeof plain, NULL,
                      NULL, 0, &cbResult, 0);
     ASSERT_OK("Encrypt size query succeeds", ss);
-    ASSERT_EQ("Size query reports ciphertext length",
-              cbResult, (DWORD)sizeof plain);
+    /* An upper bound, computed here rather than asked of the token: one AES
+     * block of headroom covers CBC_PAD's padding and GCM's tag alike. The
+     * query used to run a real C_Encrypt and abandon it, leaving the
+     * operation active on a pooled session. */
+    ASSERT_EQ("Size query reports an upper bound without asking the token",
+              cbResult, (DWORD)(sizeof plain + AES_BLOCK_SIZE));
+    ASSERT_EQ("and the token was never asked",
+              P11Mock_GetCalls()->nEncryptInit, 0);
 
     KSP_FreeKey(hProv, hKey);
 

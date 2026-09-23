@@ -157,6 +157,69 @@ static SECURITY_STATUS KeyContextLogin(KSP_KEY *pKey, CK_SESSION_HANDLE hSession
     return P11RvToSecStatus(rv);
 }
 
+/* How long a signature this key and mechanism produce.
+ *
+ * Answered without asking the token, and that is the point rather than an
+ * optimisation. CNG callers ask for the size first and sign second. Getting
+ * the size by starting a signing operation and abandoning it leaves that
+ * operation active on the session, and because sessions are POOLED the next
+ * caller to draw that session gets CKR_OPERATION_ACTIVE from its own
+ * C_SignInit — for a key it does not own, on a thread that did nothing
+ * wrong.
+ *
+ * That is what this provider did until a run against Kryoptic exposed it.
+ * SoftHSM2 permits re-initialising over an active operation, so against the
+ * only backend ever tested the bug was invisible. PKCS#11 v2.40 §5.2 is
+ * explicit that C_SignInit returns CKR_OPERATION_ACTIVE, and it offers no
+ * way to cancel an operation, so the only portable fix is not to start one.
+ *
+ * Every size here is fixed by the algorithm, so nothing is lost. */
+static SECURITY_STATUS KspSignatureLength(const KSP_KEY *pKey,
+                                          CK_MECHANISM_TYPE mech,
+                                          DWORD *pcbSig)
+{
+    switch (mech) {
+    case CKM_RSA_PKCS:
+    case CKM_RSA_PKCS_PSS:
+        /* Always the modulus length, for both padding schemes. */
+        if (pKey->dwKeyBitLen == 0)
+            return NTE_BAD_KEY;
+        *pcbSig = pKey->dwKeyBitLen / 8;
+        return ERROR_SUCCESS;
+
+    case CKM_ECDSA:
+        /* The token returns DER; the caller gets raw r||s. */
+        *pcbSig = P11_EcCoordSize(pKey->szAlgId) * 2;
+        return (*pcbSig > 0) ? ERROR_SUCCESS : NTE_BAD_ALGID;
+
+    case CKM_EDDSA:
+        if (_wcsicmp(pKey->szAlgId, ALG_EDDSA_ED25519) == 0)
+            *pcbSig = ED25519_SIG_SIZE;
+        else if (_wcsicmp(pKey->szAlgId, ALG_EDDSA_ED448) == 0)
+            *pcbSig = ED448_SIG_SIZE;
+        else
+            return NTE_BAD_ALGID;
+        return ERROR_SUCCESS;
+
+    case CKM_ML_DSA:
+        *pcbSig = P11_MlDsaSignatureSize(pKey->szAlgId);
+        return (*pcbSig > 0) ? ERROR_SUCCESS : NTE_BAD_ALGID;
+
+    case CKM_AES_CMAC:
+        *pcbSig = AES_BLOCK_SIZE;
+        return ERROR_SUCCESS;
+
+    case CKM_SHA_1_HMAC:    *pcbSig = 20; return ERROR_SUCCESS;
+    case CKM_SHA224_HMAC:   *pcbSig = 28; return ERROR_SUCCESS;
+    case CKM_SHA256_HMAC:   *pcbSig = 32; return ERROR_SUCCESS;
+    case CKM_SHA384_HMAC:   *pcbSig = 48; return ERROR_SUCCESS;
+    case CKM_SHA512_HMAC:   *pcbSig = 64; return ERROR_SUCCESS;
+
+    default:
+        return NTE_NOT_SUPPORTED;
+    }
+}
+
 SECURITY_STATUS WINAPI KSP_SignHash(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -211,6 +274,19 @@ SECURITY_STATUS WINAPI KSP_SignHash(
 
     bEcdsa = (mech.mechanism == CKM_ECDSA);
 
+    /* A size query never starts a token operation — see KspSignatureLength. */
+    if (pbSignature == NULL) {
+        DWORD cbNeeded = 0;
+        ss = KspSignatureLength(pKey, mech.mechanism, &cbNeeded);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_SignHash", ss);
+            return ss;
+        }
+        *pcbResult = cbNeeded;
+        LOG_LEAVE("KSP_SignHash", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+    }
+
     ss = P11_AcquireSession(&hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_SignHash", ss);
@@ -245,19 +321,6 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         return ss;
     }
 
-    if (pbSignature == NULL) {
-        /* Size-only mode */
-        P11_ReleaseSession(hSession);
-        if (bEcdsa) {
-            /* For ECDSA the final size is r||s (Windows format) */
-            *pcbResult = P11_EcCoordSize(pKey->szAlgId) * 2;
-        } else {
-            *pcbResult = (DWORD)cbRawSig;
-        }
-        LOG_LEAVE("KSP_SignHash", ERROR_SUCCESS);
-        return ERROR_SUCCESS;
-    }
-
     pbRawSig = (BYTE *)KSP_Alloc(cbRawSig);
     if (!pbRawSig) {
         P11_ReleaseSession(hSession);
@@ -281,14 +344,54 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     }
 
     if (bEcdsa) {
-        /* Convert DER → r||s Windows format */
-        DWORD cbDecoded = cbSignature;
-        ss = P11_DecodeDerEcdsaSignature(
-            pKey->szAlgId, pbRawSig, (DWORD)cbRawSig,
-            pbSignature, &cbDecoded);
-        KSP_Free(pbRawSig);
-        if (ss == ERROR_SUCCESS)
-            *pcbResult = cbDecoded;
+        /* PKCS#11 v2.40 §2.3.1 is explicit: CKM_ECDSA returns r||s, each
+         * padded to the length of the curve order. That is already CNG's
+         * format, so a conformant token needs no conversion at all.
+         *
+         * This provider used to DER-decode unconditionally, on the belief
+         * that SoftHSM2 returns DER. It does not — OSSLECDSA.cpp writes
+         * BN_bn2bin(r) then BN_bn2bin(s) into a 2*len buffer — so the
+         * conversion was parsing a raw signature as if it were a structure
+         * and rejecting it. Against Kryoptic that surfaced as
+         * NTE_INVALID_PARAMETER on every ECDSA signature; against SoftHSM2
+         * it would have done the same, and no test caught it because the
+         * mock returns whatever DER the test itself supplied.
+         *
+         * The DER path is kept as a fallback rather than deleted. It costs
+         * one length comparison, and a token that returns the OpenSSL EVP
+         * form instead of the PKCS#11 form is a thing that exists. */
+        DWORD cbCoord = P11_EcCoordSize(pKey->szAlgId);
+        DWORD cbRaw   = cbCoord * 2;
+
+        if (cbCoord == 0) {
+            KSP_Free(pbRawSig);
+            LOG_LEAVE("KSP_SignHash", NTE_BAD_ALGID);
+            return NTE_BAD_ALGID;
+        }
+
+        if ((DWORD)cbRawSig == cbRaw) {
+            /* Conformant: already r||s. */
+            if (cbSignature < cbRaw) {
+                KSP_Free(pbRawSig);
+                LOG_LEAVE("KSP_SignHash", NTE_BUFFER_TOO_SMALL);
+                return NTE_BUFFER_TOO_SMALL;
+            }
+            memcpy(pbSignature, pbRawSig, cbRaw);
+            *pcbResult = cbRaw;
+            KSP_Free(pbRawSig);
+            ss = ERROR_SUCCESS;
+        } else {
+            DWORD cbDecoded = cbSignature;
+            LOG_INFO("ECDSA signature is %lu bytes, not the %lu this curve "
+                     "implies — trying the DER form",
+                     (unsigned long)cbRawSig, (unsigned long)cbRaw);
+            ss = P11_DecodeDerEcdsaSignature(
+                pKey->szAlgId, pbRawSig, (DWORD)cbRawSig,
+                pbSignature, &cbDecoded);
+            KSP_Free(pbRawSig);
+            if (ss == ERROR_SUCCESS)
+                *pcbResult = cbDecoded;
+        }
     } else {
         if (cbSignature < (DWORD)cbRawSig) {
             KSP_Free(pbRawSig);
@@ -378,6 +481,30 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
         hDecryptKey = pKey->hPrivKey;
     }
 
+    /* A size query never starts a token operation. Same reasoning as
+     * KspSignatureLength: C_Decrypt leaves its operation active when the
+     * output buffer is absent or too small, and the session then goes back
+     * into a SHARED pool carrying it.
+     *
+     * The plaintext length is not known until the padding comes off, so an
+     * upper bound is reported. That is what a size query is for — the caller
+     * learns how large a buffer to provide, and the real call reports the
+     * exact length. For RSA the bound is the modulus; for a block cipher the
+     * plaintext is never longer than the ciphertext. */
+    if (pbOutput == NULL) {
+        if (pKey->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC) {
+            *pcbResult = cbInput;
+        } else {
+            if (pKey->dwKeyBitLen == 0) {
+                LOG_LEAVE("KSP_Decrypt", NTE_BAD_KEY);
+                return NTE_BAD_KEY;
+            }
+            *pcbResult = pKey->dwKeyBitLen / 8;
+        }
+        LOG_LEAVE("KSP_Decrypt", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+    }
+
     ss = P11_AcquireSession(&hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_Decrypt", ss);
@@ -405,13 +532,27 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
         hSession, pbInput, (CK_ULONG)cbInput,
         pbOutput, &cbDecrypted);
 
-    P11_ReleaseSession(hSession);
-
-    if (rv == CKR_BUFFER_TOO_SMALL || (rv == CKR_OK && pbOutput == NULL)) {
+    /* A caller that ignored the size query and passed a short buffer leaves
+     * the operation active. PKCS#11 v2.40 offers no way to cancel one, so it
+     * is completed into a scratch buffer and the plaintext discarded —
+     * otherwise this session poisons the next caller to draw it from the
+     * pool. The cost falls only on the caller who skipped the size query. */
+    if (rv == CKR_BUFFER_TOO_SMALL) {
+        BYTE *pbScratch = (BYTE *)KSP_Alloc(cbDecrypted);
+        if (pbScratch) {
+            CK_ULONG cbScratch = cbDecrypted;
+            (void)pCtx->pFunctionList->C_Decrypt(
+                hSession, pbInput, (CK_ULONG)cbInput, pbScratch, &cbScratch);
+            SecureZeroMemory(pbScratch, cbDecrypted);
+            KSP_Free(pbScratch);
+        }
+        P11_ReleaseSession(hSession);
         *pcbResult = (DWORD)cbDecrypted;
-        LOG_LEAVE("KSP_Decrypt", ERROR_SUCCESS);
-        return ERROR_SUCCESS;
+        LOG_LEAVE("KSP_Decrypt", NTE_BUFFER_TOO_SMALL);
+        return NTE_BUFFER_TOO_SMALL;
     }
+
+    P11_ReleaseSession(hSession);
 
     if (rv != CKR_OK) {
         ss = P11RvToSecStatus(rv);
@@ -1094,6 +1235,18 @@ SECURITY_STATUS WINAPI KSP_Encrypt(
         return ss;
     }
 
+    /* A size query never starts a token operation — same reasoning as
+     * KspSignatureLength and KSP_Decrypt.
+     *
+     * One AES block of headroom covers every mode this provider offers:
+     * CBC_PAD adds at most a full block of padding, GCM appends a 16-byte
+     * tag, and ECB/CBC/CTR add nothing. */
+    if (pbOutput == NULL) {
+        *pcbResult = cbInput + AES_BLOCK_SIZE;
+        LOG_LEAVE("KSP_Encrypt", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
+    }
+
     ss = P11_AcquireSession(&hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_Encrypt", ss);
@@ -1112,14 +1265,23 @@ SECURITY_STATUS WINAPI KSP_Encrypt(
     rv = pCtx->pFunctionList->C_Encrypt(
         hSession, pbInput, (CK_ULONG)cbInput, pbOutput, &cbEncrypted);
 
-    P11_ReleaseSession(hSession);
-
-    /* Size query: pbOutput NULL, or the buffer was too small */
-    if (rv == CKR_BUFFER_TOO_SMALL || (rv == CKR_OK && pbOutput == NULL)) {
+    /* As in KSP_Decrypt: a short buffer leaves the operation active, and a
+     * pooled session must not be returned carrying one. */
+    if (rv == CKR_BUFFER_TOO_SMALL) {
+        BYTE *pbScratch = (BYTE *)KSP_Alloc(cbEncrypted);
+        if (pbScratch) {
+            CK_ULONG cbScratch = cbEncrypted;
+            (void)pCtx->pFunctionList->C_Encrypt(
+                hSession, pbInput, (CK_ULONG)cbInput, pbScratch, &cbScratch);
+            KSP_Free(pbScratch);
+        }
+        P11_ReleaseSession(hSession);
         *pcbResult = (DWORD)cbEncrypted;
-        LOG_LEAVE("KSP_Encrypt", ERROR_SUCCESS);
-        return ERROR_SUCCESS;
+        LOG_LEAVE("KSP_Encrypt", NTE_BUFFER_TOO_SMALL);
+        return NTE_BUFFER_TOO_SMALL;
     }
+
+    P11_ReleaseSession(hSession);
 
     if (rv != CKR_OK) {
         ss = P11RvToSecStatus(rv);

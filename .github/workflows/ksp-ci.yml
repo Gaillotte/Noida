@@ -79,6 +79,48 @@ jobs:
         run: |
           gcovr --root ../.. --filter '.*/src/.*' --print-summary --txt
 
+  # ── The second backend ──────────────────────────────────────────────────
+  # Everything else this project knows about itself comes from a mock we
+  # wrote. This job is the only one that tests the claim the architecture
+  # rests on — that any PKCS#11 v2.40+ module can back the provider — by
+  # running the real p11_* and ksp_* sources against Kryoptic, a PKCS#11
+  # token written in Rust by people with no connection to this repository.
+  #
+  # It earned its place on the first run: it found two defects that had
+  # survived 1434 assertions against the mock. See docs/13-roadmap.md,
+  # phase 7.
+  second-backend:
+    name: Against a second PKCS#11 backend (Kryoptic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      # Kryoptic is the slow part of this job, and it only changes when the
+      # pinned ref does.
+      - name: Cache the Kryoptic build
+        id: kryoptic-cache
+        uses: actions/cache@v4
+        with:
+          path: softhsm_ksp/tests/linux/.kryoptic
+          key: kryoptic-${{ runner.os }}-main-v1
+
+      - name: Build Kryoptic
+        working-directory: softhsm_ksp/tests/linux
+        run: make kryoptic
+
+      - name: Initialise a token
+        working-directory: softhsm_ksp/tests/linux
+        run: make token
+
+      - name: Run the provider against it
+        working-directory: softhsm_ksp/tests/linux
+        run: make run
+
   # ── The authority ───────────────────────────────────────────────────────
   # Only this job can answer whether the DLL actually builds. Everything
   # above is a proxy.

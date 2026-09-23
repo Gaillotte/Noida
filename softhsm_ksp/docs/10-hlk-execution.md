@@ -174,7 +174,7 @@ run both roles on one host.
 | Provider not found | KSP not registered, or registered for the wrong architecture |
 | `NTE_BAD_KEYSET` on every test | Token not initialised, or the PIN is wrong for HLK's session |
 | Key generation times out | SoftHSM2 RSA-4096 generation is slow; raise the test timeout |
-| Signature verification fails | ECDSA DER → r‖s conversion; check `P11_DecodeDerEcdsaSignature` |
+| Signature verification fails | ECDSA signature shape. A conformant token returns raw r‖s and it is passed through; `P11_DecodeDerEcdsaSignature` is only the fallback for a token returning DER |
 | Sporadic failures under load | Session pool exhaustion — the pool holds 16 sessions (`P11_SESSION_POOL_SIZE`) |
 
 Enable KSP tracing on the client while diagnosing:
