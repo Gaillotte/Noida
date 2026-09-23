@@ -33,13 +33,12 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
 }
 void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
-/* ── KSP_IsValidKey stub (defined in ksp_key.c, not linked here) ───────────── */
+/* ksp_key.c is linked into this suite now — KSP_ExportKey asks it which
+ * curve family a key belongs to, so that KSP_IsEddsaAlg and
+ * KSP_IsMontgomeryAlg are the real ones here rather than a copy that could
+ * drift from them. It also supplies the real KSP_IsValidKey, which this
+ * file used to stub. */
 #include "../../src/ksp/ksp_key.h"
-BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey)
-{
-    KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hKey;
-    return (k && k->dwMagic == KSP_KEY_MAGIC);
-}
 
 #include "../../src/ksp/ksp_provider.h"
 #include "../../src/ksp/ksp_crypto.h"

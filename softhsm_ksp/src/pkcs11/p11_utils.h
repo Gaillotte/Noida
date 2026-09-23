@@ -122,6 +122,12 @@ SECURITY_STATUS P11_BuildOaepParams(
 /* Build a PKCS#11 CKA_EC_POINT value (DER OCTET STRING wrapping
  * 0x04 || X || Y) from the X/Y coordinates of a BCRYPT_ECCKEY_BLOB.
  * The caller frees *ppDer with KSP_Free. */
+SECURITY_STATUS P11_BuildRawEcPointDer(
+    const BYTE *pbRaw,
+    DWORD       cbRaw,
+    BYTE      **ppDer,
+    DWORD      *pcbDer);
+
 SECURITY_STATUS P11_BuildEcPointDer(
     const BYTE *pbX,
     const BYTE *pbY,

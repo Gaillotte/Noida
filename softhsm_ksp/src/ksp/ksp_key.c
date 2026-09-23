@@ -149,9 +149,13 @@ BOOL KSP_IsGenericEccAlg(LPCWSTR pszAlgId)
             _wcsicmp(pszAlgId, BCRYPT_ECDH_ALGORITHM)  == 0);
 }
 
-/* X25519 is a Montgomery curve. SoftHSM2 generates it with the Edwards
- * mechanism and CKK_EC_EDWARDS, but the key is for agreement, not signing,
- * so it needs CKA_DERIVE where Ed25519 needs CKA_SIGN. */
+/* X25519 is a Montgomery curve, and PKCS#11 3.0 gives Montgomery curves
+ * their own generator and key type — CKM_EC_MONTGOMERY_KEY_PAIR_GEN and
+ * CKK_EC_MONTGOMERY — not the Edwards pair with a different curve OID.
+ * This file asserted the opposite until session 10 ran X25519 against
+ * Kryoptic, which implements the Montgomery generator and not the Edwards
+ * one and refused every X25519 key. The key is also for agreement rather
+ * than signing, so it needs CKA_DERIVE where Ed25519 needs CKA_SIGN. */
 BOOL KSP_IsMontgomeryAlg(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return FALSE;
@@ -393,27 +397,30 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
     return ERROR_SUCCESS;
 }
 
-/* Generate an Edwards or Montgomery curve key pair in SoftHSM2.
+/* Generate an Edwards or Montgomery curve key pair.
  *
- * Both use CKM_EC_EDWARDS_KEY_PAIR_GEN and CKK_EC_EDWARDS; the curve in
- * CKA_EC_PARAMS is what distinguishes them. The usage attribute differs:
- * Ed25519 and Ed448 are signature-only, X25519 is agreement-only, and
- * setting the wrong one makes the token refuse the operation later with an
- * error that does not point back here. */
+ * The two are NOT the same mechanism with a different curve OID, which is
+ * what this comment claimed before a real token contradicted it. PKCS#11
+ * 3.0 defines CKM_EC_MONTGOMERY_KEY_PAIR_GEN / CKK_EC_MONTGOMERY for
+ * X25519 and X448, separately from the Edwards pair, and a token may
+ * implement either alone. The usage attribute differs too: Ed25519 and
+ * Ed448 are signature-only, X25519 is agreement-only, and setting the wrong
+ * one makes the token refuse the operation later with an error that does
+ * not point back here. */
 SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
 {
     P11_CONTEXT      *pCtx = P11_GetContext();
     CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
     SECURITY_STATUS   ss;
     CK_RV             rv;
-    CK_MECHANISM      mech = { CKM_EC_EDWARDS_KEY_PAIR_GEN, NULL, 0 };
+    CK_MECHANISM      mech;
     char              szLabel[MAX_KEY_LABEL_LEN];
     int               nLabelLen;
     CK_BBOOL          bTrue  = CK_TRUE;
     CK_BBOOL          bFalse = CK_FALSE;
     CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
     CK_OBJECT_CLASS   classPub  = CKO_PUBLIC_KEY;
-    CK_KEY_TYPE       keyType   = CKK_EC_EDWARDS;
+    CK_KEY_TYPE       keyType;
     const char       *pbOid;
     CK_ULONG          cbOid;
     BOOL              bAgreement;
@@ -426,8 +433,15 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
     if (!pbOid)
         return NTE_BAD_ALGID;
 
-    /* X25519 derives; Ed25519 and Ed448 sign. */
+    /* X25519 derives; Ed25519 and Ed448 sign. The generator and key type
+     * follow the same split. */
     bAgreement = KSP_IsMontgomeryAlg(pKey->szAlgId);
+
+    mech.mechanism      = bAgreement ? CKM_EC_MONTGOMERY_KEY_PAIR_GEN
+                                     : CKM_EC_EDWARDS_KEY_PAIR_GEN;
+    mech.pParameter     = NULL;
+    mech.ulParameterLen = 0;
+    keyType             = bAgreement ? CKK_EC_MONTGOMERY : CKK_EC_EDWARDS;
 
     CK_ATTRIBUTE aPubTemplate[] = {
         { CKA_CLASS,     &classPub,          sizeof(classPub)    },
@@ -788,7 +802,8 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
         wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, ALG_RSA);
         P11_GetUlongAttr(hSession, hPriv, CKA_MODULUS_BITS, &ulModBits);
         pKey->dwKeyBitLen = (DWORD)ulModBits;
-    } else if (ulKeyType == CKK_EC || ulKeyType == CKK_EC_EDWARDS) {
+    } else if (ulKeyType == CKK_EC || ulKeyType == CKK_EC_EDWARDS ||
+               ulKeyType == CKK_EC_MONTGOMERY) {
         /* Identify the exact curve via CKA_EC_PARAMS */
         BYTE  *pbParams = NULL;
         DWORD  cbParams = 0;

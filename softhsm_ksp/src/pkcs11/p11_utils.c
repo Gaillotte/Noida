@@ -711,9 +711,53 @@ SECURITY_STATUS P11_BuildEcPointDer(
     return ERROR_SUCCESS;
 }
 
-/* Export an Edwards-curve public key as a BCRYPT_ECCKEY_BLOB.
- * EdDSA public keys are a single compressed point, so the blob carries
- * the raw key bytes directly after the header. */
+/* Build CKA_EC_POINT for a curve whose public key is a single raw string:
+ * a DER OCTET STRING wrapping the bytes, with no 0x04 marker. Ed25519,
+ * Ed448 and X25519 all use this form. */
+SECURITY_STATUS P11_BuildRawEcPointDer(
+    const BYTE *pbRaw,
+    DWORD       cbRaw,
+    BYTE      **ppDer,
+    DWORD      *pcbDer)
+{
+    DWORD cbHeader;
+    BYTE *pb;
+
+    if (!pbRaw || !ppDer || !pcbDer || cbRaw == 0 || cbRaw > 0xFF)
+        return NTE_INVALID_PARAMETER;
+
+    cbHeader = (cbRaw < 128) ? 2 : 3;
+
+    *ppDer = (BYTE *)KSP_AllocZero(cbHeader + cbRaw);
+    if (!*ppDer)
+        return NTE_NO_MEMORY;
+
+    pb = *ppDer;
+    *pb++ = 0x04;                       /* OCTET STRING */
+    if (cbRaw < 128) {
+        *pb++ = (BYTE)cbRaw;
+    } else {
+        *pb++ = 0x81;
+        *pb++ = (BYTE)cbRaw;
+    }
+    memcpy(pb, pbRaw, cbRaw);
+
+    *pcbDer = cbHeader + cbRaw;
+    return ERROR_SUCCESS;
+}
+
+/* Export an Edwards- or Montgomery-curve public key as a BCRYPT_ECCKEY_BLOB.
+ *
+ * Ed25519, Ed448 and X25519 public keys are a single compressed point, so
+ * the blob carries the raw key bytes directly after the header. There is no
+ * 0x04 uncompressed-point marker and no second coordinate, which is why
+ * P11_ExportEcPublicKey cannot be used: it would consume the first key byte
+ * as a marker and halve the rest into two coordinates.
+ *
+ * Until session 10 this function was never called. KSP_ExportKey dispatched
+ * on the blob type alone and sent every EC-family key to the X9.62 parser,
+ * so EdDSA export had never worked through the provider's own entry point
+ * despite being unit-tested here directly. */
 SECURITY_STATUS P11_ExportEddsaPublicKey(
     CK_SESSION_HANDLE  hSession,
     CK_OBJECT_HANDLE   hPubKey,
@@ -732,8 +776,12 @@ SECURITY_STATUS P11_ExportEddsaPublicKey(
     if (!pszAlgId || !ppBlob || !pcbBlob)
         return NTE_INVALID_PARAMETER;
 
-    cbExpected = (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)
-                 ? ED25519_PUBKEY_SIZE : ED448_PUBKEY_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)
+        cbExpected = ED25519_PUBKEY_SIZE;
+    else if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
+        cbExpected = EC_X25519_COORD_SIZE;
+    else
+        cbExpected = ED448_PUBKEY_SIZE;
 
     if (P11_GetBinaryAttr(hSession, hPubKey, CKA_EC_POINT,
                           &pbEcPoint, &cbEcPoint) != CKR_OK)
@@ -764,7 +812,13 @@ SECURITY_STATUS P11_ExportEddsaPublicKey(
     }
 
     pEccBlob = (BCRYPT_ECCKEY_BLOB *)*ppBlob;
-    pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC;
+    /* The magic is the only thing that tells X25519 from Ed25519 on the way
+     * back in: both are 32 raw bytes, and cbKey cannot separate them.
+     * Signing curves get the ECDSA generic magic, agreement curves the
+     * ECDH one — which is also how CNG distinguishes them. */
+    pEccBlob->dwMagic = (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
+                        ? BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC
+                        : BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC;
     pEccBlob->cbKey   = cbRaw;
 
     memcpy(*ppBlob + sizeof(BCRYPT_ECCKEY_BLOB), pbRaw, cbRaw);

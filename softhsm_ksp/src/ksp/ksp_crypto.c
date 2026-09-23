@@ -772,7 +772,19 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
     if (_wcsicmp(pszBlobType, BCRYPT_RSAPUBLIC_BLOB) == 0) {
         ss = P11_ExportRsaPublicKey(hSession, pKey->hPubKey, &pbBlob, &cbBlob);
     } else if (_wcsicmp(pszBlobType, BCRYPT_ECCPUBLIC_BLOB) == 0) {
-        ss = P11_ExportEcPublicKey(hSession, pKey->hPubKey, &pbBlob, &cbBlob);
+        /* Edwards and Montgomery points are raw bytes, not X9.62. Sending
+         * them to the Weierstrass parser is not merely a rejection: a raw
+         * key whose first byte happens to be 0x04 parses as an
+         * uncompressed point and yields a well-formed blob of nonsense,
+         * roughly one key in 256. Dispatch on the curve family. */
+        if (KSP_IsEddsaAlg(pKey->szAlgId) ||
+            KSP_IsMontgomeryAlg(pKey->szAlgId)) {
+            ss = P11_ExportEddsaPublicKey(hSession, pKey->hPubKey,
+                                          pKey->szAlgId, &pbBlob, &cbBlob);
+        } else {
+            ss = P11_ExportEcPublicKey(hSession, pKey->hPubKey,
+                                       &pbBlob, &cbBlob);
+        }
     } else {
         P11_ReleaseSession(hSession);
         LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
@@ -991,6 +1003,8 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
         DWORD        cbCoord;
         WCHAR        szAlg[MAX_ALG_ID_LEN];
         DWORD        dwBits;
+        BOOL         bRawPoint;
+        BOOL         bAgree = FALSE;
 
         if (cbData < sizeof(BCRYPT_ECCKEY_BLOB)) {
             LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
@@ -999,22 +1013,56 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
 
         cbCoord = pEcc->cbKey;
 
-        /* The blob must carry both coordinates after the header */
-        if (cbData < sizeof(BCRYPT_ECCKEY_BLOB) + 2 * cbCoord) {
-            LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
-            return NTE_INVALID_PARAMETER;
-        }
+        /* Edwards and Montgomery keys are a single raw string, not a pair
+         * of coordinates, and the generic magics are what say so. The size
+         * alone cannot: an X25519 key and a P-256 coordinate are both 32
+         * bytes, so reading cbKey and nothing else identified every X25519
+         * key as P-256 and then rejected it for being half a point.
+         * X25519 and Ed25519 are 32 bytes each as well, so the ECDH and
+         * ECDSA generic magics are the only thing separating those two. */
+        bRawPoint = (pEcc->dwMagic == BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC ||
+                     pEcc->dwMagic == BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC);
 
-        /* Identify the curve from the coordinate size */
-        if (cbCoord == EC_P256_COORD_SIZE) {
-            wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDSA_P256); dwBits = 256;
-        } else if (cbCoord == EC_P384_COORD_SIZE) {
-            wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDSA_P384); dwBits = 384;
-        } else if (cbCoord == EC_P521_COORD_SIZE) {
-            wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDSA_P521); dwBits = 521;
+        if (bRawPoint) {
+            if (cbData < sizeof(BCRYPT_ECCKEY_BLOB) + cbCoord) {
+                LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
+                return NTE_INVALID_PARAMETER;
+            }
+
+            if (pEcc->dwMagic == BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC &&
+                cbCoord == EC_X25519_COORD_SIZE) {
+                wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDH_X25519);
+                dwBits = 255; keyType = CKK_EC_MONTGOMERY; bAgree = TRUE;
+            } else if (pEcc->dwMagic == BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC &&
+                       cbCoord == ED25519_PUBKEY_SIZE) {
+                wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_EDDSA_ED25519);
+                dwBits = 255; keyType = CKK_EC_EDWARDS; bAgree = FALSE;
+            } else if (pEcc->dwMagic == BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC &&
+                       cbCoord == ED448_PUBKEY_SIZE) {
+                wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_EDDSA_ED448);
+                dwBits = 448; keyType = CKK_EC_EDWARDS; bAgree = FALSE;
+            } else {
+                LOG_LEAVE("KSP_ImportKey", NTE_BAD_ALGID);
+                return NTE_BAD_ALGID;
+            }
         } else {
-            LOG_LEAVE("KSP_ImportKey", NTE_BAD_ALGID);
-            return NTE_BAD_ALGID;
+            /* The blob must carry both coordinates after the header */
+            if (cbData < sizeof(BCRYPT_ECCKEY_BLOB) + 2 * cbCoord) {
+                LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
+                return NTE_INVALID_PARAMETER;
+            }
+
+            /* Identify the curve from the coordinate size */
+            if (cbCoord == EC_P256_COORD_SIZE) {
+                wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDSA_P256); dwBits = 256;
+            } else if (cbCoord == EC_P384_COORD_SIZE) {
+                wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDSA_P384); dwBits = 384;
+            } else if (cbCoord == EC_P521_COORD_SIZE) {
+                wcscpy_s(szAlg, MAX_ALG_ID_LEN, ALG_ECDSA_P521); dwBits = 521;
+            } else {
+                LOG_LEAVE("KSP_ImportKey", NTE_BAD_ALGID);
+                return NTE_BAD_ALGID;
+            }
         }
 
         pbOid = P11_GetCurveOid(szAlg, &cbOid);
@@ -1023,11 +1071,17 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
             return NTE_BAD_ALGID;
         }
 
-        /* Build CKA_EC_POINT = DER OCTET STRING { 04 || X || Y } */
-        ss = P11_BuildEcPointDer(
-                pbData + sizeof(BCRYPT_ECCKEY_BLOB),
-                pbData + sizeof(BCRYPT_ECCKEY_BLOB) + cbCoord,
-                cbCoord, &pbDer, &cbDer);
+        if (bRawPoint) {
+            /* CKA_EC_POINT = DER OCTET STRING { raw key } — no 0x04 */
+            ss = P11_BuildRawEcPointDer(pbData + sizeof(BCRYPT_ECCKEY_BLOB),
+                                        cbCoord, &pbDer, &cbDer);
+        } else {
+            /* Build CKA_EC_POINT = DER OCTET STRING { 04 || X || Y } */
+            ss = P11_BuildEcPointDer(
+                    pbData + sizeof(BCRYPT_ECCKEY_BLOB),
+                    pbData + sizeof(BCRYPT_ECCKEY_BLOB) + cbCoord,
+                    cbCoord, &pbDer, &cbDer);
+        }
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_ImportKey", ss);
             return ss;
@@ -1040,8 +1094,12 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
                 { CKA_TOKEN,     &bFalse,            sizeof(bFalse)   },
                 { CKA_EC_PARAMS, (CK_VOID_PTR)pbOid, cbOid            },
                 { CKA_EC_POINT,  pbDer,              cbDer            },
-                { CKA_VERIFY,    &bTrue,             sizeof(bTrue)    },
-                { CKA_DERIVE,    &bTrue,             sizeof(bTrue)    },
+                /* A Montgomery key may not verify and an Edwards key may
+                 * not derive; a strict token refuses the template outright
+                 * rather than ignoring the attribute it cannot honour. */
+                { CKA_VERIFY,    bAgree ? &bFalse : &bTrue, sizeof(bTrue) },
+                { CKA_DERIVE,    (bAgree || !bRawPoint) ? &bTrue : &bFalse,
+                                 sizeof(bTrue) },
             };
 
             ss = P11_AcquireSession(&hSession);

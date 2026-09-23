@@ -128,8 +128,13 @@ test_ksp_key_ops: test_ksp_key_ops.c \
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_ksp_crypto : SignHash, Decrypt, ExportKey, ImportKey ─────────────
+#
+# KEY_SRC is here for the curve-family predicates KSP_ExportKey uses to send
+# Edwards and Montgomery keys to the raw-point exporter rather than the
+# X9.62 one.
 test_ksp_crypto: test_ksp_crypto.c \
-    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
+    $(CRYPT_SRC) $(KEY_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) \
+    $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
 
 # ── test_oaep_params : P11_MapHashAlg, P11_BuildOaepParams (Phase 2) ──────
@@ -138,7 +143,8 @@ test_oaep_params: test_oaep_params.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
 
 # ── test_ecdh : SecretAgreement, DeriveKey, FreeSecret (Phase 4) ──────────
 test_ecdh: test_ecdh.c \
-    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+    $(CRYPT_SRC) $(KEY_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) \
+    $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
 
 # ── test_eddsa : Ed25519 / Ed448 keygen, sign, export (Phase 5) ───────────

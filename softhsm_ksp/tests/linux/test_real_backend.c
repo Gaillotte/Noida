@@ -1049,7 +1049,135 @@ int main(void)
         ASSERT_OK("User key deleted", ss);
     }
 
-    /* ── Suite 20 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 20 : X25519 key agreement ────────────────────────────────── */
+    TEST_SUITE("X25519");
+
+    {
+        NCRYPT_KEY_HANDLE    hA = 0, hB = 0, hPeer = 0;
+        NCRYPT_SECRET_HANDLE hSecret = 0;
+        BYTE   abPeerBlob[512];
+        DWORD  cbPeerBlob = 0;
+
+        /* X25519 is a standard CNG curve — unlike Ed25519, which CNG names
+         * nowhere — and this provider has offered it since session 4. It
+         * had never met a real token, and did not work against one: it
+         * generated Montgomery keys with the EDWARDS generator and
+         * CKK_EC_EDWARDS. PKCS#11 3.0 gives Montgomery curves their own
+         * pair. This token proves the two are separable — it implements
+         * CKM_EC_MONTGOMERY_KEY_PAIR_GEN and not the Edwards one, which is
+         * exactly the configuration that exposes the confusion. */
+        ASSERT("The token implements the Montgomery generator",
+               P11_HasMechanism(CKM_EC_MONTGOMERY_KEY_PAIR_GEN));
+        ASSERT("and NOT the Edwards one — so the two cannot be conflated",
+               !P11_HasMechanism(CKM_EC_EDWARDS_KEY_PAIR_GEN));
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-x-a", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+            hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-x-b", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hA, ALG_ECDH_X25519,
+                                    L"phase7-x-a", 0, 0);
+        ASSERT_OK("X25519 key A generated on the token", ss);
+        ss = KSP_CreatePersistedKey(hProv, &hB, ALG_ECDH_X25519,
+                                    L"phase7-x-b", 0, 0);
+        ASSERT_OK("X25519 key B generated on the token", ss);
+
+        if (hA && hB) {
+            NCRYPT_KEY_HANDLE    hPeerA  = 0;
+            NCRYPT_SECRET_HANDLE hSecret2 = 0;
+            BYTE   abOwnBlob[512];
+            DWORD  cbOwnBlob = 0;
+            BYTE   abZ1[64], abZ2[64];
+            DWORD  cbZ1 = 0, cbZ2 = 0;
+
+            cbPeerBlob = 0;
+            ss = KSP_ExportKey(hProv, hB, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                               abPeerBlob, sizeof(abPeerBlob), &cbPeerBlob, 0);
+            ASSERT_OK("B's public key exported", ss);
+            ASSERT_EQ("as an 8-byte header plus 32 raw bytes — no X9.62 point",
+                      cbPeerBlob,
+                      (DWORD)(sizeof(BCRYPT_ECCKEY_BLOB) + 32));
+
+            if (ss == ERROR_SUCCESS) {
+                BCRYPT_ECCKEY_BLOB *pB = (BCRYPT_ECCKEY_BLOB *)abPeerBlob;
+                /* The magic is load-bearing: it is the only thing telling
+                 * a 32-byte X25519 key from a 32-byte Ed25519 one. */
+                ASSERT_EQ("carrying the ECDH generic magic",
+                          pB->dwMagic,
+                          (DWORD)BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC);
+                ASSERT_EQ("and cbKey = 32", pB->cbKey, 32U);
+
+                ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                                   &hPeer, abPeerBlob, cbPeerBlob, 0);
+                ASSERT_OK("and imported as a peer", ss);
+            }
+
+            cbOwnBlob = 0;
+            ss = KSP_ExportKey(hProv, hA, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                               abOwnBlob, sizeof(abOwnBlob), &cbOwnBlob, 0);
+            ASSERT_OK("A's public key exported", ss);
+            if (ss == ERROR_SUCCESS) {
+                ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                                   &hPeerA, abOwnBlob, cbOwnBlob, 0);
+                ASSERT_OK("and imported as a peer", ss);
+            }
+
+            if (hPeer) {
+                ss = KSP_SecretAgreement(hProv, hA, hPeer, &hSecret, 0);
+                ASSERT_OK("X25519 agreement A+pub(B) on the token", ss);
+
+                if (ss == ERROR_SUCCESS) {
+                    ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_RAW_SECRET,
+                                       NULL, abZ1, sizeof(abZ1), &cbZ1, 0);
+                    ASSERT_OK("Raw Z derived", ss);
+                    ASSERT_EQ("X25519 shared secret is 32 bytes", cbZ1, 32U);
+                    KSP_FreeSecret(hProv, hSecret);
+                }
+            }
+
+            if (hPeerA) {
+                ss = KSP_SecretAgreement(hProv, hB, hPeerA, &hSecret2, 0);
+                ASSERT_OK("X25519 agreement B+pub(A) on the token", ss);
+
+                if (ss == ERROR_SUCCESS) {
+                    ss = KSP_DeriveKey(hProv, hSecret2, BCRYPT_KDF_RAW_SECRET,
+                                       NULL, abZ2, sizeof(abZ2), &cbZ2, 0);
+                    ASSERT_OK("Raw Z derived from the other side", ss);
+                    KSP_FreeSecret(hProv, hSecret2);
+                }
+            }
+
+            /* The point of a key agreement. A secret that is merely
+             * non-zero proves nothing — both sides must reach the SAME
+             * one, and that is what a wrong curve, a mis-encoded point or
+             * a truncated scalar would break. */
+            ASSERT("Both sides derived the same shared secret",
+                   cbZ1 == 32 && cbZ1 == cbZ2 &&
+                   memcmp(abZ1, abZ2, cbZ1) == 0);
+            {
+                DWORD i; BOOL bZero = TRUE;
+                for (i = 0; i < cbZ1; i++)
+                    if (abZ1[i] != 0) { bZero = FALSE; break; }
+                ASSERT("and it is not all zeroes", !bZero);
+            }
+
+            if (hPeerA) KSP_FreeKey(hProv, hPeerA);
+            if (hPeer)  KSP_FreeKey(hProv, hPeer);
+        }
+
+        if (hB) { ss = KSP_DeleteKey(hProv, hB, 0);
+                  ASSERT_OK("X25519 key B deleted", ss); }
+        if (hA) { ss = KSP_DeleteKey(hProv, hA, 0);
+                  ASSERT_OK("X25519 key A deleted", ss); }
+    }
+
+    /* ── Suite 21 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

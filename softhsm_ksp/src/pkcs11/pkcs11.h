@@ -78,6 +78,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKK_GENERIC_SECRET  0x00000010UL
 #define CKK_AES             0x0000001FUL
 #define CKK_EC_EDWARDS      0x00000040UL
+#define CKK_EC_MONTGOMERY   0x00000041UL
 
 /* Attributs */
 #define CKA_CLASS              0x00000000UL
@@ -158,6 +159,14 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 /* EdDSA (Edwards curves: Ed25519, Ed448) */
 #define CKM_EC_EDWARDS_KEY_PAIR_GEN 0x00001055UL
 #define CKM_EDDSA                 0x00001057UL
+
+/* Montgomery curves (X25519, X448) — a SEPARATE generator and key type.
+ * PKCS#11 3.0 gave Montgomery curves their own pair; they are not a flavour
+ * of Edwards distinguished only by the curve OID. A token may implement one
+ * without the other, and Kryoptic built with ec_montgomery and without eddsa
+ * advertises exactly 0x1056 and no 0x1055. Values from the OASIS header
+ * vendored in the SoftHSM2 submodule. */
+#define CKM_EC_MONTGOMERY_KEY_PAIR_GEN 0x00001056UL
 
 /* CK_MECHANISM_INFO.flags — what a token says a mechanism may be used for.
  * Values copied from the vendored OASIS header, as with everything below. */

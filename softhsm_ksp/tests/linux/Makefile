@@ -34,11 +34,19 @@ KRYOPTIC_DIR ?= $(LINUX_DIR)/.kryoptic
 KRYOPTIC_REF ?= main
 KRYOPTIC_SO  ?= $(KRYOPTIC_DIR)/target/release/libkryoptic_pkcs11.so
 
-# Features OpenSSL 3.0 can satisfy. eddsa needs ossl320 and the PQC
-# mechanisms need ossl350, so both are left out.
-KRYOPTIC_FEATURES = kryoptic-lib/sqlitedb,kryoptic-lib/rsa,\
-kryoptic-lib/ecc_min,kryoptic-lib/hash_all,kryoptic-lib/kdf_all,\
-kryoptic-lib/aes,kryoptic-lib/dynamic
+# Features OpenSSL 3.0 can satisfy.
+#
+# ec_montgomery (X25519) carries no version gate, so it is in — X25519 is
+# implemented and advertised by this provider and had never met a real
+# token. eddsa needs ossl320 and the PQC mechanisms need ossl350, so those
+# wait for the OpenSSL build in steps 2b and 2c.
+#
+# One line on purpose. A backslash continuation inside a make variable
+# becomes a SPACE, and cargo reads the feature list as several arguments and
+# refuses it. That was not caught earlier because the first Kryoptic build
+# was done by hand and its .so copied into place, so `make kryoptic` had
+# never actually run — the CI job would have failed on a cold cache.
+KRYOPTIC_FEATURES = kryoptic-lib/sqlitedb,kryoptic-lib/rsa,kryoptic-lib/ecc_min,kryoptic-lib/ec_montgomery,kryoptic-lib/hash_all,kryoptic-lib/kdf_all,kryoptic-lib/aes,kryoptic-lib/dynamic
 
 TOKEN_DIR   ?= $(LINUX_DIR)/.token
 TOKEN_CONF  := $(TOKEN_DIR)/kryoptic.conf
