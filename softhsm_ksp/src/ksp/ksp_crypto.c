@@ -124,6 +124,39 @@ static SECURITY_STATUS KspBuildAesMechanism(
 }
 
 /* Sign a hash — implements the CNG double-call pattern */
+/* Re-authenticate for a key that carries a per-key PIN (PROP-13).
+ *
+ * PKCS#11's own mechanism: a key marked CKA_ALWAYS_AUTHENTICATE requires
+ * C_Login(CKU_CONTEXT_SPECIFIC) between the operation's Init call and the
+ * operation itself. Called with the operation already initialised, which is
+ * what makes the login context-specific.
+ *
+ * A token that did not need it answers CKR_OPERATION_NOT_INITIALIZED, and
+ * that is tolerated: a caller may set a PIN on a key the token does not
+ * actually mark as always-authenticate, and failing the operation for that
+ * would be worse than ignoring a credential the token did not want. */
+static SECURITY_STATUS KeyContextLogin(KSP_KEY *pKey, CK_SESSION_HANDLE hSession)
+{
+    P11_CONTEXT *pCtx = P11_GetContext();
+    CK_RV        rv;
+
+    if (pKey->szKeyPin[0] == '\0')
+        return ERROR_SUCCESS;
+
+    rv = pCtx->pFunctionList->C_Login(
+        hSession, CKU_CONTEXT_SPECIFIC,
+        (CK_UTF8CHAR_PTR)pKey->szKeyPin,
+        (CK_ULONG)strlen(pKey->szKeyPin));
+
+    if (rv == CKR_OK ||
+        rv == CKR_OPERATION_NOT_INITIALIZED ||
+        rv == CKR_USER_ALREADY_LOGGED_IN)
+        return ERROR_SUCCESS;
+
+    LOG_ERROR("Per-key re-authentication failed", P11RvToSecStatus(rv));
+    return P11RvToSecStatus(rv);
+}
+
 SECURITY_STATUS WINAPI KSP_SignHash(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE  hKey,
@@ -188,6 +221,13 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     if (rv != CKR_OK) {
         P11_ReleaseSession(hSession);
         ss = P11RvToSecStatus(rv);
+        LOG_LEAVE("KSP_SignHash", ss);
+        return ss;
+    }
+
+    ss = KeyContextLogin(pKey, hSession);
+    if (ss != ERROR_SUCCESS) {
+        P11_ReleaseSession(hSession);
         LOG_LEAVE("KSP_SignHash", ss);
         return ss;
     }
@@ -348,6 +388,13 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
     if (rv != CKR_OK) {
         P11_ReleaseSession(hSession);
         ss = P11RvToSecStatus(rv);
+        LOG_LEAVE("KSP_Decrypt", ss);
+        return ss;
+    }
+
+    ss = KeyContextLogin(pKey, hSession);
+    if (ss != ERROR_SUCCESS) {
+        P11_ReleaseSession(hSession);
         LOG_LEAVE("KSP_Decrypt", ss);
         return ss;
     }

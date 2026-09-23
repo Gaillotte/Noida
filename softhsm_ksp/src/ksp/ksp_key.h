@@ -32,6 +32,14 @@ typedef struct _KSP_KEY {
     DWORD            cbIV;                      /* IV length actually set */
     BYTE             pbAuthData[MAX_AUTH_DATA_LEN]; /* GCM additional authenticated data */
     DWORD            cbAuthData;                /* AAD length actually set */
+
+    /* Per-key PIN (NCRYPT_PIN_PROPERTY on a key handle).
+     *
+     * Empty unless the caller set one. When set, every operation with this
+     * key re-authenticates through C_Login(CKU_CONTEXT_SPECIFIC), which is
+     * PKCS#11's own per-key mechanism for a key marked
+     * CKA_ALWAYS_AUTHENTICATE. Zeroed in KSP_FreeKey. */
+    char             szKeyPin[P11_MAX_PIN_LEN + 1];
 } KSP_KEY;
 
 /* Agreed-secret handle produced by KSP_SecretAgreement (ECDH).

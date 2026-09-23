@@ -161,7 +161,20 @@ static CK_RV mock_SetOperationState(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
 
 static CK_RV mock_Login(CK_SESSION_HANDLE h, CK_USER_TYPE t,
                          CK_UTF8CHAR_PTR pin, CK_ULONG n) {
-    (void)h; (void)t; (void)pin; (void)n;
+    (void)h;
+    /* CKU_CONTEXT_SPECIFIC is per-key re-authentication and is counted
+     * separately: a test asserting "the key's PIN was replayed" must not be
+     * satisfied by the ordinary session login. */
+    if (t == CKU_CONTEXT_SPECIFIC) {
+        g_calls.nContextLogin++;
+        g_cfg.cbLastContextPin = 0;
+        if (pin && n < sizeof(g_cfg.lastContextPin)) {
+            memcpy(g_cfg.lastContextPin, pin, n);
+            g_cfg.lastContextPin[n] = '\0';
+            g_cfg.cbLastContextPin = n;
+        }
+        return g_cfg.rv_ContextLogin;
+    }
     g_calls.nLogin++;
     return g_cfg.rv_Login;
 }
@@ -720,6 +733,48 @@ static CK_FUNCTION_LIST g_fnList = {
     mock_GetFunctionStatus, mock_CancelFunction, mock_WaitForSlotEvent
 };
 
+/* ── Module loading ──────────────────────────────────────────────────────
+ *
+ * p11_context.c reaches the token through LoadLibrary + GetProcAddress.
+ * Driving those from here is what lets a test exercise the failure path and
+ * the recovery from it; while they were inline stubs in windows_compat.h
+ * that always returned NULL, p11_context.c could not be tested at all.
+ *
+ * bModuleLoads is FALSE by default, so a suite that does not care keeps the
+ * old behaviour: no module, initialisation fails. */
+static CK_RV mock_C_GetFunctionList_entry(CK_FUNCTION_LIST_PTR CK_PTR pp)
+{
+    if (!pp) return CKR_ARGUMENTS_BAD;
+    *pp = &g_fnList;
+    return CKR_OK;
+}
+
+HMODULE LoadLibraryW(const wchar_t *path)
+{
+    (void)path;
+    g_calls.nLoadLibrary++;
+    if (!g_cfg.bModuleLoads) return NULL;
+    /* Any non-NULL value; the provider only ever passes it back to us. */
+    return (HMODULE)(ULONG_PTR)0xD11;
+}
+
+void *GetProcAddress(HMODULE m, const char *n)
+{
+    (void)m;
+    g_calls.nGetProcAddress++;
+    if (!g_cfg.bModuleLoads || g_cfg.bNoGetFunctionList) return NULL;
+    if (n && strcmp(n, "C_GetFunctionList") == 0)
+        return (void *)mock_C_GetFunctionList_entry;
+    return NULL;
+}
+
+int FreeLibrary(HMODULE m)
+{
+    (void)m;
+    g_calls.nFreeLibrary++;
+    return 1;
+}
+
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
 void P11Mock_ResetCalls(void)
@@ -790,6 +845,7 @@ void P11Mock_Reset(void)
     g_cfg.rv_GetMechanismInfo  = CKR_OK;
     g_cfg.rv_WrapKey           = CKR_OK;
     g_cfg.rv_UnwrapKey         = CKR_OK;
+    g_cfg.rv_ContextLogin      = CKR_OK;
     g_cfg.cbWrapped            = 40;   /* 32-byte AES key + RFC 3394 overhead */
 
     /* Default token: SoftHSM2 2.7.0 as this provider sees it — every

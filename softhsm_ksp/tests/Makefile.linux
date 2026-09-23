@@ -45,7 +45,9 @@ TESTS = \
     test_aes_keys \
     test_mldsa \
     test_certificate \
-    test_keywrap
+    test_keywrap \
+    test_p11_context \
+    test_key_pin
 
 .PHONY: all clean run coverage syntax-check
 
@@ -165,6 +167,18 @@ test_certificate: test_certificate.c \
 # ── test_keywrap : AES key wrap / unwrap (AES-09) ─────────────────────────
 test_keywrap: test_keywrap.c \
     $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_p11_context : module load, init retry, slot selection (OPS-08) ───
+test_p11_context: test_p11_context.c \
+    $(SRC)/pkcs11/p11_context.c $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_key_pin : per-key PIN via CKU_CONTEXT_SPECIFIC (PROP-13) ─────────
+test_key_pin: test_key_pin.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROP_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) \
     $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
 

@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         17 test suites · 1289 assertions · gcov coverage         │
+   │         21 test suites · 1434 assertions · gcov coverage         │
    │         Lines: 88.9 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -89,7 +89,11 @@ make syntax-check # parses the Windows-only integration test
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
 | AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
 | Capability probe and ML-DSA | `test_mldsa.c` | 102 | `P11_ProbeCapabilities` against tokens that vary by mechanism list and Cryptoki version; `EnumAlgorithms` / `IsAlgSupported` tracking the token; ML-DSA parameter sets, mechanism resolution, gated key generation, refused export; ML-KEM recognised and deliberately not offered |
-| **Total** | | **1289** | |
+| Certificate property | `test_certificate.c` | 41 | `KSP_StoreCertificate` / `KSP_LoadCertificate`, the CKO_CERTIFICATE object's class, type and scoped label, replacement on re-enrolment, and the property dispatch |
+| AES key wrap | `test_keywrap.c` | 40 | `C_WrapKey` / `C_UnwrapKey` through `BCRYPT_AES_WRAP_KEY_BLOB`, both calls of the two-call convention, the non-extractable refusal, and capability gating |
+| PKCS#11 context | `test_p11_context.c` | 26 | Module load failure and recovery without a restart, C_Initialize failure modes, slot selection, and the capability probe running as part of initialisation |
+| Per-key PIN | `test_key_pin.c` | 25 | `CKU_CONTEXT_SPECIFIC` re-authentication on sign and decrypt, replay per operation, token responses, and refusal to read the credential back |
+| **Total** | | **1434** | |
 
 Counts above are the assertions each suite reports, read back from a full
 `make run`. The earlier figures (10 suites / 281 assertions) predate the

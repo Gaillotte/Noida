@@ -326,6 +326,10 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 /* User types */
 #define CKU_SO   0UL
 #define CKU_USER 1UL
+/* Re-authentication for a key carrying CKA_ALWAYS_AUTHENTICATE. This is
+ * PKCS#11's own per-key authentication, and the only correct basis for a
+ * per-key PIN — there is no notion of a second user within a slot. */
+#define CKU_CONTEXT_SPECIFIC 2UL
 
 /* Initialisation flags */
 #define CKF_TOKEN_PRESENT    0x00000001UL

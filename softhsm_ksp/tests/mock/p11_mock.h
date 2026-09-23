@@ -6,6 +6,7 @@
 
 #include "windows_compat.h"
 #include "../../src/pkcs11/pkcs11.h"
+#include "../../src/common/config.h"
 
 /* Room for a mechanism list larger than P11_MAX_MECHANISMS would allow, so
  * a test can present a token that overflows the provider's own bound. */
@@ -38,6 +39,17 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_GetMechanismInfo;
     CK_RV rv_WrapKey;
     CK_RV rv_UnwrapKey;
+    /* C_Login(CKU_CONTEXT_SPECIFIC) — per-key re-authentication. */
+    CK_RV rv_ContextLogin;
+    char     lastContextPin[P11_MAX_PIN_LEN + 1];
+    CK_ULONG cbLastContextPin;
+
+    /* Module loading, for p11_context.c. FALSE by default: LoadLibraryW
+     * fails, which is what these stubs always did before they became
+     * controllable. */
+    BOOL  bModuleLoads;
+    /* A module that loads but exports no C_GetFunctionList. */
+    BOOL  bNoGetFunctionList;
 
     /* AES key wrap. cbWrapped is the length C_WrapKey reports and fills. */
     CK_ULONG          cbWrapped;
@@ -192,6 +204,10 @@ typedef struct _P11_MOCK_CALLS {
     int nGetMechanismInfo;
     int nWrapKey;
     int nUnwrapKey;
+    int nContextLogin;
+    int nLoadLibrary;
+    int nGetProcAddress;
+    int nFreeLibrary;
 } P11_MOCK_CALLS;
 
 /* Reset mock configuration (all CKR_OK, default behaviour) */

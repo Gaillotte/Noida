@@ -331,9 +331,13 @@ static inline int InitOnceExecuteOnce(INIT_ONCE *o, PINIT_ONCE_FN fn,
 /* ── HMODULE (mock) ─────────────────────────────────────────────────────── */
 typedef void* HMODULE;
 typedef void* HINSTANCE;
-static inline HMODULE LoadLibraryW(const wchar_t *path) { (void)path; return NULL; }
-static inline void *GetProcAddress(HMODULE m, const char *n) { (void)m; (void)n; return NULL; }
-static inline int FreeLibrary(HMODULE m) { (void)m; return 1; }
+/* Module loading is defined in p11_mock.c rather than inlined here, so a
+ * test can decide whether the load succeeds. These used to be inline stubs
+ * that always failed, which meant p11_context.c could not be exercised at
+ * all and had no unit coverage. */
+HMODULE LoadLibraryW(const wchar_t *path);
+void   *GetProcAddress(HMODULE m, const char *n);
+int     FreeLibrary(HMODULE m);
 static inline DWORD GetLastError(void) { return 0; }
 static inline int DisableThreadLibraryCalls(HINSTANCE h) { (void)h; return 1; }
 

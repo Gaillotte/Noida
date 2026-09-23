@@ -5,7 +5,7 @@ Key Storage Providers surveyed in
 [11 — CNG KSP market comparison](./11-market-comparison.md), and in what
 order the work has to happen.
 
-*Written: September 2026. **Phases 0, 1, 2 and 4 are done**; Phase 3 is
+*Written: September 2026. **Phases 0, 1, 2, 4 and 5 are done**; Phase 3 is
 tooled as far as it can be here — see §3 for what each changed and what it
 could not settle. Complements the gap analysis
 in [`feature-matrix.csv`](./feature-matrix.csv) and
@@ -21,8 +21,8 @@ Everything else in this document is downstream of that. Phase 0 has since
 fixed all six root causes: nine of the ten source files now cross-compile
 clean, and CI enforces it. The tenth, `ksp_main.c`, needs a header that
 only Windows has — the CI `windows` job is what will confirm it. The feature
-matrix now records 61 of 101 capabilities as covered, and 1289 unit
-assertions pass at 89.0 % line coverage — but all of it is measured on
+matrix now records 65 of 101 capabilities as covered, and 1434 unit
+assertions pass at 88.5 % line coverage — but all of it is measured on
 Linux, against a hand-written stand-in for the Windows headers. On the
 platform the product actually targets, nothing has been demonstrated to
 work at all.
@@ -499,7 +499,7 @@ are work this repository can do.
 | D — blocked on something not obtainable here | 6 | A Windows SDK header, a machine, or a certificate |
 | E — should stay open on purpose | 15 | A decision, already taken |
 
-### Phase 5 — The five that are simply work
+### Phase 5 — The five that are simply work ✅ done
 
 Every one of these was re-checked against the real headers before being
 listed, because the feature matrix had two of them mis-graded.
@@ -512,10 +512,43 @@ listed, because the feature matrix had two of them mis-graded.
 | **OPS-08** Re-initialisation without restart | `InitOnceExecuteOnce` is one-shot per process *even on failure*, so one bad module path poisons the provider until the host restarts | Needs a resettable guard and care around in-flight sessions |
 | **PROP-13** Per-key PIN | Provider-wide PIN works; per-key needs a per-handle credential cache and re-login per operation | Smallest value of the five; listed for completeness |
 
-All five are testable on Linux against the mock, and three of them extend
-the standard CNG surface rather than this provider's private one — which is
-the criticism finding 2 of the market comparison has levelled since the
-first audit.
+All five are done. Three extend the standard CNG surface rather than this
+provider's private one, which is the criticism finding 2 of the market
+comparison has levelled since the first audit.
+
+**What the phase actually turned up.** `PROP-13` looked like the weakest
+item on the list and was the most interesting: a "per-key PIN" is a
+smart-card idea and PKCS#11 has no second user within a slot to hang it on.
+What it does have is `CKA_ALWAYS_AUTHENTICATE` and
+`C_Login(CKU_CONTEXT_SPECIFIC)`, which SoftHSM2 implements — verified in the
+submodule rather than assumed from the constants appearing in a header. That
+is a real per-key mechanism, so the credential is replayed on every
+operation rather than cached as a one-time unlock.
+
+`AES-09` split in two. Unwrap works on any token and is the migration path;
+wrap works only for a key the TOKEN considers extractable, which this
+provider never creates. The matrix records it Partial for that reason — a
+consequence of the non-extractable posture, not an omission.
+
+`OPS-08` came with a bonus: `p11_context.c` had no unit tests at all and
+could not have had any, because the `LoadLibrary` stand-in in
+`windows_compat.h` was an inline stub that always failed. Making it
+controllable gave the module that loads the backend, initialises Cryptoki
+and selects the slot its first coverage — 75 % of it, from nothing.
+
+Two defects were found in the test build rather than the product, and both
+were of the kind this project keeps paying for. The Makefile listed only
+`.c` files as prerequisites, so editing a header rebuilt nothing: a mock
+buffer was enlarged, the suite re-run, and it failed identically against a
+binary that had not been recompiled. And a key-wrap assertion checked only
+that two handles differed, so swapping them passed; strengthening it
+revealed it examined only the second of two `C_WrapKey` calls, leaving the
+size query unchecked.
+
+Unit tests 1289 → **1434 assertions** across 17 → **21 suites**. Line
+coverage reads 89.0 % → **88.5 %**, which is a fall on paper and a rise in
+fact: `p11_context.c` entered the measurement for the first time carrying
+106 previously uncounted lines.
 
 ### Phase 6 — The three that phase 4 quietly unblocked
 

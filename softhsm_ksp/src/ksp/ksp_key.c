@@ -898,7 +898,9 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
         ss = GenerateForAlg(pKey);
 
         if (ss != ERROR_SUCCESS) {
-            KSP_Free(pKey);
+            /* The per-key PIN is the only secret this structure holds. */
+    SecureZeroMemory(pKey->szKeyPin, sizeof(pKey->szKeyPin));
+    KSP_Free(pKey);
             LOG_LEAVE("KSP_CreatePersistedKey", ss);
             return ss;
         }

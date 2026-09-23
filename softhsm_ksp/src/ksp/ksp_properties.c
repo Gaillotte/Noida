@@ -193,6 +193,11 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
             }
         }
 
+    } else if (_wcsicmp(pszProperty, NCRYPT_PIN_PROPERTY) == 0) {
+        /* Never hand a credential back. A caller that set it has it; a
+         * caller that did not has no business reading it. */
+        ss = NTE_NOT_SUPPORTED;
+
     } else if (_wcsicmp(pszProperty, NCRYPT_CERTIFICATE_PROPERTY) == 0) {
         /* The certificate issued for this key, as stored by
          * NCryptSetProperty after enrolment. NTE_NOT_FOUND means the key
@@ -382,6 +387,54 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
             memcpy(pKey->pbAuthData, pbInput, cbInput);
             pKey->cbAuthData = cbInput;
             ss = ERROR_SUCCESS;
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_PIN_PROPERTY) == 0) {
+        /* Per-key PIN (PROP-13).
+         *
+         * PKCS#11 has no second user within a slot, so this is not a login
+         * as a different identity. It is CKA_ALWAYS_AUTHENTICATE: a key can
+         * require re-authentication before each private-key operation, and
+         * C_Login(CKU_CONTEXT_SPECIFIC) supplies it. The credential is kept
+         * on the key handle and replayed by KSP_SignHash and KSP_Decrypt.
+         *
+         * Setting it on the PROVIDER handle remains the way to supply the
+         * token's user PIN; the two are different things and both exist. */
+        WCHAR wszPin[P11_MAX_PIN_LEN + 1];
+        DWORD cchPin;
+        int   cb;
+
+        if (!pbInput) {
+            /* An explicit clear. */
+            SecureZeroMemory(pKey->szKeyPin, sizeof(pKey->szKeyPin));
+            ss = ERROR_SUCCESS;
+        } else {
+            cchPin = cbInput / sizeof(WCHAR);
+            if (cchPin == 0 || cchPin > P11_MAX_PIN_LEN) {
+                ss = NTE_INVALID_PARAMETER;
+            } else {
+                memcpy(wszPin, pbInput, cchPin * sizeof(WCHAR));
+                wszPin[cchPin] = L'\0';
+                cchPin = (DWORD)wcslen(wszPin);
+
+                if (cchPin == 0) {
+                    ss = NTE_INVALID_PARAMETER;
+                } else {
+                    cb = WideCharToMultiByte(CP_UTF8, 0, wszPin, (int)cchPin,
+                                             pKey->szKeyPin,
+                                             sizeof(pKey->szKeyPin) - 1,
+                                             NULL, NULL);
+                    if (cb <= 0) {
+                        SecureZeroMemory(pKey->szKeyPin,
+                                         sizeof(pKey->szKeyPin));
+                        ss = NTE_INVALID_PARAMETER;
+                    } else {
+                        pKey->szKeyPin[cb] = '\0';
+                        ss = ERROR_SUCCESS;
+                    }
+                }
+            }
+            SecureZeroMemory(wszPin, sizeof(wszPin));
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_CERTIFICATE_PROPERTY) == 0) {

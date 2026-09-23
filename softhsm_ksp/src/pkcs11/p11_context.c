@@ -7,10 +7,34 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Singleton protected by InitOnceExecuteOnce */
+/* Singleton, guarded so that a FAILED initialisation can be retried.
+ *
+ * This used to be a bare InitOnceExecuteOnce, which runs its callback
+ * exactly once per process whether it succeeded or not. One bad module path
+ * therefore poisoned the provider for the lifetime of the host: correcting
+ * KSP_PKCS11_LIB changed nothing, because the callback would never run
+ * again, and the only cure was restarting the application. For a service
+ * that loads this DLL that meant a restart of the service.
+ *
+ * A critical section replaces it. A successful initialisation is still
+ * one-shot — C_Initialize must not be called twice — but a failed one
+ * leaves the context in its not-initialised state and the next caller tries
+ * again. The retry costs a LoadLibrary on the failure path only.
+ *
+ * INIT_ONCE is still used, for the one thing that genuinely cannot fail:
+ * creating the critical section itself, which Windows gives no static
+ * initialiser for. */
 static P11_CONTEXT  g_ctx;
-static INIT_ONCE    g_initOnce = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION g_initLock;
+static INIT_ONCE    g_lockOnce = INIT_ONCE_STATIC_INIT;
 static SECURITY_STATUS g_initStatus = NTE_PROVIDER_DLL_FAIL;
+
+static BOOL CALLBACK CreateInitLock(PINIT_ONCE p1, PVOID p2, PVOID *p3)
+{
+    (void)p1; (void)p2; (void)p3;
+    InitializeCriticalSection(&g_initLock);
+    return TRUE;
+}
 
 /* Load the PKCS#11 module and retrieve its function list.
  *
@@ -139,24 +163,17 @@ static BOOL SelectSlot(P11_CONTEXT *pCtx)
     return TRUE;
 }
 
-/* Callback for InitOnceExecuteOnce */
-static BOOL CALLBACK InitOnceCallback(
-    PINIT_ONCE  pInitOnce,
-    PVOID       pParameter,
-    PVOID      *ppContext)
+/* One initialisation attempt. Caller holds g_initLock. */
+static void TryInitialize(void)
 {
     CK_C_INITIALIZE_ARGS initArgs;
     CK_RV rv;
-
-    (void)pInitOnce;
-    (void)pParameter;
-    (void)ppContext;
 
     memset(&g_ctx, 0, sizeof(g_ctx));
 
     if (!LoadP11Module(&g_ctx)) {
         g_initStatus = NTE_PROVIDER_DLL_FAIL;
-        return TRUE;
+        return;
     }
 
     /* Initialise Cryptoki with OS locking */
@@ -169,7 +186,7 @@ static BOOL CALLBACK InitOnceCallback(
         FreeLibrary(g_ctx.hModule);
         g_ctx.hModule = NULL;
         g_initStatus  = P11RvToSecStatus(rv);
-        return TRUE;
+        return;
     }
 
     if (!SelectSlot(&g_ctx)) {
@@ -177,7 +194,7 @@ static BOOL CALLBACK InitOnceCallback(
         FreeLibrary(g_ctx.hModule);
         g_ctx.hModule = NULL;
         g_initStatus  = NTE_NO_KEY;
-        return TRUE;
+        return;
     }
 
     g_ctx.bInitialized = TRUE;
@@ -190,20 +207,36 @@ static BOOL CALLBACK InitOnceCallback(
 
     g_initStatus = ERROR_SUCCESS;
     LOG_INFO("P11_Initialize: success, slot=%lu", (unsigned long)g_ctx.slotId);
-    return TRUE;
 }
 
-/* Initialise the PKCS#11 context (thread-safe, idempotent) */
+/* Initialise the PKCS#11 context (thread-safe, idempotent on success).
+ *
+ * Idempotent once it has succeeded; retried while it has not. See the note
+ * on the guard above for why that distinction exists. */
 SECURITY_STATUS P11_Initialize(void)
 {
-    InitOnceExecuteOnce(&g_initOnce, InitOnceCallback, NULL, NULL);
-    return g_initStatus;
+    SECURITY_STATUS ss;
+
+    InitOnceExecuteOnce(&g_lockOnce, CreateInitLock, NULL, NULL);
+
+    EnterCriticalSection(&g_initLock);
+    if (g_initStatus != ERROR_SUCCESS)
+        TryInitialize();
+    ss = g_initStatus;
+    LeaveCriticalSection(&g_initLock);
+
+    return ss;
 }
 
 /* Free the PKCS#11 context */
 void P11_Finalize(void)
 {
     P11_ReleaseCapabilities();
+
+    /* Return to the not-initialised state so a later P11_Initialize starts
+     * over. Finalising while another thread holds a session is unsafe and
+     * always has been — this is called from DllMain on process detach. */
+    g_initStatus = NTE_PROVIDER_DLL_FAIL;
 
     if (g_ctx.bInitialized && g_ctx.pFunctionList) {
         g_ctx.pFunctionList->C_Finalize(NULL);
