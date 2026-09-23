@@ -486,7 +486,11 @@ static CK_RV mock_DigestFinal(CK_SESSION_HANDLE h, CK_BYTE_PTR dg,
 
 static CK_RV mock_SignInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                             CK_OBJECT_HANDLE k) {
-    (void)h; (void)k;
+    (void)h;
+    /* Which object was handed to the token. The provider used to pass the
+     * private-key handle unconditionally, so a symmetric key could never
+     * sign; nothing noticed, because this argument was discarded here. */
+    g_cfg.lastSignKey = k;
     g_calls.nSignInit++;
     if (m) {
         g_cfg.lastSignMech = m->mechanism;
@@ -594,6 +598,16 @@ static CK_RV mock_GenerateKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     g_calls.nGenerateKey++;
     capture_label(t, n);
     if (m) g_cfg.lastGenerateMech = m->mechanism;
+    /* Record the usage flags asked for, so a test can assert that an AES
+     * key is created able to wrap. Without CKA_WRAP a conformant token
+     * refuses C_WrapKey with CKR_KEY_FUNCTION_NOT_PERMITTED. */
+    g_cfg.lastGenWrap = 0xFF;
+    {
+        CK_ULONG i;
+        for (i = 0; t && i < n; i++)
+            if (t[i].type == CKA_WRAP && t[i].pValue)
+                g_cfg.lastGenWrap = *(CK_BBOOL *)t[i].pValue;
+    }
     if (g_cfg.rv_GenerateKey != CKR_OK) return g_cfg.rv_GenerateKey;
     /* Distinct handles per key. Handing every generated key the same
      * object handle made two different keys indistinguishable, so a test

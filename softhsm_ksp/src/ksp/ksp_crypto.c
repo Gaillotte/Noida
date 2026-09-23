@@ -241,6 +241,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     BYTE                 *pbRawSig  = NULL;
     CK_ULONG              cbRawSig  = 0;
     BOOL                  bEcdsa;
+    CK_OBJECT_HANDLE      hSigningKey;
 
     LOG_ENTER("KSP_SignHash");
 
@@ -253,7 +254,21 @@ SECURITY_STATUS WINAPI KSP_SignHash(
 
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
-    if (!pKey->bFinalized || pKey->hPrivKey == CK_INVALID_HANDLE) {
+    /* Which object signs depends on the key class, and this used to assume
+     * asymmetric unconditionally.
+     *
+     * An HMAC or CMAC key lives in hSecretKey and has no hPrivKey at all,
+     * so the guard below rejected it outright — meaning HMAC signing, which
+     * this provider has advertised since the mechanism work in session 4,
+     * had never worked, and AES-CMAC was born broken in phase 5. No test
+     * caught it: the unit suites check that HMAC resolves to the right
+     * mechanism and never call KSP_SignHash with an HMAC key, so the gap
+     * was not merely hidden by the mock — it was never covered at all.
+     * Running against a real token is what surfaced it. */
+    hSigningKey = (pKey->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC)
+                  ? pKey->hSecretKey : pKey->hPrivKey;
+
+    if (!pKey->bFinalized || hSigningKey == CK_INVALID_HANDLE) {
         LOG_LEAVE("KSP_SignHash", NTE_INVALID_HANDLE);
         return NTE_INVALID_HANDLE;
     }
@@ -293,7 +308,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         return ss;
     }
 
-    rv = pCtx->pFunctionList->C_SignInit(hSession, &mech, pKey->hPrivKey);
+    rv = pCtx->pFunctionList->C_SignInit(hSession, &mech, hSigningKey);
     if (rv != CKR_OK) {
         P11_ReleaseSession(hSession);
         ss = P11RvToSecStatus(rv);

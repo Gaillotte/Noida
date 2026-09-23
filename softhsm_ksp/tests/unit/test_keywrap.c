@@ -159,6 +159,26 @@ int main(void)
     ASSERT_EQ("and the needed size is reported", cbResult,
         (DWORD)P11Mock_GetConfig()->cbWrapped);
 
+    /* ── Suite 1b : the KEK must be allowed to wrap ─────────────────────── */
+    TEST_SUITE("AES keys are created able to wrap");
+
+    {
+        /* CNG has no separate notion of a key-encryption key: whatever the
+         * caller passes as hExportKey is used as one. An AES key created
+         * without CKA_WRAP therefore cannot serve, and a conformant token
+         * says so — Kryoptic answers CKR_KEY_FUNCTION_NOT_PERMITTED, while
+         * SoftHSM2 does not enforce usage flags at all. AES-09 was
+         * non-functional on any strict token until this was added. */
+        NCRYPT_KEY_HANDLE hFresh = 0;
+
+        P11Mock_ResetCalls();
+        hFresh = MakeAesKey(hProv, L"wrap-rights");
+        ASSERT("AES key created", hFresh != 0);
+        ASSERT_EQ("created with CKA_WRAP set",
+            (DWORD)P11Mock_GetConfig()->lastGenWrap, (DWORD)CK_TRUE);
+        KSP_FreeKey(hProv, hFresh);
+    }
+
     /* ── Suite 2 : the wrapping key must be one ─────────────────────────── */
     TEST_SUITE("Wrapping key validation");
 

@@ -616,9 +616,23 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
     {
         /* AES keys encrypt/decrypt; HMAC and CMAC keys sign/verify. A CMAC
          * key marked for encryption would let the same key be used as a
-         * cipher key, which is exactly the key reuse CMAC assumes away. */
+         * cipher key, which is exactly the key reuse CMAC assumes away.
+         *
+         * AES keys are also marked for wrapping, because CNG has no
+         * separate notion of a key-encryption key: whatever the caller
+         * passes as hExportKey is used as one. Without CKA_WRAP a
+         * conformant token refuses with CKR_KEY_FUNCTION_NOT_PERMITTED —
+         * Kryoptic does, SoftHSM2 does not — which made the whole of
+         * AES-09 non-functional on any token that enforces usage flags.
+         *
+         * The capability is narrower than it looks: a wrapping key can only
+         * extract a key the token marks CKA_EXTRACTABLE, and this provider
+         * never creates one. It reaches only keys that arrived from
+         * elsewhere already extractable, which is exactly the migration
+         * case key wrap exists for. MAC keys get no wrapping rights. */
         CK_BBOOL bCipher = bAes ? CK_TRUE : CK_FALSE;
         CK_BBOOL bMac    = bAes ? CK_FALSE : CK_TRUE;
+        CK_BBOOL bWrap   = bAes ? CK_TRUE : CK_FALSE;
 
         CK_ATTRIBUTE aTemplate[] = {
             { CKA_CLASS,       &classSecret, sizeof(classSecret) },
@@ -632,6 +646,8 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
             { CKA_DECRYPT,     &bCipher,     sizeof(bCipher)     },
             { CKA_SIGN,        &bMac,        sizeof(bMac)        },
             { CKA_VERIFY,      &bMac,        sizeof(bMac)        },
+            { CKA_WRAP,        &bWrap,       sizeof(bWrap)       },
+            { CKA_UNWRAP,      &bWrap,       sizeof(bWrap)       },
         };
 
         ss = P11_AcquireSession(&hSession);

@@ -677,6 +677,47 @@ What passed first time is worth recording too: ECDH agreement, the raw-secret
 / hash / HKDF derivations, and AES-CBC round-trip encryption all worked
 against an unfamiliar token without changes.
 
+#### Step 1c ✅ done — finish the sweep, and find two more
+
+80 assertions had found three defects. The untouched surface was the phase-5
+work — key wrap, CMAC, the per-key PIN — plus HMAC, which had been
+advertised since session 4. **108 assertions now, and two more defects,
+both in that untouched surface.**
+
+**Four: a symmetric key could never sign.** `KSP_SignHash` passed
+`pKey->hPrivKey` to `C_SignInit` unconditionally, and rejected outright any
+key whose `hPrivKey` was invalid. An HMAC or CMAC key has no private key —
+it lives in `hSecretKey` — so **HMAC signing had never worked at all**,
+despite being advertised since the mechanism work in session 4, and AES-CMAC
+was born broken in phase 5.
+
+This one was not hidden by the mock. It was never covered: the unit suites
+checked that HMAC resolved to the right mechanism and never once called
+`KSP_SignHash` with an HMAC key. The mock would have passed either way,
+because it discarded the object handle argument. A real token cannot.
+
+**Five: AES keys were created without the right to wrap.** PKCS#11 gates
+`C_WrapKey` on `CKA_WRAP`, and this provider set neither `CKA_WRAP` nor
+`CKA_UNWRAP` on the AES keys it creates. Kryoptic answers
+`CKR_KEY_FUNCTION_NOT_PERMITTED`; SoftHSM2 does not enforce usage flags at
+all. So AES-09 — shipped in phase 5 with 40 mock assertions behind it — was
+non-functional on any token that checks.
+
+CNG has no separate notion of a key-encryption key: whatever the caller
+passes as `hExportKey` is used as one, so AES keys now carry both rights.
+The capability is narrower than it sounds — a wrapping key can only extract
+a key the token marks `CKA_EXTRACTABLE`, and this provider never creates
+one. MAC keys get no wrapping rights.
+
+What passed first time: RSA and ECDSA signing, public key export, ECDH and
+the KDFs, AES-CBC round trip, the certificate property, the per-key PIN's
+tolerance path.
+
+**Five defects, from one suite, in code that 1434 mock assertions called
+healthy.** Three of the five are in phase-5 features that were days old.
+The lesson is not that the unit suites are bad — they catch regressions well
+— but that a mock can only confirm the provider agrees with its author.
+
 The suite runs in CI as the `second-backend` job.
 
 ### Group D — real, and not reachable from this repository

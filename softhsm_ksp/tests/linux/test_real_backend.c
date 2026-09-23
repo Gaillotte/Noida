@@ -459,7 +459,239 @@ int main(void)
         ASSERT_OK("Key deleted", ss);
     }
 
-    /* ── Suite 11 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 11 : AES-CMAC (AES-10, phase 5) ──────────────────────────── */
+    TEST_SUITE("AES-CMAC");
+
+    {
+        NCRYPT_KEY_HANDLE hCmac = 0;
+        BYTE  abData[32];
+        BYTE  abMac[64];
+        DWORD cbMac = 0;
+
+        memset(abData, 0x4D, sizeof(abData));
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-cmac", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ASSERT("The token implements CKM_AES_CMAC",
+               P11_HasMechanism(CKM_AES_CMAC));
+
+        ss = KSP_CreatePersistedKey(hProv, &hCmac, BCRYPT_AES_CMAC_ALGORITHM,
+                                    L"phase7-cmac", 0, 0);
+        ASSERT_OK("CMAC key generated on the token", ss);
+
+        cbMac = 0;
+        ss = KSP_SignHash(hProv, hCmac, NULL, abData, sizeof(abData),
+                          NULL, 0, &cbMac, 0);
+        ASSERT_OK("MAC size query", ss);
+        ASSERT_EQ("CMAC is one AES block", cbMac, (DWORD)AES_BLOCK_SIZE);
+
+        memset(abMac, 0, sizeof(abMac));
+        cbMac = 0;
+        ss = KSP_SignHash(hProv, hCmac, NULL, abData, sizeof(abData),
+                          abMac, sizeof(abMac), &cbMac, 0);
+        ASSERT_OK("MAC produced by the token", ss);
+        ASSERT_EQ("16 bytes returned", cbMac, (DWORD)AES_BLOCK_SIZE);
+
+        {
+            BOOL bZero = TRUE;
+            DWORD i;
+            for (i = 0; i < cbMac; i++)
+                if (abMac[i] != 0) { bZero = FALSE; break; }
+            ASSERT("and it is not all zeroes", !bZero);
+        }
+
+        ss = KSP_DeleteKey(hProv, hCmac, 0);
+        ASSERT_OK("CMAC key deleted", ss);
+    }
+
+    /* ── Suite 12 : HMAC ────────────────────────────────────────────────── */
+    TEST_SUITE("HMAC");
+
+    {
+        NCRYPT_KEY_HANDLE hMac = 0;
+        BYTE  abData[32];
+        BYTE  abMac[128];
+        DWORD cbMac = 0;
+
+        memset(abData, 0x68, sizeof(abData));
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-hmac", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hMac, ALG_HMAC_SHA256,
+                                    L"phase7-hmac", 0, 0);
+        ASSERT_OK("HMAC-SHA256 key generated on the token", ss);
+
+        cbMac = 0;
+        ss = KSP_SignHash(hProv, hMac, NULL, abData, sizeof(abData),
+                          abMac, sizeof(abMac), &cbMac, 0);
+        ASSERT_OK("HMAC produced by the token", ss);
+        ASSERT_EQ("SHA-256 HMAC is 32 bytes", cbMac, 32U);
+
+        ss = KSP_DeleteKey(hProv, hMac, 0);
+        ASSERT_OK("HMAC key deleted", ss);
+    }
+
+    /* ── Suite 13 : AES key wrap (AES-09, phase 5) ──────────────────────── */
+    TEST_SUITE("AES key wrap");
+
+    {
+        NCRYPT_KEY_HANDLE hKek = 0;
+        NCRYPT_KEY_HANDLE hTarget = 0;
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-kek", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+            hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-wrapped", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ASSERT("The token implements CKM_AES_KEY_WRAP",
+               P11_HasMechanism(CKM_AES_KEY_WRAP));
+
+        ss = KSP_CreatePersistedKey(hProv, &hKek, ALG_AES, L"phase7-kek", 0, 0);
+        ASSERT_OK("Key-encryption key generated", ss);
+        ss = KSP_CreatePersistedKey(hProv, &hTarget, ALG_AES,
+                                    L"phase7-wrapped", 0, 0);
+        ASSERT_OK("Target key generated", ss);
+
+        /* Wrapping a key this provider created must fail, and the token is
+         * what refuses it: every key here is CKA_EXTRACTABLE=FALSE. This is
+         * the posture working, not a defect. */
+        {
+            BYTE  abWrapped[128];
+            DWORD cbWrapped = 0;
+
+            ss = KSP_ExportKey(hProv, hTarget, hKek, BCRYPT_AES_WRAP_KEY_BLOB,
+                               NULL, abWrapped, sizeof(abWrapped),
+                               &cbWrapped, 0);
+            ASSERT_EQ("Wrapping a non-extractable key → NTE_NOT_SUPPORTED",
+                      ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        }
+
+        /* Unwrap is the direction that works anywhere. A genuinely wrapped
+         * blob is needed, and only the token can make one — so an
+         * extractable key is created directly through the function list,
+         * wrapped by the token, and the blob handed to the provider. */
+        {
+            P11_CONTEXT      *pCtx = P11_GetContext();
+            CK_SESSION_HANDLE hSess = CK_INVALID_HANDLE;
+            CK_OBJECT_HANDLE  hPlain = CK_INVALID_HANDLE;
+            KSP_KEY          *pKek = (KSP_KEY *)(ULONG_PTR)hKek;
+            BYTE   abBlob[128];
+            CK_ULONG cbBlob = sizeof(abBlob);
+            CK_RV  rv = CKR_OK;
+
+            if (P11_AcquireSession(&hSess) == ERROR_SUCCESS) {
+                CK_MECHANISM    gen  = { CKM_AES_KEY_GEN, NULL, 0 };
+                CK_MECHANISM    wrap = { CKM_AES_KEY_WRAP, NULL, 0 };
+                CK_OBJECT_CLASS cls  = CKO_SECRET_KEY;
+                CK_KEY_TYPE     kt   = CKK_AES;
+                CK_ULONG        len  = 32;
+                CK_BBOOL        T = CK_TRUE, F = CK_FALSE;
+                CK_ATTRIBUTE    t[] = {
+                    { CKA_CLASS,       &cls, sizeof(cls) },
+                    { CKA_KEY_TYPE,    &kt,  sizeof(kt)  },
+                    { CKA_TOKEN,       &F,   sizeof(F)   },
+                    { CKA_VALUE_LEN,   &len, sizeof(len) },
+                    { CKA_SENSITIVE,   &F,   sizeof(F)   },
+                    { CKA_EXTRACTABLE, &T,   sizeof(T)   },
+                };
+
+                rv = pCtx->pFunctionList->C_GenerateKey(hSess, &gen, t, 6,
+                                                        &hPlain);
+                ASSERT_EQ("An extractable key made directly on the token",
+                          (DWORD)rv, (DWORD)CKR_OK);
+
+                if (rv == CKR_OK) {
+                    rv = pCtx->pFunctionList->C_WrapKey(hSess, &wrap,
+                                                        pKek->hSecretKey,
+                                                        hPlain,
+                                                        abBlob, &cbBlob);
+                    ASSERT_EQ("and wrapped by the token", (DWORD)rv,
+                              (DWORD)CKR_OK);
+                    pCtx->pFunctionList->C_DestroyObject(hSess, hPlain);
+                }
+                P11_ReleaseSession(hSess);
+            }
+
+            if (rv == CKR_OK) {
+                NCRYPT_KEY_HANDLE hUnwrapped = 0;
+
+                ss = KSP_ImportKey(hProv, hKek, BCRYPT_AES_WRAP_KEY_BLOB,
+                                   NULL, &hUnwrapped, abBlob,
+                                   (DWORD)cbBlob, 0);
+                ASSERT_OK("A genuinely wrapped key unwraps through the KSP",
+                          ss);
+                ASSERT("and a handle comes back", hUnwrapped != 0);
+
+                if (hUnwrapped) {
+                    KSP_KEY *pNew = (KSP_KEY *)(ULONG_PTR)hUnwrapped;
+                    ASSERT("holding a real token object",
+                           pNew->hSecretKey != CK_INVALID_HANDLE);
+                    KSP_FreeKey(hProv, hUnwrapped);
+                }
+            }
+        }
+
+        ss = KSP_DeleteKey(hProv, hTarget, 0);
+        ASSERT_OK("Target key deleted", ss);
+        ss = KSP_DeleteKey(hProv, hKek, 0);
+        ASSERT_OK("KEK deleted", ss);
+    }
+
+    /* ── Suite 14 : per-key PIN (PROP-13, phase 5) ──────────────────────── */
+    TEST_SUITE("Per-key PIN");
+
+    {
+        NCRYPT_KEY_HANDLE hPinKey = 0;
+        BYTE  abHash[32];
+        BYTE  abSig[512];
+        DWORD cbSig = 0;
+
+        memset(abHash, 0x9A, sizeof(abHash));
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-pin", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hPinKey, ALG_RSA,
+                                    L"phase7-pin", 0, 0);
+        ASSERT_OK("Key generated", ss);
+
+        ss = KSP_SetKeyProperty(hProv, hPinKey, NCRYPT_PIN_PROPERTY,
+                                (PBYTE)L"1234", 4 * sizeof(WCHAR), 0);
+        ASSERT_OK("Per-key PIN accepted", ss);
+
+        /* This key is not CKA_ALWAYS_AUTHENTICATE, so the token has no
+         * re-authentication to perform and answers
+         * CKR_OPERATION_NOT_INITIALIZED. Tolerating that is what keeps a
+         * caller from being punished for supplying a credential the key
+         * never needed — and this is the first time that tolerance has been
+         * exercised against a token rather than a mock. */
+        cbSig = 0;
+        ss = KSP_SignHash(hProv, hPinKey, NULL, abHash, sizeof(abHash),
+                          abSig, sizeof(abSig), &cbSig, NCRYPT_PAD_PKCS1_FLAG);
+        ASSERT_OK("Signing still works with a PIN the key does not need", ss);
+        ASSERT_EQ("and produces a full signature", cbSig, 256U);
+
+        ss = KSP_DeleteKey(hProv, hPinKey, 0);
+        ASSERT_OK("Key deleted", ss);
+    }
+
+    /* ── Suite 15 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

@@ -164,6 +164,11 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV      rv_GetSessionInfo;
 
     CK_MECHANISM_TYPE lastSignMech;
+    /* Object handle passed to the last C_SignInit. */
+    CK_OBJECT_HANDLE  lastSignKey;
+    /* CKA_WRAP from the last C_GenerateKey template, or 0xFF if the
+     * template did not carry it. */
+    CK_BBOOL          lastGenWrap;
     /* CK_RSA_PKCS_PSS_PARAMS captured by the last C_SignInit call. Valid
      * only when lastSignPssValid is non-zero. */
     CK_RSA_PKCS_PSS_PARAMS lastSignPss;

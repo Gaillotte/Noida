@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 22 test suites, 1466 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 22 test suites, 1477 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -87,7 +87,7 @@ noida/
 │   │   │   ├── p11_real_loader.c    LoadLibraryW → dlopen
 │   │   │   ├── p11_init_token.c     C_InitToken / C_InitPIN standalone tool
 │   │   │   ├── real_cert.c          a genuine openssl-generated certificate
-│   │   │   └── test_real_backend.c  80 assertions against a live token
+│   │   │   └── test_real_backend.c  108 assertions against a live token
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
@@ -178,14 +178,34 @@ defect.**
   `openssl asn1parse`, every truncation walked under AddressSanitizer.
   Unparseable certificates fall back to an empty Name.
 
-ECDH agreement, the KDFs and AES round-trip encryption all passed first time
-against an unfamiliar token.
+**Step 1c finished the sweep — key wrap, CMAC, HMAC, the per-key PIN — and
+found two more, both in that untouched surface.**
+
+- **A symmetric key could never sign.** `KSP_SignHash` passed
+  `pKey->hPrivKey` to `C_SignInit` unconditionally and rejected any key
+  whose `hPrivKey` was invalid. HMAC and CMAC keys live in `hSecretKey`, so
+  **HMAC signing had never worked** despite being advertised since session
+  4, and AES-CMAC was born broken in phase 5. Not hidden by the mock —
+  never covered: the suites checked HMAC *mechanism resolution* and never
+  called `KSP_SignHash` with an HMAC key, and the mock discarded the object
+  handle anyway.
+- **AES keys were created without `CKA_WRAP` / `CKA_UNWRAP`.** PKCS#11
+  gates `C_WrapKey` on them; Kryoptic answers
+  `CKR_KEY_FUNCTION_NOT_PERMITTED`, SoftHSM2 enforces nothing. AES-09 was
+  non-functional on any strict token. AES keys now carry both rights; MAC
+  keys do not.
+
+ECDH agreement, the KDFs, AES round-trip encryption, RSA/ECDSA signing,
+public key export and the per-key PIN tolerance path all passed first time.
+
+**Five defects total from this one suite**, three of them in phase-5 code
+that was days old and had 1434 mock assertions behind it.
 
 Also: the `second-backend` CI job; four more test binaries untracked (the
 same `.gitignore` gap as session 8).
 
-Unit tests 1434 → **1466 assertions** across 22 suites, plus **80 against a
-live token**. Coverage 88.5 % → 87.3 % lines at 100 % functions — the fall
+Unit tests 1434 → **1477 assertions** across 22 suites, plus **108 against a
+live token**. Coverage 88.5 % → 87.4 % lines at 100 % functions — the fall
 is the size-query paths no longer running token code.
 
 ### Session 9 — Phase 5: five gaps from the analysis
@@ -639,8 +659,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 22 suites, 1466 assertions
-make coverage      # → coverage_html/index.html (87.3 % lines, 100 % functions)
+make run           # 22 suites, 1477 assertions
+make coverage      # → coverage_html/index.html (87.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

@@ -571,6 +571,65 @@ int main(void)
         KSP_FreeKey(hProv, hCmac);
     }
 
+    /* ── Symmetric signing reaches the secret key ────────────────────────
+     *
+     * KSP_SignHash passed pKey->hPrivKey to C_SignInit unconditionally, so
+     * an HMAC or CMAC key — which has no private key, only hSecretKey —
+     * was rejected before it got that far. HMAC signing had been advertised
+     * since the mechanism work in session 4 and had never worked.
+     *
+     * Nothing caught it. These suites checked that HMAC resolved to the
+     * right mechanism and never once called KSP_SignHash with an HMAC key,
+     * so the gap was not hidden by the mock, it was simply never covered.
+     * A run against a real token is what surfaced it. */
+    TEST_SUITE("Symmetric keys can sign");
+    {
+        NCRYPT_KEY_HANDLE hMacKey = 0;
+        BYTE   abData[32];
+        BYTE   abMac[64];
+        DWORD  cbMac = 0;
+
+        memset(abData, 0x31, sizeof abData);
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->cbSignature = 32;
+
+        ss = KSP_CreatePersistedKey(hProv, &hMacKey, ALG_HMAC_SHA256,
+                                    L"mac-signs", 0, 0);
+        ASSERT_OK("HMAC key created", ss);
+
+        cbMac = 0;
+        ss = KSP_SignHash(hProv, hMacKey, NULL, abData, sizeof abData,
+                          abMac, sizeof abMac, &cbMac, 0);
+        ASSERT_OK("An HMAC key can sign", ss);
+        ASSERT_EQ("SHA-256 HMAC is 32 bytes", cbMac, 32U);
+
+        {
+            KSP_KEY *pMac = (KSP_KEY *)(ULONG_PTR)hMacKey;
+            ASSERT_EQ("and the SECRET key object was handed to C_SignInit",
+                      P11Mock_GetConfig()->lastSignKey, pMac->hSecretKey);
+            ASSERT("not the private-key handle, which it does not have",
+                   pMac->hPrivKey == CK_INVALID_HANDLE);
+        }
+        KSP_FreeKey(hProv, hMacKey);
+
+        /* CMAC takes the same path. */
+        hMacKey = 0;
+        P11Mock_ResetCalls();
+        P11Mock_GetConfig()->cbSignature = AES_BLOCK_SIZE;
+        ss = KSP_CreatePersistedKey(hProv, &hMacKey, BCRYPT_AES_CMAC_ALGORITHM,
+                                    L"cmac-signs", 0, 0);
+        ASSERT_OK("CMAC key created", ss);
+        cbMac = 0;
+        ss = KSP_SignHash(hProv, hMacKey, NULL, abData, sizeof abData,
+                          abMac, sizeof abMac, &cbMac, 0);
+        ASSERT_OK("A CMAC key can sign", ss);
+        ASSERT_EQ("CMAC is one AES block", cbMac, (DWORD)AES_BLOCK_SIZE);
+        ASSERT_EQ("using CKM_AES_CMAC", P11Mock_GetConfig()->lastSignMech,
+                  (CK_MECHANISM_TYPE)CKM_AES_CMAC);
+        KSP_FreeKey(hProv, hMacKey);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();
