@@ -173,11 +173,23 @@ static CK_RV mock_CreateObject(CK_SESSION_HANDLE h, CK_ATTRIBUTE_PTR tmpl,
     CK_ULONG i;
     (void)h;
     g_calls.nCreateObject++;
+    g_cfg.lastCreateClass    = (CK_OBJECT_CLASS)~0UL;
+    g_cfg.lastCreateCertType = (CK_ULONG)~0UL;
     for (i = 0; tmpl && i < n; i++) {
         if (tmpl[i].type == CKA_VALUE && tmpl[i].pValue &&
             tmpl[i].ulValueLen <= sizeof(g_cfg.lastCreateValue)) {
             memcpy(g_cfg.lastCreateValue, tmpl[i].pValue, tmpl[i].ulValueLen);
             g_cfg.cbLastCreateValue = tmpl[i].ulValueLen;
+        } else if (tmpl[i].type == CKA_CLASS && tmpl[i].pValue &&
+                   tmpl[i].ulValueLen == sizeof(CK_OBJECT_CLASS)) {
+            g_cfg.lastCreateClass = *(CK_OBJECT_CLASS *)tmpl[i].pValue;
+        } else if (tmpl[i].type == CKA_CERTIFICATE_TYPE && tmpl[i].pValue &&
+                   tmpl[i].ulValueLen == sizeof(CK_ULONG)) {
+            g_cfg.lastCreateCertType = *(CK_ULONG *)tmpl[i].pValue;
+        } else if (tmpl[i].type == CKA_LABEL && tmpl[i].pValue &&
+                   tmpl[i].ulValueLen < sizeof(g_cfg.lastLabel)) {
+            memcpy(g_cfg.lastLabel, tmpl[i].pValue, tmpl[i].ulValueLen);
+            g_cfg.lastLabel[tmpl[i].ulValueLen] = '\0';
         }
     }
     if (g_cfg.rv_CreateObject != CKR_OK) return g_cfg.rv_CreateObject;
@@ -296,26 +308,56 @@ static CK_RV mock_SetAttributeValue(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
     (void)h; (void)o; (void)t; (void)n; return CKR_OK;
 }
 
+/* The search template used to be ignored entirely, so a search for a
+ * certificate came back with key handles. The class is now honoured, which
+ * is what lets a test say "this key has no certificate yet". */
 static CK_RV mock_FindObjectsInit(CK_SESSION_HANDLE h, CK_ATTRIBUTE_PTR t,
                                    CK_ULONG n) {
-    (void)h; (void)t; (void)n;
+    CK_ULONG i;
+    (void)h;
     g_calls.nFindObjectsInit++;
     g_findCallCount = 0;
+
+    /* CKO_DATA is 0, so "no class in the template" needs its own marker. */
+    g_cfg.lastFindClass    = (CK_OBJECT_CLASS)~0UL;
+    g_cfg.lastFindLabel[0] = '\0';
+
+    for (i = 0; t && i < n; i++) {
+        if (t[i].type == CKA_CLASS && t[i].pValue &&
+            t[i].ulValueLen == sizeof(CK_OBJECT_CLASS)) {
+            g_cfg.lastFindClass = *(CK_OBJECT_CLASS *)t[i].pValue;
+        } else if (t[i].type == CKA_LABEL && t[i].pValue &&
+                   t[i].ulValueLen < sizeof(g_cfg.lastFindLabel)) {
+            memcpy(g_cfg.lastFindLabel, t[i].pValue, t[i].ulValueLen);
+            g_cfg.lastFindLabel[t[i].ulValueLen] = '\0';
+        }
+    }
     return g_cfg.rv_FindObjectsInit;
 }
 
 static CK_RV mock_FindObjects(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE_PTR phObj,
                                CK_ULONG max, CK_ULONG_PTR pulFound) {
+    CK_ULONG n;
+    CK_OBJECT_HANDLE base;
     (void)h;
     g_calls.nFindObjects++;
     if (g_cfg.rv_FindObjects != CKR_OK) { *pulFound = 0; return g_cfg.rv_FindObjects; }
-    if (g_findCallCount > 0 || g_cfg.nKeyObjects == 0) {
+
+    if (g_cfg.lastFindClass == CKO_CERTIFICATE) {
+        n    = (CK_ULONG)g_cfg.nCertObjects;
+        base = 0x40;
+    } else {
+        n    = (CK_ULONG)g_cfg.nKeyObjects;
+        base = 0x10;
+    }
+
+    if (g_findCallCount > 0 || n == 0) {
         *pulFound = 0;
         return CKR_OK;
     }
-    CK_ULONG n = (CK_ULONG)g_cfg.nKeyObjects;
+
     if (n > max) n = max;
-    for (CK_ULONG i = 0; i < n; i++) phObj[i] = (CK_OBJECT_HANDLE)(0x10 + i);
+    for (CK_ULONG i = 0; i < n; i++) phObj[i] = (CK_OBJECT_HANDLE)(base + i);
     *pulFound = n;
     g_findCallCount++;
     return CKR_OK;
@@ -540,7 +582,10 @@ static CK_RV mock_GenerateKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     capture_label(t, n);
     if (m) g_cfg.lastGenerateMech = m->mechanism;
     if (g_cfg.rv_GenerateKey != CKR_OK) return g_cfg.rv_GenerateKey;
-    if (ph) *ph = 0xFF;
+    /* Distinct handles per key. Handing every generated key the same
+     * object handle made two different keys indistinguishable, so a test
+     * could not tell a wrapping key from the key being wrapped. */
+    if (ph) *ph = (CK_OBJECT_HANDLE)(0xFF + g_calls.nGenerateKey - 1);
     return CKR_OK;
 }
 
@@ -564,14 +609,51 @@ static CK_RV mock_GenerateKeyPair(
 static CK_RV mock_WrapKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     CK_OBJECT_HANDLE wk, CK_OBJECT_HANDLE k, CK_BYTE_PTR wkb,
     CK_ULONG_PTR wkbl) {
-    (void)h; (void)m; (void)wk; (void)k; (void)wkb; (void)wkbl;
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    (void)h;
+    g_calls.nWrapKey++;
+    if (m) g_cfg.lastWrapMech = m->mechanism;
+    g_cfg.lastWrappingKey = wk;
+    g_cfg.lastWrappedKey  = k;
+    if (g_cfg.rv_WrapKey != CKR_OK) return g_cfg.rv_WrapKey;
+    if (!wkbl) return CKR_ARGUMENTS_BAD;
+
+    /* Two-call idiom, as a real token does it. */
+    if (!wkb) { *wkbl = g_cfg.cbWrapped; return CKR_OK; }
+    if (*wkbl < g_cfg.cbWrapped) { *wkbl = g_cfg.cbWrapped; return CKR_BUFFER_TOO_SMALL; }
+
+    memset(wkb, 0x5A, g_cfg.cbWrapped);
+    *wkbl = g_cfg.cbWrapped;
+    return CKR_OK;
 }
+
 static CK_RV mock_UnwrapKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     CK_OBJECT_HANDLE uwk, CK_BYTE_PTR wkb, CK_ULONG wkbl,
     CK_ATTRIBUTE_PTR t, CK_ULONG n, CK_OBJECT_HANDLE_PTR ph) {
-    (void)h; (void)m; (void)uwk; (void)wkb; (void)wkbl; (void)t; (void)n; (void)ph;
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    CK_ULONG i;
+    (void)h;
+    g_calls.nUnwrapKey++;
+    if (m) g_cfg.lastUnwrapMech = m->mechanism;
+    g_cfg.lastWrappingKey = uwk;
+    g_cfg.cbLastUnwrapInput = wkbl;
+    if (wkb && wkbl <= sizeof(g_cfg.lastUnwrapInput))
+        memcpy(g_cfg.lastUnwrapInput, wkb, wkbl);
+
+    /* Record the template the provider asked for, so a test can assert the
+     * unwrapped key is sensitive and non-extractable rather than assuming
+     * it. A key that arrives wrapped and leaves in the clear would defeat
+     * the point of wrapping it. */
+    g_cfg.lastUnwrapExtractable = 0xFF;
+    g_cfg.lastUnwrapSensitive   = 0xFF;
+    for (i = 0; t && i < n; i++) {
+        if (t[i].type == CKA_EXTRACTABLE && t[i].pValue)
+            g_cfg.lastUnwrapExtractable = *(CK_BBOOL *)t[i].pValue;
+        else if (t[i].type == CKA_SENSITIVE && t[i].pValue)
+            g_cfg.lastUnwrapSensitive = *(CK_BBOOL *)t[i].pValue;
+    }
+
+    if (g_cfg.rv_UnwrapKey != CKR_OK) return g_cfg.rv_UnwrapKey;
+    if (ph) *ph = 0x200;
+    return CKR_OK;
 }
 static CK_RV mock_DeriveKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
     CK_OBJECT_HANDLE bk, CK_ATTRIBUTE_PTR t, CK_ULONG n,
@@ -679,8 +761,11 @@ void P11Mock_Reset(void)
     g_cfg.rv_EncryptInit     = CKR_OK;
     g_cfg.rv_Encrypt         = CKR_OK;
 
-    g_cfg.nSlots      = 1;
-    g_cfg.nKeyObjects = 0;
+    g_cfg.nSlots       = 1;
+    g_cfg.nKeyObjects  = 0;
+    g_cfg.nCertObjects = 0;
+    g_cfg.lastFindClass    = (CK_OBJECT_CLASS)~0UL;
+    g_cfg.lastFindLabel[0] = '\0';
     g_cfg.ulKeyType   = CKK_RSA;
     g_cfg.ulModBits   = 2048;
     g_cfg.cbSignature = 256;
@@ -703,6 +788,9 @@ void P11Mock_Reset(void)
     g_cfg.rv_GetInfo           = CKR_OK;
     g_cfg.rv_GetMechanismList  = CKR_OK;
     g_cfg.rv_GetMechanismInfo  = CKR_OK;
+    g_cfg.rv_WrapKey           = CKR_OK;
+    g_cfg.rv_UnwrapKey         = CKR_OK;
+    g_cfg.cbWrapped            = 40;   /* 32-byte AES key + RFC 3394 overhead */
 
     /* Default token: SoftHSM2 2.7.0 as this provider sees it — every
      * mechanism the KSP maps, and no post-quantum one, because SoftHSM2

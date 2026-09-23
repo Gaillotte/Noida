@@ -397,7 +397,12 @@ typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER {
 #define BCRYPT_RSAFULLPRIVATE_BLOB  L"RSAFULLPRIVATEBLOB"
 #define BCRYPT_ECCPUBLIC_BLOB       L"ECCPUBLICBLOB"
 #define BCRYPT_ECCPRIVATE_BLOB      L"ECCPRIVATEBLOB"
+#define BCRYPT_AES_CMAC_ALGORITHM   L"AES-CMAC"
 #define BCRYPT_KEY_DATA_BLOB        L"KeyDataBlob"
+/* RFC 3394 / 5649 AES key wrap. Value copied from the real bcrypt.h — the
+ * string is "Rfc3565KeyWrapBlob", which does not match the RFC number the
+ * mechanism is usually called by; check_mock_drift.py verifies it. */
+#define BCRYPT_AES_WRAP_KEY_BLOB    L"Rfc3565KeyWrapBlob"
 
 #define BCRYPT_SHA1_ALGORITHM    L"SHA1"
 #define BCRYPT_SHA256_ALGORITHM  L"SHA256"
@@ -472,6 +477,10 @@ typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
 #define NCRYPT_VERSION_PROPERTY         L"Version"
 #define NCRYPT_IMPL_TYPE_PROPERTY       L"Impl Type"
 #define NCRYPT_PIN_PROPERTY             L"SmartCardPin"
+/* Value copied from the real ncrypt.h, not invented: the name says "smart
+ * card" but this is the standard property every KSP uses to hold the
+ * certificate issued for a key. check_mock_drift.py verifies it. */
+#define NCRYPT_CERTIFICATE_PROPERTY     L"SmartCardKeyCertificate"
 #define NCRYPT_ALGORITHM_PROPERTY       L"Algorithm Name"
 #define NCRYPT_LENGTH_PROPERTY          L"Length"
 #define NCRYPT_KEY_TYPE_PROPERTY        L"Key Type"

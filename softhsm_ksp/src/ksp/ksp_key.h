@@ -87,6 +87,18 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
 /* Validate a key handle */
 BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey);
 
+/* Store an issued certificate beside the key, as a CKO_CERTIFICATE object
+ * carrying the key's scoped CKA_LABEL. Replaces any certificate already
+ * stored under that label. Backs NCRYPT_CERTIFICATE_PROPERTY. */
+SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
+                                     const BYTE *pbCert, DWORD cbCert);
+
+/* Read that certificate back, following the CNG two-call convention.
+ * Returns NTE_NOT_FOUND when the key has no certificate yet, which is the
+ * normal state between generation and enrolment. */
+SECURITY_STATUS KSP_LoadCertificate(KSP_KEY *pKey, PBYTE pbOutput,
+                                    DWORD cbOutput, DWORD *pcbResult);
+
 /* Generate an RSA key pair in SoftHSM2 */
 SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey);
 

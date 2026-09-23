@@ -88,6 +88,9 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKA_VALUE              0x00000011UL
 #define CKA_OBJECT_ID          0x00000012UL
 #define CKA_CERTIFICATE_TYPE   0x00000080UL
+/* CK_CERTIFICATE_TYPE. Only X.509 is used here — CNG hands a provider a
+ * DER-encoded certificate and names no other type. */
+#define CKC_X_509              0x00000000UL
 #define CKA_ISSUER             0x00000081UL
 #define CKA_SERIAL_NUMBER      0x00000082UL
 #define CKA_KEY_TYPE           0x00000100UL

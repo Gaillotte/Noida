@@ -176,6 +176,7 @@ BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return FALSE;
     return (_wcsicmp(pszAlgId, ALG_AES)         == 0 ||
+            _wcsicmp(pszAlgId, BCRYPT_AES_CMAC_ALGORITHM) == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA1)   == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0 ||
             _wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0 ||
@@ -209,6 +210,8 @@ DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId)
     if (P11_MlDsaPublicKeySize(pszAlgId) != 0)
         return P11_MlDsaPublicKeySize(pszAlgId) * 8;
     if (_wcsicmp(pszAlgId, ALG_AES) == 0)            return 256;
+    /* CMAC keys are AES keys; 256 matches the AES default. */
+    if (_wcsicmp(pszAlgId, BCRYPT_AES_CMAC_ALGORITHM) == 0) return 256;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1)   == 0)    return 160;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0)    return 224;
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0)    return 256;
@@ -579,7 +582,11 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
     CK_OBJECT_CLASS   classSecret = CKO_SECRET_KEY;
     CK_KEY_TYPE       keyType;
     CK_ULONG          ulValueLen;
-    BOOL              bAes = (_wcsicmp(pKey->szAlgId, ALG_AES) == 0);
+    BOOL              bAes  = (_wcsicmp(pKey->szAlgId, ALG_AES) == 0);
+    /* AES-CMAC needs an AES key like bAes, but signs like an HMAC key.
+     * The two questions are separate, so they are separate flags. */
+    BOOL              bCmac = (_wcsicmp(pKey->szAlgId,
+                                        BCRYPT_AES_CMAC_ALGORITHM) == 0);
 
     nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
@@ -587,7 +594,7 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
 
     memset(&mech, 0, sizeof(mech));
 
-    if (bAes) {
+    if (bAes || bCmac) {
         /* AES supports exactly 128, 192 and 256 bits */
         if (pKey->dwKeyBitLen != 128 &&
             pKey->dwKeyBitLen != 192 &&
@@ -607,7 +614,9 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
     }
 
     {
-        /* AES keys encrypt/decrypt; HMAC keys sign/verify */
+        /* AES keys encrypt/decrypt; HMAC and CMAC keys sign/verify. A CMAC
+         * key marked for encryption would let the same key be used as a
+         * cipher key, which is exactly the key reuse CMAC assumes away. */
         CK_BBOOL bCipher = bAes ? CK_TRUE : CK_FALSE;
         CK_BBOOL bMac    = bAes ? CK_FALSE : CK_TRUE;
 
@@ -902,6 +911,140 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
 
     LOG_INFO("KSP_CreatePersistedKey: '%ls' created", pKey->szKeyName);
     LOG_LEAVE("KSP_CreatePersistedKey", ERROR_SUCCESS);
+    return ERROR_SUCCESS;
+}
+
+/* ── Certificate stored beside the key (NCRYPT_CERTIFICATE_PROPERTY) ──────
+ *
+ * Certificate enrolment is the flow this provider exists to serve, and it
+ * has two halves: the CA signs a request with a key the KSP holds, then
+ * hands back the issued certificate for the KSP to keep with that key. A
+ * provider that cannot do the second half leaves the caller to store the
+ * certificate somewhere else and re-associate it by hand.
+ *
+ * PKCS#11 already has the object type. The certificate is a CKO_CERTIFICATE
+ * carrying the same scoped CKA_LABEL as the key, so the two travel together
+ * through the same naming and the same machine/user scoping.
+ *
+ * CKA_SUBJECT is deliberately not set. PKCS#11 marks it required for X.509
+ * certificates, but CNG hands a provider nothing except the encoded
+ * certificate, so populating it would mean parsing X.509 inside the KSP to
+ * reach the subject field. SoftHSM2 requires only CKA_CLASS and
+ * CKA_CERTIFICATE_TYPE (see SoftHSM.cpp, the CKO_CERTIFICATE branch of the
+ * template check) and accepts the object without it. A token that enforces
+ * the specification's marking would refuse, and there is no such token here
+ * to test a workaround against — writing one blind is how this project
+ * accumulated code that only ever worked against its own assumptions.
+ */
+
+/* Replace any certificate already stored under this key's label, then
+ * create the new one. Without the destroy, a re-enrolment leaves two
+ * certificate objects with the same label and lookups become a coin toss. */
+SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
+                                     const BYTE *pbCert, DWORD cbCert)
+{
+    P11_CONTEXT      *pCtx = P11_GetContext();
+    CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
+    CK_OBJECT_HANDLE  hExisting;
+    CK_OBJECT_HANDLE  hCert = CK_INVALID_HANDLE;
+    SECURITY_STATUS   ss;
+    CK_RV             rv;
+    char              szLabel[MAX_KEY_LABEL_LEN];
+    int               nLabelLen;
+    CK_BBOOL          bTrue  = CK_TRUE;
+    CK_BBOOL          bFalse = CK_FALSE;
+    CK_OBJECT_CLASS   classCert = CKO_CERTIFICATE;
+    CK_ULONG          certType  = CKC_X_509;
+
+    if (!pbCert || cbCert == 0)
+        return NTE_INVALID_PARAMETER;
+
+    nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
+    if (nLabelLen <= 0)
+        return NTE_INVALID_PARAMETER;
+
+    ss = P11_AcquireSession(&hSession);
+    if (ss != ERROR_SUCCESS)
+        return ss;
+
+    hExisting = FindScopedObject(hSession, CKO_CERTIFICATE,
+                                 pKey->szKeyName, pKey->bMachineKey);
+    if (hExisting != CK_INVALID_HANDLE)
+        pCtx->pFunctionList->C_DestroyObject(hSession, hExisting);
+
+    {
+        CK_ATTRIBUTE aTemplate[] = {
+            { CKA_CLASS,            &classCert,         sizeof(classCert)   },
+            { CKA_CERTIFICATE_TYPE, &certType,          sizeof(certType)    },
+            { CKA_TOKEN,            &bTrue,             sizeof(bTrue)       },
+            { CKA_PRIVATE,          &bFalse,            sizeof(bFalse)      },
+            { CKA_LABEL,            szLabel,            (CK_ULONG)nLabelLen },
+            { CKA_VALUE,            (CK_VOID_PTR)pbCert, (CK_ULONG)cbCert   },
+        };
+
+        rv = pCtx->pFunctionList->C_CreateObject(
+            hSession, aTemplate,
+            (CK_ULONG)(sizeof(aTemplate) / sizeof(CK_ATTRIBUTE)), &hCert);
+    }
+
+    P11_ReleaseSession(hSession);
+
+    if (rv != CKR_OK) {
+        LOG_ERROR("KSP_StoreCertificate - C_CreateObject", P11RvToSecStatus(rv));
+        return P11RvToSecStatus(rv);
+    }
+
+    LOG_INFO("Certificate stored for '%ls' (%lu bytes, obj=0x%lX)",
+             pKey->szKeyName, (unsigned long)cbCert, (unsigned long)hCert);
+    return ERROR_SUCCESS;
+}
+
+/* Read the certificate back. Follows the CNG two-call convention: a NULL
+ * output buffer reports the size and returns success. */
+SECURITY_STATUS KSP_LoadCertificate(KSP_KEY *pKey, PBYTE pbOutput,
+                                    DWORD cbOutput, DWORD *pcbResult)
+{
+    CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
+    CK_OBJECT_HANDLE  hCert;
+    SECURITY_STATUS   ss;
+    CK_RV             rv;
+    BYTE             *pbValue = NULL;
+    DWORD             cbValue = 0;
+
+    if (!pcbResult)
+        return NTE_INVALID_PARAMETER;
+
+    ss = P11_AcquireSession(&hSession);
+    if (ss != ERROR_SUCCESS)
+        return ss;
+
+    hCert = FindScopedObject(hSession, CKO_CERTIFICATE,
+                             pKey->szKeyName, pKey->bMachineKey);
+    if (hCert == CK_INVALID_HANDLE) {
+        P11_ReleaseSession(hSession);
+        /* No certificate is a normal state for a key that has been
+         * generated but not yet enrolled, so it is NTE_NOT_FOUND rather
+         * than an error about the property itself. */
+        return NTE_NOT_FOUND;
+    }
+
+    rv = P11_GetBinaryAttr(hSession, hCert, CKA_VALUE, &pbValue, &cbValue);
+    P11_ReleaseSession(hSession);
+
+    if (rv != CKR_OK || !pbValue)
+        return P11RvToSecStatus(rv);
+
+    *pcbResult = cbValue;
+
+    if (pbOutput) {
+        if (cbOutput < cbValue) {
+            KSP_Free(pbValue);
+            return NTE_BUFFER_TOO_SMALL;
+        }
+        memcpy(pbOutput, pbValue, cbValue);
+    }
+
+    KSP_Free(pbValue);
     return ERROR_SUCCESS;
 }
 

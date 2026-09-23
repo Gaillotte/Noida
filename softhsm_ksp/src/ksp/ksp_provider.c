@@ -355,6 +355,10 @@ static const KSP_ALG_ENTRY g_KspAlgorithms[] = {
                       CKM_EC_KEY_PAIR_GEN, CKM_ECDH1_DERIVE },
     { ALG_AES,        NCRYPT_CIPHER_OPERATION,
                       CKM_AES_KEY_GEN, CKM_AES_CBC },
+    /* AES-CMAC is a standard CNG identifier, unlike this provider's HMAC
+     * names, so it is published rather than left reachable by name only. */
+    { BCRYPT_AES_CMAC_ALGORITHM, NCRYPT_SIGNATURE_OPERATION,
+                      CKM_AES_KEY_GEN, CKM_AES_CMAC },
 
     /* Post-quantum. Unreachable on SoftHSM2 2.7.0, which defines these
      * mechanisms and implements none of them, and therefore never lists

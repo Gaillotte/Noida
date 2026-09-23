@@ -505,6 +505,65 @@ int main(void)
                   (SECURITY_STATUS)NTE_BAD_ALGID);
     }
 
+    /* ── AES-CMAC (AES-10) ──────────────────────────────────────────────
+     *
+     * Unlike this provider's HMAC identifiers, BCRYPT_AES_CMAC_ALGORITHM is
+     * a real CNG name, so a portable application can ask for it. The key is
+     * an AES key that signs rather than encrypts. */
+    TEST_SUITE("AES-CMAC");
+    {
+        CK_MECHANISM       m;
+        NCRYPT_KEY_HANDLE  hCmac = 0;
+
+        ss = P11_ResolveMechanism(BCRYPT_AES_CMAC_ALGORITHM, 0, &m, NULL);
+        ASSERT_OK("AES-CMAC resolves", ss);
+        ASSERT_EQ("→ CKM_AES_CMAC", m.mechanism,
+                  (CK_MECHANISM_TYPE)CKM_AES_CMAC);
+
+        P11Mock_ResetCalls();
+        ss = KSP_CreatePersistedKey(hProv, &hCmac, BCRYPT_AES_CMAC_ALGORITHM,
+                                    L"cmac-key", 0, 0);
+        ASSERT_OK("CMAC key created", ss);
+        ASSERT_EQ("generated with CKM_AES_KEY_GEN, not a generic secret",
+                  P11Mock_GetConfig()->lastGenerateMech,
+                  (CK_MECHANISM_TYPE)CKM_AES_KEY_GEN);
+
+        {
+            KSP_KEY *pCmac = (KSP_KEY *)(ULONG_PTR)hCmac;
+            ASSERT("Classified as symmetric",
+                   pCmac->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC);
+            ASSERT_EQ("Default length is 256 bits", pCmac->dwKeyBitLen, 256U);
+        }
+
+        /* A CMAC key belongs to the AES group, not the HMAC one — it is an
+         * AES key, and a caller filtering by group would otherwise miss it. */
+        {
+            WCHAR wszGroup[64];
+            DWORD cb = 0;
+            ss = KSP_GetKeyProperty(hProv, hCmac,
+                                    NCRYPT_ALGORITHM_GROUP_PROPERTY,
+                                    (PBYTE)wszGroup, sizeof(wszGroup), &cb, 0);
+            ASSERT_OK("Algorithm group readable", ss);
+            ASSERT("Group is AES", _wcsicmp(wszGroup, ALG_GROUP_AES) == 0);
+        }
+
+        /* Sizes outside AES's three are refused, as for any AES key. */
+        {
+            NCRYPT_KEY_HANDLE hBad = 0;
+            ss = KSP_CreatePersistedKey(hProv, &hBad,
+                                        BCRYPT_AES_CMAC_ALGORITHM,
+                                        L"cmac-bad", 0,
+                                        NCRYPT_PERSIST_ONLY_FLAG);
+            ASSERT_OK("Deferred CMAC key created", ss);
+            ss = KSP_SetKeyProperty(hProv, hBad, NCRYPT_LENGTH_PROPERTY,
+                                    (PBYTE)"\x40\x00\x00\x00", 4, 0);
+            ASSERT_ERR("64-bit CMAC key refused", ss);
+            KSP_FreeKey(hProv, hBad);
+        }
+
+        KSP_FreeKey(hProv, hCmac);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

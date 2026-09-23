@@ -389,13 +389,14 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
     DWORD             *pcbResult,
     DWORD              dwFlags)
 {
+    P11_CONTEXT      *pCtx = P11_GetContext();
     KSP_KEY          *pKey;
     CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
     BYTE             *pbBlob   = NULL;
     DWORD             cbBlob   = 0;
     SECURITY_STATUS   ss;
+    CK_RV             rv;
 
-    UNREFERENCED_PARAMETER(hExportKey);
     UNREFERENCED_PARAMETER(pParameterList);
     UNREFERENCED_PARAMETER(dwFlags);
     LOG_ENTER("KSP_ExportKey");
@@ -452,6 +453,106 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
                   NTE_NOT_SUPPORTED);
         LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
         return NTE_NOT_SUPPORTED;
+    }
+
+    /* ── AES key wrap (RFC 3394 / 5649) ──────────────────────────────────
+     *
+     * The standard CNG route for key material to leave a token: the caller
+     * supplies a key-encryption key in hExportKey and gets the target key
+     * back wrapped under it. Nothing is ever in the clear.
+     *
+     * This does NOT weaken the non-extractable posture, and cannot. The
+     * token decides: every key this provider creates is
+     * CKA_EXTRACTABLE=FALSE, and C_WrapKey on such a key returns
+     * CKR_KEY_UNEXTRACTABLE, which surfaces here as NTE_NOT_SUPPORTED. The
+     * path is useful for a key this provider opened rather than created —
+     * a token provisioned with extractable keys for migration — and for
+     * that case only. */
+    if (_wcsicmp(pszBlobType, BCRYPT_AES_WRAP_KEY_BLOB) == 0) {
+        KSP_KEY         *pKek;
+        CK_OBJECT_HANDLE hTarget;
+        CK_MECHANISM     mech = { CKM_AES_KEY_WRAP, NULL, 0 };
+        CK_ULONG         cbWrapped = 0;
+
+        if (!KSP_IsValidKey(hExportKey)) {
+            LOG_ERROR("KSP_ExportKey - AES key wrap needs a wrapping key in "
+                      "hExportKey", NTE_INVALID_PARAMETER);
+            LOG_LEAVE("KSP_ExportKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        pKek = (KSP_KEY *)(ULONG_PTR)hExportKey;
+        if (_wcsicmp(pKek->szAlgId, ALG_AES) != 0 ||
+            pKek->hSecretKey == CK_INVALID_HANDLE) {
+            LOG_ERROR("KSP_ExportKey - the wrapping key must be a finalised "
+                      "AES key", NTE_BAD_KEY);
+            LOG_LEAVE("KSP_ExportKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        if (!P11_HasMechanism(CKM_AES_KEY_WRAP)) {
+            LOG_ERROR("KSP_ExportKey - the token does not implement "
+                      "CKM_AES_KEY_WRAP", NTE_NOT_SUPPORTED);
+            LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
+            return NTE_NOT_SUPPORTED;
+        }
+
+        /* A symmetric key wraps its secret object; an asymmetric one wraps
+         * its private key. The public half needs no protection. */
+        hTarget = (pKey->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC)
+                  ? pKey->hSecretKey : pKey->hPrivKey;
+        if (hTarget == CK_INVALID_HANDLE) {
+            LOG_LEAVE("KSP_ExportKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_ExportKey", ss);
+            return ss;
+        }
+
+        rv = pCtx->pFunctionList->C_WrapKey(hSession, &mech,
+                                            pKek->hSecretKey, hTarget,
+                                            NULL, &cbWrapped);
+        if (rv != CKR_OK) {
+            P11_ReleaseSession(hSession);
+            ss = P11RvToSecStatus(rv);
+            /* CKR_KEY_UNEXTRACTABLE is the expected answer for any key this
+             * provider generated, and is not a defect. */
+            LOG_ERROR("KSP_ExportKey - C_WrapKey (size)", ss);
+            LOG_LEAVE("KSP_ExportKey", ss);
+            return ss;
+        }
+
+        *pcbResult = (DWORD)cbWrapped;
+
+        if (!pbOutput) {
+            P11_ReleaseSession(hSession);
+            LOG_LEAVE("KSP_ExportKey", ERROR_SUCCESS);
+            return ERROR_SUCCESS;
+        }
+
+        if (cbOutput < (DWORD)cbWrapped) {
+            P11_ReleaseSession(hSession);
+            LOG_LEAVE("KSP_ExportKey", NTE_BUFFER_TOO_SMALL);
+            return NTE_BUFFER_TOO_SMALL;
+        }
+
+        rv = pCtx->pFunctionList->C_WrapKey(hSession, &mech,
+                                            pKek->hSecretKey, hTarget,
+                                            pbOutput, &cbWrapped);
+        P11_ReleaseSession(hSession);
+
+        if (rv != CKR_OK) {
+            ss = P11RvToSecStatus(rv);
+            LOG_LEAVE("KSP_ExportKey", ss);
+            return ss;
+        }
+
+        *pcbResult = (DWORD)cbWrapped;
+        LOG_LEAVE("KSP_ExportKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
     }
 
     if (pKey->hPubKey == CK_INVALID_HANDLE) {
@@ -519,7 +620,6 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
     CK_OBJECT_CLASS      classPub = CKO_PUBLIC_KEY;
     CK_OBJECT_HANDLE     hPubObj  = CK_INVALID_HANDLE;
 
-    UNREFERENCED_PARAMETER(hImportKey);
     UNREFERENCED_PARAMETER(pParameterList);
     UNREFERENCED_PARAMETER(dwFlags);
     LOG_ENTER("KSP_ImportKey");
@@ -527,6 +627,101 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
     if (!KSP_IsValidProvider(hProvider) || !phKey || !pbData) {
         LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
         return NTE_INVALID_PARAMETER;
+    }
+
+    /* ── AES key unwrap (RFC 3394 / 5649) ────────────────────────────────
+     *
+     * The useful half of key wrap, and the one that does not depend on the
+     * token having been provisioned with extractable keys: an AES key
+     * arrives wrapped under a key-encryption key already on the token, and
+     * C_UnwrapKey decrypts it inside the token. The plaintext key never
+     * exists outside it.
+     *
+     * The unwrapped key is created CKA_SENSITIVE / not extractable, so a
+     * key that arrives this way cannot then be exported in the clear.
+     * Wrapping is a way in, not a way back out. */
+    if (_wcsicmp(pszBlobType, BCRYPT_AES_WRAP_KEY_BLOB) == 0) {
+        KSP_KEY         *pKek;
+        CK_MECHANISM     mech = { CKM_AES_KEY_WRAP, NULL, 0 };
+        CK_OBJECT_CLASS  classSecret = CKO_SECRET_KEY;
+        CK_KEY_TYPE      keyTypeAes  = CKK_AES;
+        CK_OBJECT_HANDLE hNew = CK_INVALID_HANDLE;
+
+        if (!KSP_IsValidKey(hImportKey)) {
+            LOG_ERROR("KSP_ImportKey - AES key unwrap needs an unwrapping key "
+                      "in hImportKey", NTE_INVALID_PARAMETER);
+            LOG_LEAVE("KSP_ImportKey", NTE_INVALID_PARAMETER);
+            return NTE_INVALID_PARAMETER;
+        }
+
+        pKek = (KSP_KEY *)(ULONG_PTR)hImportKey;
+        if (_wcsicmp(pKek->szAlgId, ALG_AES) != 0 ||
+            pKek->hSecretKey == CK_INVALID_HANDLE) {
+            LOG_ERROR("KSP_ImportKey - the unwrapping key must be a finalised "
+                      "AES key", NTE_BAD_KEY);
+            LOG_LEAVE("KSP_ImportKey", NTE_BAD_KEY);
+            return NTE_BAD_KEY;
+        }
+
+        if (!P11_HasMechanism(CKM_AES_KEY_WRAP)) {
+            LOG_ERROR("KSP_ImportKey - the token does not implement "
+                      "CKM_AES_KEY_WRAP", NTE_NOT_SUPPORTED);
+            LOG_LEAVE("KSP_ImportKey", NTE_NOT_SUPPORTED);
+            return NTE_NOT_SUPPORTED;
+        }
+
+        {
+            CK_ATTRIBUTE aTemplate[] = {
+                { CKA_CLASS,       &classSecret, sizeof(classSecret) },
+                { CKA_KEY_TYPE,    &keyTypeAes,  sizeof(keyTypeAes)  },
+                { CKA_TOKEN,       &bFalse,      sizeof(bFalse)      },
+                { CKA_SENSITIVE,   &bTrue,       sizeof(bTrue)       },
+                { CKA_EXTRACTABLE, &bFalse,      sizeof(bFalse)      },
+                { CKA_ENCRYPT,     &bTrue,       sizeof(bTrue)       },
+                { CKA_DECRYPT,     &bTrue,       sizeof(bTrue)       },
+            };
+
+            ss = P11_AcquireSession(&hSession);
+            if (ss != ERROR_SUCCESS) {
+                LOG_LEAVE("KSP_ImportKey", ss);
+                return ss;
+            }
+
+            rv = pCtx->pFunctionList->C_UnwrapKey(
+                hSession, &mech, pKek->hSecretKey,
+                pbData, (CK_ULONG)cbData,
+                aTemplate,
+                (CK_ULONG)(sizeof(aTemplate) / sizeof(CK_ATTRIBUTE)),
+                &hNew);
+
+            P11_ReleaseSession(hSession);
+        }
+
+        if (rv != CKR_OK) {
+            ss = P11RvToSecStatus(rv);
+            LOG_ERROR("KSP_ImportKey - C_UnwrapKey", ss);
+            LOG_LEAVE("KSP_ImportKey", ss);
+            return ss;
+        }
+
+        pKey = (KSP_KEY *)KSP_AllocZero(sizeof(KSP_KEY));
+        if (!pKey) {
+            LOG_LEAVE("KSP_ImportKey", NTE_NO_MEMORY);
+            return NTE_NO_MEMORY;
+        }
+
+        pKey->dwMagic        = KSP_KEY_MAGIC;
+        pKey->hSecretKey     = hNew;
+        pKey->hPubKey        = CK_INVALID_HANDLE;
+        pKey->hPrivKey       = CK_INVALID_HANDLE;
+        pKey->bFinalized     = TRUE;
+        pKey->bSessionObject = TRUE;
+        pKey->dwKeyClass     = KSP_KEY_CLASS_SYMMETRIC;
+        wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, ALG_AES);
+
+        *phKey = (NCRYPT_KEY_HANDLE)(ULONG_PTR)pKey;
+        LOG_LEAVE("KSP_ImportKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
     }
 
     /* Only public keys are importable */

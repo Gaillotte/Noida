@@ -144,6 +144,14 @@ SECURITY_STATUS P11_ResolveMechanism(
         return ERROR_SUCCESS;
     }
 
+    /* AES-CMAC. Unlike HMAC this is a standard CNG identifier
+     * (BCRYPT_AES_CMAC_ALGORITHM), so a portable application can ask for it
+     * by name. The key is an ordinary AES key used for signing. */
+    if (_wcsicmp(pszAlgId, BCRYPT_AES_CMAC_ALGORITHM) == 0) {
+        pMechanism->mechanism = CKM_AES_CMAC;
+        return ERROR_SUCCESS;
+    }
+
     /* HMAC secret keys sign through C_Sign with the matching HMAC mechanism */
     if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1) == 0) {
         pMechanism->mechanism = CKM_SHA_1_HMAC;

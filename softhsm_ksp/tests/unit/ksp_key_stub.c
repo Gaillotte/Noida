@@ -6,6 +6,7 @@
 #include "../../src/pkcs11/pkcs11.h"
 #include "../../src/common/config.h"
 #include "../../src/ksp/ksp_key.h"
+#include <string.h>
 #include <wchar.h>
 
 BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey)
@@ -35,6 +36,40 @@ BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId)
     if (!pszAlgId) return FALSE;
     return (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0 ||
             _wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0);
+}
+
+/* Certificate storage — recorded rather than performed, so the property
+ * suite can assert that KSP_SetKeyProperty routed the blob correctly
+ * without linking the whole key layer. test_certificate.c exercises the
+ * real implementation. */
+BYTE  g_stubCert[4096];
+DWORD g_cbStubCert = 0;
+SECURITY_STATUS g_ssStubStore = ERROR_SUCCESS;
+
+SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
+                                     const BYTE *pbCert, DWORD cbCert)
+{
+    (void)pKey;
+    if (g_ssStubStore != ERROR_SUCCESS) return g_ssStubStore;
+    if (!pbCert || cbCert == 0 || cbCert > sizeof(g_stubCert))
+        return NTE_INVALID_PARAMETER;
+    memcpy(g_stubCert, pbCert, cbCert);
+    g_cbStubCert = cbCert;
+    return ERROR_SUCCESS;
+}
+
+SECURITY_STATUS KSP_LoadCertificate(KSP_KEY *pKey, PBYTE pbOutput,
+                                    DWORD cbOutput, DWORD *pcbResult)
+{
+    (void)pKey;
+    if (!pcbResult) return NTE_INVALID_PARAMETER;
+    if (g_cbStubCert == 0) return NTE_NOT_FOUND;
+    *pcbResult = g_cbStubCert;
+    if (pbOutput) {
+        if (cbOutput < g_cbStubCert) return NTE_BUFFER_TOO_SMALL;
+        memcpy(pbOutput, g_stubCert, g_cbStubCert);
+    }
+    return ERROR_SUCCESS;
 }
 
 BOOL KSP_IsMlDsaAlg(LPCWSTR pszAlgId)

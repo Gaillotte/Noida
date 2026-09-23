@@ -115,7 +115,8 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
             pszGroup = ALG_GROUP_EDDSA;
         else if (KSP_IsMlDsaAlg(pKey->szAlgId))
             pszGroup = ALG_GROUP_MLDSA;
-        else if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0)
+        else if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0 ||
+                 _wcsicmp(pKey->szAlgId, BCRYPT_AES_CMAC_ALGORITHM) == 0)
             pszGroup = ALG_GROUP_AES;
         else if (KSP_IsSymmetricAlg(pKey->szAlgId))
             pszGroup = ALG_GROUP_HMAC;
@@ -191,6 +192,12 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
                     memcpy(pbOutput, &dwBlock, sizeof(DWORD));
             }
         }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_CERTIFICATE_PROPERTY) == 0) {
+        /* The certificate issued for this key, as stored by
+         * NCryptSetProperty after enrolment. NTE_NOT_FOUND means the key
+         * exists but has not been enrolled yet. */
+        ss = KSP_LoadCertificate(pKey, pbOutput, cbOutput, pcbResult);
 
     } else {
         ss = NTE_NOT_SUPPORTED;
@@ -375,6 +382,23 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
             memcpy(pKey->pbAuthData, pbInput, cbInput);
             pKey->cbAuthData = cbInput;
             ss = ERROR_SUCCESS;
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_CERTIFICATE_PROPERTY) == 0) {
+        /* The issued certificate, handed back after enrolment. Stored on
+         * the token as a CKO_CERTIFICATE sharing the key's scoped label.
+         *
+         * The key must exist on the token first: a certificate attached to
+         * a key that was never generated would outlive nothing and be found
+         * by a later key of the same name. */
+        if (!pKey->bFinalized) {
+            LOG_ERROR("SetKeyProperty - certificate set on an unfinalised key",
+                      NTE_INVALID_HANDLE);
+            ss = NTE_INVALID_HANDLE;
+        } else if (!pbInput || cbInput == 0) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            ss = KSP_StoreCertificate(pKey, pbInput, cbInput);
         }
     }
 

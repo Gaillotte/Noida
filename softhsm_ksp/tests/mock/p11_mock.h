@@ -36,6 +36,21 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_GetInfo;
     CK_RV rv_GetMechanismList;
     CK_RV rv_GetMechanismInfo;
+    CK_RV rv_WrapKey;
+    CK_RV rv_UnwrapKey;
+
+    /* AES key wrap. cbWrapped is the length C_WrapKey reports and fills. */
+    CK_ULONG          cbWrapped;
+    CK_MECHANISM_TYPE lastWrapMech;
+    CK_MECHANISM_TYPE lastUnwrapMech;
+    CK_OBJECT_HANDLE  lastWrappingKey;
+    CK_OBJECT_HANDLE  lastWrappedKey;
+    unsigned char     lastUnwrapInput[512];
+    CK_ULONG          cbLastUnwrapInput;
+    /* CKA_SENSITIVE / CKA_EXTRACTABLE from the unwrap template, or 0xFF if
+     * the provider did not set them — which would itself be the defect. */
+    CK_BBOOL          lastUnwrapSensitive;
+    CK_BBOOL          lastUnwrapExtractable;
 
     /* What the token claims to implement, for the capability probe.
      * P11Mock_SetMechanisms fills these; the default is the SoftHSM2 2.7.0
@@ -52,6 +67,20 @@ typedef struct _P11_MOCK_CONFIG {
     int nSlots;
     /* Number of simulated keys returned by FindObjects */
     int nKeyObjects;
+    /* Number of simulated CKO_CERTIFICATE objects. Kept separate from
+     * nKeyObjects so a test can present a key that has no certificate. */
+    int nCertObjects;
+    /* CKA_CLASS and CKA_LABEL from the last C_FindObjectsInit template.
+     * lastFindClass is (CK_OBJECT_CLASS)~0 when the template named no
+     * class, because CKO_DATA is 0 and cannot serve as "unset". */
+    CK_OBJECT_CLASS lastFindClass;
+    char            lastFindLabel[128];
+    /* CKA_CLASS and CKA_CERTIFICATE_TYPE from the last C_CreateObject
+     * template, so a test can assert what kind of object was written.
+     * Both are (~0UL) when the template did not carry them — CKO_DATA and
+     * CKC_X_509 are each 0 and cannot serve as "unset". */
+    CK_OBJECT_CLASS lastCreateClass;
+    CK_ULONG        lastCreateCertType;
     /* Label of the simulated keys */
     char szKeyLabel[256];
     /* Key type returned (CKK_RSA or CKK_EC) */
@@ -112,8 +141,11 @@ typedef struct _P11_MOCK_CONFIG {
     unsigned char lastSignData[512];
     CK_ULONG      cbLastSignData;
     /* CKA_VALUE of the last object created — the HMAC key in each HKDF
-     * step, so the salt and PRK can be checked. */
-    unsigned char lastCreateValue[128];
+     * step, so the salt and PRK can be checked; and the certificate in the
+     * PROP-14 tests, which is why this is sized for a real certificate
+     * rather than a key. A value larger than this is not captured at all,
+     * so a test asserting on it would silently compare against nothing. */
+    unsigned char lastCreateValue[4096];
     CK_ULONG      cbLastCreateValue;
 
     CK_ULONG   sessionState;
@@ -158,6 +190,8 @@ typedef struct _P11_MOCK_CALLS {
     int nGetInfo;
     int nGetMechanismList;
     int nGetMechanismInfo;
+    int nWrapKey;
+    int nUnwrapKey;
 } P11_MOCK_CALLS;
 
 /* Reset mock configuration (all CKR_OK, default behaviour) */
