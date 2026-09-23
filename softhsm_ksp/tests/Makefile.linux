@@ -47,7 +47,8 @@ TESTS = \
     test_certificate \
     test_keywrap \
     test_p11_context \
-    test_key_pin
+    test_key_pin \
+    test_cert_subject
 
 .PHONY: all clean run coverage syntax-check
 
@@ -181,6 +182,10 @@ test_key_pin: test_key_pin.c \
     $(KEY_SRC) $(CRYPT_SRC) $(PROP_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) \
     $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_cert_subject : X.509 subject extraction for CKA_SUBJECT ──────────
+test_cert_subject: test_cert_subject.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 run: all
 	@echo "════════════════════════════════════════════════════════"

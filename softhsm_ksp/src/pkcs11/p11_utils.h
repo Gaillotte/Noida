@@ -10,6 +10,17 @@
 /* Convert a CK_RV code to SECURITY_STATUS */
 SECURITY_STATUS P11RvToSecStatus(CK_RV rv);
 
+/* Extract the DER-encoded subject Name from an X.509 certificate.
+ *
+ * *ppSubject points into pbCert (no copy) and *pcbSubject covers the whole
+ * encoded Name, header included — which is what CKA_SUBJECT wants.
+ *
+ * Returns FALSE for anything it cannot parse, which the caller must treat
+ * as "no subject available" rather than as a fatal error: a token that does
+ * not require CKA_SUBJECT should still store the certificate. */
+BOOL P11_ExtractCertSubject(const BYTE *pbCert, DWORD cbCert,
+                            const BYTE **ppSubject, DWORD *pcbSubject);
+
 /* ML-DSA (FIPS 204) parameter set for an algorithm identifier.
  *
  * Returns the CKP_ML_DSA_* value for ALG_MLDSA_44 / _65 / _87, or 0 for

@@ -640,6 +640,43 @@ Neither bug is exotic. Both sit on the main path of the two most-used
 operations in the provider. Both were invisible to a test suite that only
 ever asked a mock whether the provider agreed with itself.
 
+#### Step 1b ✅ done — widen it, because the first pass only touched a third
+
+42 assertions found two defects. The obvious next move was to cover the rest
+of the surface rather than add features on top of it: ECDH and the KDFs, AES
+encryption, the certificate property. **80 assertions now, and a third
+defect.**
+
+**Three: a deleted key left its certificate on the token.** `KSP_DeleteKey`
+destroyed the private, public and secret objects and not the
+`CKO_CERTIFICATE` stored beside them. That is not only a storage leak — the
+certificate is found by the key's scoped label, so the next key created with
+the same name inherits a certificate belonging to a key that no longer
+exists, and a caller reading `NCRYPT_CERTIFICATE_PROPERTY` gets one whose
+public key does not match the key it now holds. The live suite demonstrated
+it by failing on its *second* run, reading back what its first run had left.
+
+And a prediction came due. Phase 5 set `CKA_SUBJECT` aside with this note:
+
+> A token that enforces the specification's marking would refuse, and there
+> is no such token here to test a workaround against — writing one blind is
+> how this project accumulated code that only ever worked against its own
+> assumptions.
+
+Kryoptic is that token: `CKR_TEMPLATE_INCONSISTENT`. So the subject is now
+parsed out of the certificate by `P11_ExtractCertSubject`, a bounds-checked
+DER walk verified against a real `openssl req -x509` certificate whose
+subject offset and length come from `openssl asn1parse` rather than from the
+parser agreeing with itself. Every truncation of that certificate is walked
+under AddressSanitizer, because this project has already shipped one
+out-of-bounds read in DER handling. A certificate it cannot parse falls back
+to an empty Name, so a token that does not require the attribute still
+stores the object.
+
+What passed first time is worth recording too: ECDH agreement, the raw-secret
+/ hash / HKDF derivations, and AES-CBC round-trip encryption all worked
+against an unfamiliar token without changes.
+
 The suite runs in CI as the `second-backend` job.
 
 ### Group D — real, and not reachable from this repository

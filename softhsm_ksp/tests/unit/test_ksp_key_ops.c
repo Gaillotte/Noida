@@ -108,6 +108,16 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
  * stubs exist only so ksp_key.c links, and they are kept deliberately
  * dumb — if they ever disagree with the real ones, test_mldsa is the
  * suite that will say so. */
+/* Certificate subject extraction lives in p11_utils.c, which this suite
+ * stubs rather than links. Refusing here exercises the empty-Name fallback
+ * in KSP_StoreCertificate; test_cert_subject.c covers the real parser. */
+BOOL P11_ExtractCertSubject(const BYTE *pbCert, DWORD cbCert,
+                            const BYTE **ppSubject, DWORD *pcbSubject)
+{
+    (void)pbCert; (void)cbCert; (void)ppSubject; (void)pcbSubject;
+    return FALSE;
+}
+
 CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return 0;

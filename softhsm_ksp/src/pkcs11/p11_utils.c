@@ -88,6 +88,133 @@ DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId)
     return p ? p->cbPublicKey : 0;
 }
 
+/* ── X.509 subject extraction ────────────────────────────────────────────
+ *
+ * PKCS#11 marks CKA_SUBJECT required for an X.509 certificate object.
+ * SoftHSM2 does not enforce it; Kryoptic answers CKR_TEMPLATE_INCONSISTENT
+ * without it. CNG hands a provider nothing but the encoded certificate, so
+ * the subject has to come out of the DER.
+ *
+ * This walks only as far as it must:
+ *
+ *   Certificate ::= SEQUENCE {
+ *       tbsCertificate SEQUENCE {
+ *           [0] version   OPTIONAL,
+ *           serialNumber  INTEGER,
+ *           signature     AlgorithmIdentifier,
+ *           issuer        Name,
+ *           validity      SEQUENCE,
+ *           subject       Name,        <- this, header included
+ *           ...
+ *
+ * It is a parser over attacker-adjacent input, and this project has already
+ * shipped one out-of-bounds read in DER handling
+ * (P11_DecodeDerEcdsaSignature, found with AddressSanitizer). Every read
+ * here is bounded by pEnd before it happens, long-form lengths are capped
+ * at four bytes, and a length that would run past the buffer fails rather
+ * than truncating. Failure is not fatal to the caller: KSP_StoreCertificate
+ * falls back to an empty subject, so an unparseable certificate is still
+ * stored.
+ */
+
+/* Read one DER tag-length header. On success *ppValue points at the value
+ * and *pcbValue is its length; *ppNext is the element after this one. */
+static BOOL DerReadHeader(const BYTE *pbData, const BYTE *pEnd,
+                          BYTE *pbTag, const BYTE **ppValue,
+                          DWORD *pcbValue, const BYTE **ppNext)
+{
+    DWORD cbLen = 0;
+
+    if (!pbData || pbData + 2 > pEnd)
+        return FALSE;
+
+    *pbTag = pbData[0];
+    pbData++;
+
+    if (pbData[0] < 0x80) {
+        cbLen = pbData[0];
+        pbData++;
+    } else {
+        DWORD cbLenBytes = pbData[0] & 0x7F;
+        DWORD i;
+
+        /* 0x80 is the indefinite form, which DER forbids; more than four
+         * length bytes cannot be represented here and is refused rather
+         * than wrapped. */
+        if (cbLenBytes == 0 || cbLenBytes > 4)
+            return FALSE;
+        pbData++;
+        if (pbData + cbLenBytes > pEnd)
+            return FALSE;
+
+        for (i = 0; i < cbLenBytes; i++)
+            cbLen = (cbLen << 8) | pbData[i];
+        pbData += cbLenBytes;
+    }
+
+    if (cbLen > (DWORD)(pEnd - pbData))
+        return FALSE;
+
+    *ppValue  = pbData;
+    *pcbValue = cbLen;
+    *ppNext   = pbData + cbLen;
+    return TRUE;
+}
+
+BOOL P11_ExtractCertSubject(const BYTE *pbCert, DWORD cbCert,
+                            const BYTE **ppSubject, DWORD *pcbSubject)
+{
+    const BYTE *pEnd;
+    const BYTE *pVal, *pNext, *pCur, *pTbsEnd;
+    DWORD       cbVal;
+    BYTE        bTag;
+    int         i;
+
+    if (!pbCert || cbCert == 0 || !ppSubject || !pcbSubject)
+        return FALSE;
+
+    pEnd = pbCert + cbCert;
+
+    /* Certificate ::= SEQUENCE */
+    if (!DerReadHeader(pbCert, pEnd, &bTag, &pVal, &cbVal, &pNext) ||
+        bTag != 0x30)
+        return FALSE;
+
+    /* tbsCertificate ::= SEQUENCE */
+    if (!DerReadHeader(pVal, pVal + cbVal, &bTag, &pVal, &cbVal, &pNext) ||
+        bTag != 0x30)
+        return FALSE;
+
+    pCur    = pVal;
+    pTbsEnd = pVal + cbVal;
+
+    /* [0] version is optional; everything after it is positional. */
+    if (!DerReadHeader(pCur, pTbsEnd, &bTag, &pVal, &cbVal, &pNext))
+        return FALSE;
+    if (bTag == 0xA0)
+        pCur = pNext;          /* skip version */
+
+    /* serialNumber, signature, issuer, validity — four elements, then
+     * subject is next. Their tags are not checked beyond being readable:
+     * the position is what identifies the field. */
+    for (i = 0; i < 4; i++) {
+        if (!DerReadHeader(pCur, pTbsEnd, &bTag, &pVal, &cbVal, &pNext))
+            return FALSE;
+        pCur = pNext;
+    }
+
+    /* subject ::= Name, which is a SEQUENCE. CKA_SUBJECT is the whole
+     * encoded Name including its header, not just the contents. */
+    if (!DerReadHeader(pCur, pTbsEnd, &bTag, &pVal, &cbVal, &pNext))
+        return FALSE;
+    if (bTag != 0x30)
+        return FALSE;
+
+    *ppSubject  = pCur;
+    *pcbSubject = (DWORD)(pNext - pCur);
+    return TRUE;
+}
+
 /* Resolve the PKCS#11 mechanism from algorithm identifier and CNG flags */
 SECURITY_STATUS P11_ResolveMechanism(
     LPCWSTR          pszAlgId,

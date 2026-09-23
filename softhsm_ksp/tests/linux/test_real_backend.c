@@ -245,7 +245,221 @@ int main(void)
         ASSERT_OK("EC key deleted from the token", ss);
     }
 
-    /* ── Suite 7 : enumeration and cleanup ──────────────────────────────── */
+
+    /* ── Suite 8 : ECDH agreement and the KDFs ─────────────────────────────
+     *
+     * The most provider logic between CNG and the token of anything here:
+     * the peer's public key arrives as a CNG blob, is imported as a PKCS#11
+     * object, agreed with CKM_ECDH1_DERIVE, and the raw Z is then run
+     * through whichever KDF the caller named. None of it had ever met a
+     * real token. */
+    TEST_SUITE("ECDH agreement");
+
+    {
+        NCRYPT_KEY_HANDLE    hAlice = 0, hBob = 0, hPeer = 0;
+        NCRYPT_SECRET_HANDLE hSecret = 0;
+        BYTE   abPeerBlob[512];
+        DWORD  cbPeerBlob = 0;
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-dh-a", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+            hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-dh-b", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hAlice, ALG_ECDH_P256,
+                                    L"phase7-dh-a", 0, 0);
+        ASSERT_OK("ECDH P-256 key A generated", ss);
+        ss = KSP_CreatePersistedKey(hProv, &hBob, ALG_ECDH_P256,
+                                    L"phase7-dh-b", 0, 0);
+        ASSERT_OK("ECDH P-256 key B generated", ss);
+
+        /* B's public half, in CNG's blob format, then back in as a peer. */
+        cbPeerBlob = 0;
+        ss = KSP_ExportKey(hProv, hBob, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                           abPeerBlob, sizeof(abPeerBlob), &cbPeerBlob, 0);
+        ASSERT_OK("B's public key exported", ss);
+        ASSERT("Blob is not empty", cbPeerBlob > 0);
+
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                           &hPeer, abPeerBlob, cbPeerBlob, 0);
+        ASSERT_OK("and imported as a peer public key", ss);
+
+        ss = KSP_SecretAgreement(hProv, hAlice, hPeer, &hSecret, 0);
+        ASSERT_OK("Secret agreement on the token", ss);
+        ASSERT("A secret handle came back", hSecret != 0);
+
+        if (ss == ERROR_SUCCESS) {
+            BYTE  abZ[64], abZ2[64], abHash[64], abHkdf[32];
+            DWORD cbZ = 0, cbZ2 = 0, cbHash = 0, cbHkdf = 0;
+            DWORD i;
+
+            ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_RAW_SECRET, NULL,
+                               abZ, sizeof(abZ), &cbZ, 0);
+            ASSERT_OK("Raw Z derived", ss);
+            ASSERT_EQ("P-256 shared secret is 32 bytes", cbZ, 32U);
+
+            {
+                BOOL bZero = TRUE;
+                for (i = 0; i < cbZ; i++)
+                    if (abZ[i] != 0) { bZero = FALSE; break; }
+                ASSERT("The shared secret is not all zeroes", !bZero);
+            }
+
+            /* Deriving twice from the same secret must be stable. */
+            ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_RAW_SECRET, NULL,
+                               abZ2, sizeof(abZ2), &cbZ2, 0);
+            ASSERT_OK("Raw Z derived again", ss);
+            ASSERT_EQ("same length", cbZ2, cbZ);
+            ASSERT("and the same bytes", memcmp(abZ, abZ2, cbZ) == 0);
+
+            ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HASH, NULL,
+                               abHash, sizeof(abHash), &cbHash, 0);
+            ASSERT_OK("Hash KDF", ss);
+            ASSERT("produced output", cbHash > 0);
+
+            ss = KSP_DeriveKey(hProv, hSecret, BCRYPT_KDF_HKDF, NULL,
+                               abHkdf, sizeof(abHkdf), &cbHkdf, 0);
+            ASSERT_OK("HKDF", ss);
+            ASSERT_EQ("filled the requested length", cbHkdf, 32U);
+
+            /* A KDF the provider refuses on purpose. */
+            {
+                BYTE  abTls[48];
+                DWORD cbTls = 0;
+                ss = KSP_DeriveKey(hProv, hSecret, L"TLS_PRF_1_1", NULL,
+                                   abTls, sizeof(abTls), &cbTls, 0);
+                ASSERT_ERR("An unknown KDF is refused", ss);
+            }
+
+            KSP_FreeSecret(hProv, hSecret);
+        }
+
+        if (hPeer) KSP_FreeKey(hProv, hPeer);
+        ss = KSP_DeleteKey(hProv, hAlice, 0);
+        ASSERT_OK("ECDH key A deleted", ss);
+        ss = KSP_DeleteKey(hProv, hBob, 0);
+        ASSERT_OK("ECDH key B deleted", ss);
+    }
+
+    /* ── Suite 9 : AES through a KSP ───────────────────────────────────── */
+    TEST_SUITE("AES encryption");
+
+    {
+        NCRYPT_KEY_HANDLE hAes = 0;
+        BYTE  abPlain[32];
+        BYTE  abCipher[128];
+        BYTE  abBack[128];
+        BYTE  abIv[AES_BLOCK_SIZE];
+        DWORD cbCipher = 0, cbBack = 0;
+        DWORD i;
+
+        for (i = 0; i < sizeof(abPlain); i++) abPlain[i] = (BYTE)(i * 3);
+        memset(abIv, 0x5A, sizeof(abIv));
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-aes", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hAes, ALG_AES, L"phase7-aes", 0, 0);
+        ASSERT_OK("AES-256 key generated on the token", ss);
+
+        ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_CHAINING_MODE_PROPERTY,
+                                (PBYTE)BCRYPT_CHAIN_MODE_CBC,
+                                (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CBC) + 1)
+                                        * sizeof(WCHAR)), 0);
+        ASSERT_OK("CBC chaining mode set", ss);
+        ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_INITIALIZATION_VECTOR,
+                                abIv, sizeof(abIv), 0);
+        ASSERT_OK("IV set", ss);
+
+        cbCipher = 0;
+        ss = KSP_Encrypt(hProv, hAes, abPlain, sizeof(abPlain), NULL,
+                         abCipher, sizeof(abCipher), &cbCipher, 0);
+        ASSERT_OK("AES-CBC encryption on the token", ss);
+        ASSERT_EQ("two blocks in, two blocks out", cbCipher, 32U);
+        ASSERT("The ciphertext differs from the plaintext",
+               memcmp(abCipher, abPlain, sizeof(abPlain)) != 0);
+
+        /* The round trip is the assertion that matters — a mock can return
+         * any bytes and call them ciphertext. */
+        ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_INITIALIZATION_VECTOR,
+                                abIv, sizeof(abIv), 0);
+        ASSERT_OK("IV reset for decryption", ss);
+
+        cbBack = 0;
+        ss = KSP_Decrypt(hProv, hAes, abCipher, cbCipher, NULL,
+                         abBack, sizeof(abBack), &cbBack, 0);
+        ASSERT_OK("AES-CBC decryption", ss);
+        ASSERT_EQ("plaintext length restored", cbBack, (DWORD)sizeof(abPlain));
+        ASSERT("and the plaintext round-trips",
+               memcmp(abBack, abPlain, sizeof(abPlain)) == 0);
+
+        ss = KSP_DeleteKey(hProv, hAes, 0);
+        ASSERT_OK("AES key deleted", ss);
+    }
+
+    /* ── Suite 10 : the certificate property, on a real token ──────────── */
+    TEST_SUITE("Certificate storage");
+
+    {
+        NCRYPT_KEY_HANDLE hCertKey = 0;
+        BYTE  abRead[2048];
+        DWORD cbRead = 0;
+
+        /* A real certificate, not a shaped blob. Kryoptic requires
+         * CKA_SUBJECT — it answers CKR_TEMPLATE_INCONSISTENT without one —
+         * so this is what exercises P11_ExtractCertSubject end to end. A
+         * fake blob would take the empty-Name fallback and prove nothing
+         * about the parser. The bytes and the expected subject offset are
+         * pinned in tests/unit/test_cert_subject.c. */
+        extern const BYTE g_realCert[];
+        extern const DWORD g_cbRealCert;
+        const BYTE *abCert = g_realCert;
+        const DWORD cbCert = g_cbRealCert;
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-cert", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hCertKey, ALG_RSA,
+                                    L"phase7-cert", 0, 0);
+        ASSERT_OK("Key for enrolment generated", ss);
+
+        /* Before enrolment there is no certificate, and that is not an
+         * error — it is the normal state of a freshly generated key. */
+        cbRead = 0;
+        ss = KSP_GetKeyProperty(hProv, hCertKey, NCRYPT_CERTIFICATE_PROPERTY,
+                                NULL, 0, &cbRead, 0);
+        ASSERT_EQ("No certificate yet → NTE_NOT_FOUND",
+                  ss, (SECURITY_STATUS)NTE_NOT_FOUND);
+
+        ss = KSP_SetKeyProperty(hProv, hCertKey, NCRYPT_CERTIFICATE_PROPERTY,
+                                (PBYTE)abCert, cbCert, 0);
+        /* This is the assertion that failed before CKA_SUBJECT was set:
+         * Kryoptic refused the object outright. */
+        ASSERT_OK("Certificate stored on a token that requires CKA_SUBJECT",
+                  ss);
+
+        cbRead = 0;
+        ss = KSP_GetKeyProperty(hProv, hCertKey, NCRYPT_CERTIFICATE_PROPERTY,
+                                abRead, sizeof(abRead), &cbRead, 0);
+        ASSERT_OK("Certificate read back", ss);
+        ASSERT_EQ("same length", cbRead, cbCert);
+        ASSERT("and the same bytes", memcmp(abRead, abCert, cbCert) == 0);
+
+        ss = KSP_DeleteKey(hProv, hCertKey, 0);
+        ASSERT_OK("Key deleted", ss);
+    }
+
+    /* ── Suite 11 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

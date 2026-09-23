@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         21 test suites · 1442 assertions · gcov coverage         │
+   │         22 test suites · 1466 assertions · gcov coverage         │
    │         Lines: 88.9 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -93,7 +93,8 @@ make syntax-check # parses the Windows-only integration test
 | AES key wrap | `test_keywrap.c` | 40 | `C_WrapKey` / `C_UnwrapKey` through `BCRYPT_AES_WRAP_KEY_BLOB`, both calls of the two-call convention, the non-extractable refusal, and capability gating |
 | PKCS#11 context | `test_p11_context.c` | 26 | Module load failure and recovery without a restart, C_Initialize failure modes, slot selection, and the capability probe running as part of initialisation |
 | Per-key PIN | `test_key_pin.c` | 25 | `CKU_CONTEXT_SPECIFIC` re-authentication on sign and decrypt, replay per operation, token responses, and refusal to read the credential back |
-| **Total** | | **1442** | |
+| X.509 subject extraction | `test_cert_subject.c` | 19 | `P11_ExtractCertSubject` against a real OpenSSL-generated certificate, with every truncation of it walked under AddressSanitizer |
+| **Total** | | **1466** | |
 
 ## Layer 1b — against a second, real PKCS#11 module
 
@@ -108,17 +109,19 @@ cd softhsm_ksp/tests/linux
 make            # fetch + build Kryoptic, init a token, run the suite
 ```
 
-42 assertions, covering initialisation against an unfamiliar module, the
+80 assertions, covering initialisation against an unfamiliar module, the
 capability probe reporting *that* token's mechanisms, algorithm
 advertisement narrowing to match, RSA and EC key generation and signing,
-public key export in CNG's blob format, enumeration and deletion.
+public key export in CNG's blob format, ECDH agreement and the KDFs, AES
+round-trip encryption, certificate storage, enumeration and deletion.
 
 **It exists because a mock cannot test the claim it is asked to test.** The
 unit suites ask whether the provider agrees with itself. This one asks
 whether it agrees with someone else's token, and on its first run it found
-two defects that 1434 mock assertions had not: a size query that left an
-operation active on a pooled session, and an ECDSA path that DER-decoded
-signatures PKCS#11 mandates be raw. See
+three defects that the mock assertions had not: a size query that left an
+operation active on a pooled session, an ECDSA path that DER-decoded
+signatures PKCS#11 mandates be raw, and a certificate left orphaned on the
+token when its key was deleted. See
 [13 — Roadmap](./13-roadmap.md), phase 7.
 
 Counts above are the assertions each suite reports, read back from a full

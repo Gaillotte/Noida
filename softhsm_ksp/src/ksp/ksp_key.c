@@ -928,15 +928,19 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
  * carrying the same scoped CKA_LABEL as the key, so the two travel together
  * through the same naming and the same machine/user scoping.
  *
- * CKA_SUBJECT is deliberately not set. PKCS#11 marks it required for X.509
- * certificates, but CNG hands a provider nothing except the encoded
- * certificate, so populating it would mean parsing X.509 inside the KSP to
- * reach the subject field. SoftHSM2 requires only CKA_CLASS and
- * CKA_CERTIFICATE_TYPE (see SoftHSM.cpp, the CKO_CERTIFICATE branch of the
- * template check) and accepts the object without it. A token that enforces
- * the specification's marking would refuse, and there is no such token here
- * to test a workaround against — writing one blind is how this project
- * accumulated code that only ever worked against its own assumptions.
+ * CKA_SUBJECT is set, and the history of that is worth keeping. PKCS#11
+ * marks it required for X.509 certificates. SoftHSM2 does not enforce it —
+ * see the CKO_CERTIFICATE branch of SoftHSM.cpp's template check — so this
+ * originally omitted it, with a comment saying a stricter token would
+ * refuse and that writing a workaround blind was how this project had
+ * accumulated code that only worked against its own assumptions.
+ *
+ * Kryoptic is that stricter token, and it answers CKR_TEMPLATE_INCONSISTENT.
+ * The subject is now parsed out of the certificate by
+ * P11_ExtractCertSubject. When that fails — a malformed certificate, or one
+ * shaped in a way the walk does not expect — an empty Name is sent instead,
+ * so a token that does not require the attribute still stores the object
+ * and one that does still accepts it.
  */
 
 /* Replace any certificate already stored under this key's label, then
@@ -957,9 +961,22 @@ SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
     CK_BBOOL          bFalse = CK_FALSE;
     CK_OBJECT_CLASS   classCert = CKO_CERTIFICATE;
     CK_ULONG          certType  = CKC_X_509;
+    const BYTE       *pbSubject = NULL;
+    DWORD             cbSubject = 0;
+    /* An empty RDNSequence: SEQUENCE, length 0. Valid DER, and what is sent
+     * when the certificate's own subject cannot be located. */
+    static const BYTE abEmptyName[] = { 0x30, 0x00 };
 
     if (!pbCert || cbCert == 0)
         return NTE_INVALID_PARAMETER;
+
+    if (!P11_ExtractCertSubject(pbCert, cbCert, &pbSubject, &cbSubject)) {
+        LOG_INFO("KSP_StoreCertificate: could not locate the subject in a "
+                 "%lu-byte certificate; storing an empty Name",
+                 (unsigned long)cbCert);
+        pbSubject = abEmptyName;
+        cbSubject = (DWORD)sizeof(abEmptyName);
+    }
 
     nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
@@ -981,6 +998,7 @@ SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
             { CKA_TOKEN,            &bTrue,             sizeof(bTrue)       },
             { CKA_PRIVATE,          &bFalse,            sizeof(bFalse)      },
             { CKA_LABEL,            szLabel,            (CK_ULONG)nLabelLen },
+            { CKA_SUBJECT,          (CK_VOID_PTR)pbSubject, (CK_ULONG)cbSubject },
             { CKA_VALUE,            (CK_VOID_PTR)pbCert, (CK_ULONG)cbCert   },
         };
 
@@ -1125,6 +1143,31 @@ SECURITY_STATUS WINAPI KSP_DeleteKey(
         rv = pCtx->pFunctionList->C_DestroyObject(hSession, pKey->hSecretKey);
         if (rv != CKR_OK)
             LOG_ERROR("C_DestroyObject secret", P11RvToSecStatus(rv));
+    }
+
+    /* The certificate stored beside the key goes with it.
+     *
+     * Leaving it behind is not merely a storage leak. The certificate is
+     * found by the key's scoped label, so the next key created with the
+     * same name inherits a certificate belonging to a key that no longer
+     * exists — and a caller reading NCRYPT_CERTIFICATE_PROPERTY would get
+     * a certificate whose public key does not match the one it now holds.
+     *
+     * Found by the live-token suite: a second run of it read back a
+     * certificate the previous run had left on the token. */
+    {
+        CK_OBJECT_HANDLE hCert = FindScopedObject(hSession, CKO_CERTIFICATE,
+                                                  pKey->szKeyName,
+                                                  pKey->bMachineKey);
+        if (hCert != CK_INVALID_HANDLE) {
+            rv = pCtx->pFunctionList->C_DestroyObject(hSession, hCert);
+            if (rv != CKR_OK)
+                LOG_ERROR("C_DestroyObject certificate",
+                          P11RvToSecStatus(rv));
+            else
+                LOG_INFO("Certificate for '%ls' removed with the key",
+                         pKey->szKeyName);
+        }
     }
 
     P11_ReleaseSession(hSession);

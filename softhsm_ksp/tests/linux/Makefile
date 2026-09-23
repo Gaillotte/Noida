@@ -89,7 +89,7 @@ token: p11_init_token $(KRYOPTIC_SO)
 	    ./p11_init_token $(KRYOPTIC_SO) $(TOKEN_LABEL) $(SO_PIN) $(USER_PIN)
 
 # ── The provider, against that token ──────────────────────────────────────
-test_real_backend: test_real_backend.c p11_real_loader.c $(PROVIDER_SRC)
+test_real_backend: test_real_backend.c p11_real_loader.c real_cert.c $(PROVIDER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
 
 run: test_real_backend

@@ -284,6 +284,35 @@ int main(void)
         KSP_FreeKey(hProv, hPending);
     }
 
+    /* ── Suite 8 : the certificate goes when the key goes ───────────────── */
+    TEST_SUITE("DeleteKey removes the certificate");
+
+    {
+        NCRYPT_KEY_HANDLE hDoomed = 0;
+
+        ss = KSP_CreatePersistedKey(hProv, &hDoomed, ALG_RSA, L"doomed", 0,
+                                    NCRYPT_PERSIST_ONLY_FLAG);
+        ASSERT_OK("Key created", ss);
+        ss = KSP_FinalizeKey(hProv, hDoomed, 0);
+        ASSERT_OK("Key finalised", ss);
+
+        TokenHasCert(g_cert, sizeof(g_cert));
+        P11Mock_ResetCalls();
+
+        ss = KSP_DeleteKey(hProv, hDoomed, 0);
+        ASSERT_OK("Key deleted", ss);
+
+        /* Private, public and certificate — leaving the certificate behind
+         * means the next key of the same name inherits one belonging to a
+         * key that no longer exists. The live-token suite found exactly
+         * that: its second run read back the first run's certificate. */
+        ASSERT_EQ("Three objects destroyed, not two",
+            P11Mock_GetCalls()->nDestroyObject, 3);
+        ASSERT_EQ("and the certificate was the one searched for",
+            P11Mock_GetConfig()->lastFindClass,
+            (CK_OBJECT_CLASS)CKO_CERTIFICATE);
+    }
+
     KSP_FreeKey(hProv, hKey);
     P11_ReleaseCapabilities();
     KSP_FreeProvider(hProv);
