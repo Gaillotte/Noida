@@ -691,7 +691,365 @@ int main(void)
         ASSERT_OK("Key deleted", ss);
     }
 
-    /* ── Suite 15 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 15 : RSA decryption, both paddings ───────────────────────── */
+    TEST_SUITE("RSA decryption");
+
+    {
+        NCRYPT_KEY_HANDLE hDec = 0;
+        P11_CONTEXT      *pCtx = P11_GetContext();
+        BYTE   abPlain[32];
+        BYTE   abCipher[512];
+        BYTE   abBack[512];
+        DWORD  cbBack = 0;
+        DWORD  i;
+
+        for (i = 0; i < sizeof(abPlain); i++) abPlain[i] = (BYTE)(0xE0 ^ i);
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-dec", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        /* AT_KEYEXCHANGE, so the public half carries CKA_ENCRYPT and the
+         * token can produce its own ciphertext — no second crypto library
+         * in the test, and the bytes under test come from the same
+         * implementation that must undo them. */
+        ss = KSP_CreatePersistedKey(hProv, &hDec, ALG_RSA, L"phase7-dec",
+                                    AT_KEYEXCHANGE, 0);
+        ASSERT_OK("RSA key-exchange key generated", ss);
+
+        /* ---- PKCS#1 v1.5 ---- */
+        {
+            KSP_KEY          *pDec = (KSP_KEY *)(ULONG_PTR)hDec;
+            CK_SESSION_HANDLE hSess = CK_INVALID_HANDLE;
+            CK_MECHANISM      mech = { CKM_RSA_PKCS, NULL, 0 };
+            CK_ULONG          cbCipher = sizeof(abCipher);
+            CK_RV             rv = CKR_GENERAL_ERROR;
+
+            if (P11_AcquireSession(&hSess) == ERROR_SUCCESS) {
+                rv = pCtx->pFunctionList->C_EncryptInit(hSess, &mech,
+                                                        pDec->hPubKey);
+                if (rv == CKR_OK)
+                    rv = pCtx->pFunctionList->C_Encrypt(hSess, abPlain,
+                            (CK_ULONG)sizeof(abPlain), abCipher, &cbCipher);
+                P11_ReleaseSession(hSess);
+            }
+            ASSERT_EQ("Token encrypted with PKCS#1 v1.5",
+                      (DWORD)rv, (DWORD)CKR_OK);
+
+            if (rv == CKR_OK) {
+                cbBack = 0;
+                ss = KSP_Decrypt(hProv, hDec, abCipher, (DWORD)cbCipher, NULL,
+                                 abBack, sizeof(abBack), &cbBack,
+                                 NCRYPT_PAD_PKCS1_FLAG);
+                ASSERT_OK("PKCS#1 decryption through the KSP", ss);
+                ASSERT_EQ("plaintext length restored", cbBack,
+                          (DWORD)sizeof(abPlain));
+                ASSERT("and the plaintext round-trips",
+                       memcmp(abBack, abPlain, sizeof(abPlain)) == 0);
+            }
+        }
+
+        /* ---- OAEP, SHA-256 ---- */
+        {
+            KSP_KEY          *pDec = (KSP_KEY *)(ULONG_PTR)hDec;
+            CK_SESSION_HANDLE hSess = CK_INVALID_HANDLE;
+            CK_RSA_PKCS_OAEP_PARAMS oaep;
+            CK_MECHANISM      mech;
+            CK_ULONG          cbCipher = sizeof(abCipher);
+            CK_RV             rv = CKR_GENERAL_ERROR;
+            BCRYPT_OAEP_PADDING_INFO oaepInfo;
+
+            memset(&oaep, 0, sizeof(oaep));
+            oaep.hashAlg    = CKM_SHA256;
+            oaep.mgf        = CKG_MGF1_SHA256;
+            oaep.source     = 0;
+            oaep.pSourceData = NULL;
+            oaep.ulSourceDataLen = 0;
+
+            mech.mechanism      = CKM_RSA_PKCS_OAEP;
+            mech.pParameter     = &oaep;
+            mech.ulParameterLen = sizeof(oaep);
+
+            if (P11_AcquireSession(&hSess) == ERROR_SUCCESS) {
+                rv = pCtx->pFunctionList->C_EncryptInit(hSess, &mech,
+                                                        pDec->hPubKey);
+                if (rv == CKR_OK)
+                    rv = pCtx->pFunctionList->C_Encrypt(hSess, abPlain,
+                            (CK_ULONG)sizeof(abPlain), abCipher, &cbCipher);
+                P11_ReleaseSession(hSess);
+            }
+            ASSERT_EQ("Token encrypted with OAEP-SHA256",
+                      (DWORD)rv, (DWORD)CKR_OK);
+
+            if (rv == CKR_OK) {
+                oaepInfo.pszAlgId = BCRYPT_SHA256_ALGORITHM;
+                oaepInfo.pbLabel  = NULL;
+                oaepInfo.cbLabel  = 0;
+
+                cbBack = 0;
+                ss = KSP_Decrypt(hProv, hDec, abCipher, (DWORD)cbCipher,
+                                 &oaepInfo, abBack, sizeof(abBack), &cbBack,
+                                 NCRYPT_PAD_OAEP_FLAG);
+                ASSERT_OK("OAEP decryption through the KSP", ss);
+                ASSERT_EQ("plaintext length restored", cbBack,
+                          (DWORD)sizeof(abPlain));
+                ASSERT("and the plaintext round-trips",
+                       memcmp(abBack, abPlain, sizeof(abPlain)) == 0);
+            }
+        }
+
+        ss = KSP_DeleteKey(hProv, hDec, 0);
+        ASSERT_OK("Key-exchange key deleted", ss);
+    }
+
+    /* ── Suite 16 : RSA-PSS signing ─────────────────────────────────────── */
+    TEST_SUITE("RSA-PSS");
+
+    {
+        NCRYPT_KEY_HANDLE hPss = 0;
+        BCRYPT_PSS_PADDING_INFO pssInfo;
+        BYTE  abHash[32];
+        BYTE  abSig[512];
+        DWORD cbSig = 0;
+
+        memset(abHash, 0x2B, sizeof(abHash));
+        pssInfo.pszAlgId = BCRYPT_SHA256_ALGORITHM;
+        pssInfo.cbSalt   = 32;
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-pss", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hPss, ALG_RSA, L"phase7-pss", 0, 0);
+        ASSERT_OK("RSA signing key generated", ss);
+
+        cbSig = 0;
+        ss = KSP_SignHash(hProv, hPss, &pssInfo, abHash, sizeof(abHash),
+                          abSig, sizeof(abSig), &cbSig, NCRYPT_PAD_PSS_FLAG);
+        ASSERT_OK("PSS signature produced by the token", ss);
+        ASSERT_EQ("and is the modulus length", cbSig, 256U);
+
+        /* PSS is randomised: two signatures over the same hash must differ,
+         * which also proves the salt reached the token. */
+        {
+            BYTE  abSig2[512];
+            DWORD cbSig2 = 0;
+            ss = KSP_SignHash(hProv, hPss, &pssInfo, abHash, sizeof(abHash),
+                              abSig2, sizeof(abSig2), &cbSig2,
+                              NCRYPT_PAD_PSS_FLAG);
+            ASSERT_OK("A second PSS signature", ss);
+            ASSERT("differs from the first — PSS is randomised",
+                   memcmp(abSig, abSig2, cbSig) != 0);
+        }
+
+        ss = KSP_DeleteKey(hProv, hPss, 0);
+        ASSERT_OK("PSS key deleted", ss);
+    }
+
+    /* ── Suite 17 : the other AES chaining modes ────────────────────────── */
+    TEST_SUITE("AES chaining modes");
+
+    {
+        NCRYPT_KEY_HANDLE hAes = 0;
+        BYTE  abPlain[32];
+        BYTE  abCipher[128];
+        BYTE  abBack[128];
+        DWORD cbCipher = 0, cbBack = 0;
+        DWORD i;
+
+        for (i = 0; i < sizeof(abPlain); i++) abPlain[i] = (BYTE)(i + 1);
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-modes", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hAes, ALG_AES, L"phase7-modes",
+                                    0, 0);
+        ASSERT_OK("AES key generated", ss);
+
+        /* ECB takes no IV. */
+        ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_CHAINING_MODE_PROPERTY,
+                                (PBYTE)BCRYPT_CHAIN_MODE_ECB,
+                                (DWORD)((wcslen(BCRYPT_CHAIN_MODE_ECB) + 1)
+                                        * sizeof(WCHAR)), 0);
+        ASSERT_OK("ECB selected", ss);
+        cbCipher = 0;
+        ss = KSP_Encrypt(hProv, hAes, abPlain, sizeof(abPlain), NULL,
+                         abCipher, sizeof(abCipher), &cbCipher, 0);
+        ASSERT_OK("ECB encryption", ss);
+        cbBack = 0;
+        ss = KSP_Decrypt(hProv, hAes, abCipher, cbCipher, NULL,
+                         abBack, sizeof(abBack), &cbBack, 0);
+        ASSERT_OK("ECB decryption", ss);
+        ASSERT("ECB round-trips", cbBack == sizeof(abPlain) &&
+               memcmp(abBack, abPlain, sizeof(abPlain)) == 0);
+
+        /* CTR — this provider's own chaining-mode name, so nothing but a
+         * caller written against this KSP can reach it. */
+        {
+            BYTE abCtr[AES_BLOCK_SIZE];
+            memset(abCtr, 0x01, sizeof(abCtr));
+
+            ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_CHAINING_MODE_PROPERTY,
+                                    (PBYTE)KSP_CHAIN_MODE_CTR,
+                                    (DWORD)((wcslen(KSP_CHAIN_MODE_CTR) + 1)
+                                            * sizeof(WCHAR)), 0);
+            ASSERT_OK("CTR selected", ss);
+            ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_INITIALIZATION_VECTOR,
+                                    abCtr, sizeof(abCtr), 0);
+            ASSERT_OK("counter block set", ss);
+
+            cbCipher = 0;
+            ss = KSP_Encrypt(hProv, hAes, abPlain, sizeof(abPlain), NULL,
+                             abCipher, sizeof(abCipher), &cbCipher, 0);
+            ASSERT_OK("CTR encryption", ss);
+
+            ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_INITIALIZATION_VECTOR,
+                                    abCtr, sizeof(abCtr), 0);
+            ASSERT_OK("counter block reset", ss);
+            cbBack = 0;
+            ss = KSP_Decrypt(hProv, hAes, abCipher, cbCipher, NULL,
+                             abBack, sizeof(abBack), &cbBack, 0);
+            ASSERT_OK("CTR decryption", ss);
+            ASSERT("CTR round-trips", cbBack == sizeof(abPlain) &&
+                   memcmp(abBack, abPlain, sizeof(abPlain)) == 0);
+        }
+
+        /* GCM — 12-byte nonce, and the tag rides in the ciphertext. */
+        {
+            BYTE abNonce[12];
+            memset(abNonce, 0x77, sizeof(abNonce));
+
+            ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_CHAINING_MODE_PROPERTY,
+                                    (PBYTE)BCRYPT_CHAIN_MODE_GCM,
+                                    (DWORD)((wcslen(BCRYPT_CHAIN_MODE_GCM) + 1)
+                                            * sizeof(WCHAR)), 0);
+            ASSERT_OK("GCM selected", ss);
+            ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_INITIALIZATION_VECTOR,
+                                    abNonce, sizeof(abNonce), 0);
+            ASSERT_OK("nonce set", ss);
+
+            cbCipher = 0;
+            ss = KSP_Encrypt(hProv, hAes, abPlain, sizeof(abPlain), NULL,
+                             abCipher, sizeof(abCipher), &cbCipher, 0);
+            ASSERT_OK("GCM encryption", ss);
+            ASSERT("ciphertext carries the 16-byte tag",
+                   cbCipher == sizeof(abPlain) + 16);
+
+            ss = KSP_SetKeyProperty(hProv, hAes, NCRYPT_INITIALIZATION_VECTOR,
+                                    abNonce, sizeof(abNonce), 0);
+            ASSERT_OK("nonce reset", ss);
+            cbBack = 0;
+            ss = KSP_Decrypt(hProv, hAes, abCipher, cbCipher, NULL,
+                             abBack, sizeof(abBack), &cbBack, 0);
+            ASSERT_OK("GCM decryption", ss);
+            ASSERT("GCM round-trips", cbBack == sizeof(abPlain) &&
+                   memcmp(abBack, abPlain, sizeof(abPlain)) == 0);
+        }
+
+        ss = KSP_DeleteKey(hProv, hAes, 0);
+        ASSERT_OK("AES key deleted", ss);
+    }
+
+    /* ── Suite 18 : the standard curve-name route ───────────────────────── */
+    TEST_SUITE("Generic ECDSA plus BCRYPT_ECC_CURVE_NAME");
+
+    {
+        NCRYPT_KEY_HANDLE hGen = 0;
+        BYTE  abHash[48];
+        BYTE  abSig[256];
+        DWORD cbSig = 0;
+
+        memset(abHash, 0x3C, sizeof(abHash));
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-generic", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        /* How a portable application reaches a curve: the generic algorithm
+         * plus a curve name, with nothing provider-specific anywhere. */
+        ss = KSP_CreatePersistedKey(hProv, &hGen, BCRYPT_ECDSA_ALGORITHM,
+                                    L"phase7-generic", 0,
+                                    NCRYPT_PERSIST_ONLY_FLAG);
+        ASSERT_OK("Generic ECDSA key created", ss);
+
+        ss = KSP_SetKeyProperty(hProv, hGen, BCRYPT_ECC_CURVE_NAME,
+                                (PBYTE)BCRYPT_ECC_CURVE_NISTP384,
+                                (DWORD)((wcslen(BCRYPT_ECC_CURVE_NISTP384) + 1)
+                                        * sizeof(WCHAR)), 0);
+        ASSERT_OK("Curve named as nistP384", ss);
+
+        ss = KSP_FinalizeKey(hProv, hGen, 0);
+        ASSERT_OK("Finalised on the token", ss);
+
+        cbSig = 0;
+        ss = KSP_SignHash(hProv, hGen, NULL, abHash, sizeof(abHash),
+                          abSig, sizeof(abSig), &cbSig, 0);
+        ASSERT_OK("Signed", ss);
+        ASSERT_EQ("P-384 signature is 96 bytes", cbSig, 96U);
+
+        ss = KSP_DeleteKey(hProv, hGen, 0);
+        ASSERT_OK("Generic key deleted", ss);
+    }
+
+    /* ── Suite 19 : machine and user scopes are distinct objects ────────── */
+    TEST_SUITE("Machine and user key scoping");
+
+    {
+        NCRYPT_KEY_HANDLE hUser = 0, hMachine = 0, hReopen = 0;
+
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-scope", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+            hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase7-scope", 0,
+                            NCRYPT_MACHINE_KEY_FLAG) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+
+        ss = KSP_CreatePersistedKey(hProv, &hUser, ALG_ECDSA_P256,
+                                    L"phase7-scope", 0, 0);
+        ASSERT_OK("User-scoped key created", ss);
+        ss = KSP_CreatePersistedKey(hProv, &hMachine, ALG_ECDSA_P256,
+                                    L"phase7-scope", 0,
+                                    NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Machine-scoped key of the SAME name created", ss);
+
+        /* Before scoping existed these aliased each other. Both must now be
+         * openable independently and be different objects on the token. */
+        ss = KSP_OpenKey(hProv, &hReopen, L"phase7-scope", 0, 0);
+        ASSERT_OK("The user key reopens", ss);
+        if (ss == ERROR_SUCCESS) {
+            KSP_KEY *pA = (KSP_KEY *)(ULONG_PTR)hReopen;
+            KSP_KEY *pB = (KSP_KEY *)(ULONG_PTR)hMachine;
+            ASSERT("and is not the machine key's object",
+                   pA->hPrivKey != pB->hPrivKey);
+            KSP_FreeKey(hProv, hReopen);
+            hReopen = 0;
+        }
+
+        ss = KSP_OpenKey(hProv, &hReopen, L"phase7-scope", 0,
+                         NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("The machine key reopens", ss);
+        if (hReopen) KSP_FreeKey(hProv, hReopen);
+
+        ss = KSP_DeleteKey(hProv, hMachine, 0);
+        ASSERT_OK("Machine key deleted", ss);
+        ss = KSP_DeleteKey(hProv, hUser, 0);
+        ASSERT_OK("User key deleted", ss);
+    }
+
+    /* ── Suite 20 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

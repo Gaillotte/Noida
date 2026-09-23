@@ -117,9 +117,12 @@ jobs:
         working-directory: softhsm_ksp/tests/linux
         run: make token
 
-      - name: Run the provider against it
+      # Twice, against the same token, without re-initialising between.
+      # Anything the provider leaves behind is invisible to a single pass —
+      # the orphaned-certificate defect was found precisely this way.
+      - name: Run the provider against it, twice
         working-directory: softhsm_ksp/tests/linux
-        run: make run
+        run: make run-twice
 
   # ── The authority ───────────────────────────────────────────────────────
   # Only this job can answer whether the DLL actually builds. Everything

@@ -106,15 +106,23 @@ to this project, initialises a token in it, and runs the real `p11_*` and
 
 ```bash
 cd softhsm_ksp/tests/linux
-make            # fetch + build Kryoptic, init a token, run the suite
+make            # fetch + build Kryoptic, init a token, run the suite twice
 ```
 
-108 assertions, covering initialisation against an unfamiliar module, the
+**It runs twice against the same token, and that is not belt and braces.**
+A whole class of defect is invisible to a single pass: anything the provider
+leaves behind. The orphaned-certificate bug was found exactly this way — a
+second run reading back what the first had left — and a single pass passed
+it happily.
+
+156 assertions, covering initialisation against an unfamiliar module, the
 capability probe reporting *that* token's mechanisms, algorithm
 advertisement narrowing to match, RSA and EC key generation and signing,
 public key export in CNG's blob format, ECDH agreement and the KDFs, AES
-round-trip encryption, certificate storage, AES-CMAC and HMAC signing, key
-wrap and unwrap, the per-key PIN, enumeration and deletion.
+round-trip encryption in four chaining modes, RSA PKCS#1 and OAEP
+decryption, RSA-PSS signing, certificate storage, AES-CMAC and HMAC
+signing, key wrap and unwrap, the per-key PIN, the standard
+curve-name route, machine/user scoping, enumeration and deletion.
 
 **It exists because a mock cannot test the claim it is asked to test.** The
 unit suites ask whether the provider agrees with itself. This one asks

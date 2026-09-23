@@ -87,7 +87,7 @@ noida/
 │   │   │   ├── p11_real_loader.c    LoadLibraryW → dlopen
 │   │   │   ├── p11_init_token.c     C_InitToken / C_InitPIN standalone tool
 │   │   │   ├── real_cert.c          a genuine openssl-generated certificate
-│   │   │   └── test_real_backend.c  108 assertions against a live token
+│   │   │   └── test_real_backend.c  156 assertions against a live token (run twice)
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
@@ -197,6 +197,16 @@ found two more, both in that untouched surface.**
 
 ECDH agreement, the KDFs, AES round-trip encryption, RSA/ECDSA signing,
 public key export and the per-key PIN tolerance path all passed first time.
+
+**Step 1d finished the sweep** — RSA PKCS#1 and OAEP decryption, RSA-PSS
+signing, the AES modes CBC had not covered, the curve-name route,
+machine/user scoping. **156 assertions, no new defects** — the first
+evidence the sweep has bottomed out rather than paused.
+
+**The suite now runs twice against the same token**, without
+re-initialising. Anything the provider leaves behind is invisible to a
+single pass; the orphaned-certificate bug was found exactly that way.
+Re-injecting it confirms the mechanism works: pass 1 green, pass 2 red.
 
 **Five defects total from this one suite**, three of them in phase-5 code
 that was days old and had 1434 mock assertions behind it.

@@ -9,7 +9,8 @@
 #   make kryoptic      fetch and build Kryoptic (a PKCS#11 token in Rust)
 #   make token         initialise a token in it
 #   make run           run the provider against that token
-#   make all           all three
+#   make run-twice     run it twice against the SAME token — see below
+#   make all           all four
 #
 # Kryoptic is built WITHOUT eddsa and WITHOUT the post-quantum mechanisms.
 # That is deliberate: its mechanism list must differ from SoftHSM2's, or the
@@ -60,7 +61,7 @@ PROVIDER_SRC = \
 
 .PHONY: all kryoptic token run clean distclean
 
-all: kryoptic token run
+all: kryoptic token run-twice
 
 # ── Kryoptic ──────────────────────────────────────────────────────────────
 $(KRYOPTIC_SO):
@@ -98,6 +99,24 @@ run: test_real_backend
 	KSP_PKCS11_LIB=$(KRYOPTIC_SO) \
 	SOFTHSM2_PIN=$(USER_PIN) \
 	    ./test_real_backend
+
+# Run twice against the same token, without re-initialising between.
+#
+# This is not belt and braces. A whole class of defect is invisible to a
+# single pass: anything the provider leaves behind on the token. The
+# orphaned-certificate bug — KSP_DeleteKey destroying the key and not the
+# CKO_CERTIFICATE beside it — was found exactly this way, by a second run
+# reading back what the first had left. A single run passed it happily.
+#
+# The second pass costs a few seconds and makes "the token is as clean as we
+# found it" an enforced property rather than a hope.
+run-twice: test_real_backend
+	@echo "══ Pass 1 of 2 ══"
+	@$(MAKE) --no-print-directory run
+	@echo ""
+	@echo "══ Pass 2 of 2 — same token, nothing re-initialised ══"
+	@echo "   (a failure here means the first pass left state behind)"
+	@$(MAKE) --no-print-directory run
 
 clean:
 	rm -f test_real_backend p11_init_token

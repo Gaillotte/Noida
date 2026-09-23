@@ -718,6 +718,25 @@ healthy.** Three of the five are in phase-5 features that were days old.
 The lesson is not that the unit suites are bad — they catch regressions well
 — but that a mock can only confirm the provider agrees with its author.
 
+#### Step 1d ✅ done — the sweep ends, and the harness gets teeth
+
+The remainder: RSA PKCS#1 and OAEP decryption, RSA-PSS signing, the three
+AES chaining modes CBC had not covered, the standard curve-name route, and
+machine/user scoping. **156 assertions, and no new defects.**
+
+That is a result, not an anticlimax. Five defects came out of the first 108
+assertions and none out of the next 48, which is the first evidence that the
+sweep has reached the bottom rather than merely paused. The remaining
+surface is now covered, and saying so is more useful than sweeping again out
+of habit.
+
+**The harness itself changed, and that may outlast the assertions.** The
+suite now runs *twice against the same token*, without re-initialising
+between. A whole class of defect is invisible to a single pass — anything
+the provider leaves behind — and the orphaned-certificate bug was found
+exactly that way. Re-injecting it confirms the mechanism: pass 1 green, pass
+2 red. "The token is as clean as we found it" is now an enforced property.
+
 The suite runs in CI as the `second-backend` job.
 
 ### Group D — real, and not reachable from this repository
