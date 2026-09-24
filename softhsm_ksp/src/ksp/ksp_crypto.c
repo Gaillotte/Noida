@@ -5,6 +5,7 @@
 #include "../pkcs11/p11_context.h"
 #include "../pkcs11/p11_session.h"
 #include "../pkcs11/p11_utils.h"
+#include "../pkcs11/p11_caps.h"
 #include "../common/config.h"
 #include "../common/logging.h"
 #include "../common/memory.h"
@@ -236,6 +237,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
     CK_SESSION_HANDLE     hSession = CK_INVALID_HANDLE;
     CK_MECHANISM          mech;
     CK_RSA_PKCS_PSS_PARAMS pssParams;
+    CK_EDDSA_PARAMS       eddsaParams;
     CK_RV                 rv;
     SECURITY_STATUS       ss;
     BYTE                 *pbRawSig  = NULL;
@@ -285,6 +287,28 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         FillPssParams((BCRYPT_PSS_PADDING_INFO *)pPaddingInfo, &pssParams);
         mech.pParameter     = &pssParams;
         mech.ulParameterLen = sizeof(pssParams);
+    }
+
+    /* Ed448 requires CK_EDDSA_PARAMS and Ed25519 must not be given it.
+     *
+     * RFC 8032 defines five algorithms, not two. Ed25519 has a pure form
+     * taking no context, so an absent parameter selects it and a present
+     * one with phFlag false selects Ed25519ctx — a different scheme that
+     * would produce signatures no Ed25519 verifier accepts. Ed448 has no
+     * context-free form at all: its context is merely empty by default,
+     * and a token given no parameter answers CKR_MECHANISM_PARAM_INVALID.
+     *
+     * The provider sent NULL for both, so Ed448 signing had never worked.
+     * SoftHSM2 accepts the bare mechanism for both curves, which is why
+     * nine sessions and a full mock suite never saw it. */
+    if (mech.mechanism == CKM_EDDSA &&
+        _wcsicmp(pKey->szAlgId, ALG_EDDSA_ED448) == 0) {
+        memset(&eddsaParams, 0, sizeof(eddsaParams));
+        eddsaParams.phFlag           = CK_FALSE;  /* pure Ed448, not Ed448ph */
+        eddsaParams.ulContextDataLen = 0;
+        eddsaParams.pContextData     = NULL;
+        mech.pParameter     = &eddsaParams;
+        mech.ulParameterLen = sizeof(eddsaParams);
     }
 
     bEcdsa = (mech.mechanism == CKM_ECDSA);

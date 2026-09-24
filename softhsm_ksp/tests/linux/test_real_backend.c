@@ -107,14 +107,64 @@ int main(void)
     ASSERT("ECDSA present", P11_HasMechanism(CKM_ECDSA));
     ASSERT("AES key generation present", P11_HasMechanism(CKM_AES_KEY_GEN));
 
-    /* And what it does not. These are the assertions that would be
-     * meaningless against the mock: the provider is reporting a real
-     * token's absences, not a list compiled into itself. SoftHSM2 has
-     * CKM_EDDSA; this Kryoptic build is configured without it. */
-    ASSERT("CKM_EDDSA absent — this build has no eddsa feature",
-        !P11_HasMechanism(CKM_EDDSA));
-    ASSERT("CKM_ML_DSA absent — no post-quantum in this build",
-        !P11_HasMechanism(CKM_ML_DSA));
+    /* And that the probe is reporting the TOKEN, not a list compiled into
+     * the provider. Naming specific absences would only hold for one
+     * Kryoptic feature set — the eddsa and pqc builds of step 2 flip them —
+     * so this asks the token directly and requires the probe to agree on
+     * every mechanism it is asked about, present or absent. That property
+     * is true of any build, and it is the one a mock cannot establish: a
+     * mock answers from whatever the test just told it to say. */
+    {
+        P11_CONTEXT      *pCtx = P11_GetContext();
+        CK_MECHANISM_TYPE aRaw[512];
+        CK_ULONG          nRaw = sizeof(aRaw) / sizeof(aRaw[0]);
+        CK_RV             rvMech;
+        /* A spread: some this build has, some it does not, and the three
+         * that later steps turn on. */
+        CK_MECHANISM_TYPE aAsk[] = {
+            CKM_RSA_PKCS_KEY_PAIR_GEN, CKM_RSA_PKCS, CKM_RSA_PKCS_PSS,
+            CKM_RSA_PKCS_OAEP, CKM_EC_KEY_PAIR_GEN, CKM_ECDSA,
+            CKM_ECDH1_DERIVE, CKM_EC_MONTGOMERY_KEY_PAIR_GEN,
+            CKM_EC_EDWARDS_KEY_PAIR_GEN, CKM_EDDSA, CKM_ML_DSA,
+            CKM_ML_DSA_KEY_PAIR_GEN, CKM_AES_KEY_GEN, CKM_AES_CBC,
+            CKM_AES_GCM, CKM_SHA256_HMAC, CKM_GENERIC_SECRET_KEY_GEN,
+            /* One mechanism no token implements, so the "absent" half of
+               the sample is non-empty whatever features are compiled in.
+               CKM_VENDOR_DEFINED is the start of the vendor range; nothing
+               in it is defined by any standard. */
+            (CK_MECHANISM_TYPE)(CKM_VENDOR_DEFINED | 0x0BADF00DUL),
+        };
+        size_t   iAsk;
+        CK_ULONG iRaw;
+        int      nAgree = 0, nDisagree = 0, nPresent = 0;
+
+        rvMech = pCtx->pFunctionList->C_GetMechanismList(
+                     pCtx->slotId, aRaw, &nRaw);
+        ASSERT("The token answers C_GetMechanismList directly",
+               rvMech == CKR_OK);
+        printf("  token reports %lu mechanisms\n", (unsigned long)nRaw);
+
+        if (rvMech == CKR_OK) {
+            for (iAsk = 0; iAsk < sizeof(aAsk) / sizeof(aAsk[0]); iAsk++) {
+                BOOL bRawHas = FALSE;
+                for (iRaw = 0; iRaw < nRaw; iRaw++)
+                    if (aRaw[iRaw] == aAsk[iAsk]) { bRawHas = TRUE; break; }
+                if (bRawHas) nPresent++;
+                if (P11_HasMechanism(aAsk[iAsk]) == bRawHas) nAgree++;
+                else                                         nDisagree++;
+            }
+        }
+
+        ASSERT("The probe agrees with the token on every mechanism asked",
+               nDisagree == 0 &&
+               nAgree == (int)(sizeof(aAsk) / sizeof(aAsk[0])));
+        /* Both halves have to be non-empty or the agreement is vacuous:
+         * a probe that answered TRUE to everything would also "agree" if
+         * the token happened to have all seventeen. */
+        ASSERT("and the sample covers both present and absent mechanisms",
+               nPresent > 0 &&
+               nPresent < (int)(sizeof(aAsk) / sizeof(aAsk[0])));
+    }
 
     /* ── Suite 3 : advertisement follows the token ──────────────────────── */
     TEST_SUITE("EnumAlgorithms reflects this token");
@@ -129,15 +179,24 @@ int main(void)
     ASSERT("RSA advertised", Advertises(pList, cAlgs, ALG_RSA));
     ASSERT("ECDSA_P256 advertised", Advertises(pList, cAlgs, ALG_ECDSA_P256));
     ASSERT("AES advertised", Advertises(pList, cAlgs, ALG_AES));
-    /* ML-DSA is wired into this provider and must stay dark here. */
-    ASSERT("ML-DSA-65 NOT advertised",
-        !Advertises(pList, cAlgs, ALG_MLDSA_65));
-    KSP_FreeBuffer(pList);
+    /* ML-DSA is wired into this provider but must be advertised only when
+     * the token can actually do it — which is the whole point of the
+     * probe. Both answers are checked against the token rather than
+     * asserted outright, because the pqc build of step 2c flips it. */
+    {
+        BOOL bTokenPqc = P11_HasMechanism(CKM_ML_DSA_KEY_PAIR_GEN) &&
+                         P11_HasMechanism(CKM_ML_DSA);
+        ASSERT("ML-DSA advertised exactly when the token implements it",
+               Advertises(pList, cAlgs, ALG_MLDSA_65) == bTokenPqc);
+        KSP_FreeBuffer(pList);
 
-    ASSERT_OK("IsAlgSupported(RSA)", KSP_IsAlgSupported(hProv, ALG_RSA, 0));
-    ASSERT_EQ("IsAlgSupported(ML-DSA-65) → NTE_NOT_SUPPORTED",
-        KSP_IsAlgSupported(hProv, ALG_MLDSA_65, 0),
-        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        ASSERT_OK("IsAlgSupported(RSA)",
+                  KSP_IsAlgSupported(hProv, ALG_RSA, 0));
+        ASSERT_EQ("IsAlgSupported(ML-DSA-65) follows the token",
+                  KSP_IsAlgSupported(hProv, ALG_MLDSA_65, 0),
+                  bTokenPqc ? (SECURITY_STATUS)ERROR_SUCCESS
+                            : (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    }
 
     /* ── Suite 4 : a real key, on a real token ─────────────────────────── */
     TEST_SUITE("RSA key generation and signing");
@@ -1069,8 +1128,15 @@ int main(void)
          * exactly the configuration that exposes the confusion. */
         ASSERT("The token implements the Montgomery generator",
                P11_HasMechanism(CKM_EC_MONTGOMERY_KEY_PAIR_GEN));
-        ASSERT("and NOT the Edwards one — so the two cannot be conflated",
-               !P11_HasMechanism(CKM_EC_EDWARDS_KEY_PAIR_GEN));
+        /* The two generators are separate mechanisms, and a build without
+         * the eddsa feature proves it by having one and not the other.
+         * Once eddsa is compiled in the token has both, so what can still
+         * be asserted everywhere is that the provider asks for the
+         * Montgomery one — which the generation below would fail without
+         * on any token that lacks the Edwards generator. */
+        printf("      [token %s the Edwards generator]\n",
+               P11_HasMechanism(CKM_EC_EDWARDS_KEY_PAIR_GEN)
+               ? "also implements" : "does NOT implement");
 
         {
             NCRYPT_KEY_HANDLE hOld = 0;
@@ -1171,13 +1237,260 @@ int main(void)
             if (hPeer)  KSP_FreeKey(hProv, hPeer);
         }
 
+        /* Reopen by name. Generation and use both work from the algorithm
+         * the CALLER passed in; only a reopen has to recover it from the
+         * token, and that path read CKA_EC_PARAMS through a chain covering
+         * five of the ten curves this provider can generate. X25519 fell
+         * through to a final else that named it ECDH_P384, at 384 bits. */
+        if (hB) {
+            NCRYPT_KEY_HANDLE hRe = 0;
+            ss = KSP_OpenKey(hProv, &hRe, L"phase7-x-b", 0, 0);
+            ASSERT_OK("X25519 key reopened by name", ss);
+            if (ss == ERROR_SUCCESS) {
+                KSP_KEY *pRe = (KSP_KEY *)(ULONG_PTR)hRe;
+                ASSERT("and it comes back as X25519, not some other curve",
+                       _wcsicmp(pRe->szAlgId, ALG_ECDH_X25519) == 0);
+                ASSERT_EQ("with the right key size", pRe->dwKeyBitLen, 255U);
+                KSP_FreeKey(hProv, hRe);
+            }
+        }
+
         if (hB) { ss = KSP_DeleteKey(hProv, hB, 0);
                   ASSERT_OK("X25519 key B deleted", ss); }
         if (hA) { ss = KSP_DeleteKey(hProv, hA, 0);
                   ASSERT_OK("X25519 key A deleted", ss); }
     }
 
-    /* ── Suite 21 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 21 : EdDSA, on whichever side of the gate this token is ──── */
+    TEST_SUITE("EdDSA");
+
+    /* This suite deliberately tests BOTH sides of the capability probe.
+     * Kryoptic's eddsa feature needs OpenSSL 3.2+, so the same source runs
+     * against a token that has CKM_EDDSA and one that does not, and both
+     * are real answers: with the mechanism, EdDSA must work end to end;
+     * without it, the provider must refuse rather than generate a key it
+     * cannot then use. A mock can be told to say either, which is exactly
+     * why being told by a real token is worth more. */
+    {
+        BOOL bHasEddsa = P11_HasMechanism(CKM_EDDSA) &&
+                         P11_HasMechanism(CKM_EC_EDWARDS_KEY_PAIR_GEN);
+        struct { LPCWSTR szAlg; LPCWSTR szName; DWORD cbSig; DWORD cbPub; }
+        aCurves[] = {
+            { ALG_EDDSA_ED25519, L"phase7-ed25519", ED25519_SIG_SIZE,
+              ED25519_PUBKEY_SIZE },
+            { ALG_EDDSA_ED448,   L"phase7-ed448",   ED448_SIG_SIZE,
+              ED448_PUBKEY_SIZE },
+        };
+        size_t i;
+
+        printf("      [token %s CKM_EDDSA]\n",
+               bHasEddsa ? "implements" : "does NOT implement");
+
+        for (i = 0; i < sizeof(aCurves) / sizeof(aCurves[0]); i++) {
+            NCRYPT_KEY_HANDLE hEd = 0;
+            BYTE   abHash[64];
+            BYTE   abSig[256];
+            DWORD  cbSig = 0;
+            DWORD  j;
+
+            for (j = 0; j < sizeof(abHash); j++)
+                abHash[j] = (BYTE)(j + 1);
+
+            {
+                NCRYPT_KEY_HANDLE hOld = 0;
+                if (KSP_OpenKey(hProv, &hOld, aCurves[i].szName, 0, 0)
+                        == ERROR_SUCCESS)
+                    KSP_DeleteKey(hProv, hOld, 0);
+            }
+
+            ss = KSP_CreatePersistedKey(hProv, &hEd, aCurves[i].szAlg,
+                                        aCurves[i].szName, 0, 0);
+
+            if (!bHasEddsa) {
+                /* The token cannot do it, so the provider must not pretend
+                 * it can. Any success here is the provider handing back a
+                 * key that no later operation could use. */
+                ASSERT("Without CKM_EDDSA the token refuses the key",
+                       ss != ERROR_SUCCESS);
+                if (ss == ERROR_SUCCESS && hEd)
+                    KSP_DeleteKey(hProv, hEd, 0);
+                continue;
+            }
+
+            ASSERT_OK("EdDSA key generated on the token", ss);
+            if (ss != ERROR_SUCCESS)
+                continue;
+
+            /* Size query first. It must not leave an operation live on the
+             * pooled session — the defect step 1 found — so the signature
+             * that follows is also the check that the pool is still sane. */
+            cbSig = 0;
+            ss = KSP_SignHash(hProv, hEd, NULL, abHash, 32,
+                              NULL, 0, &cbSig, 0);
+            ASSERT_OK("Signature length answered", ss);
+            ASSERT_EQ("and it is the raw EdDSA signature size",
+                      cbSig, aCurves[i].cbSig);
+
+            cbSig = 0;
+            ss = KSP_SignHash(hProv, hEd, NULL, abHash, 32,
+                              abSig, sizeof(abSig), &cbSig, 0);
+            ASSERT_OK("EdDSA signature produced by the token", ss);
+            ASSERT_EQ("of exactly the raw size — no DER wrapper",
+                      cbSig, aCurves[i].cbSig);
+
+            /* EdDSA signatures are raw r||s like ECDSA's. A DER-encoded
+             * signature would start 0x30; catching that here is the same
+             * defect class step 1 found in ECDSA. */
+            ASSERT("and it is not DER — a raw signature has no 0x30 header",
+                   cbSig > 0 && abSig[0] != 0x30);
+
+            {
+                BYTE  abBlob[256];
+                DWORD cbBlob = 0;
+                ss = KSP_ExportKey(hProv, hEd, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                                   abBlob, sizeof(abBlob), &cbBlob, 0);
+                ASSERT_OK("EdDSA public key exported", ss);
+                ASSERT_EQ("as a header plus the raw compressed point",
+                          cbBlob,
+                          (DWORD)(sizeof(BCRYPT_ECCKEY_BLOB) +
+                                  aCurves[i].cbPub));
+
+                if (ss == ERROR_SUCCESS) {
+                    BCRYPT_ECCKEY_BLOB *pB = (BCRYPT_ECCKEY_BLOB *)abBlob;
+                    NCRYPT_KEY_HANDLE   hImp = 0;
+
+                    /* A signing curve takes the ECDSA generic magic. That
+                     * is what stops a 32-byte Ed25519 key being read back
+                     * as a 32-byte X25519 one. */
+                    ASSERT_EQ("carrying the ECDSA generic magic",
+                              pB->dwMagic,
+                              (DWORD)BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC);
+
+                    ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                                       &hImp, abBlob, cbBlob, 0);
+                    ASSERT_OK("and imported back as a public key", ss);
+                    if (hImp) KSP_FreeKey(hProv, hImp);
+                }
+            }
+
+            ss = KSP_DeleteKey(hProv, hEd, 0);
+            ASSERT_OK("EdDSA key deleted", ss);
+        }
+    }
+
+
+    /* ── Suite 22 : ML-DSA, on whichever side of the gate this token is ─── */
+    TEST_SUITE("ML-DSA");
+
+    /* Post-quantum signing has been implemented and gated since phase 4 and
+     * had never run: SoftHSM2 2.7.0 defines the mechanisms and implements
+     * none of them, so the gate never opened and the code beyond it was
+     * only ever reached by a mock told to say yes. Kryoptic built with the
+     * pqc feature — which needs OpenSSL 3.5 — opens it for real. */
+    {
+        BOOL bHasMlDsa = P11_HasMechanism(CKM_ML_DSA_KEY_PAIR_GEN) &&
+                         P11_HasMechanism(CKM_ML_DSA);
+        struct { LPCWSTR szAlg; LPCWSTR szName; DWORD cbSig; } aSets[] = {
+            { ALG_MLDSA_44, L"phase7-mldsa44", MLDSA_44_SIG_SIZE },
+            { ALG_MLDSA_65, L"phase7-mldsa65", MLDSA_65_SIG_SIZE },
+            { ALG_MLDSA_87, L"phase7-mldsa87", MLDSA_87_SIG_SIZE },
+        };
+        size_t i;
+
+        printf("      [token %s ML-DSA]\n",
+               bHasMlDsa ? "implements" : "does NOT implement");
+
+        for (i = 0; i < sizeof(aSets) / sizeof(aSets[0]); i++) {
+            NCRYPT_KEY_HANDLE hMl = 0;
+            BYTE  abHash[64];
+            BYTE *pbSig = NULL;
+            DWORD cbSig = 0;
+            DWORD j;
+
+            for (j = 0; j < sizeof(abHash); j++)
+                abHash[j] = (BYTE)(0xA0 ^ j);
+
+            {
+                NCRYPT_KEY_HANDLE hOld = 0;
+                if (KSP_OpenKey(hProv, &hOld, aSets[i].szName, 0, 0)
+                        == ERROR_SUCCESS)
+                    KSP_DeleteKey(hProv, hOld, 0);
+            }
+
+            ss = KSP_CreatePersistedKey(hProv, &hMl, aSets[i].szAlg,
+                                        aSets[i].szName, 0, 0);
+
+            if (!bHasMlDsa) {
+                ASSERT("Without the ML-DSA mechanisms the key is refused",
+                       ss != ERROR_SUCCESS);
+                ASSERT_EQ("and refused as NOT SUPPORTED, not some other error",
+                          ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+                if (ss == ERROR_SUCCESS && hMl)
+                    KSP_DeleteKey(hProv, hMl, 0);
+                continue;
+            }
+
+            ASSERT_OK("ML-DSA key generated on the token", ss);
+            if (ss != ERROR_SUCCESS)
+                continue;
+
+            /* The parameter set is the key's identity — there is no curve
+             * and no modulus — so a reopen has to recover it from
+             * CKA_PARAMETER_SET. Nothing read that attribute back, so an
+             * ML-DSA key reopened by name had an empty algorithm. */
+            {
+                NCRYPT_KEY_HANDLE hRe = 0;
+                ss = KSP_OpenKey(hProv, &hRe, aSets[i].szName, 0, 0);
+                ASSERT_OK("ML-DSA key reopened by name", ss);
+                if (ss == ERROR_SUCCESS) {
+                    KSP_KEY *pRe = (KSP_KEY *)(ULONG_PTR)hRe;
+                    ASSERT("and the parameter set came back intact",
+                           _wcsicmp(pRe->szAlgId, aSets[i].szAlg) == 0);
+                    KSP_FreeKey(hProv, hRe);
+                }
+            }
+
+            cbSig = 0;
+            ss = KSP_SignHash(hProv, hMl, NULL, abHash, 32,
+                              NULL, 0, &cbSig, 0);
+            ASSERT_OK("Signature length answered", ss);
+            ASSERT_EQ("and it is this parameter set's signature size",
+                      cbSig, aSets[i].cbSig);
+
+            pbSig = (BYTE *)malloc(aSets[i].cbSig + 64);
+            if (pbSig) {
+                cbSig = 0;
+                ss = KSP_SignHash(hProv, hMl, NULL, abHash, 32,
+                                  pbSig, aSets[i].cbSig + 64, &cbSig, 0);
+                ASSERT_OK("ML-DSA signature produced by the token", ss);
+                ASSERT_EQ("of exactly the expected size",
+                          cbSig, aSets[i].cbSig);
+                free(pbSig);
+            }
+
+            /* Export stays refused on purpose. The CNG post-quantum blob
+             * layout lives in a Windows SDK header not available in this
+             * workspace, and a guessed layout would pass every test here
+             * and fail only on Windows — which is exactly how the
+             * BCRYPT_SHA224_ALGORITHM mistake happened. Having a real PQC
+             * token does not change that; the missing piece is a Windows
+             * header, not a backend. */
+            {
+                BYTE  abBlob[4096];
+                DWORD cbBlob = 0;
+                ss = KSP_ExportKey(hProv, hMl, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+                                   abBlob, sizeof(abBlob), &cbBlob, 0);
+                ASSERT("ML-DSA public key export is still refused",
+                       ss != ERROR_SUCCESS);
+            }
+
+            ss = KSP_DeleteKey(hProv, hMl, 0);
+            ASSERT_OK("ML-DSA key deleted", ss);
+        }
+    }
+
+    /* ── Suite 23 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

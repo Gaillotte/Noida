@@ -82,6 +82,17 @@ DWORD P11_MlDsaSignatureSize(LPCWSTR pszAlgId)
     return p ? p->cbSignature : 0;
 }
 
+/* Reverse of P11_MlDsaParameterSet, from the same table, so reopening a
+ * key by name recovers the parameter set it was generated with. */
+LPCWSTR P11_MlDsaAlgFromParameterSet(CK_ULONG ulParamSet)
+{
+    size_t i;
+    for (i = 0; i < MLDSA_SET_COUNT; i++)
+        if (g_MlDsaSets[i].ulParamSet == ulParamSet)
+            return g_MlDsaSets[i].pszAlgId;
+    return NULL;
+}
+
 DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId)
 {
     const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
@@ -629,44 +640,97 @@ DWORD P11_EcCoordSize(LPCWSTR pszAlgId)
     return 0;
 }
 
+/* Every curve this provider can put on a token, in one table.
+ *
+ * Both directions read from it — name to OID when generating, OID back to
+ * name when reopening a key. They were separate hand-written chains, and
+ * the reverse one covered five of the ten curves: X25519, secp256k1 and
+ * the three Brainpool curves all fell through to a final `else` that
+ * named them P-384. A key generated here and reopened by name came back
+ * claiming a curve it was not, with a key size to match. One table cannot
+ * drift from itself.
+ *
+ * pszDeriveAlgId is the name to report when CKA_DERIVE is set — the same
+ * NIST curve serves ECDSA and ECDH, and only that attribute separates
+ * them. It is NULL for a curve with one purpose. */
+typedef struct _EC_CURVE_ENTRY {
+    LPCWSTR     pszAlgId;
+    LPCWSTR     pszDeriveAlgId;
+    const char *pbOid;
+    CK_ULONG    cbOid;
+    DWORD       dwBits;
+} EC_CURVE_ENTRY;
+
+static const EC_CURVE_ENTRY g_EcCurves[] = {
+    { ALG_ECDSA_P256,      ALG_ECDH_P256,  EC_OID_P256,      EC_OID_P256_LEN,      256 },
+    { ALG_ECDSA_P384,      ALG_ECDH_P384,  EC_OID_P384,      EC_OID_P384_LEN,      384 },
+    { ALG_ECDSA_P521,      ALG_ECDH_P521,  EC_OID_P521,      EC_OID_P521_LEN,      521 },
+    { ALG_ECDSA_SECP256K1, NULL,           EC_OID_SECP256K1, EC_OID_SECP256K1_LEN, 256 },
+    { ALG_ECDSA_BP256,     NULL,           EC_OID_BP256,     EC_OID_BP_LEN,        256 },
+    { ALG_ECDSA_BP384,     NULL,           EC_OID_BP384,     EC_OID_BP_LEN,        384 },
+    { ALG_ECDSA_BP512,     NULL,           EC_OID_BP512,     EC_OID_BP_LEN,        512 },
+    { ALG_EDDSA_ED25519,   NULL,           EC_OID_ED25519,   EC_OID_ED25519_LEN,   255 },
+    { ALG_EDDSA_ED448,     NULL,           EC_OID_ED448,     EC_OID_ED448_LEN,     448 },
+    /* X25519 is agreement-only, so it is named by the derive column and
+     * has no signing name at all. */
+    { NULL,                ALG_ECDH_X25519, EC_OID_X25519,   EC_OID_X25519_LEN,    255 },
+};
+
+#define EC_CURVE_COUNT (sizeof(g_EcCurves) / sizeof(g_EcCurves[0]))
+
 /* Map an EC / EdDSA algorithm name to its DER-encoded curve OID */
 const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
 {
+    size_t i;
+
     if (!pszAlgId || !pcbOid)
         return NULL;
 
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDH_P256)  == 0) {
-        *pcbOid = EC_OID_P256_LEN;  return EC_OID_P256;
+    for (i = 0; i < EC_CURVE_COUNT; i++) {
+        if ((g_EcCurves[i].pszAlgId &&
+             _wcsicmp(pszAlgId, g_EcCurves[i].pszAlgId) == 0) ||
+            (g_EcCurves[i].pszDeriveAlgId &&
+             _wcsicmp(pszAlgId, g_EcCurves[i].pszDeriveAlgId) == 0)) {
+            *pcbOid = g_EcCurves[i].cbOid;
+            return g_EcCurves[i].pbOid;
+        }
     }
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0) {
-        *pcbOid = EC_OID_P384_LEN;  return EC_OID_P384;
-    }
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0) {
-        *pcbOid = EC_OID_P521_LEN;  return EC_OID_P521;
-    }
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
-        *pcbOid = EC_OID_SECP256K1_LEN; return EC_OID_SECP256K1;
-    }
-    if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0) {
-        *pcbOid = EC_OID_X25519_LEN; return EC_OID_X25519;
-    }
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0) {
-        *pcbOid = EC_OID_BP_LEN; return EC_OID_BP256;
-    }
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0) {
-        *pcbOid = EC_OID_BP_LEN; return EC_OID_BP384;
-    }
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0) {
-        *pcbOid = EC_OID_BP_LEN; return EC_OID_BP512;
-    }
-    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
-        *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;
-    }
-    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED448) == 0) {
-        *pcbOid = EC_OID_ED448_LEN;   return EC_OID_ED448;
+    return NULL;
+}
+
+/* The reverse: identify a curve from the CKA_EC_PARAMS read off a key.
+ *
+ * bDerive is the key's CKA_DERIVE, which is the only thing distinguishing
+ * an ECDH key from an ECDSA key on the same NIST curve. Returns NULL for
+ * an OID this provider does not know, so the caller can say so rather
+ * than guess — the previous code guessed P-384. */
+LPCWSTR P11_CurveAlgFromOid(
+    const BYTE *pbOid,
+    DWORD       cbOid,
+    BOOL        bDerive,
+    DWORD      *pdwBits)
+{
+    size_t i;
+
+    if (!pbOid || cbOid == 0)
+        return NULL;
+
+    for (i = 0; i < EC_CURVE_COUNT; i++) {
+        if (cbOid != g_EcCurves[i].cbOid ||
+            memcmp(pbOid, g_EcCurves[i].pbOid, cbOid) != 0)
+            continue;
+
+        if (pdwBits)
+            *pdwBits = g_EcCurves[i].dwBits;
+
+        /* A curve with only one purpose reports that purpose whatever
+         * CKA_DERIVE says; asking a Brainpool key to be an ECDH name it
+         * has no identifier for would be worse than ignoring the flag. */
+        if (bDerive && g_EcCurves[i].pszDeriveAlgId)
+            return g_EcCurves[i].pszDeriveAlgId;
+        if (g_EcCurves[i].pszAlgId)
+            return g_EcCurves[i].pszAlgId;
+        return g_EcCurves[i].pszDeriveAlgId;
     }
     return NULL;
 }

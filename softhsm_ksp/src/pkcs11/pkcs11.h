@@ -168,6 +168,23 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
  * vendored in the SoftHSM2 submodule. */
 #define CKM_EC_MONTGOMERY_KEY_PAIR_GEN 0x00001056UL
 
+/* CK_EDDSA_PARAMS — required for Ed448, and NOT to be sent for Ed25519.
+ *
+ * RFC 8032 defines five distinct algorithms, not two. Ed25519 has a pure
+ * form that takes no context; Ed448 always takes one, empty by default.
+ * So a token reads an ABSENT parameter as pure Ed25519 and a PRESENT one
+ * with phFlag false as Ed25519ctx — a different signature scheme — while
+ * for Ed448 the absent parameter is simply an error.
+ *
+ * Layout confirmed against two independent sources: the OASIS header
+ * vendored in the SoftHSM2 submodule (struct ck_eddsa_params) and
+ * Kryoptic's own bindgen output, which additionally pins sizeof to 24. */
+typedef struct CK_EDDSA_PARAMS {
+    CK_BBOOL   phFlag;
+    CK_ULONG   ulContextDataLen;
+    CK_BYTE   *pContextData;
+} CK_EDDSA_PARAMS;
+
 /* CK_MECHANISM_INFO.flags — what a token says a mechanism may be used for.
  * Values copied from the vendored OASIS header, as with everything below. */
 #define CKF_HW                    (1UL << 0)
@@ -331,6 +348,11 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKR_PUBLIC_KEY_INVALID          0x000001B9UL
 #define CKR_FUNCTION_REJECTED           0x00000200UL
 #define CKR_VENDOR_DEFINED              0x80000000UL
+
+/* Start of the vendor mechanism range. Nothing in it is defined by any
+ * standard, so a value here is guaranteed absent from a conformant token's
+ * mechanism list. Value from the OASIS header in the SoftHSM2 submodule. */
+#define CKM_VENDOR_DEFINED              0x80000000UL
 
 /* User types */
 #define CKU_SO   0UL

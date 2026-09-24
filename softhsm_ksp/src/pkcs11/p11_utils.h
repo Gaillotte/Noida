@@ -34,6 +34,8 @@ CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId);
 /* Fixed ML-DSA signature and public key sizes in bytes, or 0 if the
  * identifier is not an ML-DSA one. */
 DWORD P11_MlDsaSignatureSize(LPCWSTR pszAlgId);
+LPCWSTR P11_MlDsaAlgFromParameterSet(CK_ULONG ulParamSet);
+
 DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId);
 
 /* Resolve the PKCS#11 mechanism from the CNG algorithm and flags */
@@ -100,6 +102,17 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
 
 /* Return the EC coordinate size in bytes for the given algorithm */
 DWORD P11_EcCoordSize(LPCWSTR pszAlgId);
+
+/* Identify a curve from the CKA_EC_PARAMS read off a key — the reverse of
+ * P11_GetCurveOid, reading the same table so the two cannot disagree.
+ * bDerive is the key's CKA_DERIVE, which is all that separates an ECDH key
+ * from an ECDSA key on the same NIST curve. Returns NULL for an OID this
+ * provider does not know, so a caller can refuse rather than guess. */
+LPCWSTR P11_CurveAlgFromOid(
+    const BYTE *pbOid,
+    DWORD       cbOid,
+    BOOL        bDerive,
+    DWORD      *pdwBits);
 
 /* Return the DER-encoded curve OID for an EC / EdDSA algorithm.
  * Returns NULL and leaves *pcbOid untouched for non-curve algorithms. */

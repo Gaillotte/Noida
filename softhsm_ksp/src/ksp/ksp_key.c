@@ -805,9 +805,9 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
     } else if (ulKeyType == CKK_EC || ulKeyType == CKK_EC_EDWARDS ||
                ulKeyType == CKK_EC_MONTGOMERY) {
         /* Identify the exact curve via CKA_EC_PARAMS */
-        BYTE  *pbParams = NULL;
-        DWORD  cbParams = 0;
-        BOOL   bDerive  = FALSE;
+        BYTE    *pbParams = NULL;
+        DWORD    cbParams = 0;
+        BOOL     bDerive  = FALSE;
         CK_ULONG ulDerive = 0;
 
         /* CKA_DERIVE distinguishes ECDH keys from ECDSA keys */
@@ -816,31 +816,51 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
 
         if (P11_GetBinaryAttr(hSession, hPriv, CKA_EC_PARAMS,
                               &pbParams, &cbParams) == CKR_OK) {
-            if (cbParams == EC_OID_ED25519_LEN &&
-                memcmp(pbParams, EC_OID_ED25519, EC_OID_ED25519_LEN) == 0) {
-                wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, ALG_EDDSA_ED25519);
-                pKey->dwKeyBitLen = 255;
-            } else if (cbParams == EC_OID_ED448_LEN &&
-                       memcmp(pbParams, EC_OID_ED448, EC_OID_ED448_LEN) == 0) {
-                wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, ALG_EDDSA_ED448);
-                pKey->dwKeyBitLen = 448;
-            } else if (cbParams == EC_OID_P256_LEN &&
-                       memcmp(pbParams, EC_OID_P256, EC_OID_P256_LEN) == 0) {
-                wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN,
-                         bDerive ? ALG_ECDH_P256 : ALG_ECDSA_P256);
-                pKey->dwKeyBitLen = 256;
-            } else if (cbParams == EC_OID_P521_LEN &&
-                       memcmp(pbParams, EC_OID_P521, EC_OID_P521_LEN) == 0) {
-                wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN,
-                         bDerive ? ALG_ECDH_P521 : ALG_ECDSA_P521);
-                pKey->dwKeyBitLen = 521;
+            DWORD   dwBits = 0;
+            LPCWSTR pszAlg = P11_CurveAlgFromOid(pbParams, cbParams,
+                                                 bDerive, &dwBits);
+            if (pszAlg) {
+                wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, pszAlg);
+                pKey->dwKeyBitLen = dwBits;
             } else {
-                wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN,
-                         bDerive ? ALG_ECDH_P384 : ALG_ECDSA_P384);
-                pKey->dwKeyBitLen = 384;
+                /* An OID this provider does not know. Saying so beats the
+                 * old behaviour, which named every unrecognised curve
+                 * P-384 — and since the chain it replaced covered only
+                 * five of ten curves, that included X25519, secp256k1 and
+                 * all three Brainpool curves, every one of which this
+                 * provider can itself generate. */
+                LOG_ERROR("KSP_OpenKey - unrecognised curve in CKA_EC_PARAMS",
+                          NTE_BAD_ALGID);
+                KSP_Free(pbParams);
+                P11_ReleaseSession(hSession);
+                KSP_Free(pKey);
+                LOG_LEAVE("KSP_OpenKey", NTE_BAD_ALGID);
+                return NTE_BAD_ALGID;
             }
             KSP_Free(pbParams);
         }
+    } else if (ulKeyType == CKK_ML_DSA) {
+        /* ML-DSA carries no curve. Its identity is CKA_PARAMETER_SET, and
+         * nothing read it back: an ML-DSA key reopened by name came back
+         * with an empty algorithm and a zero key size. */
+        CK_ULONG ulParamSet = 0;
+        LPCWSTR  pszAlg     = NULL;
+
+        if (P11_GetUlongAttr(hSession, hPriv, CKA_PARAMETER_SET,
+                             &ulParamSet) == CKR_OK)
+            pszAlg = P11_MlDsaAlgFromParameterSet(ulParamSet);
+
+        if (!pszAlg) {
+            LOG_ERROR("KSP_OpenKey - unknown ML-DSA parameter set",
+                      NTE_BAD_ALGID);
+            P11_ReleaseSession(hSession);
+            KSP_Free(pKey);
+            LOG_LEAVE("KSP_OpenKey", NTE_BAD_ALGID);
+            return NTE_BAD_ALGID;
+        }
+
+        wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, pszAlg);
+        pKey->dwKeyBitLen = P11_MlDsaPublicKeySize(pszAlg) * 8;
     }
 
     P11_ReleaseSession(hSession);

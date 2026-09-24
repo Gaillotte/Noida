@@ -9,3 +9,9 @@
 # Binaries
 test_real_backend
 p11_init_token
+
+# Built by `make openssl` — OpenSSL 3.5, needed because Kryoptic gates
+# eddsa on 3.2 and the post-quantum mechanisms on 3.5, and the distribution
+# ships 3.0.
+.openssl/
+.openssl-src/

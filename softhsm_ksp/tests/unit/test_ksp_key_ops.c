@@ -118,6 +118,50 @@ BOOL P11_ExtractCertSubject(const BYTE *pbCert, DWORD cbCert,
     return FALSE;
 }
 
+/* The reverse curve lookup, built out of the forward stub above rather
+ * than as a second hand-written table — the two therefore cannot disagree
+ * with each other, which is the same property the real pair now has by
+ * reading one table. The real functions are covered by the round-trip
+ * test in test_mechanism_resolve.c, which links p11_utils.c. */
+LPCWSTR P11_CurveAlgFromOid(const BYTE *pbOid, DWORD cbOid,
+                            BOOL bDerive, DWORD *pdwBits)
+{
+    static const struct { LPCWSTR szAlg; DWORD dwBits; } aCandidates[] = {
+        { ALG_ECDH_P256,     256 }, { ALG_ECDH_P384,   384 },
+        { ALG_ECDH_P521,     521 }, { ALG_ECDH_X25519, 255 },
+        { ALG_ECDSA_P256,    256 }, { ALG_ECDSA_P384,  384 },
+        { ALG_ECDSA_P521,    521 },
+        { ALG_EDDSA_ED25519, 255 }, { ALG_EDDSA_ED448, 448 },
+    };
+    size_t i;
+
+    if (!pbOid || cbOid == 0)
+        return NULL;
+
+    /* The agreement names come first, so scanning forward when bDerive is
+     * set finds ECDH_P256 before ECDSA_P256, and scanning from the signing
+     * names when it is not. */
+    for (i = bDerive ? 0 : 4; i < sizeof(aCandidates) / sizeof(aCandidates[0]);
+         i++) {
+        CK_ULONG    cbCand = 0;
+        const char *pbCand = P11_GetCurveOid(aCandidates[i].szAlg, &cbCand);
+
+        if (!pbCand || cbCand != cbOid || memcmp(pbCand, pbOid, cbOid) != 0)
+            continue;
+        if (pdwBits) *pdwBits = aCandidates[i].dwBits;
+        return aCandidates[i].szAlg;
+    }
+    return NULL;
+}
+
+LPCWSTR P11_MlDsaAlgFromParameterSet(CK_ULONG ulParamSet)
+{
+    if (ulParamSet == CKP_ML_DSA_44) return ALG_MLDSA_44;
+    if (ulParamSet == CKP_ML_DSA_65) return ALG_MLDSA_65;
+    if (ulParamSet == CKP_ML_DSA_87) return ALG_MLDSA_87;
+    return NULL;
+}
+
 CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId)
 {
     if (!pszAlgId) return 0;

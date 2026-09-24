@@ -2,7 +2,13 @@
 # Usage : make -f Makefile.linux [all | clean | run | coverage]
 
 CC      = gcc
-CFLAGS  = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+# -Werror=implicit-function-declaration is not a style preference. A call
+# with no prototype in scope is assumed to return int, so a function
+# returning a pointer has its result truncated to 32 bits — a segfault at
+# the call site and nothing at the definition. That cost a debugging
+# session here. MSVC at /W3 /WX rejects it; this makes Linux agree.
+CFLAGS  = -Wall -Wextra -Werror=implicit-function-declaration \
+          -Wno-unused-parameter -Wno-unused-function \
           -g --coverage \
           -I../mock \
           -I../../src \

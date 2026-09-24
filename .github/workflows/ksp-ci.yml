@@ -124,6 +124,58 @@ jobs:
         working-directory: softhsm_ksp/tests/linux
         run: make run-twice
 
+  # ── The same provider against a token that can do EdDSA and ML-DSA ──────
+  #
+  # Separate from the job above because it is a genuinely different token,
+  # not a bigger one. That build has the Montgomery generator and NOT the
+  # Edwards one, which is what showed the two are separate mechanisms; this
+  # one has both, plus CKM_EDDSA and the post-quantum mechanisms.
+  #
+  # Every capability-dependent assertion in the suite asks the token and
+  # requires the provider to agree, so the same source is a real test under
+  # either configuration: it checks that the gate opens here and that it
+  # closes there. Running only one of them would leave half of the
+  # capability probe unexercised.
+  #
+  # The cost is an OpenSSL build — Kryoptic gates eddsa on 3.2 and the
+  # post-quantum mechanisms on 3.5, and the runner image ships 3.0.
+  second-backend-pqc:
+    name: Against a post-quantum capable Kryoptic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config
+
+      # Both halves are slow and both are pinned, so both are cached. The
+      # keys carry the pinned versions: bumping either rebuilds only it.
+      - name: Cache the OpenSSL build
+        uses: actions/cache@v4
+        with:
+          path: softhsm_ksp/tests/linux/.openssl
+          key: openssl-${{ runner.os }}-3.5.8-v1
+
+      - name: Cache the Kryoptic build
+        uses: actions/cache@v4
+        with:
+          path: softhsm_ksp/tests/linux/.kryoptic
+          key: kryoptic-pqc-${{ runner.os }}-main-v1
+
+      - name: Build OpenSSL and Kryoptic with eddsa + pqc
+        working-directory: softhsm_ksp/tests/linux
+        run: make kryoptic-pqc
+
+      - name: Initialise a token
+        working-directory: softhsm_ksp/tests/linux
+        run: make token
+
+      - name: Run the provider against it, twice
+        working-directory: softhsm_ksp/tests/linux
+        run: make run-twice
+
   # ── The authority ───────────────────────────────────────────────────────
   # Only this job can answer whether the DLL actually builds. Everything
   # above is a proxy.

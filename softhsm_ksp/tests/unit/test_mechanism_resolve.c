@@ -13,6 +13,8 @@ SECURITY_STATUS P11_ResolveMechanism(
 DWORD       P11_EcCoordSize(LPCWSTR pszAlgId);
 const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid);
 LPCWSTR     P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement);
+LPCWSTR     P11_CurveAlgFromOid(const BYTE *pbOid, DWORD cbOid,
+                                BOOL bDerive, DWORD *pdwBits);
 
 int main(void)
 {
@@ -230,6 +232,76 @@ int main(void)
         ASSERT_NULL("Unknown curve",
             (void *)P11_CurveNameToAlgId(L"nistP192", FALSE));
         ASSERT_NULL("NULL name", (void *)P11_CurveNameToAlgId(NULL, FALSE));
+    }
+
+    /* ── Curve OID round trip ───────────────────────────────────────────── */
+    TEST_SUITE("Curve OID round trip");
+
+    /* Name -> OID -> name, for every curve the provider can generate.
+     *
+     * The two directions used to be separate hand-written chains and the
+     * reverse one covered five of ten curves; the rest fell through to a
+     * final else that named them P-384, so a reopened X25519, secp256k1 or
+     * Brainpool key came back as something it was not. They now read one
+     * table, and this asserts the property that makes that worth doing:
+     * whatever goes out as an OID comes back as the same algorithm. */
+    {
+        struct { LPCWSTR szAlg; BOOL bDerive; DWORD dwBits; } aCurves[] = {
+            { ALG_ECDSA_P256,      FALSE, 256 },
+            { ALG_ECDSA_P384,      FALSE, 384 },
+            { ALG_ECDSA_P521,      FALSE, 521 },
+            { ALG_ECDH_P256,       TRUE,  256 },
+            { ALG_ECDH_P384,       TRUE,  384 },
+            { ALG_ECDH_P521,       TRUE,  521 },
+            { ALG_ECDSA_SECP256K1, FALSE, 256 },
+            { ALG_ECDSA_BP256,     FALSE, 256 },
+            { ALG_ECDSA_BP384,     FALSE, 384 },
+            { ALG_ECDSA_BP512,     FALSE, 512 },
+            { ALG_EDDSA_ED25519,   FALSE, 255 },
+            { ALG_EDDSA_ED448,     FALSE, 448 },
+            { ALG_ECDH_X25519,     TRUE,  255 },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(aCurves) / sizeof(aCurves[0]); i++) {
+            CK_ULONG    cbOid = 0;
+            const char *pbOid = P11_GetCurveOid(aCurves[i].szAlg, &cbOid);
+            DWORD       dwBits = 0;
+            LPCWSTR     szBack;
+
+            ASSERT("Every curve has an OID", pbOid != NULL && cbOid > 0);
+            if (!pbOid)
+                continue;
+
+            szBack = P11_CurveAlgFromOid((const BYTE *)pbOid, (DWORD)cbOid,
+                                         aCurves[i].bDerive, &dwBits);
+            ASSERT("and the OID maps back to an algorithm", szBack != NULL);
+            if (szBack) {
+                ASSERT("and back to the SAME algorithm",
+                       _wcsicmp(szBack, aCurves[i].szAlg) == 0);
+                ASSERT("carrying the right key size",
+                       dwBits == aCurves[i].dwBits);
+            }
+        }
+
+        /* An OID the provider does not know must be refused, not guessed.
+         * P-192, which this provider deliberately does not support. */
+        {
+            static const BYTE abP192[] =
+                { 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x01 };
+            DWORD dwBits = 0;
+            ASSERT_NULL("An unknown curve OID is refused, not guessed",
+                (void *)P11_CurveAlgFromOid(abP192, sizeof(abP192),
+                                            FALSE, &dwBits));
+        }
+        {
+            DWORD dwBits = 0;
+            ASSERT_NULL("NULL OID",
+                (void *)P11_CurveAlgFromOid(NULL, 5, FALSE, &dwBits));
+            ASSERT_NULL("Zero-length OID",
+                (void *)P11_CurveAlgFromOid((const BYTE *)"\x06", 0, FALSE,
+                                            &dwBits));
+        }
     }
 
     TEST_REPORT();
