@@ -849,6 +849,66 @@ arguments and refused. The first Kryoptic build had been done by hand and
 its `.so` copied into place — so the `second-backend` CI job would have
 failed on the first cold cache. Verified now from a clean clone.
 
+### Step 3 ✅ done — the re-entrancy claim, tested
+
+Steps 1 and 2 swept operations. Step 3 swept the one claim this project
+made in writing and had never checked: *"all 22 KSP functions are
+re-entrant"*. Every unit and live-token assertion ran on a single thread.
+
+`tests/linux/test_concurrent.c` runs **32 threads over the pool of 16
+sessions** — more threads than sessions, so every thread blocks on the
+semaphore and reuses a session another has just returned.
+
+**Correctness is checked by value, not status.** A crossed session returns
+`ERROR_SUCCESS` with a signature computed from the wrong key; a
+status-only test sees nothing. RSA PKCS#1 is deterministic, so references
+are computed single-threaded and recompared byte for byte under
+contention. The suite asserts that determinism rather than assuming it.
+
+**No defects found** — 1920 operations, pool intact, no TSan race in this
+repository's code. `CKF_OS_LOCKING_OK` is correctly passed, which PKCS#11
+§5.4 requires before relying on a module's own locking.
+
+The clean result is only worth something because each detection claim was
+injected: removing the pool lock is caught by TSan and **not** by the value
+checks; a wrong-entry release is caught by the value checks and **not** by
+TSan. Neither tool subsumes the other, so CI runs both.
+
+Two harness defects were fixed first, either of which would have corrupted
+the experiment: `InitOnceExecuteOnce` kept its callback in one file-static
+pointer, and `WaitForSingleObject` ignored its timeout so a leaked session
+hung instead of failing.
+
+## Phase 6 ✅ done — the three mechanisms SoftHSM2 cannot do
+
+`RSA-12` (raw RSA), `AES-07` (CCM) and `AES-08` (CFB) sat in the matrix for
+eight sessions marked "blocked by the backend, not the KSP". **That stopped
+being true the moment the capability probe landed in phase 4** and nobody
+noticed — a mechanism can be wired and gated, dark on a token without it
+and live on one with it, exactly as ML-DSA already was. The Kryoptic build
+here has all three, so they could be verified rather than written blind.
+
+The most valuable find was not one of the three:
+
+- **`NCRYPT_AUTH_TAG_LENGTH` never meant what this provider used it for.**
+  It is a read-only *range* that "only applies to algorithms"; this code
+  treated setting it as "here is my AAD" and copied the bytes into the
+  key's AAD buffer. An application writing a real tag length would have
+  had four bytes become GCM AAD and fail authentication — and AAD had no
+  correct route at all. It belongs in
+  `BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`, which is also exactly what CCM
+  needs for its nonce and tag.
+- **CFB's default feedback size is 8 bits, not the full block.** The matrix
+  said this gap "would need `CKM_AES_CFB128`" — the mechanism a caller
+  reaches only by setting `MessageBlockLength`. Mapping the default there
+  would have produced ciphertext no other CNG implementation could
+  decrypt. **The matrix entry was itself the bug**, waiting to be
+  implemented as written.
+
+Both were caught by reading the actual specification for a property before
+reusing it, rather than by a test. That is worth noting: the sweep of
+"things nobody has run" has a companion in "claims nobody has checked".
+
 ### Group D — real, and not reachable from this repository
 
 Listing these as backlog items would be dishonest; they need something this

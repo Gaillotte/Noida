@@ -301,6 +301,7 @@ toc_entries = [
     ("4", "Registering the KSP",                               "7"),
     ("5", "Running the tests",                                 "8"),
     ("5.1", "Layer 1 — Unit tests (Linux)",                    "8"),
+    ("5.1b","Layer 1b — Against a second PKCS#11 module (Linux)", "9"),
     ("5.2", "Layer 2 — Integration tests (Windows)",           "9"),
     ("5.3", "Layer 3a — Basic PowerShell tests (Windows)",     "10"),
     ("5.4", "Layer 3b — HLK-conformant PowerShell tests",      "10"),
@@ -579,9 +580,19 @@ page_break(doc)
 heading1(doc, "5.  Running the tests")
 
 body(doc,
-    "Tests are organised in three layers. Run them in order: "
-    "Layer 1 works on Linux without any Windows dependencies; "
+    "Tests are organised in four layers. Run them in order: "
+    "Layers 1 and 1b work on Linux without any Windows dependencies; "
     "Layers 2 and 3 require Windows, SoftHSM2, and a live token.")
+
+body(doc,
+    "Layer 1b is the one that has repaid its cost most often. A mock can only "
+    "agree with the assumptions it was written from, and several of this "
+    "provider's assumptions were wrong: ECDSA signatures were DER-decoded "
+    "though PKCS#11 mandates raw r\u2016s, X25519 keys were generated with the "
+    "Edwards mechanism rather than the Montgomery one, Ed448 was signed without "
+    "the CK_EDDSA_PARAMS it requires, and a size query left an operation live "
+    "on a pooled session. Every one of those passed the unit suite and failed "
+    "against a real second module.")
 
 heading2(doc, "5.1  Layer 1 — Unit tests (Linux, GCC)")
 
@@ -615,22 +626,67 @@ code_block(doc, [
 ], caption="Example unit test output")
 
 table_std(doc,
+    # Counts measured from `make run` in softhsm_ksp/tests/unit, not recalled.
+    # Refresh them the same way: each binary prints its own TOTAL.
     ["Suite", "Assertions", "Key scenarios tested"],
     [
-        ("test_p11rv_mapping",    "22", "All CK_RV error codes → Windows SECURITY_STATUS"),
-        ("test_logging",          "9",  "Log_Initialize, Log_Debug, Log_Error, KSP_DEBUG toggle"),
-        ("test_mechanism_resolve","18", "P11_ResolveMechanism() for all alg/flag combinations"),
-        ("test_export_blobs",     "23", "RSA + EC public key blob generation, label lookup"),
-        ("test_ksp_provider",     "27", "KSP_OpenProvider, GetProviderProperty, FreeBuffer"),
-        ("test_ksp_key_ops",      "65", "CreatePersistedKey, OpenKey, FinalizeKey, EnumKeys, DeleteKey"),
-        ("test_ksp_crypto",       "60", "SignHash (RSA/ECDSA), Decrypt (PKCS1/OAEP), ExportKey"),
-        ("test_ksp_key_props",    "25", "GetKeyProperty, SetKeyProperty — all property types"),
-        ("test_memory",           "13", "KSP_Alloc, KSP_AllocZero, KSP_Free, KSP_WStrDup"),
-        ("test_ecdsa_decode",     "19", "P11_DecodeDerEcdsaSignature DER parsing, P-256/P-384"),
-        ("TOTAL",                 "281",""),
+("test_p11rv_mapping",      "26", "All CK_RV error codes -> Windows SECURITY_STATUS"),
+        ("test_logging",            "7", "Log_Initialize, Log_Debug, Log_Error, KSP_DEBUG toggle"),
+        ("test_mechanism_resolve",  "145", "P11_ResolveMechanism for every alg/flag pair; curve OID round trip"),
+        ("test_export_blobs",       "52", "RSA + EC public key blob generation, label lookup"),
+        ("test_ksp_provider",       "124", "KSP_OpenProvider, GetProviderProperty, EnumAlgorithms, FreeBuffer"),
+        ("test_ksp_key_ops",        "186", "CreatePersistedKey, OpenKey, FinalizeKey, EnumKeys, DeleteKey, curve reopen"),
+        ("test_ksp_crypto",         "127", "SignHash (RSA/ECDSA), Decrypt (PKCS1/OAEP/raw), Export/ImportKey"),
+        ("test_ksp_key_props",      "122", "GetKeyProperty, SetKeyProperty - every property type"),
+        ("test_memory",             "21", "KSP_Alloc, KSP_AllocZero, KSP_Free, KSP_WStrDup"),
+        ("test_ecdsa_decode",       "47", "P11_DecodeDerEcdsaSignature - the DER fallback path"),
+        ("test_oaep_params",        "49", "P11_MapHashAlg, P11_BuildOaepParams, OAEP labels"),
+        ("test_ecdh",               "133", "SecretAgreement, DeriveKey (RAW/HASH/HKDF/HMAC/TLS_PRF), FreeSecret"),
+        ("test_eddsa",              "58", "Ed25519 / Ed448 generation, signing, raw public key export"),
+        ("test_aes_keys",           "111", "AES + HMAC key generation, chaining modes, IV handling"),
+        ("test_mldsa",              "109", "Capability probe, ML-DSA gating, raw RSA gating - both directions"),
+        ("test_certificate",        "46", "NCRYPT_CERTIFICATE_PROPERTY as a CKO_CERTIFICATE object"),
+        ("test_keywrap",            "42", "AES key wrap / unwrap through Export/ImportKey"),
+        ("test_p11_context",        "26", "Module load, initialisation retry, slot selection"),
+        ("test_p11_session",        "39", "Session pool acquire / release, PIN handling"),
+        ("test_key_pin",            "25", "Per-key PIN via CKU_CONTEXT_SPECIFIC"),
+        ("test_cert_subject",       "19", "X.509 subject extraction for CKA_SUBJECT"),
+        ("test_function_table",     "68", "NCRYPT_KEY_STORAGE_FUNCTION_TABLE slot assignment by name"),
+        ("TOTAL",                   "1582",""),
     ],
     col_widths=[5.0, 2.5, 8.5]
 )
+
+heading2(doc, "5.1b  Layer 1b — Against a second, real PKCS#11 module (Linux)")
+
+body(doc,
+    "The same provider sources, linked against Kryoptic \u2014 a PKCS#11 token "
+    "written in Rust with no connection to this project. The only substitution "
+    "is the loader: LoadLibraryW becomes dlopen. This is the only layer that "
+    "can test the claim the architecture rests on, that any conformant "
+    "PKCS#11 v2.40+ module can back this provider.")
+
+code_block(doc, [
+    "cd softhsm_ksp/tests/linux",
+    "make all          # fetch + build Kryoptic, init a token, run twice",
+    "make all-pqc      # same, but build OpenSSL 3.5 and a token with",
+    "                  # EdDSA and ML-DSA as well",
+    "make concurrent   # 32 threads over the pool of 16 sessions",
+    "make tsan         # the same, under ThreadSanitizer",
+])
+
+body(doc,
+    "The suite runs TWICE against the same token without re-initialising. "
+    "Anything the provider leaves behind is invisible to a single pass; an "
+    "orphaned certificate object was found exactly that way, by a second run "
+    "reading back what the first had left.")
+
+body(doc,
+    "Capability-dependent assertions ask the token and require the provider to "
+    "agree, rather than asserting one build's feature set. With the mechanism "
+    "the operation must work; without it the provider must refuse. Both are "
+    "real answers, so the same source is a real test against either token "
+    "configuration.")
 
 heading2(doc, "5.2  Layer 2 — Integration tests (Windows)")
 

@@ -212,7 +212,7 @@ def build():
     add_table(doc,
         ['Key Family', 'CNG Algorithm ID', 'Key Type', 'Supported Sizes', 'PKCS#11 Gen Mechanism'],
         [
-            ['RSA', 'RSA', 'Asymmetric pair', '2048, 3072, 4096 bits', 'CKM_RSA_PKCS_KEY_PAIR_GEN'],
+            ['RSA', 'RSA', 'Asymmetric pair', '2048-16384 bits, step 64', 'CKM_RSA_PKCS_KEY_PAIR_GEN'],
             ['ECDSA P-256', 'ECDSA_P256', 'Asymmetric pair', '256 bits (fixed)', 'CKM_EC_KEY_PAIR_GEN'],
             ['ECDSA P-384', 'ECDSA_P384', 'Asymmetric pair', '384 bits (fixed)', 'CKM_EC_KEY_PAIR_GEN'],
             ['ECDSA P-521', 'ECDSA_P521', 'Asymmetric pair', '521 bits (fixed)', 'CKM_EC_KEY_PAIR_GEN'],
@@ -221,8 +221,12 @@ def build():
             ['ECDH P-521', 'ECDH_P521', 'Asymmetric pair', '521 bits (fixed)', 'CKM_EC_KEY_PAIR_GEN'],
             ['EdDSA Ed25519', 'EDDSA_ED25519', 'Asymmetric pair', '255 bits (fixed)', 'CKM_EC_EDWARDS_KEY_PAIR_GEN'],
             ['EdDSA Ed448', 'EDDSA_ED448', 'Asymmetric pair', '448 bits (fixed)', 'CKM_EC_EDWARDS_KEY_PAIR_GEN'],
+            ['X25519', 'ECDH_X25519', 'Asymmetric pair', '255 bits (fixed)', 'CKM_EC_MONTGOMERY_KEY_PAIR_GEN'],
+            ['ECDSA secp256k1', 'ECDSA_SECP256K1', 'Asymmetric pair', '256 bits (fixed)', 'CKM_EC_KEY_PAIR_GEN'],
+            ['ECDSA Brainpool', 'ECDSA_BRAINPOOLP256R1/384R1/512R1', 'Asymmetric pair', '256 / 384 / 512 bits', 'CKM_EC_KEY_PAIR_GEN'],
+            ['ML-DSA', 'ML-DSA-44/65/87', 'Asymmetric pair', 'Fixed per parameter set', 'CKM_ML_DSA_KEY_PAIR_GEN + CKA_PARAMETER_SET'],
             ['AES', 'AES', 'Symmetric secret', '128, 192, 256 bits', 'CKM_AES_KEY_GEN'],
-            ['HMAC', 'HMAC_SHA1/256/384/512', 'Symmetric secret', '160 / 256 / 384 / 512 bits', 'CKM_GENERIC_SECRET_KEY_GEN'],
+            ['HMAC', 'HMAC_SHA1/224/256/384/512', 'Symmetric secret', '160 / 224 / 256 / 384 / 512 bits', 'CKM_GENERIC_SECRET_KEY_GEN'],
         ],
         col_widths=[3.0, 3.5, 3.0, 4.0, 5.5]
     )
@@ -272,6 +276,11 @@ def build():
             ['P-521 (secp521r1)', 'ECDSA_P521 / ECDH_P521', '66 bytes', 'secp521r1',  '06 05 2B 81 04 00 23  (7 bytes)',           'AT_SIGNATURE / AT_KEYEXCHANGE'],
             ['Ed25519',           'EDDSA_ED25519',          '32 bytes (raw key)', 'Ed25519', '06 03 2B 65 70  (5 bytes)',          'AT_SIGNATURE'],
             ['Ed448',             'EDDSA_ED448',            '57 bytes (raw key)', 'Ed448',   '06 03 2B 65 71  (5 bytes)',          'AT_SIGNATURE'],
+            ['X25519',            'ECDH_X25519',            '32 bytes (raw key)', 'curveX25519', '06 03 2B 65 6E  (5 bytes)',      'AT_KEYEXCHANGE'],
+            ['secp256k1',         'ECDSA_SECP256K1',        '32 bytes', 'secp256k1', '06 05 2B 81 04 00 0A  (7 bytes)',            'AT_SIGNATURE'],
+            ['brainpoolP256r1',   'ECDSA_BRAINPOOLP256R1',  '32 bytes', 'brainpoolP256r1', '06 09 2B 24 03 03 02 08 01 01 07  (11 bytes)', 'AT_SIGNATURE'],
+            ['brainpoolP384r1',   'ECDSA_BRAINPOOLP384R1',  '48 bytes', 'brainpoolP384r1', '06 09 2B 24 03 03 02 08 01 01 0B  (11 bytes)', 'AT_SIGNATURE'],
+            ['brainpoolP512r1',   'ECDSA_BRAINPOOLP512R1',  '64 bytes', 'brainpoolP512r1', '06 09 2B 24 03 03 02 08 01 01 0D  (11 bytes)', 'AT_SIGNATURE'],
         ],
         col_widths=[3.0, 4.0, 3.0, 2.5, 5.5, 4.0]
     )
@@ -280,8 +289,14 @@ def build():
     add_note(doc,
         'ECDSA and ECDH keys share the same generation mechanism and curve OIDs. '
         'They are distinguished by CKA_DERIVE: an ECDH key sets CKA_DERIVE=TRUE '
-        'and CKA_SIGN=FALSE, an ECDSA key the reverse. EdDSA keys use the '
-        'Edwards-curve generation mechanism and are signature-only.'
+        'and CKA_SIGN=FALSE, an ECDSA key the reverse. EdDSA keys use '
+        'CKM_EC_EDWARDS_KEY_PAIR_GEN and are signature-only. '
+        'X25519 does NOT: PKCS#11 v3.0 gives Montgomery curves their own '
+        'generator and key type, CKM_EC_MONTGOMERY_KEY_PAIR_GEN and '
+        'CKK_EC_MONTGOMERY. They are not Edwards keys distinguished by the '
+        'curve OID; a token may implement either alone, and generating X25519 '
+        'with the Edwards pair is refused by a token that has only the '
+        'Montgomery one.'
     )
     doc.add_paragraph()
 
@@ -322,9 +337,9 @@ def build():
     add_table(doc,
         ['Curve', 'CNG Algorithm ID', 'Recommended Hash', 'CNG Flag', 'PKCS#11 Mechanism', 'PKCS#11 Output Format', 'KSP Output Format', 'Signature Size'],
         [
-            ['P-256', 'ECDSA_P256', 'SHA-256 (32 B)', '0 (no padding)', 'CKM_ECDSA', 'DER ASN.1 (30 XX 02 XX r 02 XX s)', 'Raw r‖s (Windows)', '64 bytes (r=32, s=32)'],
-            ['P-384', 'ECDSA_P384', 'SHA-384 (48 B)', '0 (no padding)', 'CKM_ECDSA', 'DER ASN.1 (30 XX 02 XX r 02 XX s)', 'Raw r‖s (Windows)', '96 bytes (r=48, s=48)'],
-            ['P-521', 'ECDSA_P521', 'SHA-512 (64 B)', '0 (no padding)', 'CKM_ECDSA', 'DER ASN.1, long-form length', 'Raw r‖s (Windows)', '132 bytes (r=66, s=66)'],
+            ['P-256', 'ECDSA_P256', 'SHA-256 (32 B)', '0 (no padding)', 'CKM_ECDSA', 'Raw r‖s (PKCS#11 §2.3.1)', 'Raw r‖s (Windows) — no conversion', '64 bytes (r=32, s=32)'],
+            ['P-384', 'ECDSA_P384', 'SHA-384 (48 B)', '0 (no padding)', 'CKM_ECDSA', 'Raw r‖s (PKCS#11 §2.3.1)', 'Raw r‖s (Windows) — no conversion', '96 bytes (r=48, s=48)'],
+            ['P-521', 'ECDSA_P521', 'SHA-512 (64 B)', '0 (no padding)', 'CKM_ECDSA', 'Raw r‖s (PKCS#11 §2.3.1)', 'Raw r‖s (Windows) — no conversion', '132 bytes (r=66, s=66)'],
         ],
         col_widths=[2.0, 3.0, 3.5, 2.5, 3.0, 5.0, 4.0, 3.5]
     )
@@ -332,17 +347,25 @@ def build():
     doc.add_paragraph()
     add_heading(doc, '3.3 EdDSA Signing', 2)
     doc.add_paragraph(
-        'EdDSA is deterministic and takes no padding parameters. Unlike ECDSA, '
-        'SoftHSM2 returns the signature already in raw form, so no DER decoding '
-        'is performed. EdDSA hashes the message internally, so the value passed '
-        'to NCryptSignHash is the message rather than a pre-computed digest.'
+        'EdDSA is deterministic and takes no padding flags. The signature comes '
+        'back raw, as ECDSA\'s does. EdDSA hashes the message internally, so '
+        'the value passed to NCryptSignHash is the message rather than a '
+        'pre-computed digest. Ed448 nevertheless requires CK_EDDSA_PARAMS and '
+        'Ed25519 must NOT be given it: RFC 8032 defines five algorithms, not '
+        'two. Ed25519 has a pure context-free form, so an absent parameter '
+        'selects it while a present one selects Ed25519ctx, a different scheme. '
+        'Ed448 has no context-free form and a token given no parameter answers '
+        'CKR_MECHANISM_PARAM_INVALID. The asymmetry is deliberate.'
     ).runs[0].font.size = Pt(10)
 
     add_table(doc,
         ['Curve', 'CNG Algorithm ID', 'CNG Flag', 'PKCS#11 Mechanism', 'Output Format', 'Signature Size', 'Public Key Size'],
         [
-            ['Ed25519', 'EDDSA_ED25519', '0 (no padding)', 'CKM_EDDSA', 'Raw (no conversion)', '64 bytes', '32 bytes'],
-            ['Ed448',   'EDDSA_ED448',   '0 (no padding)', 'CKM_EDDSA', 'Raw (no conversion)', '114 bytes', '57 bytes'],
+            ['Ed25519', 'EDDSA_ED25519', '0 (no padding)', 'CKM_EDDSA (no params)', 'Raw (no conversion)', '64 bytes', '32 bytes'],
+            ['Ed448',   'EDDSA_ED448',   '0 (no padding)', 'CKM_EDDSA + CK_EDDSA_PARAMS', 'Raw (no conversion)', '114 bytes', '57 bytes'],
+            ['ML-DSA-44', 'ML-DSA-44', '0 (no padding)', 'CKM_ML_DSA', 'Raw (no conversion)', '2420 bytes', '1312 bytes'],
+            ['ML-DSA-65', 'ML-DSA-65', '0 (no padding)', 'CKM_ML_DSA', 'Raw (no conversion)', '3309 bytes', '1952 bytes'],
+            ['ML-DSA-87', 'ML-DSA-87', '0 (no padding)', 'CKM_ML_DSA', 'Raw (no conversion)', '4627 bytes', '2592 bytes'],
         ],
         col_widths=[2.5, 3.5, 3.0, 3.0, 4.0, 3.0, 3.0]
     )
@@ -353,6 +376,7 @@ def build():
         ['CNG Algorithm ID', 'PKCS#11 Mechanism', 'Key Type', 'Default Key Size', 'MAC Output'],
         [
             ['HMAC_SHA1',   'CKM_SHA_1_HMAC',  'CKK_GENERIC_SECRET', '160 bits', '20 bytes'],
+            ['HMAC_SHA224', 'CKM_SHA224_HMAC', 'CKK_GENERIC_SECRET', '224 bits', '28 bytes'],
             ['HMAC_SHA256', 'CKM_SHA256_HMAC', 'CKK_GENERIC_SECRET', '256 bits', '32 bytes'],
             ['HMAC_SHA384', 'CKM_SHA384_HMAC', 'CKK_GENERIC_SECRET', '384 bits', '48 bytes'],
             ['HMAC_SHA512', 'CKM_SHA512_HMAC', 'CKK_GENERIC_SECRET', '512 bits', '64 bytes'],
@@ -362,8 +386,16 @@ def build():
     doc.add_paragraph()
 
     add_note(doc,
-        'SoftHSM2 returns ECDSA signatures in DER format. The KSP converts them to '
-        'Windows raw r‖s format via P11_DecodeDerEcdsaSignature() in p11_utils.c.'
+        'A conformant token returns ECDSA signatures as raw r‖s already: PKCS#11 '
+        'v2.40 §2.3.1 mandates it, and SoftHSM2\'s own OSSLECDSA.cpp writes '
+        'BN_bn2bin(r) then BN_bn2bin(s) into a 2*len buffer. That is also CNG\'s '
+        'format, so no conversion is needed. '
+        'P11_DecodeDerEcdsaSignature() is retained only as a fallback for a '
+        'non-conformant token that returns the OpenSSL EVP (DER) form, selected '
+        'by signature length. '
+        'Earlier revisions of this document stated the opposite, and the provider '
+        'decoded DER unconditionally — so every ECDSA signature failed against a '
+        'conformant token. Found by running against a second, real PKCS#11 module.'
     )
 
     # ── 4. Decryption ─────────────────────────────────────────────────────
@@ -418,16 +450,30 @@ def build():
             ['CBC', 'ChainingModeCBC', 'CKM_AES_CBC', '16 bytes', 'Raw IV bytes', 'Unpadded'],
             ['CBC + padding', 'ChainingModeCBC', 'CKM_AES_CBC_PAD', '16 bytes', 'Raw IV bytes', 'Selected by NCRYPT_PAD_CIPHER_FLAG'],
             ['CTR', 'ChainingModeCTR', 'CKM_AES_CTR', '16 bytes', 'CK_AES_CTR_PARAMS', 'KSP extension; 32-bit counter'],
-            ['GCM', 'ChainingModeGCM', 'CKM_AES_GCM', '12 bytes typical', 'CK_GCM_PARAMS', 'AAD via NCRYPT_AUTH_TAG_LENGTH; 128-bit tag'],
+            ['GCM', 'ChainingModeGCM', 'CKM_AES_GCM', '12 bytes typical', 'CK_GCM_PARAMS', 'Nonce/AAD/tag via BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO'],
+            ['CCM', 'ChainingModeCCM', 'CKM_AES_CCM', '7-13 bytes', 'CK_CCM_PARAMS', 'Plaintext length needed up front; not an online mode'],
+            ['CFB (default)', 'ChainingModeCFB', 'CKM_AES_CFB8', '16 bytes', 'Raw IV bytes', '8-bit feedback — CNG\'s default'],
+            ['CFB (full block)', 'ChainingModeCFB', 'CKM_AES_CFB128', '16 bytes', 'Raw IV bytes', 'Requires MessageBlockLength = 16'],
         ],
         col_widths=[3.0, 4.5, 3.5, 3.0, 4.0, 5.0]
     )
     doc.add_paragraph()
 
     add_note(doc,
-        'CCM and CFB are rejected with NTE_NOT_SUPPORTED: no SoftHSM2 mechanism '
-        'is wired to them. AES key sizes outside 128 / 192 / 256 bits are '
-        'rejected with NTE_BAD_LEN.'
+        'CCM and CFB are gated on the capability probe rather than refused: they '
+        'stay dark on a token without the mechanisms and light up on one that '
+        'has them. '
+        'CFB\'s default feedback size is 8 bits, NOT the full block — per '
+        'Microsoft, "By default, [MessageBlockLength] is set to 1 for 8-bit CFB. '
+        'Setting it to the block size in bytes causes full-block CFB to be '
+        'used." Mapping ChainingModeCFB to CKM_AES_CFB128 would produce '
+        'ciphertext no other CNG implementation could decrypt. '
+        'The nonce, AAD and tag for GCM and CCM arrive in '
+        'BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO through pPaddingInfo. '
+        'NCRYPT_AUTH_TAG_LENGTH is read-only and reports a range; it was once '
+        'misused here to carry the AAD. '
+        'AES key sizes outside 128 / 192 / 256 bits are rejected with '
+        'NTE_BAD_LEN.'
     )
     doc.add_paragraph()
 
@@ -452,9 +498,13 @@ def build():
     doc.add_paragraph()
 
     add_note(doc,
-        'The KSP requests CKD_NULL so SoftHSM2 returns the raw Z value; any KDF '
-        'is applied afterwards. Hash-based KDFs through NCryptDeriveKey return '
-        'NTE_NOT_SUPPORTED — request the raw secret and run the KDF with BCrypt. '
+        'The KSP requests CKD_NULL so the token returns the raw Z value, and the '
+        'KDF is applied afterwards inside the provider. NCryptDeriveKey supports '
+        'BCRYPT_KDF_RAW_SECRET, BCRYPT_KDF_HASH, BCRYPT_KDF_HKDF (RFC 5869), '
+        'BCRYPT_KDF_HMAC and BCRYPT_KDF_TLS_PRF. Only the TLS 1.0/1.1 PRF is '
+        'refused, deliberately: it is the MD5/SHA-1 split construction and both '
+        'versions are deprecated by RFC 8996. X25519 is available alongside the '
+        'NIST curves. '
         'Both keys must sit on the same curve, or the call returns NTE_BAD_ALGID.'
     )
 
@@ -575,13 +625,13 @@ def build():
     add_table(doc,
         ['Feature', 'Status', 'Reason'],
         [
-            ['Raw RSA (CKM_RSA_X_509)',           '✗ Not supported', 'SoftHSM2 does not implement CKM_RSA_X_509'],
+            ['Raw RSA (CKM_RSA_X_509)',           '◐ Gated on the probe', 'NCRYPT_NO_PADDING_FLAG; dark on SoftHSM2, live on a token that advertises it'],
             ['Private key import',                 '✗ Not supported', 'HSM design principle — private material never leaves the device'],
             ['Multiple HSM slots',                 '✗ Not supported', 'Only the first slot with a token present is used'],
             ['RSA sizes other than 2048/3072/4096','✗ Rejected (NTE_BAD_LEN)', 'Hardcoded validation in ksp_properties.c'],
             ['AES sizes other than 128/192/256',   '✗ Rejected (NTE_BAD_LEN)', 'Hardcoded validation in ksp_properties.c'],
             ['EC curves beyond P-256/384/521, Ed25519, Ed448', '✗ Not supported', 'Only these OIDs are defined in config.h'],
-            ['AES-CCM and AES-CFB',                '✗ NTE_NOT_SUPPORTED', 'No SoftHSM2 mechanism wired to these modes'],
+            ['AES-CCM and AES-CFB',                '◐ Gated on the probe', 'CFB defaults to 8-bit feedback; MessageBlockLength selects full block'],
             ['Hash-based KDFs in NCryptDeriveKey', '✗ NTE_NOT_SUPPORTED', 'Request BCRYPT_KDF_RAW_SECRET and run the KDF with BCrypt'],
             ['DES / 3DES, DSA, PKCS#3 DH, GOST',   '✗ Out of scope', 'Deprecated, or outside the Microsoft HLK test plan'],
             ['Raw hash and sign-with-hash mechanisms', '✗ Unreachable by design', 'CNG always supplies NCryptSignHash a pre-computed digest'],
