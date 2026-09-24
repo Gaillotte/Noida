@@ -59,6 +59,13 @@ static const CK_MECHANISM_TYPE g_rsaOnlyToken[] = {
     CKM_RSA_PKCS_KEY_PAIR_GEN, CKM_RSA_PKCS,
 };
 
+/* An RSA token that also offers raw RSA. SoftHSM2 2.7.0 does not, which
+ * is why raw RSA was recorded for years as a backend blocker rather than
+ * something the probe could gate. */
+static const CK_MECHANISM_TYPE g_rawRsaToken[] = {
+    CKM_RSA_PKCS_KEY_PAIR_GEN, CKM_RSA_PKCS, CKM_RSA_X_509,
+};
+
 /* An EC token that can generate and sign but cannot derive — the case a
  * presence-only check on CKM_EC_KEY_PAIR_GEN would get wrong. */
 static const CK_MECHANISM_TYPE g_noDeriveToken[] = {
@@ -474,6 +481,52 @@ int main(void)
     ASSERT_EQ("IsAlgSupported(ML-KEM) → NTE_NOT_SUPPORTED",
         KSP_IsAlgSupported(hProv, L"ML-KEM", 0),
         (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+    /* ── Raw RSA is gated the same way ──────────────────────────────────── */
+    TEST_SUITE("Raw RSA follows the token");
+
+    /* The gate has to be tested in BOTH directions, and only one of them
+     * can be checked against the live token: Kryoptic implements
+     * CKM_RSA_X_509, so removing the gate there changes nothing and the
+     * fault injection passes. Here the mock decides what the token has,
+     * which is the only way to exercise the gate closing. */
+    {
+        CK_MECHANISM mech;
+
+        UseToken(g_rsaOnlyToken,
+                 sizeof(g_rsaOnlyToken) / sizeof(g_rsaOnlyToken[0]), 2, 40);
+
+        memset(&mech, 0, sizeof(mech));
+        ASSERT_EQ("Without CKM_RSA_X_509, raw RSA is refused",
+            P11_ResolveMechanism(ALG_RSA, NCRYPT_NO_PADDING_FLAG, &mech, NULL),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        /* And the ordinary padding schemes are unaffected — a gate that
+         * closed over everything would also pass the assertion above. */
+        memset(&mech, 0, sizeof(mech));
+        ASSERT_OK("PKCS#1 still resolves on that token",
+            P11_ResolveMechanism(ALG_RSA, NCRYPT_PAD_PKCS1_FLAG, &mech, NULL));
+        ASSERT_EQ("as CKM_RSA_PKCS", mech.mechanism,
+                  (CK_MECHANISM_TYPE)CKM_RSA_PKCS);
+
+        UseToken(g_rawRsaToken,
+                 sizeof(g_rawRsaToken) / sizeof(g_rawRsaToken[0]), 2, 40);
+
+        memset(&mech, 0, sizeof(mech));
+        ASSERT_OK("With CKM_RSA_X_509, raw RSA resolves",
+            P11_ResolveMechanism(ALG_RSA, NCRYPT_NO_PADDING_FLAG, &mech, NULL));
+        ASSERT_EQ("to CKM_RSA_X_509", mech.mechanism,
+                  (CK_MECHANISM_TYPE)CKM_RSA_X_509);
+
+        /* No-padding is not a modifier on PKCS#1: it selects a different
+         * mechanism entirely, and mixing the flags must not silently
+         * produce one of them. */
+        memset(&mech, 0, sizeof(mech));
+        ASSERT_OK("PKCS#1 unaffected on the raw-capable token",
+            P11_ResolveMechanism(ALG_RSA, NCRYPT_PAD_PKCS1_FLAG, &mech, NULL));
+        ASSERT_EQ("still CKM_RSA_PKCS", mech.mechanism,
+                  (CK_MECHANISM_TYPE)CKM_RSA_PKCS);
+    }
 
     P11_ReleaseCapabilities();
     KSP_FreeProvider(hProv);

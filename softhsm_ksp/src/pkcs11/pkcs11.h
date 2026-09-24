@@ -240,7 +240,16 @@ typedef struct CK_EDDSA_PARAMS {
 #define CKM_AES_CBC_PAD           0x00001085UL
 #define CKM_AES_CTR               0x00001086UL
 #define CKM_AES_GCM               0x00001087UL
+#define CKM_AES_CCM               0x00001088UL
 #define CKM_AES_CMAC              0x0000108AUL
+/* CFB comes in feedback sizes and they are DIFFERENT mechanisms. CNG's
+ * ChainingModeCFB defaults to 8-bit feedback and selects full-block only
+ * when MessageBlockLength is set to the block size, so CFB8 is the one a
+ * caller gets without asking. Values from the OASIS header vendored in the
+ * SoftHSM2 submodule. */
+#define CKM_AES_CFB8              0x00002106UL
+#define CKM_AES_CFB128            0x00002107UL
+
 #define CKM_AES_KEY_WRAP          0x00002109UL
 #define CKM_AES_KEY_WRAP_PAD      0x0000210AUL
 
@@ -507,6 +516,22 @@ typedef struct CK_GCM_PARAMS {
     CK_ULONG    ulTagBits;
 } CK_GCM_PARAMS;
 typedef CK_GCM_PARAMS CK_PTR CK_GCM_PARAMS_PTR;
+
+/* AES-CCM parameters (CKM_AES_CCM).
+ *
+ * ulDataLen is the length of the PLAINTEXT and must be known before the
+ * operation starts — CCM is not an online mode, unlike GCM. On decryption
+ * that is the ciphertext length minus the MAC. Field order and types from
+ * struct ck_ccm_params in the OASIS header vendored in the submodule. */
+typedef struct CK_CCM_PARAMS {
+    CK_ULONG    ulDataLen;
+    CK_BYTE_PTR pNonce;
+    CK_ULONG    ulNonceLen;
+    CK_BYTE_PTR pAAD;
+    CK_ULONG    ulAADLen;
+    CK_ULONG    ulMACLen;
+} CK_CCM_PARAMS;
+typedef CK_CCM_PARAMS CK_PTR CK_CCM_PARAMS_PTR;
 
 /* AES-CTR parameters (CKM_AES_CTR) */
 typedef struct CK_AES_CTR_PARAMS {

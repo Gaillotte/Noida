@@ -32,6 +32,15 @@ typedef struct _KSP_KEY {
     DWORD            cbIV;                      /* IV length actually set */
     BYTE             pbAuthData[MAX_AUTH_DATA_LEN]; /* GCM additional authenticated data */
     DWORD            cbAuthData;                /* AAD length actually set */
+    /* CFB feedback size in bytes, from BCRYPT_MESSAGE_BLOCK_LENGTH.
+     * Zero means unset, which is CNG's default of 1 (8-bit CFB) — NOT the
+     * full block. Microsoft's own property documentation: "By default,
+     * this property is set to 1 for 8-bit CFB. Setting it to the block
+     * size in bytes causes full-block CFB to be used." Mapping
+     * ChainingModeCFB straight to CKM_AES_CFB128 would therefore be wrong
+     * for every caller that did not set this, and the ciphertext would not
+     * decrypt on any other CNG implementation. */
+    DWORD            cbMessageBlockLen;
 
     /* Per-key PIN (NCRYPT_PIN_PROPERTY on a key handle).
      *

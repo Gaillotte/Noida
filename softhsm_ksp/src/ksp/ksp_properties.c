@@ -178,6 +178,53 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
             }
         }
 
+    } else if (_wcsicmp(pszProperty, NCRYPT_AUTH_TAG_LENGTH) == 0) {
+        /* What the property is actually for: the tag lengths the algorithm
+         * supports, as a BCRYPT_AUTH_TAG_LENGTHS_STRUCT. Reported per
+         * chaining mode because GCM and CCM do not accept the same set —
+         * GCM takes 12..16 in steps of 1, CCM 4..16 in steps of 2. */
+        if (_wcsicmp(pKey->szAlgId, ALG_AES) != 0) {
+            ss = NTE_NOT_SUPPORTED;
+        } else {
+            BOOL bCcm = (_wcsicmp(pKey->szChainingMode,
+                                  BCRYPT_CHAIN_MODE_CCM) == 0);
+            BOOL bGcm = (_wcsicmp(pKey->szChainingMode,
+                                  BCRYPT_CHAIN_MODE_GCM) == 0);
+            if (!bCcm && !bGcm) {
+                /* An unauthenticated mode has no tag at all. */
+                ss = NTE_NOT_SUPPORTED;
+            } else {
+                BCRYPT_AUTH_TAG_LENGTHS_STRUCT tags;
+                tags.dwMinLength = bCcm ? AES_CCM_TAG_MIN : AES_GCM_TAG_MIN;
+                tags.dwMaxLength = bCcm ? AES_CCM_TAG_MAX : AES_GCM_TAG_MAX;
+                tags.dwIncrement = bCcm ? 2 : 1;
+
+                *pcbResult = sizeof(tags);
+                if (pbOutput) {
+                    if (cbOutput < sizeof(tags))
+                        ss = NTE_BUFFER_TOO_SMALL;
+                    else
+                        memcpy(pbOutput, &tags, sizeof(tags));
+                }
+            }
+        }
+
+    } else if (_wcsicmp(pszProperty, BCRYPT_MESSAGE_BLOCK_LENGTH) == 0) {
+        /* CFB feedback size. Unset reads back as CNG's default of 1. */
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
+            ss = NTE_NOT_SUPPORTED;
+        } else {
+            DWORD cbBlock = pKey->cbMessageBlockLen
+                            ? pKey->cbMessageBlockLen : 1;
+            *pcbResult = sizeof(DWORD);
+            if (pbOutput) {
+                if (cbOutput < sizeof(DWORD))
+                    ss = NTE_BUFFER_TOO_SMALL;
+                else
+                    memcpy(pbOutput, &cbBlock, sizeof(DWORD));
+            }
+        }
+
     } else if (_wcsicmp(pszProperty, NCRYPT_BLOCK_LENGTH_PROPERTY) == 0) {
         /* AES block size; meaningless for asymmetric keys */
         if (_wcsicmp(pKey->szAlgId, ALG_AES) != 0) {
@@ -354,14 +401,25 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
         } else {
             LPCWSTR pszMode = (LPCWSTR)pbInput;
 
+            /* CCM and CFB are accepted here and gated at the point of
+             * use, where the capability probe can be asked. Refusing them
+             * outright was right while no token could do them and wrong
+             * once the probe existed: the mode a caller may select is a
+             * property of the TOKEN, not of a list compiled into this
+             * provider — the same correctness bug phase 4 fixed for
+             * algorithm advertisement.
+             *
+             * A caller that sets a mode the token cannot do learns so from
+             * the operation, which is where PKCS#11 reports it. */
             if (_wcsicmp(pszMode, BCRYPT_CHAIN_MODE_ECB) == 0 ||
                 _wcsicmp(pszMode, BCRYPT_CHAIN_MODE_CBC) == 0 ||
                 _wcsicmp(pszMode, BCRYPT_CHAIN_MODE_GCM) == 0 ||
+                _wcsicmp(pszMode, BCRYPT_CHAIN_MODE_CCM) == 0 ||
+                _wcsicmp(pszMode, BCRYPT_CHAIN_MODE_CFB) == 0 ||
                 _wcsicmp(pszMode, KSP_CHAIN_MODE_CTR)    == 0) {
                 wcscpy_s(pKey->szChainingMode, MAX_ALG_ID_LEN, pszMode);
                 ss = ERROR_SUCCESS;
             } else {
-                /* CCM / CFB are not wired to a SoftHSM2 mechanism */
                 ss = NTE_NOT_SUPPORTED;
             }
         }
@@ -378,15 +436,40 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_AUTH_TAG_LENGTH) == 0) {
-        /* GCM additional authenticated data */
+        /* Read-only, and it never meant what this provider used it for.
+         *
+         * Microsoft's property documentation: "The authentication tag
+         * lengths that are supported by the algorithm. This property is a
+         * BCRYPT_AUTH_TAG_LENGTHS_STRUCT structure. This property only
+         * applies to algorithms." It reports a RANGE the algorithm
+         * supports; it is not a setter and it is not per-key.
+         *
+         * This branch used to treat a set of it as "here is my additional
+         * authenticated data" and copy the bytes into pbAuthData. Two
+         * consequences: an application that legitimately wrote a tag
+         * length would have those four bytes silently become GCM AAD and
+         * fail authentication, and AAD had no correct route at all — it is
+         * carried in BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO through
+         * pPaddingInfo, which KSP_Encrypt and KSP_Decrypt now read. No
+         * test ever exercised this, which is why it survived. */
+        ss = NTE_NOT_SUPPORTED;
+
+    } else if (_wcsicmp(pszProperty, BCRYPT_MESSAGE_BLOCK_LENGTH) == 0) {
+        /* CFB feedback size in bytes. 1 is 8-bit CFB (CNG's default) and
+         * the block size is full-block CFB; nothing else is wired. */
         if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
             ss = NTE_NOT_SUPPORTED;
-        } else if (!pbInput || cbInput > MAX_AUTH_DATA_LEN) {
+        } else if (!pbInput || cbInput != sizeof(DWORD)) {
             ss = NTE_INVALID_PARAMETER;
         } else {
-            memcpy(pKey->pbAuthData, pbInput, cbInput);
-            pKey->cbAuthData = cbInput;
-            ss = ERROR_SUCCESS;
+            DWORD cbBlock;
+            memcpy(&cbBlock, pbInput, sizeof(DWORD));
+            if (cbBlock != 1 && cbBlock != AES_BLOCK_SIZE) {
+                ss = NTE_NOT_SUPPORTED;
+            } else {
+                pKey->cbMessageBlockLen = cbBlock;
+                ss = ERROR_SUCCESS;
+            }
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_PIN_PROPERTY) == 0) {

@@ -164,12 +164,38 @@ int main(void)
         ASSERT_WSTR("Chaining mode is GCM", mode, BCRYPT_CHAIN_MODE_GCM);
     }
 
+    /* CFB and CCM are accepted here and gated at the point of use against
+     * the capability probe. This used to assert NTE_NOT_SUPPORTED, which
+     * was right while nothing could do them and wrong once the probe
+     * existed: which modes are available is a property of the token, not
+     * of a list compiled into the provider. */
     ss = KSP_SetKeyProperty(hProv, hKey, NCRYPT_CHAINING_MODE_PROPERTY,
                             (PBYTE)BCRYPT_CHAIN_MODE_CFB,
                             (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CFB) + 1) *
                                     sizeof(WCHAR)), 0);
-    ASSERT_EQ("CFB mode → NTE_NOT_SUPPORTED", ss,
+    ASSERT_OK("CFB mode accepted, gated at use", ss);
+
+    ss = KSP_SetKeyProperty(hProv, hKey, NCRYPT_CHAINING_MODE_PROPERTY,
+                            (PBYTE)BCRYPT_CHAIN_MODE_CCM,
+                            (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CCM) + 1) *
+                                    sizeof(WCHAR)), 0);
+    ASSERT_OK("CCM mode accepted, gated at use", ss);
+
+    /* A mode that is not a CNG chaining mode at all is still refused —
+     * otherwise the check above would be vacuous. */
+    ss = KSP_SetKeyProperty(hProv, hKey, NCRYPT_CHAINING_MODE_PROPERTY,
+                            (PBYTE)L"ChainingModeNonsense",
+                            (DWORD)((wcslen(L"ChainingModeNonsense") + 1) *
+                                    sizeof(WCHAR)), 0);
+    ASSERT_EQ("An unknown chaining mode is still refused", ss,
               (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+    /* Back to GCM for the assertions that follow. */
+    ss = KSP_SetKeyProperty(hProv, hKey, NCRYPT_CHAINING_MODE_PROPERTY,
+                            (PBYTE)BCRYPT_CHAIN_MODE_GCM,
+                            (DWORD)((wcslen(BCRYPT_CHAIN_MODE_GCM) + 1) *
+                                    sizeof(WCHAR)), 0);
+    ASSERT_OK("GCM reselected", ss);
 
     ss = KSP_SetKeyProperty(hProv, hKey, NCRYPT_INITIALIZATION_VECTOR,
                             iv, sizeof iv, 0);

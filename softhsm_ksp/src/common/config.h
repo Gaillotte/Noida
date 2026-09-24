@@ -359,6 +359,21 @@
  * mode, so the KSP accepts this name in NCRYPT_CHAINING_MODE_PROPERTY. */
 #define KSP_CHAIN_MODE_CTR  L"ChainingModeCTR"
 
+/* CCM nonce bounds, NIST SP 800-38C §A.1: the nonce is 7 to 13 bytes, and
+ * its length fixes the maximum message length. Outside that range the
+ * mode is undefined, so the provider refuses rather than passing it down. */
+#define AES_CCM_MIN_NONCE   7
+#define AES_CCM_MAX_NONCE   13
+
+/* AES-GCM and AES-CCM tag lengths CNG reports through AuthTagLength.
+ * GCM: 12..16 bytes in steps of 1 (SP 800-38D §5.2.1.2 also allows 4 and
+ * 8; CNG reports the 12..16 range). CCM: 4..16 in steps of 2
+ * (SP 800-38C §6.1). */
+#define AES_GCM_TAG_MIN     12
+#define AES_GCM_TAG_MAX     16
+#define AES_CCM_TAG_MIN     4
+#define AES_CCM_TAG_MAX     16
+
 /* RSA public exponent, settable before FinalizeKey. CNG defines no standard
  * property for this, so the name is a KSP extension. */
 #define KSP_PUBLIC_EXPONENT_PROPERTY  L"RSA Public Exponent"

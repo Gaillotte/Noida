@@ -52,6 +52,8 @@ typedef wchar_t            WCHAR;
 typedef wchar_t           *LPWSTR;
 typedef const wchar_t     *LPCWSTR;
 typedef unsigned char     *PBYTE;
+typedef unsigned char     *PUCHAR;
+typedef unsigned long long ULONGLONG;
 
 #define TRUE  1
 #define FALSE 0
@@ -462,6 +464,7 @@ typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER {
 #define BCRYPT_CHAIN_MODE_GCM    L"ChainingModeGCM"
 #define BCRYPT_CHAIN_MODE_CCM    L"ChainingModeCCM"
 #define BCRYPT_CHAIN_MODE_CFB    L"ChainingModeCFB"
+#define BCRYPT_MESSAGE_BLOCK_LENGTH L"MessageBlockLength"
 
 /* Key derivation function identifiers */
 #define BCRYPT_KDF_RAW_SECRET    L"TRUNCATE"
@@ -514,6 +517,37 @@ BOOL SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue);
 
 typedef struct { LPCWSTR pszAlgId; DWORD cbSalt; } BCRYPT_PSS_PADDING_INFO;
 typedef struct { LPCWSTR pszAlgId; PBYTE pbLabel; DWORD cbLabel; } BCRYPT_OAEP_PADDING_INFO;
+
+/* Field order and types copied from <bcrypt.h>. This is what CNG passes as
+ * pPaddingInfo for an authenticated chaining mode (GCM, CCM): it is the
+ * standard route for the nonce, the additional authenticated data and the
+ * tag, none of which are key properties. */
+#define BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION 1
+
+typedef struct _BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+    ULONG      cbSize;
+    ULONG      dwInfoVersion;
+    PUCHAR     pbNonce;
+    ULONG      cbNonce;
+    PUCHAR     pbAuthData;
+    ULONG      cbAuthData;
+    PUCHAR     pbTag;
+    ULONG      cbTag;
+    PUCHAR     pbMacContext;
+    ULONG      cbMacContext;
+    ULONG      cbAAD;
+    ULONGLONG  cbData;
+    ULONG      dwFlags;
+} BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO;
+
+/* BCRYPT_AUTH_TAG_LENGTHS_STRUCT is a typedef of the key-lengths struct in
+ * <bcrypt.h>; AuthTagLength reports a range, it does not set one. */
+typedef struct __BCRYPT_KEY_LENGTHS_STRUCT {
+    ULONG dwMinLength;
+    ULONG dwMaxLength;
+    ULONG dwIncrement;
+} BCRYPT_KEY_LENGTHS_STRUCT;
+typedef BCRYPT_KEY_LENGTHS_STRUCT BCRYPT_AUTH_TAG_LENGTHS_STRUCT;
 
 /* ── NCrypt types ────────────────────────────────────────────────────────── */
 typedef ULONG_PTR NCRYPT_PROV_HANDLE;

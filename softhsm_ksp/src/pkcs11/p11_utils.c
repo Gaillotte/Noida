@@ -1,5 +1,6 @@
 /* p11_utils.c — PKCS#11 utility implementation */
 #include "p11_utils.h"
+#include "p11_caps.h"
 #include "p11_context.h"
 #include "../common/config.h"
 #include "../common/logging.h"
@@ -239,6 +240,17 @@ SECURITY_STATUS P11_ResolveMechanism(
     memset(pMechanism, 0, sizeof(*pMechanism));
 
     if (_wcsicmp(pszAlgId, ALG_RSA) == 0) {
+        /* Raw RSA — NCRYPT_NO_PADDING_FLAG. This has to be decided INSIDE
+         * the RSA branch: the branch returns, so a check placed after it
+         * is unreachable. Gated on the probe at the point of use, as
+         * ML-DSA is; SoftHSM2 2.7.0 does not implement CKM_RSA_X_509, so
+         * it stays dark there and lights up on a token that has it. */
+        if (dwFlags & NCRYPT_NO_PADDING_FLAG) {
+            if (!P11_HasMechanism(CKM_RSA_X_509))
+                return NTE_NOT_SUPPORTED;
+            pMechanism->mechanism = CKM_RSA_X_509;
+            return ERROR_SUCCESS;
+        }
         if (dwFlags & NCRYPT_PAD_PSS_FLAG) {
             pMechanism->mechanism    = CKM_RSA_PKCS_PSS;
             if (pPssParams) {

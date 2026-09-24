@@ -113,7 +113,10 @@ test_logging: test_logging.c $(LOG_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_export_blobs : P11_ExportRsaPublicKey, P11_ExportEcPublicKey ────
-test_export_blobs: test_export_blobs.c $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
+# CAPS_SRC because p11_utils.c asks the probe whether the token can do raw
+# RSA, the same way it is asked about ML-DSA. The real probe answers
+# permissively until one has run, so linking it changes nothing here.
+test_export_blobs: test_export_blobs.c $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_ksp_provider: KSP_OpenProvider, KSP_FreeProvider, properties ───

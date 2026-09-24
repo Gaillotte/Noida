@@ -47,6 +47,33 @@ static void FillPssParams(
     }
 }
 
+/* Interpret pPaddingInfo as a BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO, but
+ * only for a chaining mode where CNG would actually pass one.
+ *
+ * pPaddingInfo is a void pointer whose meaning depends on the flags, so
+ * reading it as the wrong structure is how a provider dereferences a
+ * BCRYPT_OAEP_PADDING_INFO as something twice its size. GCM and CCM are
+ * the only modes CNG documents as carrying this, and cbSize is checked
+ * because a caller who passed the wrong thing is better refused than
+ * trusted. */
+static const BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO *KspAuthModeInfo(
+    KSP_KEY *pKey, VOID *pPaddingInfo)
+{
+    const BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO *pInfo;
+
+    if (!pKey || !pPaddingInfo)
+        return NULL;
+    if (_wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_GCM) != 0 &&
+        _wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_CCM) != 0)
+        return NULL;
+
+    pInfo = (const BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO *)pPaddingInfo;
+    if (pInfo->cbSize != sizeof(*pInfo))
+        return NULL;
+
+    return pInfo;
+}
+
 /* Build the PKCS#11 mechanism for an AES operation.
  *
  * Follows the CNG symmetric contract: the chaining mode is a key property
@@ -55,16 +82,38 @@ static void FillPssParams(
  *   ChainingModeECB → CKM_AES_ECB      (no IV)
  *   ChainingModeCBC → CKM_AES_CBC      (16-byte IV), CBC_PAD when padding asked
  *   ChainingModeGCM → CKM_AES_GCM      (12-byte nonce, 128-bit tag)
+ *   ChainingModeCCM → CKM_AES_CCM      (7–13 byte nonce, plaintext length up front)
+ *   ChainingModeCFB → CKM_AES_CFB8     by default, CKM_AES_CFB128 when
+ *                                      MessageBlockLength is the block size
  *   ChainingModeCTR → CKM_AES_CTR      (16-byte counter block, KSP extension)
+ *
+ * For the authenticated modes, pAuthInfo is the BCRYPT_AUTHENTICATED_-
+ * CIPHER_MODE_INFO that CNG passes as pPaddingInfo. That is the standard
+ * route for the nonce, the additional authenticated data and the tag —
+ * none of which are key properties. It may be NULL, in which case GCM
+ * falls back to the IV key property, which is how this provider behaved
+ * before the authenticated-mode route existed.
+ *
+ * cbData is the plaintext length. CCM needs it before the operation
+ * starts, because unlike GCM it is not an online mode.
  */
 static SECURITY_STATUS KspBuildAesMechanism(
     KSP_KEY           *pKey,
     DWORD              dwFlags,
+    const BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO *pAuthInfo,
+    DWORD              cbData,
     CK_MECHANISM      *pMech,
     CK_GCM_PARAMS     *pGcm,
-    CK_AES_CTR_PARAMS *pCtr)
+    CK_AES_CTR_PARAMS *pCtr,
+    CK_CCM_PARAMS     *pCcm)
 {
-    if (!pKey || !pMech || !pGcm || !pCtr)
+    const BYTE *pbNonce = NULL;
+    DWORD       cbNonce = 0;
+    const BYTE *pbAAD   = NULL;
+    DWORD       cbAAD   = 0;
+    DWORD       cbTag   = AES_GCM_TAG_BITS / 8;
+
+    if (!pKey || !pMech || !pGcm || !pCtr || !pCcm)
         return NTE_INVALID_PARAMETER;
 
     /* Only AES is a block cipher here; HMAC keys never reach this path */
@@ -72,6 +121,25 @@ static SECURITY_STATUS KspBuildAesMechanism(
         return NTE_BAD_ALGID;
 
     memset(pMech, 0, sizeof(*pMech));
+
+    /* The authenticated-mode info wins over the key properties when it is
+     * present, because it is what a portable CNG application supplies. */
+    if (pAuthInfo) {
+        pbNonce = pAuthInfo->pbNonce;
+        cbNonce = pAuthInfo->cbNonce;
+        pbAAD   = pAuthInfo->pbAuthData;
+        cbAAD   = pAuthInfo->cbAuthData;
+        if (pAuthInfo->cbTag)
+            cbTag = pAuthInfo->cbTag;
+    }
+    if (!pbNonce || cbNonce == 0) {
+        pbNonce = pKey->pbIV;
+        cbNonce = pKey->cbIV;
+    }
+    if (!pbAAD || cbAAD == 0) {
+        pbAAD = pKey->cbAuthData ? pKey->pbAuthData : NULL;
+        cbAAD = pKey->cbAuthData;
+    }
 
     /* ECB — no IV required */
     if (_wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_ECB) == 0) {
@@ -81,20 +149,91 @@ static SECURITY_STATUS KspBuildAesMechanism(
 
     /* GCM — authenticated mode, nonce is typically 12 bytes */
     if (_wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_GCM) == 0) {
-        if (pKey->cbIV == 0)
+        if (cbNonce == 0)
             return NTE_INVALID_PARAMETER;
 
         memset(pGcm, 0, sizeof(*pGcm));
-        pGcm->pIv       = pKey->pbIV;
-        pGcm->ulIvLen   = pKey->cbIV;
-        pGcm->ulIvBits  = pKey->cbIV * 8;
-        pGcm->pAAD      = pKey->cbAuthData ? pKey->pbAuthData : NULL;
-        pGcm->ulAADLen  = pKey->cbAuthData;
-        pGcm->ulTagBits = AES_GCM_TAG_BITS;
+        pGcm->pIv       = (CK_BYTE_PTR)pbNonce;
+        pGcm->ulIvLen   = cbNonce;
+        pGcm->ulIvBits  = cbNonce * 8;
+        pGcm->pAAD      = (CK_BYTE_PTR)pbAAD;
+        pGcm->ulAADLen  = cbAAD;
+        pGcm->ulTagBits = cbTag * 8;
 
         pMech->mechanism      = CKM_AES_GCM;
         pMech->pParameter     = pGcm;
         pMech->ulParameterLen = sizeof(*pGcm);
+        return ERROR_SUCCESS;
+    }
+
+    /* CCM — authenticated, and NOT an online mode.
+     *
+     * CK_CCM_PARAMS.ulDataLen is the plaintext length and the token needs
+     * it before any data arrives, which is the practical difference from
+     * GCM. The nonce is 7 to 13 bytes (NIST SP 800-38C); anything else is
+     * refused here rather than passed down to be rejected with an error
+     * that does not point back. */
+    if (_wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_CCM) == 0) {
+        if (!P11_HasMechanism(CKM_AES_CCM)) {
+            LOG_ERROR("AES-CCM: the token does not implement CKM_AES_CCM",
+                      NTE_NOT_SUPPORTED);
+            return NTE_NOT_SUPPORTED;
+        }
+        if (cbNonce < AES_CCM_MIN_NONCE || cbNonce > AES_CCM_MAX_NONCE)
+            return NTE_INVALID_PARAMETER;
+
+        memset(pCcm, 0, sizeof(*pCcm));
+        pCcm->ulDataLen  = cbData;
+        pCcm->pNonce     = (CK_BYTE_PTR)pbNonce;
+        pCcm->ulNonceLen = cbNonce;
+        pCcm->pAAD       = (CK_BYTE_PTR)pbAAD;
+        pCcm->ulAADLen   = cbAAD;
+        pCcm->ulMACLen   = cbTag;
+
+        pMech->mechanism      = CKM_AES_CCM;
+        pMech->pParameter     = pCcm;
+        pMech->ulParameterLen = sizeof(*pCcm);
+        return ERROR_SUCCESS;
+    }
+
+    /* CFB — the feedback size decides the mechanism, and the default is
+     * NOT the full block.
+     *
+     * Microsoft's property documentation for MessageBlockLength: "By
+     * default, this property is set to 1 for 8-bit CFB. Setting it to the
+     * block size in bytes causes full-block CFB to be used." So a caller
+     * who sets ChainingModeCFB and nothing else means CFB8, and mapping
+     * that to CKM_AES_CFB128 would produce ciphertext no other CNG
+     * implementation could decrypt. The feature matrix said this gap
+     * "would need CKM_AES_CFB128", naming the mechanism a caller gets
+     * only by asking for it explicitly. */
+    if (_wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_CFB) == 0) {
+        CK_MECHANISM_TYPE mechCfb;
+
+        if (pKey->cbMessageBlockLen == 0 ||
+            pKey->cbMessageBlockLen == 1) {
+            mechCfb = CKM_AES_CFB8;
+        } else if (pKey->cbMessageBlockLen == AES_BLOCK_SIZE) {
+            mechCfb = CKM_AES_CFB128;
+        } else {
+            /* CNG allows any size up to the block; PKCS#11 defines
+             * mechanisms only for 1, 8, 64 and 128 bits, and this provider
+             * wires the two CNG actually reaches. Refusing beats silently
+             * rounding to a different cipher. */
+            return NTE_NOT_SUPPORTED;
+        }
+
+        if (!P11_HasMechanism(mechCfb)) {
+            LOG_ERROR("AES-CFB: the token does not implement this feedback "
+                      "size", NTE_NOT_SUPPORTED);
+            return NTE_NOT_SUPPORTED;
+        }
+        if (pKey->cbIV != AES_BLOCK_SIZE)
+            return NTE_INVALID_PARAMETER;
+
+        pMech->mechanism      = mechCfb;
+        pMech->pParameter     = pKey->pbIV;
+        pMech->ulParameterLen = pKey->cbIV;
         return ERROR_SUCCESS;
     }
 
@@ -182,7 +321,9 @@ static SECURITY_STATUS KspSignatureLength(const KSP_KEY *pKey,
     switch (mech) {
     case CKM_RSA_PKCS:
     case CKM_RSA_PKCS_PSS:
-        /* Always the modulus length, for both padding schemes. */
+    case CKM_RSA_X_509:
+        /* Always the modulus length — raw RSA included, since the output
+         * of the exponentiation is exactly one modulus wide. */
         if (pKey->dwKeyBitLen == 0)
             return NTE_BAD_KEY;
         *pcbSig = pKey->dwKeyBitLen / 8;
@@ -466,6 +607,7 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
     CK_RSA_PKCS_OAEP_PARAMS oaepParams;
     CK_GCM_PARAMS        gcmParams;
     CK_AES_CTR_PARAMS    ctrParams;
+    CK_CCM_PARAMS        ccmParams;
     CK_OBJECT_HANDLE     hDecryptKey = CK_INVALID_HANDLE;
     CK_RV                rv;
     SECURITY_STATUS      ss;
@@ -495,8 +637,19 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
 
     if (pKey->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC) {
         /* Symmetric decryption (AES) — mode selected by dwFlags */
-        ss = KspBuildAesMechanism(pKey, dwFlags,
-                                  &mech, &gcmParams, &ctrParams);
+        /* On decryption CCM's ulDataLen is the PLAINTEXT length, which is
+         * the ciphertext minus the MAC. */
+        {
+            const BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO *pAuth =
+                KspAuthModeInfo(pKey, pPaddingInfo);
+            DWORD cbTag = (pAuth && pAuth->cbTag) ? pAuth->cbTag
+                                                  : AES_GCM_TAG_BITS / 8;
+            DWORD cbPlain = (cbInput > cbTag) ? (cbInput - cbTag) : 0;
+
+            ss = KspBuildAesMechanism(pKey, dwFlags, pAuth, cbPlain,
+                                      &mech, &gcmParams, &ctrParams,
+                                      &ccmParams);
+        }
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_Decrypt", ss);
             return ss;
@@ -514,6 +667,29 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
         mech.mechanism      = CKM_RSA_PKCS_OAEP;
         mech.pParameter     = &oaepParams;
         mech.ulParameterLen = sizeof(oaepParams);
+        hDecryptKey = pKey->hPrivKey;
+    } else if (dwFlags & NCRYPT_NO_PADDING_FLAG) {
+        /* Raw RSA — the modular exponentiation and nothing else.
+         *
+         * Gated on the probe, like ML-DSA: SoftHSM2 2.7.0 does not
+         * implement CKM_RSA_X_509, so it never advertises it and this
+         * branch stays dark there. The matrix recorded that as a backend
+         * blocker, which stopped being a reason not to wire it the moment
+         * the capability probe existed.
+         *
+         * No padding means no structure to check, so a caller gets exactly
+         * what the token computes. That is the point of the flag and also
+         * why it is dangerous: raw RSA is a signature-forgery primitive in
+         * the wrong hands. CNG exposes it deliberately for protocols that
+         * carry their own padding, and this provider passes it through
+         * rather than deciding for the caller. */
+        if (!P11_HasMechanism(CKM_RSA_X_509)) {
+            LOG_ERROR("Raw RSA: the token does not implement CKM_RSA_X_509",
+                      NTE_NOT_SUPPORTED);
+            LOG_LEAVE("KSP_Decrypt", NTE_NOT_SUPPORTED);
+            return NTE_NOT_SUPPORTED;
+        }
+        mech.mechanism = CKM_RSA_X_509;
         hDecryptKey = pKey->hPrivKey;
     } else {
         mech.mechanism = CKM_RSA_PKCS;
@@ -1299,6 +1475,7 @@ SECURITY_STATUS WINAPI KSP_Encrypt(
     CK_MECHANISM      mech;
     CK_GCM_PARAMS     gcmParams;
     CK_AES_CTR_PARAMS ctrParams;
+    CK_CCM_PARAMS     ccmParams;
     CK_RV             rv;
     SECURITY_STATUS   ss;
     CK_ULONG          cbEncrypted = 0;
@@ -1326,7 +1503,9 @@ SECURITY_STATUS WINAPI KSP_Encrypt(
         return NTE_INVALID_HANDLE;
     }
 
-    ss = KspBuildAesMechanism(pKey, dwFlags, &mech, &gcmParams, &ctrParams);
+    ss = KspBuildAesMechanism(pKey, dwFlags,
+                              KspAuthModeInfo(pKey, pPaddingInfo), cbInput,
+                              &mech, &gcmParams, &ctrParams, &ccmParams);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_Encrypt", ss);
         return ss;

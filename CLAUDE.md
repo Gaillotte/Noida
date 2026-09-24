@@ -872,7 +872,7 @@ See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure
 - **Naming**: `KSP_` prefix for KSP layer, `P11_` prefix for PKCS#11 layer
 - **Handles**: direct cast `(KSP_PROVIDER *)hProvider`, validated by `dwMagic`
 - **Thread-safety**: all 22 KSP functions are re-entrant. **Tested since
-  session 11**, not merely asserted — `tests/linux/test_concurrent.c` runs
+  session 12**, not merely asserted — `tests/linux/test_concurrent.c` runs
   32 threads over the 16-session pool against a live token and compares
   signature *bytes* against a single-threaded reference, because a crossed
   session returns `ERROR_SUCCESS` with the wrong data and a status-only

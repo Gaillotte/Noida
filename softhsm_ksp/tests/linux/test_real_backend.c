@@ -1490,7 +1490,310 @@ int main(void)
         }
     }
 
-    /* ── Suite 23 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 23 : the three mechanisms SoftHSM2 cannot do ─────────────── */
+    TEST_SUITE("Raw RSA, AES-CCM, AES-CFB");
+
+    /* All three were recorded in the feature matrix as "blocked by the
+     * backend, not the KSP". That stopped being true when the capability
+     * probe landed in phase 4: the mechanism can be wired and gated, dark
+     * on a token without it and live on one with it. This token has all
+     * three, so for the first time they can be verified rather than
+     * written blind — which is how this project accumulated code that only
+     * worked against its own assumptions. */
+    {
+        BOOL bRawRsa = P11_HasMechanism(CKM_RSA_X_509);
+        BOOL bCcm    = P11_HasMechanism(CKM_AES_CCM);
+        BOOL bCfb8   = P11_HasMechanism(CKM_AES_CFB8);
+        BOOL bCfb128 = P11_HasMechanism(CKM_AES_CFB128);
+
+        printf("      [token: raw RSA %s, CCM %s, CFB8 %s, CFB128 %s]\n",
+               bRawRsa ? "yes" : "no", bCcm ? "yes" : "no",
+               bCfb8 ? "yes" : "no", bCfb128 ? "yes" : "no");
+
+        /* ── Raw RSA ─────────────────────────────────────────────────── */
+        {
+            NCRYPT_KEY_HANDLE hRsa = 0;
+            NCRYPT_KEY_HANDLE hOld = 0;
+
+            if (KSP_OpenKey(hProv, &hOld, L"phase6-rawrsa", 0, 0)
+                    == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+
+            ss = KSP_CreatePersistedKey(hProv, &hRsa, ALG_RSA,
+                                        L"phase6-rawrsa", AT_KEYEXCHANGE, 0);
+            ASSERT_OK("RSA key for raw operations", ss);
+
+            if (ss == ERROR_SUCCESS) {
+                /* Raw RSA takes a full modulus-width input. A shorter one
+                 * is not padded — there is no padding — so the test feeds
+                 * exactly 256 bytes with the top byte small enough to keep
+                 * the value below the modulus. */
+                BYTE  abIn[256];
+                BYTE  abOut[512];
+                DWORD cbOut = 0;
+                DWORD i;
+
+                abIn[0] = 0x00;
+                for (i = 1; i < sizeof(abIn); i++)
+                    abIn[i] = (BYTE)(i * 3 + 1);
+
+                cbOut = 0;
+                ss = KSP_Decrypt(hProv, hRsa, abIn, sizeof(abIn), NULL,
+                                 abOut, sizeof(abOut), &cbOut,
+                                 NCRYPT_NO_PADDING_FLAG);
+
+                if (bRawRsa) {
+                    ASSERT_OK("Raw RSA (CKM_RSA_X_509) accepted", ss);
+                    ASSERT("and returns a modulus-wide result",
+                           ss != ERROR_SUCCESS || cbOut == sizeof(abIn));
+                } else {
+                    ASSERT_EQ("Without CKM_RSA_X_509 raw RSA is refused",
+                              ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+                }
+
+                KSP_DeleteKey(hProv, hRsa, 0);
+            }
+        }
+
+        /* ── AES-CCM and AES-CFB ─────────────────────────────────────── */
+        {
+            NCRYPT_KEY_HANDLE hAes = 0;
+            NCRYPT_KEY_HANDLE hOld = 0;
+            BYTE  abPlain[32];
+            BYTE  abCipher[128];
+            BYTE  abBack[128];
+            DWORD cbCipher = 0, cbBack = 0;
+            DWORD i;
+
+            for (i = 0; i < sizeof(abPlain); i++)
+                abPlain[i] = (BYTE)(i ^ 0x5A);
+
+            if (KSP_OpenKey(hProv, &hOld, L"phase6-modes", 0, 0)
+                    == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+
+            ss = KSP_CreatePersistedKey(hProv, &hAes, ALG_AES,
+                                        L"phase6-modes", 0, 0);
+            ASSERT_OK("AES key for CCM and CFB", ss);
+
+            if (ss == ERROR_SUCCESS) {
+                /* CCM — the nonce, AAD and tag arrive through
+                 * BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO, which is the
+                 * standard CNG route and the one this provider did not
+                 * read until now. */
+                BYTE abNonce[12];
+                BYTE abAad[16];
+                BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+
+                memset(abNonce, 0xA5, sizeof(abNonce));
+                memset(abAad,   0x3C, sizeof(abAad));
+
+                memset(&info, 0, sizeof(info));
+                info.cbSize        = sizeof(info);
+                info.dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
+                info.pbNonce       = abNonce;
+                info.cbNonce       = sizeof(abNonce);
+                info.pbAuthData    = abAad;
+                info.cbAuthData    = sizeof(abAad);
+                info.cbTag         = 16;
+
+                ss = KSP_SetKeyProperty(hProv, hAes,
+                        NCRYPT_CHAINING_MODE_PROPERTY,
+                        (PBYTE)BCRYPT_CHAIN_MODE_CCM,
+                        (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CCM) + 1)
+                                * sizeof(WCHAR)), 0);
+                ASSERT_OK("CCM selected", ss);
+
+                cbCipher = 0;
+                ss = KSP_Encrypt(hProv, hAes, abPlain, sizeof(abPlain),
+                                 &info, abCipher, sizeof(abCipher),
+                                 &cbCipher, 0);
+
+                if (bCcm) {
+                    ASSERT_OK("CCM encryption", ss);
+                    ASSERT("and the ciphertext carries the 16-byte tag",
+                           ss != ERROR_SUCCESS ||
+                           cbCipher == sizeof(abPlain) + 16);
+
+                    if (ss == ERROR_SUCCESS) {
+                        cbBack = 0;
+                        ss = KSP_Decrypt(hProv, hAes, abCipher, cbCipher,
+                                         &info, abBack, sizeof(abBack),
+                                         &cbBack, 0);
+                        ASSERT_OK("CCM decryption", ss);
+                        ASSERT("CCM round-trips",
+                               cbBack == sizeof(abPlain) &&
+                               memcmp(abBack, abPlain,
+                                      sizeof(abPlain)) == 0);
+                    }
+
+                    /* The AAD is authenticated, not encrypted: changing it
+                     * must break the tag. Without this the AAD could be
+                     * ignored entirely and every assertion above would
+                     * still pass. */
+                    if (ss == ERROR_SUCCESS) {
+                        BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO bad = info;
+                        BYTE abOther[16];
+                        memset(abOther, 0x77, sizeof(abOther));
+                        bad.pbAuthData = abOther;
+
+                        cbBack = 0;
+                        ss = KSP_Decrypt(hProv, hAes, abCipher, cbCipher,
+                                         &bad, abBack, sizeof(abBack),
+                                         &cbBack, 0);
+                        ASSERT("Tampering with the AAD fails the tag",
+                               ss != ERROR_SUCCESS);
+                    }
+                } else {
+                    ASSERT_EQ("Without CKM_AES_CCM the mode is refused",
+                              ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+                }
+
+                /* CFB — the default feedback size is 8-bit, NOT the full
+                 * block. Microsoft's MessageBlockLength documentation:
+                 * "By default, this property is set to 1 for 8-bit CFB."
+                 * The feature matrix said this gap needed CKM_AES_CFB128,
+                 * which is the mechanism a caller reaches only by setting
+                 * the property. */
+                {
+                    BYTE  abIv[AES_BLOCK_SIZE];
+                    DWORD dwBlock;
+
+                    memset(abIv, 0x11, sizeof(abIv));
+
+                    ss = KSP_SetKeyProperty(hProv, hAes,
+                            NCRYPT_CHAINING_MODE_PROPERTY,
+                            (PBYTE)BCRYPT_CHAIN_MODE_CFB,
+                            (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CFB) + 1)
+                                    * sizeof(WCHAR)), 0);
+                    ASSERT_OK("CFB selected", ss);
+                    ss = KSP_SetKeyProperty(hProv, hAes,
+                            NCRYPT_INITIALIZATION_VECTOR,
+                            abIv, sizeof(abIv), 0);
+                    ASSERT_OK("CFB IV set", ss);
+
+                    /* Unset MessageBlockLength must read back as 1. */
+                    dwBlock = 0;
+                    cbBack = 0;
+                    ss = KSP_GetKeyProperty(hProv, hAes,
+                            BCRYPT_MESSAGE_BLOCK_LENGTH,
+                            (PBYTE)&dwBlock, sizeof(dwBlock), &cbBack, 0);
+                    ASSERT_OK("MessageBlockLength readable", ss);
+                    ASSERT_EQ("and defaults to 1 — 8-bit CFB, per CNG",
+                              dwBlock, 1U);
+
+                    cbCipher = 0;
+                    ss = KSP_Encrypt(hProv, hAes, abPlain, sizeof(abPlain),
+                                     NULL, abCipher, sizeof(abCipher),
+                                     &cbCipher, 0);
+                    if (bCfb8) {
+                        ASSERT_OK("CFB8 encryption (the default)", ss);
+                        ASSERT("and a stream mode adds no length",
+                               ss != ERROR_SUCCESS ||
+                               cbCipher == sizeof(abPlain));
+
+                        if (ss == ERROR_SUCCESS) {
+                            ss = KSP_SetKeyProperty(hProv, hAes,
+                                    NCRYPT_INITIALIZATION_VECTOR,
+                                    abIv, sizeof(abIv), 0);
+                            ASSERT_OK("CFB IV reset", ss);
+                            cbBack = 0;
+                            ss = KSP_Decrypt(hProv, hAes, abCipher,
+                                             cbCipher, NULL, abBack,
+                                             sizeof(abBack), &cbBack, 0);
+                            ASSERT_OK("CFB8 decryption", ss);
+                            ASSERT("CFB8 round-trips",
+                                   cbBack == sizeof(abPlain) &&
+                                   memcmp(abBack, abPlain,
+                                          sizeof(abPlain)) == 0);
+                        }
+                    } else {
+                        ASSERT_EQ("Without CKM_AES_CFB8 the mode is refused",
+                                  ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+                    }
+
+                    /* Full-block CFB, selected explicitly. It must produce
+                     * DIFFERENT ciphertext from CFB8 over the same input —
+                     * otherwise the property is being ignored and both
+                     * paths are silently the same mechanism. */
+                    if (bCfb8 && bCfb128 && cbCipher == sizeof(abPlain)) {
+                        BYTE  abCipher128[128];
+                        DWORD cbCipher128 = 0;
+
+                        dwBlock = AES_BLOCK_SIZE;
+                        ss = KSP_SetKeyProperty(hProv, hAes,
+                                BCRYPT_MESSAGE_BLOCK_LENGTH,
+                                (PBYTE)&dwBlock, sizeof(dwBlock), 0);
+                        ASSERT_OK("MessageBlockLength set to the block size",
+                                  ss);
+                        ss = KSP_SetKeyProperty(hProv, hAes,
+                                NCRYPT_INITIALIZATION_VECTOR,
+                                abIv, sizeof(abIv), 0);
+                        ASSERT_OK("CFB IV reset", ss);
+
+                        ss = KSP_Encrypt(hProv, hAes, abPlain,
+                                         sizeof(abPlain), NULL,
+                                         abCipher128, sizeof(abCipher128),
+                                         &cbCipher128, 0);
+                        ASSERT_OK("CFB128 encryption", ss);
+                        ASSERT("Full-block CFB differs from 8-bit CFB — the "
+                               "feedback size is not being ignored",
+                               ss != ERROR_SUCCESS ||
+                               cbCipher128 != cbCipher ||
+                               memcmp(abCipher128, abCipher,
+                                      cbCipher128) != 0);
+                    }
+
+                    /* A feedback size PKCS#11 has no mechanism for is
+                     * refused rather than rounded to a different cipher. */
+                    dwBlock = 8;
+                    ss = KSP_SetKeyProperty(hProv, hAes,
+                            BCRYPT_MESSAGE_BLOCK_LENGTH,
+                            (PBYTE)&dwBlock, sizeof(dwBlock), 0);
+                    ASSERT_EQ("An unwired feedback size is refused",
+                              ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+                }
+
+                /* AuthTagLength reports a RANGE and is not a setter. It
+                 * used to be misused to carry the AAD. */
+                {
+                    BCRYPT_AUTH_TAG_LENGTHS_STRUCT tags;
+                    DWORD cb = 0;
+                    BYTE  abJunk[4] = { 1, 2, 3, 4 };
+
+                    ss = KSP_SetKeyProperty(hProv, hAes,
+                            NCRYPT_AUTH_TAG_LENGTH, abJunk,
+                            sizeof(abJunk), 0);
+                    ASSERT_EQ("Setting AuthTagLength is refused — it is a "
+                              "read-only algorithm property",
+                              ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+                    ss = KSP_SetKeyProperty(hProv, hAes,
+                            NCRYPT_CHAINING_MODE_PROPERTY,
+                            (PBYTE)BCRYPT_CHAIN_MODE_GCM,
+                            (DWORD)((wcslen(BCRYPT_CHAIN_MODE_GCM) + 1)
+                                    * sizeof(WCHAR)), 0);
+                    ASSERT_OK("GCM selected", ss);
+
+                    memset(&tags, 0, sizeof(tags));
+                    ss = KSP_GetKeyProperty(hProv, hAes,
+                            NCRYPT_AUTH_TAG_LENGTH, (PBYTE)&tags,
+                            sizeof(tags), &cb, 0);
+                    ASSERT_OK("AuthTagLength reads back as a range", ss);
+                    ASSERT_EQ("of the documented struct size",
+                              cb, (DWORD)sizeof(tags));
+                    ASSERT("with a sane GCM range",
+                           tags.dwMinLength <= tags.dwMaxLength &&
+                           tags.dwMaxLength == 16);
+                }
+
+                KSP_DeleteKey(hProv, hAes, 0);
+            }
+        }
+    }
+
+    /* ── Suite 24 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {
