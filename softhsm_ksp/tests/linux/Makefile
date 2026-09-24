@@ -93,9 +93,9 @@ PROVIDER_SRC = \
     $(SRC)/common/memory.c
 
 .PHONY: all all-pqc kryoptic kryoptic-pqc openssl token run run-twice \
-        clean distclean
+        concurrent tsan clean distclean
 
-all: kryoptic token run-twice
+all: kryoptic token run-twice concurrent
 
 # The same thing against a token that can do EdDSA and ML-DSA. Slower by
 # the OpenSSL build, which is why it is a separate target.
@@ -162,6 +162,36 @@ token: p11_init_token $(KRYOPTIC_SO)
 test_real_backend: test_real_backend.c p11_real_loader.c real_cert.c $(PROVIDER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
 
+# ── Concurrency ───────────────────────────────────────────────────────────
+#
+# Separate binary, not another suite in test_real_backend, because it has
+# to be built twice: once plain and once under ThreadSanitizer. The two
+# answer different questions. TSan reports a race whether or not it
+# corrupted anything on this particular run — races are timing-dependent
+# and a clean run proves very little on its own. The value comparisons
+# report corruption whether or not TSan happened to observe the race that
+# caused it. Neither subsumes the other.
+test_concurrent: test_concurrent.c p11_real_loader.c $(PROVIDER_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
+
+test_concurrent_tsan: test_concurrent.c p11_real_loader.c $(PROVIDER_SRC)
+	$(CC) $(CFLAGS) -fsanitize=thread -O1 -o $@ $(filter %.c,$^) $(LDLIBS)
+
+concurrent: test_concurrent
+	@echo "══ Concurrency against the token ══"
+	KRYOPTIC_CONF=$(TOKEN_CONF) \
+	KSP_PKCS11_LIB=$(KRYOPTIC_SO) \
+	SOFTHSM2_PIN=$(USER_PIN) \
+	    ./test_concurrent
+
+tsan: test_concurrent_tsan
+	@echo "══ Concurrency under ThreadSanitizer ══"
+	KRYOPTIC_CONF=$(TOKEN_CONF) \
+	KSP_PKCS11_LIB=$(KRYOPTIC_SO) \
+	SOFTHSM2_PIN=$(USER_PIN) \
+	TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1 suppressions=$(LINUX_DIR)/tsan.supp" \
+	    ./test_concurrent_tsan
+
 run: test_real_backend
 	@echo "══ Running the provider against Kryoptic ══"
 	KRYOPTIC_CONF=$(TOKEN_CONF) \
@@ -188,7 +218,7 @@ run-twice: test_real_backend
 	@$(MAKE) --no-print-directory run
 
 clean:
-	rm -f test_real_backend p11_init_token
+	rm -f test_real_backend test_concurrent test_concurrent_tsan p11_init_token
 	rm -rf $(TOKEN_DIR)
 
 # Leaves the Kryoptic checkout alone by default: re-cloning and rebuilding

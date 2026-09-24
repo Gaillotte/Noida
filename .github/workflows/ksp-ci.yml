@@ -124,6 +124,25 @@ jobs:
         working-directory: softhsm_ksp/tests/linux
         run: make run-twice
 
+      # 32 threads over a pool of 16 sessions. The provider claims all 22
+      # NCrypt functions are re-entrant; this is the only thing that tests
+      # it. Correctness is checked by comparing signature BYTES against a
+      # single-threaded reference, because a crossed session returns
+      # ERROR_SUCCESS with the wrong data — a status-only check sees
+      # nothing.
+      - name: Concurrency
+        working-directory: softhsm_ksp/tests/linux
+        run: make concurrent
+
+      # Separate from the run above because the two find different things.
+      # A race is timing-dependent, so a clean plain run proves little;
+      # TSan reports the race whether or not it corrupted anything this
+      # time. The value checks catch corruption whether or not TSan saw the
+      # race behind it. Neither subsumes the other.
+      - name: Concurrency under ThreadSanitizer
+        working-directory: softhsm_ksp/tests/linux
+        run: make tsan
+
   # ── The same provider against a token that can do EdDSA and ML-DSA ──────
   #
   # Separate from the job above because it is a genuinely different token,

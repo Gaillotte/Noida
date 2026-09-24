@@ -1,0 +1,49 @@
+# ThreadSanitizer suppressions for the concurrency suite.
+#
+# These suppress reports whose racing accesses are inside Kryoptic, not
+# inside this provider. That is not a convenience: without them the real
+# signal is unreadable, and a suppression file that hid our own races would
+# defeat the entire point of running TSan.
+#
+# Why Kryoptic's reports are false positives, established rather than
+# assumed:
+#
+#   - Kryoptic is linked as a prebuilt .so and is NOT instrumented, so TSan
+#     sees its memory accesses but not its synchronisation.
+#   - It guards its global state with `state: RwLock<State>` (src/lib.rs).
+#     Rust's std::sync primitives on Linux are futex-based rather than
+#     pthread-based, and TSan's happens-before edges come from intercepting
+#     pthread calls. A futex it cannot see is synchronisation it cannot
+#     credit, so every access under that RwLock looks unsynchronised.
+#   - The provider passes CKF_OS_LOCKING_OK to C_Initialize
+#     (src/pkcs11/p11_context.c), which is exactly what PKCS#11 v2.40 §5.4
+#     requires of an application that will call the library from several
+#     threads. Having declared that, the provider is entitled to rely on
+#     the module's own locking, and Kryoptic provides it.
+#
+# The entries are named by the racing function, not by the library as a
+# whole. `called_from_lib` would have been shorter and would also have
+# suppressed races in OUR code that merely happen to occur on a stack
+# passing through Kryoptic — which is the class of bug this suite exists
+# to find.
+#
+# If a report appears that these do not cover, read it before adding to
+# this file. The question is always which frame performs the racing
+# ACCESS, not which frames appear in the stack.
+
+race:kryoptic_lib::
+race:hashbrown::
+race:^rust_
+
+# libsqlite3 — Kryoptic's storage backend, also linked uninstrumented.
+#
+# The racing access is sqlite3DbStrNDup on a block sqlite3 itself
+# allocated; the provider's frames appear only as the caller. Whether
+# Kryoptic shares one sqlite3 connection across threads without a mutex is
+# a question about Kryoptic's storage layer, not about this provider, and
+# nothing in this repository can fix it.
+#
+# Worth knowing if a future backend is evaluated: it is the token's job to
+# be thread-safe once the application has passed CKF_OS_LOCKING_OK, which
+# this provider does.
+race:sqlite3

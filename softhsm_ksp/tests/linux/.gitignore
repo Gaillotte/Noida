@@ -6,8 +6,14 @@
 # Token database and config created by `make token`.
 .token/
 
-# Binaries
-test_real_backend
+# Binaries.
+#
+# A pattern, not a list of names. The list form was forgotten in sessions
+# 8, 9 and 10 — every time a suite was added, its binary showed up
+# untracked — so the names are matched and the sources exempted instead.
+test_*
+!test_*.c
+!test_*.h
 p11_init_token
 
 # Built by `make openssl` — OpenSSL 3.5, needed because Kryoptic gates

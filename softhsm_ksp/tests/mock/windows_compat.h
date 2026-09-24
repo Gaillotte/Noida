@@ -18,6 +18,8 @@
 #include <stdarg.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <errno.h>
+#include <time.h>
 
 /* ── PKCS#11 platform macros (replace the _WIN32 section of pkcs11.h) */
 #ifndef CK_PTR
@@ -297,11 +299,37 @@ static inline sem_t *CreateSemaphoreW(void *attr, long init, long max, void *nam
 static inline int CloseHandle(sem_t *s) { sem_destroy(s); free(s); return 1; }
 
 #define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT  0x102
 #define INFINITE      0xFFFFFFFF
 
+/* The timeout is honoured rather than ignored.
+ *
+ * This used to be a bare sem_wait, which cannot time out. The session pool
+ * waits 5 s for a free session and maps anything else to NTE_NO_MEMORY, so
+ * with sem_wait that entire path was unreachable on Linux — a leaked
+ * session hung the process instead of failing. A leak is precisely what a
+ * concurrency test is looking for, and a hang is a much worse way to learn
+ * about one than a returned error. */
 static inline DWORD WaitForSingleObject(sem_t *s, DWORD ms) {
-    (void)ms;
-    sem_wait(s);
+    struct timespec ts;
+
+    if (ms == INFINITE) {
+        while (sem_wait(s) != 0 && errno == EINTR) { }
+        return WAIT_OBJECT_0;
+    }
+
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        while (sem_wait(s) != 0 && errno == EINTR) { }
+        return WAIT_OBJECT_0;
+    }
+    ts.tv_sec  += (time_t)(ms / 1000);
+    ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+
+    while (sem_timedwait(s, &ts) != 0) {
+        if (errno == EINTR) continue;
+        return WAIT_TIMEOUT;
+    }
     return WAIT_OBJECT_0;
 }
 static inline int ReleaseSemaphore(sem_t *s, long n, long *prev) {
@@ -310,22 +338,36 @@ static inline int ReleaseSemaphore(sem_t *s, long n, long *prev) {
     return 1;
 }
 
-/* ── INIT_ONCE (→ pthread_once_t) ────────────────────────────────────────── */
-typedef pthread_once_t INIT_ONCE;
+/* ── INIT_ONCE ───────────────────────────────────────────────────────────── */
+/*
+ * Each INIT_ONCE carries its own state. It used to be a bare
+ * pthread_once_t plus a single file-static callback pointer that
+ * InitOnceExecuteOnce wrote before calling pthread_once — so two threads
+ * racing on the same INIT_ONCE both wrote that pointer, and two DIFFERENT
+ * INIT_ONCE objects in one translation unit would each run whichever
+ * callback happened to be stored last. It worked only because no
+ * translation unit here uses two of them, which is luck rather than
+ * design, and it is a data race whatever the outcome.
+ *
+ * A mutex and a flag are per-object, race-free, and match the Windows
+ * semantics this code relies on: the callback runs exactly once, and
+ * every caller waits until it has.
+ */
+typedef struct { pthread_mutex_t mtx; int done; } INIT_ONCE;
 typedef INIT_ONCE *PINIT_ONCE;
-#define INIT_ONCE_STATIC_INIT PTHREAD_ONCE_INIT
+#define INIT_ONCE_STATIC_INIT { PTHREAD_MUTEX_INITIALIZER, 0 }
 typedef int (*PINIT_ONCE_FN)(INIT_ONCE*, void*, void**);
-
-/* Simulated simply with pthread_once */
-typedef struct { pthread_once_t once; PINIT_ONCE_FN fn; } _INIT_ONCE_CTX;
-static _INIT_ONCE_CTX _g_once_ctx;
-static void _once_runner(void) { _g_once_ctx.fn(NULL, NULL, NULL); }
 
 static inline int InitOnceExecuteOnce(INIT_ONCE *o, PINIT_ONCE_FN fn,
                                       void *param, void **ctx) {
-    (void)param; (void)ctx;
-    _g_once_ctx.fn = fn;
-    return pthread_once(o, _once_runner) == 0;
+    int ok = 1;
+    pthread_mutex_lock(&o->mtx);
+    if (!o->done) {
+        ok = fn(o, param, ctx);
+        if (ok) o->done = 1;
+    }
+    pthread_mutex_unlock(&o->mtx);
+    return ok;
 }
 
 /* ── HMODULE (mock) ─────────────────────────────────────────────────────── */
