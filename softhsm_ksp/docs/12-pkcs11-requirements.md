@@ -81,6 +81,8 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 | `CKM_RSA_PKCS_KEY_PAIR_GEN` | `RSA` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | Public exponent fixed at 65537 |
 | `CKM_EC_KEY_PAIR_GEN` | `ECDSA_P256/384/521`, `ECDSA_SECP256K1`, `ECDH_P256/384/521` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | Curve chosen by `CKA_EC_PARAMS` |
 | `CKM_EC_EDWARDS_KEY_PAIR_GEN` | `EDDSA_ED25519`, `EDDSA_ED448` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | PKCS#11 v3.0 mechanism |
+| `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` | `ECDH_X25519` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | PKCS#11 v3.0. **A separate mechanism from the Edwards one** — a token may implement either alone |
+| `CKM_ML_DSA_KEY_PAIR_GEN` | `ML-DSA-44/65/87` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | PKCS#11 v3.2. Parameter set in `CKA_PARAMETER_SET`, which is the key's whole identity |
 | `CKM_AES_KEY_GEN` | `AES` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
 | `CKM_GENERIC_SECRET_KEY_GEN` | `HMAC_SHA1/256/384/512` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
 

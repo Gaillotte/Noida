@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 22 test suites, 1477 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 22 test suites, 1572 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -84,10 +84,11 @@ noida/
 │   │   ├── linux/                  Layer 1b — the provider against a REAL second
 │   │   │   │                        PKCS#11 module (Kryoptic), not the mock
 │   │   │   ├── Makefile             make = fetch+build Kryoptic, init token, run
+│   │   │   │                        make all-pqc = + OpenSSL 3.5 and a PQC token
 │   │   │   ├── p11_real_loader.c    LoadLibraryW → dlopen
 │   │   │   ├── p11_init_token.c     C_InitToken / C_InitPIN standalone tool
 │   │   │   ├── real_cert.c          a genuine openssl-generated certificate
-│   │   │   └── test_real_backend.c  156 assertions against a live token (run twice)
+│   │   │   └── test_real_backend.c  187 (base) / 228 (PQC) assertions, run twice
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
@@ -126,6 +127,82 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 11 — Phase 7 step 2: the curves nobody had ever run
+
+Step 1 swept the operations a SoftHSM2-backed provider could already reach.
+Step 2 took the ones it could not: **X25519, Ed25519, Ed448 and ML-DSA were
+implemented, advertised, and had only ever met a mock.** Four defects, in
+code 1477 mock assertions declared covered.
+
+- **Montgomery curves are not Edwards curves with a different OID.**
+  PKCS#11 v3.0 gives them their own generator and key type,
+  `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` / `CKK_EC_MONTGOMERY`. This repository
+  asserted the opposite *in a source comment* and generated every X25519
+  key with the Edwards pair. Kryoptic built without `eddsa` has the
+  Montgomery generator and **not** the Edwards one — exactly the
+  configuration that separates them — so every X25519 key was refused.
+- **`P11_ExportEddsaPublicKey` had never been called.** `KSP_ExportKey`
+  dispatched on blob type alone and sent every EC-family key to the X9.62
+  parser. The unit suite called the function *directly*, so six assertions
+  covered code the provider could not reach. **A unit test that calls a
+  function directly proves the function works, not that anything calls
+  it.** And the failure is not clean: a raw 32-byte key whose first byte
+  happens to be `0x04` parses as an uncompressed point and yields a
+  well-formed blob of nonsense, roughly one key in 256.
+- **Import identified the curve by size and ignored the blob magic.** An
+  X25519 key is 32 bytes and so is a P-256 coordinate; so is an Ed25519
+  key. Size separates none of them. The ECDH and ECDSA generic magics do,
+  which is how CNG distinguishes them too.
+- **Ed448 had never signed.** RFC 8032 defines five algorithms, not two.
+  Ed25519 has a pure context-free form, so an *absent* `CK_EDDSA_PARAMS`
+  selects it and a *present* one selects Ed25519ctx — a different scheme.
+  Ed448 has no context-free form and a token given no parameter refuses.
+  The provider sent NULL for both. **The fix is deliberately asymmetric
+  and must stay so**; both mistakes are fault-injected and both caught.
+- **Reopening a key by name misidentified five of the ten curves this
+  provider can generate.** Only a reopen recovers the algorithm from
+  `CKA_EC_PARAMS`, and that chain's final `else` named everything
+  unrecognised P-384 — so X25519, secp256k1 and all three Brainpool curves
+  came back as ECDH_P384 at 384 bits. Both directions now read one table
+  and an unknown OID is refused rather than guessed.
+- **An ML-DSA key reopened by name had no algorithm at all.**
+  `CKA_PARAMETER_SET` is its entire identity — no curve, no modulus — and
+  nothing read it back.
+
+**ML-DSA now generates, reopens and signs at all three parameter sets
+against a real post-quantum token** (Kryoptic + OpenSSL 3.5.8, built from
+source because `eddsa` gates on 3.2 and the PQC mechanisms on 3.5).
+`PQC-01` stays Partial for one reason only: public key export is still
+refused, and that is blocked on a Windows SDK header, not a backend.
+
+**The suite now tests both sides of the capability gate**, rather than one
+token's feature set. Assertions like "CKM_EDDSA absent — this build has no
+eddsa feature" are facts about a build, not about the provider, and broke
+the moment the build changed. Every capability-dependent assertion now asks
+the token and requires the provider to agree: with the mechanism the
+operation must work, without it the provider must refuse. CI runs both
+configurations, `second-backend` (187 assertions) and `second-backend-pqc`
+(228).
+
+Two things found sideways:
+
+- **`-Werror=implicit-function-declaration` is on for the tests.** A call
+  with no prototype is assumed to return `int`, so a pointer-returning
+  function has its result truncated to 32 bits — a segfault at the *call
+  site* and nothing wrong at the definition. That cost a debugging session.
+  Turning it on immediately caught `ksp_crypto.c` calling
+  `P11_HasMechanism` without including `p11_caps.h`.
+- **`make kryoptic` had never run.** Backslash continuations in the feature
+  list became spaces, so cargo read it as several arguments and refused.
+  The first Kryoptic build was done by hand and its `.so` copied into
+  place, so the `second-backend` CI job would have failed on the first cold
+  cache.
+
+Unit tests 1477 → **1572 assertions** across 22 suites; live token 156 →
+**187 (base) / 228 (PQC)**. Coverage 87.4 % → **87.1 % lines at 100 %
+functions**. Feature matrix unchanged at 65 covered — step 2 validated and
+corrected rather than closing new gaps, which is the honest result.
 
 ### Session 10 — Phase 7 step 1: a second, real PKCS#11 backend
 
@@ -521,7 +598,7 @@ softhsm2-x64.dll          PKCS#11 v2.40 — encrypted SQLite storage
 | RSA | `RSA` | 2048–16384 bits, step 64 | `CKM_RSA_PKCS_KEY_PAIR_GEN` |
 | ECDSA | `ECDSA_P256/384/521`, `ECDSA_SECP256K1`, `ECDSA_BRAINPOOLP256R1/384R1/512R1` | 256–521 bits | `CKM_EC_KEY_PAIR_GEN` |
 | ECDH | `ECDH_P256/384/521` | 256, 384, 521 bits | `CKM_EC_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) |
-| X25519 | `ECDH_X25519` | 255 bits | `CKM_EC_EDWARDS_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) |
+| X25519 | `ECDH_X25519` | 255 bits | `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` (CKA_DERIVE=TRUE) — **a separate mechanism from the Edwards one** |
 | EdDSA | `EDDSA_ED25519/ED448` | 255, 448 bits | `CKM_EC_EDWARDS_KEY_PAIR_GEN` |
 | AES | `AES` | 128, 192, 256 bits | `CKM_AES_KEY_GEN` |
 | HMAC | `HMAC_SHA1/224/256/384/512` | 160–512 bits | `CKM_GENERIC_SECRET_KEY_GEN` |
@@ -539,7 +616,8 @@ intersection. A token that refuses the probe gets the full list, as before.
 | RSA PKCS#1 v1.5 | `NCRYPT_PAD_PKCS1_FLAG` | `CKM_RSA_PKCS` | SHA-1/256/384/512 |
 | RSA PSS | `NCRYPT_PAD_PSS_FLAG` | `CKM_RSA_PKCS_PSS` + `CK_RSA_PKCS_PSS_PARAMS` | SHA-1/224/256/384/512 |
 | ECDSA P-256/384/521 | 0 (no padding) | `CKM_ECDSA` | SHA-256/384/512 recommended |
-| EdDSA Ed25519/Ed448 | 0 (no padding) | `CKM_EDDSA` | Hashes internally |
+| EdDSA Ed25519 | 0 (no padding) | `CKM_EDDSA`, **no** `CK_EDDSA_PARAMS` | Hashes internally |
+| EdDSA Ed448 | 0 (no padding) | `CKM_EDDSA` + `CK_EDDSA_PARAMS{phFlag=FALSE}` | Hashes internally |
 | HMAC | 0 | `CKM_SHA*_HMAC` | Secret-key MAC |
 
 ECDSA: **the token returns raw r‖s already** — PKCS#11 v2.40 §2.3.1 mandates it,
@@ -596,13 +674,16 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   because the tests read the same wrong numbers. `tests/check_mock_drift.py`
   now fails CI on any disagreement with the real Windows headers.
 - **Post-quantum needs a PKCS#11 v3.2 token.** ML-DSA is implemented and
-  gated on the capability probe, but SoftHSM2 2.7.0 defines the mechanisms
-  and implements none of them, so it never advertises them and the provider
-  never offers them. Untested against a real PQC token — none is available
-  here. ML-DSA public key export is refused deliberately: the CNG PQC blob
-  layout is not available in this workspace and a guess would fail only on
-  Windows. ML-KEM is unreachable through the key-storage function table
-  regardless of the backend
+  gated on the capability probe. SoftHSM2 2.7.0 defines the mechanisms and
+  implements none of them, so it never advertises them and the provider
+  never offers them. **Since session 11 this is tested rather than
+  asserted**: generation, reopen by parameter set and signing all work
+  against Kryoptic built with its `pqc` feature over OpenSSL 3.5.8
+  (`make kryoptic-pqc`). ML-DSA public key export is still refused
+  deliberately: the CNG PQC blob layout is in a Windows SDK header not
+  available here and a guess would fail only on Windows — a missing header,
+  not a missing backend. ML-KEM is unreachable through the key-storage
+  function table regardless of the backend
 - No raw RSA (`CKM_RSA_X_509`) — SoftHSM2 limitation
 - No private key import — HSM design
 - Token chosen by `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; with neither,
@@ -669,8 +750,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 22 suites, 1477 assertions
-make coverage      # → coverage_html/index.html (87.4 % lines, 100 % functions)
+make run           # 22 suites, 1572 assertions
+make coverage      # → coverage_html/index.html (87.1 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

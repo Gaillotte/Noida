@@ -739,6 +739,116 @@ exactly that way. Re-injecting it confirms the mechanism: pass 1 green, pass
 
 The suite runs in CI as the `second-backend` job.
 
+### Step 2 ✅ done — the curves nobody had ever run
+
+Step 1 swept the operations a SoftHSM2-backed provider could already reach.
+Step 2 is about the ones it could not: X25519, Ed25519, Ed448 and ML-DSA
+were implemented, advertised, and had only ever met a mock. **Four defects
+across three sub-steps, in code that 1477 mock assertions declared covered.**
+
+The sweep was worth starting because of a pattern step 1 established: every
+area of this provider that had never met a real token had a defect in it,
+and the rate did not fall until the untested surface ran out.
+
+#### Step 2a — X25519, and three defects in one code path
+
+`ec_montgomery` carries no OpenSSL version gate, so this cost one extra
+feature flag on the Kryoptic build.
+
+- **Montgomery curves are not Edwards curves with a different OID.**
+  PKCS#11 v3.0 gives them their own generator and key type. This repository
+  asserted the opposite *in a comment* and generated every X25519 key with
+  the Edwards pair. Kryoptic without `eddsa` has the Montgomery generator
+  and **not** the Edwards one — exactly the configuration that separates
+  them — so every X25519 key generation was refused.
+- **`P11_ExportEddsaPublicKey` had never been called.** `KSP_ExportKey`
+  dispatched on the blob type alone and sent every EC-family key to the
+  X9.62 parser. The unit suite called the function *directly*, so six
+  assertions covered code the provider could not reach. This is a failure
+  mode worth naming: a unit test that calls a function directly proves the
+  function works, not that anything calls it.
+- **Import identified the curve by size and ignored the blob magic.** An
+  X25519 public key is 32 bytes and a P-256 coordinate is 32 bytes. Size
+  cannot separate those, and cannot separate X25519 from Ed25519 either.
+  The ECDH and ECDSA generic magics can, and that is how CNG does it too.
+
+The X9.62 failure is the one to remember. A raw 32-byte key is not merely
+rejected by that parser: **one key in 256 begins with `0x04`**, parses as
+an uncompressed point, and yields a well-formed blob of nonsense. A defect
+that fails 255 times out of 256 is a good defect. The 1-in-256 success is
+the dangerous part.
+
+#### Step 2b and 2c — EdDSA and ML-DSA, after building OpenSSL
+
+Kryoptic gates `eddsa` on OpenSSL 3.2 and the post-quantum mechanisms on
+3.5; the distribution ships 3.0. Building 3.5.8 from source unblocked both
+at once, so they were done together.
+
+- **Ed448 had never been able to sign.** RFC 8032 defines five algorithms,
+  not two. Ed25519 has a pure context-free form, so an *absent*
+  `CK_EDDSA_PARAMS` selects it and a *present* one selects Ed25519ctx — a
+  different scheme. Ed448 has no context-free form; its context is merely
+  empty by default, and a token given no parameter refuses. The provider
+  sent NULL for both. **The fix is deliberately asymmetric and must stay
+  that way**; both mistakes are fault-injected and both are caught.
+- **Reopening a key by name misidentified five of the ten curves this
+  provider can generate.** Generation and use work from the algorithm the
+  caller passed in; only a reopen recovers it from `CKA_EC_PARAMS`, and
+  that was a hand-written chain whose final `else` named everything it did
+  not recognise P-384. X25519, secp256k1 and all three Brainpool curves
+  came back as ECDH_P384 at 384 bits.
+- **An ML-DSA key reopened by name had no algorithm at all.**
+  `CKA_PARAMETER_SET` is its entire identity — no curve, no modulus — and
+  nothing read it back.
+
+ML-DSA now generates, reopens and signs at all three parameter sets against
+a real post-quantum token. **`PQC-01` stays Partial**, because the half
+that is still missing is public key export, and that is blocked on the CNG
+post-quantum blob layout in a Windows SDK header. Having a PQC token does
+not change that: it was never a backend problem.
+
+#### What changed in how the suite is written
+
+The suite used to assert one token's feature set — "CKM_EDDSA absent, this
+build has no eddsa feature". That is a fact about a build, not about the
+provider, and it broke the moment the build changed.
+
+**Every capability-dependent assertion now asks the token and requires the
+provider to agree.** With the mechanism, the operation must work; without
+it, the provider must refuse rather than hand back a key nothing can use.
+Both are real answers, so the same source is a real test under either
+configuration — and running only one of them would leave half the
+capability probe unexercised. The probe itself is now checked against a
+direct `C_GetMechanismList` over a seventeen-mechanism sample that includes
+one vendor-range value no token can implement, so the "absent" half of the
+comparison is never empty and the agreement is never vacuous.
+
+CI runs both configurations: `second-backend` and `second-backend-pqc`,
+each cached on its pinned version.
+
+| | Base build | PQC build |
+|---|---|---|
+| Live-token assertions | 187 | 228 |
+| Edwards generator | absent | present |
+| `CKM_EDDSA` | absent | present |
+| ML-DSA | absent | present |
+
+#### Two things found sideways
+
+**`-Werror=implicit-function-declaration` is on for the tests now.** A call
+with no prototype in scope is assumed to return `int`, so a
+pointer-returning function has its result truncated to 32 bits — a segfault
+at the *call site* and nothing wrong at the definition. That cost a
+debugging session. MSVC at `/W3 /WX` rejects it; Linux now agrees. Turning
+it on immediately caught `ksp_crypto.c` calling `P11_HasMechanism` without
+including `p11_caps.h`.
+
+**`make kryoptic` had never run.** The feature list used backslash
+continuations, which make turns into spaces, so cargo read it as several
+arguments and refused. The first Kryoptic build had been done by hand and
+its `.so` copied into place — so the `second-backend` CI job would have
+failed on the first cold cache. Verified now from a clean clone.
+
 ### Group D — real, and not reachable from this repository
 
 Listing these as backlog items would be dishonest; they need something this

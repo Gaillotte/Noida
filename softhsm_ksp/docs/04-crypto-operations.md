@@ -296,9 +296,25 @@ the point of the label.
 
 EdDSA differs from every other signing path in three ways:
 
-1. **No padding parameters.** `CKM_EDDSA` takes no mechanism parameter, and
-   padding flags in `dwFlags` are ignored.
-2. **No DER conversion.** SoftHSM2 returns the signature already in raw
+1. **No padding parameters — but Ed448 needs a mechanism parameter anyway.**
+   Padding flags in `dwFlags` are ignored for both curves. `CKM_EDDSA`
+   nevertheless takes `CK_EDDSA_PARAMS`, and the two curves differ:
+
+   RFC 8032 defines five algorithms, not two. Ed25519 has a pure,
+   context-free form, so an **absent** parameter selects it and a
+   **present** one with `phFlag` false selects Ed25519ctx — a different
+   scheme whose signatures no Ed25519 verifier accepts. Ed448 has no
+   context-free form at all; its context is merely empty by default, and a
+   token given no parameter answers `CKR_MECHANISM_PARAM_INVALID`.
+
+   So the provider sends `CK_EDDSA_PARAMS{phFlag = CK_FALSE, no context}`
+   for Ed448 and nothing for Ed25519. **This is not symmetry that can be
+   tidied up**; both halves are fault-injected in
+   `tests/linux/test_real_backend.c` and both are caught. The provider
+   sent NULL for both until session 10, so Ed448 had never signed —
+   SoftHSM2 accepts the bare mechanism for either curve, which is why it
+   survived that long.
+2. **No DER conversion.** The token returns the signature already in raw
    form, so `P11_DecodeDerEcdsaSignature()` is not called.
 3. **The input is the message, not a digest.** EdDSA hashes internally, so
    what CNG calls the "hash" is passed through unchanged.
@@ -309,7 +325,20 @@ EdDSA differs from every other signing path in three ways:
 | Ed448 | 114 bytes | 57 bytes |
 
 Export uses `BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC` and a single raw point
-after the `BCRYPT_ECCKEY_BLOB` header — there is no X/Y split.
+after the `BCRYPT_ECCKEY_BLOB` header — there is no X/Y split. X25519
+exports the same shape but with `BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC`, and
+**the magic is load-bearing**: an X25519 key and an Ed25519 key are both
+32 raw bytes, so on import nothing else distinguishes them. Import reads
+it; identifying the curve from `cbKey` alone also collided X25519 with a
+P-256 coordinate.
+
+`KSP_ExportKey` dispatches on the curve family to reach this path at all.
+It dispatched on the blob type alone until session 10, sending every
+EC-family key to the X9.62 parser, so `P11_ExportEddsaPublicKey` was
+unreachable from the provider's own entry point despite being unit-tested
+directly. Against that parser a raw key is not merely rejected: one whose
+first byte happens to be `0x04` parses as an uncompressed point and yields
+a well-formed blob of nonsense, roughly one key in 256.
 
 ---
 

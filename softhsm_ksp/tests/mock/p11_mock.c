@@ -283,6 +283,16 @@ static CK_RV mock_GetAttributeValue(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
                 tmpl[i].ulValueLen = g_cfg.cbExponent;
             }
             break;
+        case CKA_PARAMETER_SET:
+            /* An ML-DSA key's entire identity. Reopening one has to read
+               this back, and nothing did until session 10. */
+            if (!tmpl[i].pValue) {
+                tmpl[i].ulValueLen = sizeof(CK_ULONG);
+            } else {
+                *(CK_ULONG *)tmpl[i].pValue = g_cfg.ulParameterSet;
+                tmpl[i].ulValueLen = sizeof(CK_ULONG);
+            }
+            break;
         case CKA_EC_PARAMS:
             if (!tmpl[i].pValue) {
                 tmpl[i].ulValueLen = g_cfg.cbEcParams;

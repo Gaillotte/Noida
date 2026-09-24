@@ -15,6 +15,11 @@ const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid);
 LPCWSTR     P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement);
 LPCWSTR     P11_CurveAlgFromOid(const BYTE *pbOid, DWORD cbOid,
                                 BOOL bDerive, DWORD *pdwBits);
+LPCWSTR     P11_MlDsaAlgFromParameterSet(CK_ULONG ulParamSet);
+CK_ULONG    P11_MlDsaParameterSet(LPCWSTR pszAlgId);
+SECURITY_STATUS P11_BuildRawEcPointDer(const BYTE *pbRaw, DWORD cbRaw,
+                                       BYTE **ppDer, DWORD *pcbDer);
+void        KSP_Free(void *p);
 
 int main(void)
 {
@@ -302,6 +307,93 @@ int main(void)
                 (void *)P11_CurveAlgFromOid((const BYTE *)"\x06", 0, FALSE,
                                             &dwBits));
         }
+    }
+
+    /* ── Raw EC point DER, and the ML-DSA parameter-set round trip ──────── */
+    TEST_SUITE("Raw point DER and ML-DSA parameter sets");
+
+    /* Ed25519, Ed448 and X25519 public keys are a single raw string in a
+     * DER OCTET STRING — no 0x04 uncompressed-point marker and no second
+     * coordinate. Getting the header wrong is not loud: the token simply
+     * refuses the key, or worse accepts a shifted one. */
+    {
+        BYTE  abRaw[200];
+        BYTE *pbDer = NULL;
+        DWORD cbDer = 0;
+        DWORD i;
+        SECURITY_STATUS st;
+
+        for (i = 0; i < sizeof(abRaw); i++)
+            abRaw[i] = (BYTE)(i + 1);
+
+        /* 32 bytes: short-form length, header is 04 20. */
+        st = P11_BuildRawEcPointDer(abRaw, 32, &pbDer, &cbDer);
+        ASSERT_EQ("32-byte point encodes", st, (SECURITY_STATUS)ERROR_SUCCESS);
+        ASSERT_EQ("into 2 header bytes plus the key", cbDer, 34U);
+        if (pbDer) {
+            ASSERT("tagged OCTET STRING", pbDer[0] == 0x04);
+            ASSERT("with a short-form length of 32", pbDer[1] == 32);
+            ASSERT("and no 0x04 point marker inserted",
+                   memcmp(pbDer + 2, abRaw, 32) == 0);
+            KSP_Free(pbDer); pbDer = NULL;
+        }
+
+        /* 57 bytes (Ed448) is still short form. */
+        st = P11_BuildRawEcPointDer(abRaw, 57, &pbDer, &cbDer);
+        ASSERT_EQ("Ed448's 57-byte point encodes",
+                  st, (SECURITY_STATUS)ERROR_SUCCESS);
+        ASSERT_EQ("into 59 bytes", cbDer, 59U);
+        if (pbDer) { KSP_Free(pbDer); pbDer = NULL; }
+
+        /* 200 bytes crosses into long form: 04 81 C8. */
+        st = P11_BuildRawEcPointDer(abRaw, 200, &pbDer, &cbDer);
+        ASSERT_EQ("A 200-byte point encodes",
+                  st, (SECURITY_STATUS)ERROR_SUCCESS);
+        ASSERT_EQ("into 3 header bytes plus the key", cbDer, 203U);
+        if (pbDer) {
+            ASSERT("using the long form", pbDer[1] == 0x81);
+            ASSERT("with the length in the third byte", pbDer[2] == 200);
+            ASSERT("and the key intact after it",
+                   memcmp(pbDer + 3, abRaw, 200) == 0);
+            KSP_Free(pbDer); pbDer = NULL;
+        }
+
+        ASSERT_EQ("NULL input refused",
+            P11_BuildRawEcPointDer(NULL, 32, &pbDer, &cbDer),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        ASSERT_EQ("Zero length refused",
+            P11_BuildRawEcPointDer(abRaw, 0, &pbDer, &cbDer),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        /* Above 255 the single length byte cannot hold it, so refusing is
+         * the only correct answer — truncating would emit a valid-looking
+         * header describing the wrong length. */
+        ASSERT_EQ("Over 255 bytes refused rather than truncated",
+            P11_BuildRawEcPointDer(abRaw, 256, &pbDer, &cbDer),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
+
+    /* CKA_PARAMETER_SET is an ML-DSA key's entire identity, so the two
+     * directions have to agree or a reopened key is a different key. */
+    {
+        LPCWSTR aAlgs[] = { ALG_MLDSA_44, ALG_MLDSA_65, ALG_MLDSA_87 };
+        size_t  i;
+
+        for (i = 0; i < sizeof(aAlgs) / sizeof(aAlgs[0]); i++) {
+            CK_ULONG ulSet = P11_MlDsaParameterSet(aAlgs[i]);
+            LPCWSTR  szBack;
+
+            ASSERT("Every ML-DSA name has a parameter set", ulSet != 0);
+            szBack = P11_MlDsaAlgFromParameterSet(ulSet);
+            ASSERT("and it maps back to a name", szBack != NULL);
+            if (szBack)
+                ASSERT("and back to the SAME name",
+                       _wcsicmp(szBack, aAlgs[i]) == 0);
+        }
+
+        ASSERT_NULL("An unknown parameter set is refused",
+            (void *)P11_MlDsaAlgFromParameterSet(0x7FFFFFFF));
+        ASSERT_NULL("and so is zero",
+            (void *)P11_MlDsaAlgFromParameterSet(0));
     }
 
     TEST_REPORT();

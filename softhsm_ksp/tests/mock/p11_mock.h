@@ -126,6 +126,9 @@ typedef struct _P11_MOCK_CONFIG {
     CK_ULONG    ulValueLen;
     /* CKA_DERIVE returned for EC keys (distinguishes ECDH from ECDSA) */
     CK_ULONG    ulDerive;
+    /* CKA_PARAMETER_SET returned for ML-DSA keys — the only thing that
+     * identifies one, since it has neither a curve nor a modulus. */
+    CK_ULONG    ulParameterSet;
     /* Mechanism captured by the last C_EncryptInit / C_DeriveKey call */
     CK_MECHANISM_TYPE lastEncryptMech;
     CK_MECHANISM_TYPE lastDecryptMech;

@@ -88,6 +88,7 @@ softhsm2-x64.dll       PKCS#11 v2.40 — encrypted SQLite storage
 | `CreateKey` RSA | `CKM_RSA_PKCS_KEY_PAIR_GEN` | `SENSITIVE=TRUE`, `EXTRACTABLE=FALSE` |
 | `CreateKey` EC | `CKM_EC_KEY_PAIR_GEN` | P-256/P-384/P-521 DER OID in `CKA_EC_PARAMS` |
 | `CreateKey` EdDSA | `CKM_EC_EDWARDS_KEY_PAIR_GEN` | Ed25519 or Ed448 OID in `CKA_EC_PARAMS` |
+| `CreateKey` X25519 | `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` | A separate mechanism from the Edwards one |
 | `CreateKey` AES | `CKM_AES_KEY_GEN` | `CKA_VALUE_LEN` = 16 / 24 / 32 |
 | `CreateKey` HMAC | `CKM_GENERIC_SECRET_KEY_GEN` | Generic secret sized to the hash |
 

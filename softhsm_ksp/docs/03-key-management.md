@@ -29,7 +29,17 @@ classifiers in `ksp_key.c` (`KSP_IsEcdsaAlg`, `KSP_IsEcdhAlg`,
 | ECDSA | `ECDSA_P256`, `ECDSA_P384`, `ECDSA_P521` | `KSP_GenerateEcKeyPair` | `CKM_EC_KEY_PAIR_GEN` |
 | ECDH | `ECDH_P256`, `ECDH_P384`, `ECDH_P521` | `KSP_GenerateEcKeyPair` | `CKM_EC_KEY_PAIR_GEN` |
 | EdDSA | `EDDSA_ED25519`, `EDDSA_ED448` | `KSP_GenerateEddsaKeyPair` | `CKM_EC_EDWARDS_KEY_PAIR_GEN` |
+| X25519 | `ECDH_X25519` | `KSP_GenerateEddsaKeyPair` | `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` |
 | Symmetric | `AES`, `HMAC_SHA1/256/384/512` | `KSP_GenerateSymmetricKey` | `CKM_AES_KEY_GEN`, `CKM_GENERIC_SECRET_KEY_GEN` |
+
+**Edwards and Montgomery curves do not share a generator.** PKCS#11 v3.0
+gives Montgomery curves their own pair, `CKM_EC_MONTGOMERY_KEY_PAIR_GEN`
+and `CKK_EC_MONTGOMERY`; they are not Edwards keys distinguished by the
+curve OID. A token may implement one without the other — Kryoptic built
+without its `eddsa` feature has the Montgomery generator and no Edwards
+one — so the distinction is not academic. This document and the source
+both claimed the opposite until X25519 was run against a real token in
+session 10, and every X25519 key generation was refused.
 
 ECDSA and ECDH share both the generator and the curve OIDs. They differ only
 in the attributes set on the pair:
