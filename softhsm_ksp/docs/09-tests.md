@@ -356,5 +356,5 @@ The HLK script includes managed C# helper methods to avoid raw pointer marshalli
 | OAEP application label | ✓ | ✓ | — |
 | EC public key import (real PKCS#11 object) | ✓ | ✓ | ✓ |
 | Symmetric key reopen by name | ✓ | ✓ | — |
-| Session pool concurrency | — | — | — |
+| Session pool concurrency | — | ✓ | — |
 | Missing SoftHSM2 DLL | — | — | — |

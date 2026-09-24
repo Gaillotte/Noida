@@ -88,7 +88,9 @@ noida/
 │   │   │   ├── p11_real_loader.c    LoadLibraryW → dlopen
 │   │   │   ├── p11_init_token.c     C_InitToken / C_InitPIN standalone tool
 │   │   │   ├── real_cert.c          a genuine openssl-generated certificate
-│   │   │   └── test_real_backend.c  187 (base) / 228 (PQC) assertions, run twice
+│   │   │   ├── test_real_backend.c  187 (base) / 228 (PQC) assertions, run twice
+│   │   │   ├── test_concurrent.c    32 threads over the 16-session pool
+│   │   │   └── tsan.supp            why Kryoptic's TSan reports are false
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
@@ -127,6 +129,70 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 12 — Phase 7 step 3: the re-entrancy claim, tested
+
+The line above under *Code Conventions* — "all 22 KSP functions are
+re-entrant" — had never been tested. Every one of the 1572 unit and 228
+live-token assertions runs on a single thread, so the claim rested on
+reading the code, and every stated fact in this project that was finally
+checked against a real token has needed correcting.
+
+`tests/linux/test_concurrent.c` runs **32 threads over the pool of 16
+sessions** — more threads than sessions on purpose, so every thread blocks
+on the semaphore and reuses a session another thread has just returned.
+
+**Correctness is checked by value, not by status.** If two threads'
+operations cross, the plausible outcome is not a crash but a signature
+computed with the wrong key, returned with `ERROR_SUCCESS`. RSA PKCS#1
+v1.5 is deterministic, so each reference signature is computed
+single-threaded and recomputed under contention and compared byte for
+byte. The suite asserts that determinism rather than assuming it, and
+asserts that every thread's expected signature differs from every other's
+— otherwise a crossed key could not be noticed. ECDSA is deliberately not
+used: it is randomised, so the comparison would have nothing to say.
+
+**No defects found.** 1920 operations, no wrong bytes, no failures, pool
+intact and every session handle distinct afterwards. TSan reports no race
+in this repository's code. **`CKF_OS_LOCKING_OK` is correctly passed** to
+`C_Initialize`, which PKCS#11 v2.40 §5.4 requires before an application
+may rely on a module's own locking.
+
+A clean concurrency run proves little, so each detection claim was
+established by injecting the defect:
+
+- Pool lock removed from `P11_AcquireSession` → **TSan catches it** (names
+  `bInUse` in acquire and release, racing access at frame 0 in our code);
+  the value checks do **not**. That asymmetry is why both run.
+- A release freeing the wrong entry → the value checks catch it (14
+  operations failed with `CKR_OPERATION_ACTIVE`) and TSan does not.
+- A dropped release → the pool-integrity check, which now runs between
+  phases rather than only at the end.
+
+**TSan's other reports are false positives**, suppressed by racing
+function name with the reasoning recorded in `tsan.supp`. Kryoptic is
+linked uninstrumented and guards its state with a Rust `RwLock`; Rust's
+primitives are futex-based, TSan's happens-before edges come from
+intercepting pthread calls, so synchronisation it cannot see looks like
+none. The suppressions name functions rather than the library, because
+`called_from_lib` would also hide races in *our* code on any stack passing
+through Kryoptic.
+
+**Two harness defects fixed first**, either of which would have corrupted
+the experiment:
+
+- `InitOnceExecuteOnce` stored its callback in one file-static pointer and
+  then called `pthread_once`, so two `INIT_ONCE` objects in a translation
+  unit would each run whichever callback was written last. It worked only
+  because no translation unit uses two — luck, not design. Now a
+  per-object mutex and flag.
+- `WaitForSingleObject` ignored its timeout, so the pool's five-second
+  wait and the `NTE_NO_MEMORY` path behind it were unreachable on Linux: a
+  leaked session hung the process instead of failing, and a leak is
+  exactly what this suite looks for.
+
+The `tests/linux/.gitignore` listed binaries by name — forgotten in
+sessions 8, 9 and 10. It is a pattern now.
 
 ### Session 11 — Phase 7 step 2: the curves nobody had ever run
 
@@ -805,7 +871,12 @@ See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure
 - **Memory**: `HeapAlloc` / `HeapFree` on `GetProcessHeap()` only
 - **Naming**: `KSP_` prefix for KSP layer, `P11_` prefix for PKCS#11 layer
 - **Handles**: direct cast `(KSP_PROVIDER *)hProvider`, validated by `dwMagic`
-- **Thread-safety**: all 22 KSP functions are re-entrant
+- **Thread-safety**: all 22 KSP functions are re-entrant. **Tested since
+  session 11**, not merely asserted — `tests/linux/test_concurrent.c` runs
+  32 threads over the 16-session pool against a live token and compares
+  signature *bytes* against a single-threaded reference, because a crossed
+  session returns `ERROR_SUCCESS` with the wrong data and a status-only
+  check sees nothing. Also run under ThreadSanitizer
 
 ---
 

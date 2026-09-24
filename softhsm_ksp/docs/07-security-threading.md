@@ -16,7 +16,35 @@
 
 > Two threads can perform cryptographic operations **simultaneously**
 > because each uses a distinct session from the pool (different `CK_SESSION_HANDLE`).
-> `CKF_OS_LOCKING_OK` guarantees that SoftHSM2 itself is thread-safe internally.
+> `CKF_OS_LOCKING_OK` tells the module it will be called from several
+> threads, which PKCS#11 v2.40 §5.4 requires before an application may
+> rely on the module's own locking.
+
+### This is tested, not asserted
+
+Until session 11 the paragraph above was a claim about code nobody had run
+concurrently. `tests/linux/test_concurrent.c` now runs **32 threads over
+the pool of 16 sessions** against a live token — more threads than
+sessions on purpose, so every thread blocks on the semaphore and reuses a
+session another thread has just returned.
+
+**Correctness is checked by value, not by return code.** The failure mode
+that matters here is silent: if two threads' operations cross, the likely
+result is not a crash but a signature computed with the wrong key,
+returned with `ERROR_SUCCESS`. RSA PKCS#1 v1.5 is deterministic, so each
+reference signature is computed single-threaded and recomputed under
+contention and compared byte for byte. ECDSA cannot serve this purpose —
+it is randomised, and two correct signatures over one hash differ.
+
+The suite is also run under ThreadSanitizer, which answers a different
+question: a race is timing-dependent, so a clean run proves little, while
+TSan reports the race whether or not it corrupted anything that time.
+
+Each claim about what the suite detects was established by injecting the
+defect. Removing the pool lock from `P11_AcquireSession` is caught by TSan
+and **not** by the value checks; a release freeing the wrong entry is
+caught by the value checks and not by TSan. Neither tool subsumes the
+other, which is why both run in CI.
 
 ---
 
