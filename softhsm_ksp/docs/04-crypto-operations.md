@@ -359,14 +359,55 @@ NCryptEncrypt(hKey, plaintext, ...)
 | `ChainingModeCBC` | `CKM_AES_CBC` | 16 bytes | raw IV bytes |
 | `ChainingModeCBC` + `NCRYPT_PAD_CIPHER_FLAG` | `CKM_AES_CBC_PAD` | 16 bytes | raw IV bytes |
 | `ChainingModeCTR` | `CKM_AES_CTR` | 16 bytes | `CK_AES_CTR_PARAMS`, 32-bit counter |
-| `ChainingModeGCM` | `CKM_AES_GCM` | 12 bytes typical | `CK_GCM_PARAMS`, 128-bit tag |
+| `ChainingModeGCM` | `CKM_AES_GCM` | 12 bytes typical | `CK_GCM_PARAMS`, tag from the auth info |
+| `ChainingModeCCM` | `CKM_AES_CCM` | 7–13 bytes | `CK_CCM_PARAMS`, plaintext length up front |
+| `ChainingModeCFB` | `CKM_AES_CFB8` **by default** | 16 bytes | raw IV bytes |
+| `ChainingModeCFB` + `MessageBlockLength` = 16 | `CKM_AES_CFB128` | 16 bytes | raw IV bytes |
 
 `ChainingModeCTR` is a KSP extension: CNG defines no standard string for
-counter mode. `ChainingModeCCM` and `ChainingModeCFB` return
-`NTE_NOT_SUPPORTED` — no SoftHSM2 mechanism is wired to them.
+counter mode.
 
-GCM additional authenticated data is supplied through
-`NCRYPT_AUTH_TAG_LENGTH` and stored on the key until the operation runs.
+**CCM and CFB are gated on the capability probe, not refused outright.**
+They used to return `NTE_NOT_SUPPORTED` from the property setter because
+no SoftHSM2 mechanism was wired to them. That was right while nothing
+could do them and wrong once the probe existed: which modes are available
+is a property of the token, not of a list compiled into this provider.
+
+**CFB's default feedback size is 8 bits, not the full block.** Microsoft's
+documentation for `MessageBlockLength`: *"By default, this property is set
+to 1 for 8-bit CFB. Setting it to the block size in bytes causes
+full-block CFB to be used."* So a caller who selects `ChainingModeCFB` and
+nothing else means CFB8, and mapping that to `CKM_AES_CFB128` would
+produce ciphertext no other CNG implementation could decrypt. PKCS#11
+defines mechanisms for 1, 8, 64 and 128-bit feedback; this provider wires
+the two CNG can reach and refuses any other size rather than rounding it
+to a different cipher.
+
+**CCM is not an online mode.** `CK_CCM_PARAMS.ulDataLen` is the plaintext
+length and the token needs it before any data arrives — on decryption that
+is the ciphertext minus the MAC. That is the practical difference from
+GCM, which streams.
+
+### Nonce, AAD and tag
+
+For GCM and CCM these come from `BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`,
+passed as `pPaddingInfo`. That is the standard CNG route and the only
+correct one.
+
+Additional authenticated data used to be supplied through
+`NCRYPT_AUTH_TAG_LENGTH`, which never meant that. Microsoft: *"The
+authentication tag lengths that are supported by the algorithm. This
+property is a `BCRYPT_AUTH_TAG_LENGTHS_STRUCT` structure. This property
+only applies to algorithms."* It reports a range, it is read-only, and it
+is not per-key. Setting it copied the caller's bytes into the key's AAD
+buffer, so an application that legitimately wrote a tag length would have
+had those four bytes become GCM AAD and fail authentication — and AAD had
+no correct route at all. Setting it is now refused; reading it returns the
+range, which differs between GCM (12–16, step 1) and CCM (4–16, step 2).
+
+The key-property IV remains a fallback when no auth info is supplied, so
+callers written against this provider before the auth-info route existed
+keep working.
 
 > **The IV is consumed by the operation.** Set it again before decrypting
 > the ciphertext you just produced, exactly as with BCrypt.

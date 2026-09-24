@@ -10,6 +10,28 @@
 | `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ (read-only) |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
 
+**`NCRYPT_AUTH_TAG_LENGTH` is read-only, and it never meant AAD.**
+Microsoft's definition: *"The authentication tag lengths that are
+supported by the algorithm. This property is a
+`BCRYPT_AUTH_TAG_LENGTHS_STRUCT` structure. This property only applies to
+algorithms."* It reports a range — GCM 12–16 in steps of 1, CCM 4–16 in
+steps of 2 — and setting it is refused.
+
+This provider used to treat a *set* of it as "here is my additional
+authenticated data" and copy the bytes into the key's AAD buffer. An
+application that legitimately wrote a tag length would have had those four
+bytes silently become GCM AAD and fail authentication, and AAD had no
+correct route at all. It belongs in
+`BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`, passed as `pPaddingInfo` to
+`NCryptEncrypt` / `NCryptDecrypt`, which the provider now reads. No test
+had ever exercised the property, which is why it survived.
+
+**`BCRYPT_MESSAGE_BLOCK_LENGTH` is the CFB feedback size in bytes.** Unset
+reads back as 1, which is CNG's documented default of 8-bit CFB — *not*
+the full block. Only 1 and the AES block size are accepted; PKCS#11
+defines no mechanism for the sizes in between, and refusing beats
+silently selecting a different cipher.
+
 ### Provider properties that can be written
 
 | Property | Effect |
@@ -70,10 +92,33 @@ Keys remain non-exportable regardless — that is enforced by
 | `NCRYPT_ALGORITHM_GROUP_PROPERTY` | calculated from `szAlgId` | `WCHAR[]` | ✓ | ✗ |
 | `NCRYPT_CHAINING_MODE_PROPERTY` | `pKey->szChainingMode` | `WCHAR[]` | ✓ symmetric only | ✓ symmetric only |
 | `NCRYPT_INITIALIZATION_VECTOR` | `pKey->pbIV` / `cbIV` | `BYTE[]` | ✓ symmetric only | ✓ symmetric only |
-| `NCRYPT_AUTH_TAG_LENGTH` | `pKey->pbAuthData` (GCM AAD) | `BYTE[]` | ✗ | ✓ symmetric only |
+| `NCRYPT_AUTH_TAG_LENGTH` | supported tag range | `BCRYPT_AUTH_TAG_LENGTHS_STRUCT` | ✓ GCM/CCM keys | ✗ read-only — see below |
+| `BCRYPT_MESSAGE_BLOCK_LENGTH` | `pKey->cbMessageBlockLen` | `DWORD` | ✓ | ✓ symmetric only |
 | `NCRYPT_BLOCK_LENGTH_PROPERTY` | `16` (AES block) | `DWORD` | ✓ AES only | ✗ |
 | `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ (read-only) |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
+
+**`NCRYPT_AUTH_TAG_LENGTH` is read-only, and it never meant AAD.**
+Microsoft's definition: *"The authentication tag lengths that are
+supported by the algorithm. This property is a
+`BCRYPT_AUTH_TAG_LENGTHS_STRUCT` structure. This property only applies to
+algorithms."* It reports a range — GCM 12–16 in steps of 1, CCM 4–16 in
+steps of 2 — and setting it is refused.
+
+This provider used to treat a *set* of it as "here is my additional
+authenticated data" and copy the bytes into the key's AAD buffer. An
+application that legitimately wrote a tag length would have had those four
+bytes silently become GCM AAD and fail authentication, and AAD had no
+correct route at all. It belongs in
+`BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`, passed as `pPaddingInfo` to
+`NCryptEncrypt` / `NCryptDecrypt`, which the provider now reads. No test
+had ever exercised the property, which is why it survived.
+
+**`BCRYPT_MESSAGE_BLOCK_LENGTH` is the CFB feedback size in bytes.** Unset
+reads back as 1, which is CNG's documented default of 8-bit CFB — *not*
+the full block. Only 1 and the AES block size are accepted; PKCS#11
+defines no mechanism for the sizes in between, and refusing beats
+silently selecting a different cipher.
 
 ### Provider properties that can be written
 

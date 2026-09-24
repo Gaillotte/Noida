@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 22 test suites, 1572 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 22 test suites, 1582 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -88,7 +88,7 @@ noida/
 │   │   │   ├── p11_real_loader.c    LoadLibraryW → dlopen
 │   │   │   ├── p11_init_token.c     C_InitToken / C_InitPIN standalone tool
 │   │   │   ├── real_cert.c          a genuine openssl-generated certificate
-│   │   │   ├── test_real_backend.c  187 (base) / 228 (PQC) assertions, run twice
+│   │   │   ├── test_real_backend.c  216 (base) assertions, run twice
 │   │   │   ├── test_concurrent.c    32 threads over the 16-session pool
 │   │   │   └── tsan.supp            why Kryoptic's TSan reports are false
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
@@ -129,6 +129,54 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 13 — Phase 6: the three mechanisms SoftHSM2 cannot do
+
+`RSA-12` (raw RSA), `AES-07` (CCM) and `AES-08` (CFB) were all recorded in
+the feature matrix as "blocked by the backend, not the KSP". **That
+stopped being true when the capability probe landed in phase 4** — a
+mechanism can be wired and gated, dark on a token without it and live on
+one with it, exactly as ML-DSA is. The Kryoptic build here implements all
+three, so they could be verified rather than written blind.
+
+- **`NCRYPT_AUTH_TAG_LENGTH` never meant what this provider used it for.**
+  Microsoft: "The authentication tag lengths that are supported by the
+  algorithm... This property only applies to algorithms." It reports a
+  *range*, read-only, not per-key. Setting it copied arbitrary bytes into
+  `pbAuthData`, so an application writing a real tag length would have had
+  those four bytes become GCM AAD and fail authentication — and **AAD had
+  no correct route at all**. It belongs in
+  `BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO` via `pPaddingInfo`, which
+  `KSP_Encrypt`/`KSP_Decrypt` now read. No test had ever touched the
+  property, which is why it survived.
+- **CFB's default is 8-bit, not full-block.** The matrix said this gap
+  "would need `CKM_AES_CFB128`" — the mechanism a caller reaches only by
+  setting `MessageBlockLength`. Mapping the default there would produce
+  ciphertext no other CNG implementation could decrypt. The live suite
+  asserts the two feedback sizes give *different* ciphertext, so a
+  provider ignoring the property cannot pass.
+- **CCM is not an online mode.** `CK_CCM_PARAMS.ulDataLen` is needed
+  before any data arrives. The suite checks that tampering with the AAD
+  fails the tag — without it the AAD could be dropped and everything else
+  would still pass.
+- **The chaining-mode setter no longer keeps a whitelist.** Which modes
+  are available is a property of the *token*, not of a list compiled into
+  the provider — the same correctness bug phase 4 fixed for algorithm
+  advertisement.
+- **Raw RSA's gate is tested in both directions**, and only the open one
+  can be tested against this token. The closed direction lives in
+  `test_mldsa.c`, where the mock decides what the token has. The first
+  version of that branch sat *after* the RSA block, which returns — it was
+  unreachable, and the both-directions test is what caught it.
+
+Every constant and struct layout came from a real header or Microsoft's
+own documentation source; nothing was recalled. Matrix 65 → **67 covered**,
+25 → **23 actionable gaps**. `AES-08` is Partial by choice: CNG permits any
+feedback size up to the block, PKCS#11 defines mechanisms for four of
+them.
+
+Unit 1572 → **1582 assertions**, live token 187 → **216**. Every claim
+fault-injected and confirmed caught.
 
 ### Session 12 — Phase 7 step 3: the re-entrancy claim, tested
 
@@ -712,7 +760,28 @@ Both keys must be on the same curve or the call returns `NTE_BAD_ALGID`.
 
 Chaining mode comes from `NCRYPT_CHAINING_MODE_PROPERTY`, IV from
 `NCRYPT_INITIALIZATION_VECTOR` — both key properties, not call flags.
-ECB / CBC / CBC_PAD / CTR / GCM supported; CCM and CFB return `NTE_NOT_SUPPORTED`.
+ECB / CBC / CBC_PAD / CTR / GCM / **CCM** / **CFB** supported, the last two
+gated on the capability probe (dark on SoftHSM2, live on a token that has
+the mechanisms).
+
+**CFB's default feedback size is 8 bits, not the full block.** Microsoft's
+`MessageBlockLength` documentation: "By default, this property is set to 1
+for 8-bit CFB. Setting it to the block size in bytes causes full-block CFB
+to be used." So `ChainingModeCFB` alone means `CKM_AES_CFB8`; setting
+`BCRYPT_MESSAGE_BLOCK_LENGTH` to 16 selects `CKM_AES_CFB128`. Mapping the
+default to CFB128 would produce ciphertext no other CNG implementation
+could decrypt.
+
+**Nonce, AAD and tag for GCM/CCM come from
+`BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`** passed as `pPaddingInfo` — the
+standard CNG route. `NCRYPT_AUTH_TAG_LENGTH` is **read-only** and reports
+a `BCRYPT_AUTH_TAG_LENGTHS_STRUCT` range; it was previously misused to
+carry the AAD, which meant an application writing a real tag length would
+have had those bytes become AAD and fail authentication.
+
+CCM is not an online mode: `CK_CCM_PARAMS.ulDataLen` is the plaintext
+length and is needed up front (ciphertext minus MAC when decrypting).
+Nonce 7–13 bytes per NIST SP 800-38C.
 
 ### Decryption Operations (RSA AT_KEYEXCHANGE only)
 
@@ -750,7 +819,12 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   available here and a guess would fail only on Windows — a missing header,
   not a missing backend. ML-KEM is unreachable through the key-storage
   function table regardless of the backend
-- No raw RSA (`CKM_RSA_X_509`) — SoftHSM2 limitation
+- **Raw RSA (`CKM_RSA_X_509`) is implemented and gated on the probe.**
+  SoftHSM2 2.7.0 does not implement it, so it stays dark there; a token
+  that advertises it gets `NCRYPT_NO_PADDING_FLAG` for both signing and
+  decryption. No padding means no structure to check — that is the point
+  of the flag and also why it is dangerous, and the provider passes it
+  through rather than deciding for the caller
 - No private key import — HSM design
 - Token chosen by `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; with neither,
   the first slot reporting a token. An explicit selection that matches
@@ -765,7 +839,10 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 - RSA sizes below `KSP_RSA_MIN_BITS` (2048 by default), above 16384, or not a
   multiple of 64 → `NTE_BAD_LEN`
 - AES sizes outside {128, 192, 256} → `NTE_BAD_LEN`
-- AES-CCM and AES-CFB → `NTE_NOT_SUPPORTED` (no SoftHSM2 mechanism wired)
+- AES-CCM and AES-CFB are wired and gated on the probe. A feedback size
+  other than 1 or the block size is refused: PKCS#11 defines mechanisms
+  only for 1, 8, 64 and 128 bits, and rounding would silently select a
+  different cipher
 - `NCryptDeriveKey` supports every CNG KDF except the TLS 1.0/1.1 PRF,
   which is refused deliberately: it is the MD5/SHA-1 split construction and
   both versions are deprecated by RFC 8996
@@ -816,7 +893,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 22 suites, 1572 assertions
+make run           # 22 suites, 1582 assertions
 make coverage      # → coverage_html/index.html (87.1 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
