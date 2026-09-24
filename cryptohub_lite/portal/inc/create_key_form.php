@@ -116,6 +116,29 @@ $create_back = $create_back ?? basename($_SERVER['PHP_SELF']);
                 </div>
             </div>
 
+            <div class="chl-field">
+                <label class="chl-check">
+                    <input type="checkbox" name="inactive" value="1" id="ckInactive">
+                    Create inactive (<code>PreActive</code>)
+                </label>
+                <div class="chl-hint">
+                    The key is generated but cannot be used until you activate it &mdash; the
+                    lifecycle KMIP describes, and the only way <code>Activate</code> ever has
+                    anything to act on. Leave unticked to get a usable key immediately.
+                    <span id="ckInactivePair"><br>Not offered for key pairs: the engine
+                    activates both halves together.</span>
+                </div>
+            </div>
+
+            <?php
+            // Which KMIP operation this form will actually send. The algorithm
+            // silently decides it, and a reader had no way to know that picking
+            // RSA turns Create into CreateKeyPair.
+            ?>
+            <p class="chl-hint" style="margin:0 0 10px">
+                Sends <b><span id="ckOperation">Create</span></b> over KMIP on port 5696,
+                like any other client &mdash; and records it in the audit chain.
+            </p>
             <button class="chl-btn chl-btn-primary chl-btn-block" type="submit">Generate key</button>
         </form>
     </div>
@@ -146,6 +169,14 @@ function ckSync() {
     const curve = !!spec.curve;
 
     document.getElementById('ckAction').value = keypair ? 'create_keypair' : 'create';
+    // Named, not inferred: the operation is what lands in the audit log, and
+    // it is the thing a reader will look for on the KMIP page afterwards.
+    document.getElementById('ckOperation').textContent = keypair ? 'CreateKeyPair' : 'Create';
+    // PreActive is a symmetric-key option here; the key pair path activates
+    // both halves together, so offering it would promise something untrue.
+    document.getElementById('ckInactive').disabled = keypair;
+    if (keypair) document.getElementById('ckInactive').checked = false;
+    document.getElementById('ckInactivePair').style.display = keypair ? '' : 'none';
     document.getElementById('ckCurveWrap').style.display  = curve ? '' : 'none';
     document.getElementById('ckLengthWrap').style.display = curve ? 'none' : '';
     document.getElementById('ckSymUsage').style.display   = keypair ? 'none' : '';

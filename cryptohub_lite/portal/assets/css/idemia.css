@@ -37,6 +37,18 @@
   --sidebar-width: 250px;
   --topbar-height: 60px;
 
+  /* The sidebar had its own hardcoded palette, so the theme toggle repainted
+     the content and left the navigation dark. Tokens here, overridden below,
+     because "every colour is a token" was true of everything except the one
+     block a reader looks at first. */
+  --sidebar-bg:     var(--idemia-navy);
+  --sidebar-text:   #B9CDE3;
+  --sidebar-strong: #FFFFFF;
+  --sidebar-muted:  #5C7FA3;
+  --sidebar-sub:    #7FB2E5;
+  --sidebar-hover:  rgba(255, 255, 255, .06);
+  --sidebar-rule:   rgba(255, 255, 255, .08);
+
   --font: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "Cascadia Code", Consolas, "Courier New", monospace;
 }
@@ -51,6 +63,14 @@
   --text-muted:    #4A6076;
   --text-dim:      #7A8CA0;
   --shadow:        0 2px 12px rgba(16, 35, 58, .08);
+
+  --sidebar-bg:     #FFFFFF;
+  --sidebar-text:   #41556B;
+  --sidebar-strong: #10233A;
+  --sidebar-muted:  #7A8CA0;
+  --sidebar-sub:    #4A6076;
+  --sidebar-hover:  rgba(16, 35, 58, .06);
+  --sidebar-rule:   #D6E0EC;
 }
 
 * { box-sizing: border-box; }
@@ -73,8 +93,8 @@ a:hover { text-decoration: underline; }
 
 .chl-sidebar {
   width: var(--sidebar-width);
-  background: var(--idemia-navy);
-  border-right: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-rule);
   display: flex;
   flex-direction: column;
   position: fixed;
@@ -88,7 +108,7 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 12px;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  border-bottom: 1px solid var(--sidebar-rule);
   flex-shrink: 0;
 }
 
@@ -102,12 +122,12 @@ a:hover { text-decoration: underline; }
 }
 
 .chl-brand-text { line-height: 1.15; }
-.chl-brand-name { color: #fff; font-weight: 700; letter-spacing: .04em; font-size: 14px; }
-.chl-brand-sub  { color: #7FB2E5; font-size: 11px; letter-spacing: .02em; }
+.chl-brand-name { color: var(--sidebar-strong); font-weight: 700; letter-spacing: .04em; font-size: 14px; }
+.chl-brand-sub  { color: var(--sidebar-sub); font-size: 11px; letter-spacing: .02em; }
 
 .chl-nav { padding: 14px 10px; overflow-y: auto; flex: 1; }
 .chl-nav-section {
-  color: #5C7FA3;
+  color: var(--sidebar-muted);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .1em;
@@ -116,22 +136,39 @@ a:hover { text-decoration: underline; }
 }
 
 .chl-nav-link {
-  display: flex; align-items: center; gap: 11px;
-  padding: 9px 12px;
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
-  color: #B9CDE3;
+  color: var(--sidebar-text);
   font-weight: 500;
   margin-bottom: 2px;
   transition: background .15s, color .15s;
 }
-.chl-nav-link:hover { background: rgba(255, 255, 255, .06); color: #fff; text-decoration: none; }
+.chl-nav-link:hover { background: var(--sidebar-hover); color: var(--sidebar-strong); text-decoration: none; }
 .chl-nav-link.active { background: var(--idemia-blue-light); color: #fff; }
-.chl-nav-icon { width: 18px; text-align: center; opacity: .95; flex-shrink: 0; }
+.chl-nav-icon { width: 18px; text-align: center; opacity: .95; flex-shrink: 0; line-height: 1.5; }
+
+.chl-nav-text { min-width: 0; }
+.chl-nav-label { display: block; line-height: 1.5; }
+/* The purpose line is guidance, not a second label: quiet enough that the
+   nav still scans by name, present enough to answer "which of these three
+   pages shows me my keys?". Inherits colour on the active row so it stays
+   legible against the blue. */
+.chl-nav-desc {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.35;
+  margin-top: 1px;
+  color: var(--sidebar-muted);
+}
+.chl-nav-link.active .chl-nav-desc { color: rgba(255, 255, 255, .78); }
+.chl-nav-link:hover .chl-nav-desc  { color: inherit; opacity: .8; }
 
 .chl-sidebar-foot {
   padding: 12px 16px;
-  border-top: 1px solid rgba(255, 255, 255, .08);
-  color: #5C7FA3;
+  border-top: 1px solid var(--sidebar-rule);
+  color: var(--sidebar-muted);
   font-size: 11px;
 }
 
@@ -140,14 +177,25 @@ a:hover { text-decoration: underline; }
 .chl-main { margin-left: var(--sidebar-width); flex: 1; min-width: 0; }
 
 .chl-topbar {
-  height: var(--topbar-height);
+  min-height: var(--topbar-height);
+  padding-top: 8px; padding-bottom: 8px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 24px;
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  padding-left: 24px; padding-right: 24px;
   position: sticky; top: 0; z-index: 10;
 }
 .chl-topbar h1 { font-size: 17px; font-weight: 600; margin: 0; }
+/* The title block grew a second line, so the bar can no longer be a fixed
+   60px - it sets a minimum and grows if a purpose line wraps. */
+.chl-topbar-title { min-width: 0; }
+.chl-topbar-purpose {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+  max-width: 88ch;
+}
 .chl-topbar-actions { display: flex; align-items: center; gap: 10px; }
 
 .chl-content { padding: 24px; }

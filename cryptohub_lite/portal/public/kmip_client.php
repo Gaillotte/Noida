@@ -16,7 +16,9 @@ declare(strict_types=1);
 require_once __DIR__ . '/../inc/layout.php';
 require_login();
 
-$api = new ApiClient();
+// KMIP operations go to chl-client-app, never to chl-api. The API does not
+// speak KMIP and must not be given a reason to start.
+$api = ApiClient::kmip();
 
 /*
  * Remembering the KMIP credential.
@@ -463,6 +465,16 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                           + esc(c.label) + '</label>';
                 }
                 html += '</div>';
+            } else if (f.type === 'dependent') {
+                // Sizes that belong to the chosen algorithm, and only those. A
+                // spinner here happily offers AES-257 and leaves the token to
+                // reject it, which is a worse way to find out.
+                html += '<select class="chl-select" style="width:100%" name="arg_'
+                      + esc(f.name) + '" data-depends-on="' + esc(f.depends_on) + '"'
+                      + ' data-choices-by="' + esc(JSON.stringify(f.choices_by)) + '"'
+                      + ' data-prev="' + esc((f.name in keep) ? keep[f.name]
+                                             : (f.default === null ? '' : f.default))
+                      + '"></select>';
             } else if (f.type === 'enum') {
                 // An enum is a number only on the wire. Offering the numbers
                 // and expecting someone to know that AES is 3 is the same
@@ -489,6 +501,41 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             html += '</div>';
         }
         host.innerHTML = html + '</div>';
+        wireDependents();
+    }
+
+    // A field whose options come from another field's value. Wired after each
+    // render rather than once, because the form is rebuilt from scratch every
+    // time the operation changes.
+    function wireDependents() {
+        host.querySelectorAll('[data-depends-on]').forEach(target => {
+            const source = host.querySelector('[name="arg_' + target.dataset.dependsOn + '"]');
+            if (!source) { target.disabled = true; return; }
+            const table = JSON.parse(target.dataset.choicesBy || '{}');
+
+            function fill() {
+                const options = table[String(source.value)];
+                const wanted  = target.value || target.dataset.prev || '';
+                target.innerHTML = '';
+                if (!options) {
+                    // No fixed list for this algorithm - say so rather than
+                    // offering an empty dropdown that looks broken.
+                    target.innerHTML = '<option value="">not applicable</option>';
+                    target.disabled = true;
+                    return;
+                }
+                target.disabled = false;
+                for (const value of options) {
+                    const o = document.createElement('option');
+                    o.value = value;
+                    o.textContent = value + ' bit';
+                    if (String(value) === String(wanted)) o.selected = true;
+                    target.appendChild(o);
+                }
+            }
+            source.addEventListener('change', fill);
+            fill();
+        });
     }
 
     select.addEventListener('change', () => render(select.value));

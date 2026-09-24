@@ -33,14 +33,23 @@ def handle(payload, identity: str, store, shim) -> bytes:
     if length is None:
         raise MissingData("CryptographicLength is required")
 
+    # Defaults to Active, so every existing caller is unaffected. A client that
+    # asks for PreActive gets an object that must be activated before it can be
+    # used - the state Activate exists to leave, and which nothing could reach
+    # while creation always produced Active.
+    state = attrs.get("state", State.Active)
+    if state not in (State.PreActive, State.Active):
+        raise InvalidField("State at creation must be PreActive or Active")
+
     uid = create_symmetric_key(
-        algorithm, length, usage_mask, names, sensitive, extractable, identity, store, shim
+        algorithm, length, usage_mask, names, sensitive, extractable, identity, store, shim,
+        state=state,
     )
     return encode_text_string(Tag.UniqueIdentifier, uid)
 
 
 def create_symmetric_key(algorithm, length, usage_mask, names, sensitive, extractable,
-                          identity, store, shim) -> str:
+                          identity, store, shim, state=State.Active) -> str:
     """Shared by Create and ReKey — generates the PKCS#11 key and the managed object."""
     encrypt = bool(usage_mask & CryptographicUsageMask.Encrypt)
     decrypt = bool(usage_mask & CryptographicUsageMask.Decrypt)
@@ -63,7 +72,7 @@ def create_symmetric_key(algorithm, length, usage_mask, names, sensitive, extrac
     uid = store.create_object(
         object_type=ObjectType.SymmetricKey,
         pkcs11_handle=None,   # cka_id stored as attribute below
-        state=State.Active,
+        state=state,
         cryptographic_algorithm=algorithm,
         cryptographic_length=length,
         usage_mask=usage_mask,
@@ -101,6 +110,13 @@ def _parse_attributes(tmpl_item) -> dict:
             result["sensitive"] = bool(value_item.value)
         elif name == "Extractable":
             result["extractable"] = bool(value_item.value)
+        elif name == "State":
+            # Normally the server owns State. Accepted at creation only so a
+            # client can ask for a PreActive object and activate it as a
+            # separate, audited step - which is the lifecycle KMIP describes
+            # and which this handler previously skipped by always creating
+            # Active. handle() rejects any value other than those two.
+            result["state"] = value_item.value
         elif name == "Name":
             if "names" not in result:
                 result["names"] = []

@@ -23,12 +23,28 @@ final class ApiClient
      */
     public ?array $lastExchange = null;
 
-    public function __construct(?string $token = null)
+    public function __construct(?string $token = null, ?string $baseUrl = null)
     {
         // Resolved at runtime so the same image works under Docker Compose
         // (service name) and XAMPP (localhost) without an edit.
-        $this->baseUrl = rtrim(getenv('CRYPTOHUB_API') ?: 'http://api:8000', '/');
+        $this->baseUrl = rtrim($baseUrl ?: (getenv('CRYPTOHUB_API') ?: 'http://api:8000'), '/');
         $this->token   = $token ?? ($_SESSION['token'] ?? null);
+    }
+
+    /**
+     * A client aimed at chl-client-app rather than chl-api.
+     *
+     * KMIP operations go to the one service that speaks KMIP; everything else
+     * - sign-in, roles, audit, dashboard - goes to the API. Two base URLs
+     * rather than one is the point: it is what stops the two quietly merging
+     * back into a single service with a shortcut into the engine.
+     *
+     * The same JWT authenticates both. chl-client-app verifies it with the
+     * shared secret and holds no user table of its own.
+     */
+    public static function kmip(?string $token = null): self
+    {
+        return new self($token, getenv('CRYPTOHUB_KMIP_CLIENT') ?: 'http://client-app:8002');
     }
 
     public function login(string $username, string $password): array

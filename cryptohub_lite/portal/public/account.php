@@ -46,7 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $me = $api->get('/api/auth/me');
 $profile = $me['ok'] ? $me['data'] : [];
 
-render_head('My Account');
+render_head('My Account', purpose: 'Your own account. Changing your password here also updates the credential the KMIP engine holds for you.');
 
 if ($notice) { echo '<div class="chl-alert info">' . e($notice) . '</div>'; }
 if ($error)  { render_error($error); }

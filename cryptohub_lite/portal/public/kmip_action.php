@@ -1,14 +1,22 @@
 <?php
 /**
- * Handles KMIP write actions posted from the explorer, then redirects back.
+ * Handles KMIP write actions posted from the portal, then redirects back.
  *
  * Post-redirect-get, so a browser refresh after destroying a key does not
  * offer to destroy it again. The outcome is carried in the query string and
  * rendered by the page the user returns to.
+ *
+ * Every action here now runs over KMIP, as a real client, through
+ * chl-client-app. Previously these posted to REST endpoints that called the
+ * engine's handlers in-process, which skipped the OperationDispatcher: the
+ * resulting key was identical, but nothing about its creation reached the
+ * hash-chained audit log. Two ways to make a key, one of them invisible to an
+ * auditor. There is now one way.
  */
 
 declare(strict_types=1);
 require_once __DIR__ . '/../inc/layout.php';
+require_once __DIR__ . '/../inc/kmip.php';
 require_login();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -16,80 +24,91 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-$api    = new ApiClient();
 $action = $_POST['action'] ?? '';
 $uid    = $_POST['uid'] ?? '';
 $back   = $_POST['back'] ?? 'kmip.php';
 
-switch ($action) {
-    case 'create':
-        $result = $api->post('/api/kmip/objects', [
-            'name'      => trim($_POST['name'] ?? ''),
-            'algorithm' => $_POST['algorithm'] ?? 'AES',
-            'length'    => (int)($_POST['length'] ?? 256),
-            // An unticked checkbox posts nothing at all, so absence is the
-            // only signal that the attribute was turned off.
-            'encrypt'     => isset($_POST['encrypt']),
-            'decrypt'     => isset($_POST['decrypt']),
-            'wrap'        => isset($_POST['wrap']),
-            'unwrap'      => isset($_POST['unwrap']),
-            'sensitive'   => isset($_POST['sensitive']),
-            'extractable' => isset($_POST['extractable']),
-        ]);
-        $ok = $result['ok'] ? 'Key created' : null;
-        break;
+/** Shortens a UID for a one-line notice. */
+$short = fn($value) => substr((string)$value, 0, 12) . '…';
 
-    case 'create_keypair':
-        $result = $api->post('/api/kmip/keypairs', [
-            'name'      => trim($_POST['name'] ?? ''),
-            'algorithm' => $_POST['algorithm'] ?? 'RSA',
-            'length'    => (int)($_POST['length'] ?? 2048),
-            'curve'     => $_POST['curve'] ?? 'P_256',
-            'sign'      => isset($_POST['sign']),
-            'verify'    => isset($_POST['verify']),
-            'derive'    => isset($_POST['derive']),
-        ]);
-        // Both halves are named, because the pair arrives as two rows in the
-        // table and it is not otherwise obvious which one is which.
-        $ok = $result['ok']
-            ? 'Key pair created — private ' . substr((string)($result['data']['private_uid'] ?? ''), 0, 12)
-              . '…, public ' . substr((string)($result['data']['public_uid'] ?? ''), 0, 12) . '…'
-            : null;
-        break;
+try {
+    switch ($action) {
+        case 'create':
+            $algorithm = $_POST['algorithm'] ?? 'AES';
+            $run = kmip_run('Create', [
+                'algorithm'   => KMIP_ALGORITHM[$algorithm] ?? KMIP_ALGORITHM['AES'],
+                'length'      => (int)($_POST['length'] ?? 256),
+                'usage_mask'  => kmip_usage_mask($_POST, ['encrypt', 'decrypt', 'wrap', 'unwrap']),
+                'name'        => trim($_POST['name'] ?? ''),
+                'sensitive'   => isset($_POST['sensitive']),
+                'extractable' => isset($_POST['extractable']),
+                // Unticked means "usable immediately", which is the default the
+                // engine has always applied.
+                'activate'    => !isset($_POST['inactive']),
+            ]);
+            $ok = 'Key created — ' . $short($run['result']);
+            break;
 
-    case 'activate':
-        $result = $api->post('/api/kmip/objects/' . rawurlencode($uid) . '/activate');
-        $ok = $result['ok'] ? 'Object activated' : null;
-        break;
+        case 'create_keypair':
+            $algorithm = $_POST['algorithm'] ?? 'RSA';
+            $arguments = [
+                'algorithm'  => KMIP_ALGORITHM[$algorithm] ?? KMIP_ALGORITHM['RSA'],
+                'length'     => (int)($_POST['length'] ?? 2048),
+                'name'       => trim($_POST['name'] ?? ''),
+                'usage_mask' => kmip_usage_mask($_POST, ['sign', 'verify', 'derive']),
+            ];
+            // For an elliptic curve the curve *is* the size, so it travels as
+            // Cryptographic Domain Parameters and the length is not meaningful.
+            if (in_array($algorithm, ['EC', 'ECDSA'], true)) {
+                $arguments['curve'] = KMIP_CURVE[$_POST['curve'] ?? 'P_256'] ?? KMIP_CURVE['P_256'];
+            }
+            $run = kmip_run('CreateKeyPair', $arguments);
+            // Both halves are named, because the pair arrives as two rows in
+            // the table and it is not otherwise obvious which one is which.
+            [$public, $private] = array_pad((array)$run['result'], 2, '');
+            $ok = 'Key pair created — public ' . $short($public)
+                . ', private ' . $short($private);
+            break;
 
-    case 'revoke':
-        $result = $api->post('/api/kmip/objects/' . rawurlencode($uid) . '/revoke', [
-            'reason'  => $_POST['reason'] ?? 'CessationOfOperation',
-            'message' => trim($_POST['message'] ?? ''),
-        ]);
-        $ok = $result['ok'] ? 'Object revoked' : null;
-        break;
+        case 'activate':
+            kmip_run('Activate', ['uid' => $uid]);
+            $ok = 'Object activated';
+            break;
 
-    case 'rekey':
-        $result = $api->post('/api/kmip/objects/' . rawurlencode($uid) . '/rekey');
-        $ok = $result['ok']
-            ? 'Re-keyed; replacement is ' . substr((string)($result['data']['result'] ?? ''), 0, 18) . '…'
-            : null;
-        break;
+        case 'revoke':
+            $reason = $_POST['reason'] ?? 'CessationOfOperation';
+            kmip_run('Revoke', [
+                'uid'     => $uid,
+                'reason'  => KMIP_REVOCATION_REASON[$reason]
+                             ?? KMIP_REVOCATION_REASON['CessationOfOperation'],
+                'message' => trim($_POST['message'] ?? ''),
+            ]);
+            $ok = 'Object revoked';
+            break;
 
-    case 'destroy':
-        $result = $api->delete('/api/kmip/objects/' . rawurlencode($uid));
-        $ok = $result['ok'] ? 'Key material destroyed' : null;
-        break;
+        case 'rekey':
+            $run = kmip_run('ReKey', ['uid' => $uid]);
+            $ok = 'Re-keyed; replacement is ' . $short($run['result']);
+            break;
 
-    default:
-        header('Location: ' . $back . '?error=' . urlencode('Unknown action'));
-        exit;
+        case 'destroy':
+            kmip_run('Destroy', ['uid' => $uid]);
+            $ok = 'Key material destroyed';
+            break;
+
+        default:
+            header('Location: ' . $back . '?error=' . urlencode('Unknown action'));
+            exit;
+    }
+} catch (KmipCredentialMissing $exc) {
+    // Distinct from a refusal: nothing was attempted, and the fix is to sign
+    // in again rather than to change the request.
+    header('Location: ' . $back . '?error=' . urlencode($exc->getMessage()));
+    exit;
+} catch (RuntimeException $exc) {
+    header('Location: ' . $back . '?error=' . urlencode($exc->getMessage()));
+    exit;
 }
 
-$query = $result['ok']
-    ? 'notice=' . urlencode($ok)
-    : 'error=' . urlencode($result['error'] ?? 'The operation failed');
-
-header('Location: ' . $back . '?' . $query);
+header('Location: ' . $back . '?notice=' . urlencode($ok));
 exit;

@@ -91,6 +91,49 @@ for %%E in (docker nerdctl) do (
 )
 del "%TEMP%\chl_ps.txt" >nul 2>&1
 
+REM A second witness, consulted only when the first cannot answer.
+REM
+REM The container engine is not the only thing that knows whether containers
+REM are running. They run inside the rancher-desktop WSL distributions, so if
+REM those are Stopped then nothing is running - whatever the daemon says, or
+REM fails to say. That is the common case behind "could not determine": the
+REM named pipe is gone precisely *because* the VM is down, which is the safest
+REM state there is. Failing closed on it sent operators hunting for a way to
+REM override a guard that had nothing left to protect.
+REM
+REM Still fails closed when WSL itself cannot be read: an unanswerable question
+REM is not a "no".
+REM
+REM WSL_UTF8 because wsl.exe writes UTF-16 by default, which findstr reads as
+REM interleaved NULs and never matches.
+REM Bounded, because wsl.exe can block indefinitely when the WSL service is
+REM busy - a guard that hangs is worse than one that fails closed, since it
+REM gives the operator nothing to act on. Eight seconds, then treat it as
+REM unreadable. PowerShell only for the timeout; the answer still comes from
+REM wsl.exe itself.
+if not defined DECIDED (
+    set "VM_KNOWN="
+    set "VM_RUNNING="
+    set "WSL_UTF8=1"
+    powershell -NoProfile -Command ^
+        "$p = Start-Process wsl.exe -ArgumentList '--list','--verbose' -RedirectStandardOutput $env:TEMP\chl_wsl.txt -NoNewWindow -PassThru;" ^
+        "if (-not $p.WaitForExit(8000)) { try { $p.Kill() } catch {}; exit 2 }; exit 0" >nul 2>&1
+    if not errorlevel 2 (
+        findstr /i /c:"rancher-desktop" "%TEMP%\chl_wsl.txt" >nul 2>&1
+        if not errorlevel 1 (
+            set "VM_KNOWN=yes"
+            findstr /i /c:"rancher-desktop" "%TEMP%\chl_wsl.txt" | findstr /i /c:"Running" >nul 2>&1
+            if not errorlevel 1 set "VM_RUNNING=yes"
+        )
+    )
+    del "%TEMP%\chl_wsl.txt" >nul 2>&1
+    if defined VM_KNOWN if not defined VM_RUNNING (
+        echo     The engine is unreachable and every rancher-desktop WSL distribution
+        echo     is stopped, so no container can be running. Safe to cycle.
+        set "DECIDED=wsl"
+    )
+)
+
 if not defined DECIDED (
     echo.
     echo [ERROR] Could not determine whether containers are running - the engine
@@ -99,8 +142,15 @@ if not defined DECIDED (
     echo         down underneath a live PostgreSQL and SoftHSM2 token.
     echo.
     echo         Check Rancher Desktop, then either stop the stack deliberately
-    echo         and retry, or force it with CHL_FORCE_HEAL=1 if you are certain
-    echo         nothing is running.
+    echo         and retry:
+    echo             setup backup
+    echo             setup down
+    echo.
+    echo         Or, if you are certain nothing is running, force it. This is an
+    echo         environment variable, so it has to be set before the call - it
+    echo         is not an argument:
+    echo             set CHL_FORCE_HEAL=1
+    echo             setup restart
     if not "%CHL_FORCE_HEAL%"=="1" endlocal & exit /b 1
     echo         CHL_FORCE_HEAL=1 set; continuing anyway.
 )
@@ -116,8 +166,11 @@ if 1==1 (
         echo         Back up and stop the stack first, then retry:
         echo             setup backup
         echo             setup down
-        echo         Or force it anyway with CHL_FORCE_HEAL=1 if you know the volumes
-        echo         are expendable.
+        echo.
+        echo         Or, if you know the volumes are expendable, force it. This is an
+        echo         environment variable, set before the call - not an argument:
+        echo             set CHL_FORCE_HEAL=1
+        echo             setup restart
         if not "%CHL_FORCE_HEAL%"=="1" endlocal & exit /b 1
         echo         CHL_FORCE_HEAL=1 set; continuing anyway.
     )

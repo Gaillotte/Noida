@@ -18,7 +18,7 @@ if ($what === 'audit') {
     $response = $api->raw('/api/audit/export?fmt=' . urlencode($fmt));
 
     if ($response['status'] !== 200) {
-        render_head('Export');
+        render_head('Export', purpose: 'Download an inventory as CSV. Metadata only &mdash; key material is never exported.');
         render_error('Export failed (HTTP ' . $response['status'] . '). '
                    . 'The Auditor, SecurityOfficer or Administrator role is required.');
         render_foot();

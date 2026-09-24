@@ -26,6 +26,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['capabilities'] = $result['data']['capabilities'];
         // Drives the banner on every page until the password is changed.
         $_SESSION['default_password'] = !empty($result['data']['using_default_password']);
+        /*
+         * The KMIP credential, held for this session.
+         *
+         * The engine authenticates every request itself and implements no
+         * Login operation, so acting on a user's behalf over KMIP needs their
+         * password each time. Without this the portal's own pages could not
+         * use the KMIP path at all, and would keep taking the in-process
+         * shortcut that never reaches the hash-chained audit log.
+         *
+         * Server-side, in the PHP session only: never written to the database,
+         * never sent to the browser, and destroyed at sign-out with the rest
+         * of the session. It is the portal that holds it, not the API and not
+         * chl-client-app - both of those stay stateless.
+         */
+        $_SESSION['kmip_credential'] = ['username' => $username, 'password' => $password];
         header('Location: index.php');
         exit;
     }

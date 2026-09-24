@@ -117,12 +117,25 @@ class KMIPClient:
         usage_mask: int = CryptographicUsageMask.Encrypt | CryptographicUsageMask.Decrypt,
         name: Optional[str] = None,
         extractable: bool = False,
+        sensitive: bool = True,
+        activate: bool = True,
     ) -> str:
         attrs = (
             _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, algorithm))
             + _attr("Cryptographic Length",    encode_integer(Tag.AttributeValue, length))
             + _attr("Cryptographic Usage Mask", encode_integer(Tag.AttributeValue, usage_mask))
+            # Sent explicitly rather than left to the server default, so a caller
+            # can choose it. The handler has always accepted the attribute; the
+            # client simply never offered a way to set it, which meant the one
+            # control the portal exposes for it could not survive the move to
+            # the KMIP path.
+            + _attr("Sensitive", encode_boolean(Tag.AttributeValue, sensitive))
         )
+        # Ask for PreActive when the caller does not want the key usable yet,
+        # so Activate has something to act on. Sent only in that case, leaving
+        # the default request byte-for-byte as it was.
+        if not activate:
+            attrs += _attr("State", encode_enumeration(Tag.AttributeValue, State.PreActive))
         if name:
             name_val = encode_text_string(Tag.NameValue, name)
             attrs   += _attr("Name", encode_structure(Tag.AttributeValue, name_val))
@@ -145,11 +158,27 @@ class KMIPClient:
         algorithm: int = CryptographicAlgorithm.RSA,
         length: int = 2048,
         name: Optional[str] = None,
+        usage_mask: Optional[int] = None,
+        curve: Optional[int] = None,
     ):
         common_attrs = (
             _attr("Cryptographic Algorithm", encode_enumeration(Tag.AttributeValue, algorithm))
             + _attr("Cryptographic Length",  encode_integer(Tag.AttributeValue, length))
         )
+        # What the pair may be used for - Sign, Verify, DeriveKey. Omitted
+        # entirely when not given, so the handler's own default still applies.
+        if usage_mask is not None:
+            common_attrs += _attr("Cryptographic Usage Mask",
+                                  encode_integer(Tag.AttributeValue, usage_mask))
+        # An elliptic curve is carried inside Cryptographic Domain Parameters,
+        # not as a length: for EC the curve *is* the size. Without this an EC
+        # key pair could not be created over KMIP at all, whatever the caller
+        # asked for.
+        if curve is not None:
+            common_attrs += _attr(
+                "Cryptographic Domain Parameters",
+                encode_structure(Tag.AttributeValue,
+                                 encode_enumeration(Tag.RecommendedCurve, curve)))
         if name:
             name_val      = encode_text_string(Tag.NameValue, name)
             common_attrs += _attr("Name", encode_structure(Tag.AttributeValue, name_val))
@@ -286,6 +315,278 @@ class KMIPClient:
         resp = self._request(Operation.AddAttribute, payload)
         return resp.get(Tag.UniqueIdentifier).value
 
+
+    # ── operations added for full coverage ────────────────────────────────────
+    #
+    # Every method below was written against the corresponding handler in
+    # kmip_pkcs11/operations/, not against the specification: the handler is
+    # what will actually parse the request, so its `payload.get(Tag.X)` calls
+    # and its MissingData messages are the contract that matters here.
+    #
+    # They are deliberately thin. This client exists to exercise the wire
+    # protocol, so each one builds the payload, sends it and returns the
+    # response items rather than interpreting them.
+
+    # ── lifecycle: identifier only ────────────────────────────────────────────
+
+    def archive(self, uid: str) -> str:
+        """Archive: object keeps its State but becomes metadata-only."""
+        resp = self._request(Operation.Archive,
+                             encode_text_string(Tag.UniqueIdentifier, uid))
+        return resp.get(Tag.UniqueIdentifier).value
+
+    def recover(self, uid: str) -> str:
+        """Recover: the inverse of Archive."""
+        resp = self._request(Operation.Recover,
+                             encode_text_string(Tag.UniqueIdentifier, uid))
+        return resp.get(Tag.UniqueIdentifier).value
+
+    def obtain_lease(self, uid: str) -> dict:
+        """ObtainLease: permission to keep using an object for a period."""
+        resp = self._request(Operation.ObtainLease,
+                             encode_text_string(Tag.UniqueIdentifier, uid))
+        return {
+            "uid": _v(resp, Tag.UniqueIdentifier),
+            "lease_time": _v(resp, Tag.LeaseTime),
+            "last_change_date": _v(resp, Tag.LastChangeDate),
+        }
+
+    def get_attribute_list(self, uid: str) -> list:
+        """GetAttributeList: the attribute *names* an object carries."""
+        resp = self._request(Operation.GetAttributeList,
+                             encode_text_string(Tag.UniqueIdentifier, uid))
+        return [i.value for i in resp.get_all(Tag.AttributeName)]
+
+    def export(self, uid: str) -> TTLVItem:
+        """Export: same response shape as Get, and the same refusal for a
+        non-extractable key - which is every key this system creates by
+        default."""
+        return self._request(Operation.Export,
+                             encode_text_string(Tag.UniqueIdentifier, uid))
+
+    # ── attributes ────────────────────────────────────────────────────────────
+
+    def set_attribute(self, uid: str, name: str, value: str) -> str:
+        """SetAttribute takes AttributeName/AttributeValue at the top level,
+        unlike Add/Modify/Delete which wrap them in an Attribute structure."""
+        payload = (
+            encode_text_string(Tag.UniqueIdentifier, uid)
+            + encode_text_string(Tag.AttributeName, name)
+            + encode_text_string(Tag.AttributeValue, value)
+        )
+        resp = self._request(Operation.SetAttribute, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def modify_attribute(self, uid: str, name: str, value: str,
+                         index: int = 0) -> str:
+        inner = (encode_text_string(Tag.AttributeName, name)
+                 + encode_text_string(Tag.AttributeValue, value)
+                 + encode_integer(Tag.AttributeIndex, index))
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_structure(Tag.Attribute, inner))
+        resp = self._request(Operation.ModifyAttribute, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def delete_attribute(self, uid: str, name: str, index: int = 0) -> str:
+        inner = (encode_text_string(Tag.AttributeName, name)
+                 + encode_integer(Tag.AttributeIndex, index))
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_structure(Tag.Attribute, inner))
+        resp = self._request(Operation.DeleteAttribute, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def adjust_attribute(self, uid: str, name: str, adjustment: int,
+                         value: Optional[int] = None) -> str:
+        """AdjustAttribute: increment/decrement rather than replace."""
+        inner = encode_text_string(Tag.AttributeName, name)
+        if value is not None:
+            inner += encode_integer(Tag.AttributeValue, value)
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_structure(Tag.Attribute, inner)
+                   + encode_enumeration(Tag.AdjustmentType, adjustment))
+        resp = self._request(Operation.AdjustAttribute, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    # ── cryptographic services ────────────────────────────────────────────────
+
+    def sign(self, uid: str, data: bytes, hashing_algorithm: int) -> bytes:
+        params = encode_structure(
+            Tag.CryptographicParameters,
+            encode_enumeration(Tag.HashingAlgorithm, hashing_algorithm))
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_byte_string(Tag.Data, data) + params)
+        resp = self._request(Operation.Sign, payload)
+        return _v(resp, Tag.SignatureData)
+
+    def signature_verify(self, uid: str, data: bytes, signature: bytes,
+                         hashing_algorithm: int) -> int:
+        params = encode_structure(
+            Tag.CryptographicParameters,
+            encode_enumeration(Tag.HashingAlgorithm, hashing_algorithm))
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_byte_string(Tag.Data, data)
+                   + encode_byte_string(Tag.SignatureData, signature) + params)
+        resp = self._request(Operation.SignatureVerify, payload)
+        return _v(resp, Tag.ValidityIndicator)
+
+    def mac(self, uid: str, data: bytes) -> bytes:
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_byte_string(Tag.Data, data))
+        resp = self._request(Operation.MAC, payload)
+        return _v(resp, Tag.MACData)
+
+    def mac_verify(self, uid: str, data: bytes, mac_data: bytes) -> int:
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_byte_string(Tag.Data, data)
+                   + encode_byte_string(Tag.MACData, mac_data))
+        resp = self._request(Operation.MACVerify, payload)
+        return _v(resp, Tag.ValidityIndicator)
+
+    def hash(self, data: bytes, hashing_algorithm: int) -> bytes:
+        """Hash needs no key - CryptographicParameters/HashingAlgorithm only."""
+        params = encode_structure(
+            Tag.CryptographicParameters,
+            encode_enumeration(Tag.HashingAlgorithm, hashing_algorithm))
+        resp = self._request(Operation.Hash,
+                             encode_byte_string(Tag.Data, data) + params)
+        return _v(resp, Tag.Data)
+
+    def rng_retrieve(self, length: int) -> bytes:
+        """RNGRetrieve: random bytes from the token. 1..65536."""
+        resp = self._request(Operation.RNGRetrieve,
+                             encode_integer(Tag.DataLength, length))
+        return _v(resp, Tag.Data)
+
+    def rng_seed(self, seed: bytes) -> int:
+        resp = self._request(Operation.RNGSeed,
+                             encode_byte_string(Tag.Data, seed))
+        return _v(resp, Tag.DataLength)
+
+    def validate(self, uids: Optional[list] = None,
+                 certificates: Optional[list] = None) -> int:
+        """Validate a certificate chain, by identifier or by value.
+        Returns a ValidityIndicator."""
+        payload = b""
+        for uid in (uids or []):
+            payload += encode_text_string(Tag.UniqueIdentifier, uid)
+        for der in (certificates or []):
+            payload += encode_structure(
+                Tag.Certificate, encode_byte_string(Tag.CertificateValue, der))
+        resp = self._request(Operation.Validate, payload)
+        return _v(resp, Tag.ValidityIndicator)
+
+    # ── derivation, certification, re-keying ──────────────────────────────────
+
+    def rekey(self, uid: str, name: Optional[str] = None) -> str:
+        """ReKey: a fresh symmetric key, cross-linked to the one it replaces."""
+        payload = encode_text_string(Tag.UniqueIdentifier, uid) + _template(name)
+        resp = self._request(Operation.ReKey, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def rekey_key_pair(self, private_uid: str, name: Optional[str] = None):
+        payload = encode_text_string(Tag.UniqueIdentifier, private_uid) + _template(name)
+        resp = self._request(Operation.ReKeyKeyPair, payload)
+        uids = [i.value for i in resp.get_all(Tag.UniqueIdentifier)]
+        return tuple(uids[:2]) if len(uids) >= 2 else tuple(uids)
+
+    def certify(self, public_uid: str, name: Optional[str] = None) -> str:
+        """Certify: issue a certificate over an existing public key."""
+        payload = encode_text_string(Tag.UniqueIdentifier, public_uid) + _template(name)
+        resp = self._request(Operation.Certify, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def recertify(self, certificate_uid: str, name: Optional[str] = None) -> str:
+        payload = encode_text_string(Tag.UniqueIdentifier, certificate_uid) + _template(name)
+        resp = self._request(Operation.ReCertify, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def derive_key(self, uid: str, derivation_method: int,
+                   derivation_data: bytes, name: Optional[str] = None) -> str:
+        params = encode_structure(
+            Tag.DerivationParameters,
+            encode_byte_string(Tag.DerivationData, derivation_data))
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_enumeration(Tag.DerivationMethod, derivation_method)
+                   + params + _template(name))
+        resp = self._request(Operation.DeriveKey, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    # ── split keys ────────────────────────────────────────────────────────────
+
+    def create_split_key(self, parts: int, threshold: int, method: int,
+                         name: Optional[str] = None) -> list:
+        payload = (encode_integer(Tag.SplitKeyParts, parts)
+                   + encode_integer(Tag.SplitKeyThreshold, threshold)
+                   + encode_enumeration(Tag.SplitKeyMethod, method)
+                   + _template(name))
+        resp = self._request(Operation.CreateSplitKey, payload)
+        return [i.value for i in resp.get_all(Tag.UniqueIdentifier)]
+
+    def join_split_key(self, part_uids: list, name: Optional[str] = None) -> str:
+        payload = b""
+        for uid in part_uids:
+            payload += encode_text_string(Tag.UniqueIdentifier, uid)
+        payload += _template(name)
+        resp = self._request(Operation.JoinSplitKey, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    # ── bringing material in ──────────────────────────────────────────────────
+
+    def register(self, object_type: int, key_material: bytes = b"",
+                 certificate: bytes = b"", name: Optional[str] = None) -> str:
+        """Register an object the server did not generate.
+
+        SymmetricKey and SecretData both arrive as a KeyBlock; a Certificate
+        arrives as a Certificate structure. OpaqueObject is deliberately absent:
+        register.py reads it via `hasattr(Tag, 'OpaqueObject')` and this engine's
+        Tag enum has no such member, so that branch can never fire and offering
+        it here would be offering something that silently registers nothing.
+        """
+        payload = encode_enumeration(Tag.ObjectType, object_type)
+        if key_material:
+            payload += _key_block(key_material)
+        if certificate:
+            payload += encode_structure(
+                Tag.Certificate, encode_byte_string(Tag.CertificateValue, certificate))
+        payload += _template(name)
+        resp = self._request(Operation.Register, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    def import_object(self, uid: str, object_type: int, key_material: bytes = b"",
+                      replace_existing: bool = False) -> str:
+        """Import: like Register, but the caller chooses the identifier.
+        Named import_object because `import` is a Python keyword."""
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_enumeration(Tag.ObjectType, object_type)
+                   + encode_boolean(Tag.ReplaceExisting, replace_existing))
+        if key_material:
+            payload += _key_block(key_material)
+        resp = self._request(Operation.Import, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
+    # ── usage accounting ──────────────────────────────────────────────────────
+
+    def check(self, uid: str, usage_limits_count: Optional[int] = None,
+              usage_mask: Optional[int] = None,
+              state: Optional[int] = None) -> dict:
+        """Check whether an object may be used as proposed, without using it."""
+        payload = encode_text_string(Tag.UniqueIdentifier, uid)
+        if usage_limits_count is not None:
+            payload += encode_integer(Tag.UsageLimitsCount, usage_limits_count)
+        if usage_mask is not None:
+            payload += encode_integer(Tag.CryptographicUsageMask, usage_mask)
+        if state is not None:
+            payload += encode_enumeration(Tag.State, state)
+        resp = self._request(Operation.Check, payload)
+        return {"uid": _v(resp, Tag.UniqueIdentifier),
+                "usage_limits_count": _v(resp, Tag.UsageLimitsCount)}
+
+    def get_usage_allocation(self, uid: str, count: int = 1) -> str:
+        payload = (encode_text_string(Tag.UniqueIdentifier, uid)
+                   + encode_integer(Tag.UsageLimitsCount, count))
+        resp = self._request(Operation.GetUsageAllocation, payload)
+        return _v(resp, Tag.UniqueIdentifier)
+
     # ── low-level transport ────────────────────────────────────────────────────
 
     def _request(self, operation: int, payload_bytes: bytes) -> TTLVItem:
@@ -405,6 +706,37 @@ def _block_cipher_mode(mode: int) -> bytes:
         Tag.CryptographicParameters,
         encode_enumeration(Tag.CryptographicParameters_BlockCipherMode, mode),
     )
+
+
+def _v(item: TTLVItem, tag: int):
+    """Value of `tag` in a response, or None when the server omitted it.
+
+    Responses are sparse by design - an optional field simply is not there -
+    so reaching through .get(...).value directly turns a legitimate omission
+    into an AttributeError several frames from the cause.
+    """
+    found = item.get(tag) if item is not None else None
+    return found.value if found is not None else None
+
+
+def _key_block(material: bytes) -> bytes:
+    """The KeyBlock that Register and Import expect around raw material:
+    KeyBlock > KeyValue > KeyMaterial, which is what register.py unwraps."""
+    return encode_structure(
+        Tag.KeyBlock,
+        encode_structure(Tag.KeyValue,
+                         encode_byte_string(Tag.KeyMaterial, material)))
+
+
+def _template(name=None) -> bytes:
+    """A TemplateAttribute carrying an optional Name, which is all the
+    operations that accept one need from the client side."""
+    if not name:
+        return b""
+    return encode_structure(
+        Tag.TemplateAttribute,
+        _attr("Name", encode_structure(Tag.AttributeValue,
+                                       encode_text_string(Tag.NameValue, name))))
 
 
 def _attr(name: str, value_bytes: bytes) -> bytes:

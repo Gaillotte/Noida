@@ -101,9 +101,24 @@ $kinds = ['' => 'All types', 'SymmetricKey' => 'Symmetric', 'PrivateKey' => 'RSA
                                 // where it goes rather than "Inspect", which
                                 // gave no reason to click it.
                                 ?>
-                                <td><a class="chl-btn chl-btn-sm"
-                                       href="kmip.php?uid=<?= urlencode((string)$k['uid']) ?>"
-                                       title="KMIP attributes, delegated access, and the lifecycle actions">Manage →</a></td>
+                                <?php
+                                // The lifecycle actions belong here too. This
+                                // is the page people land on, and sending them
+                                // to KMIP just to revoke a key made three
+                                // implemented operations feel missing.
+                                ?>
+                                <td>
+                                    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+                                        <a class="chl-btn chl-btn-sm"
+                                           href="kmip.php?uid=<?= urlencode((string)$k['uid']) ?>"
+                                           title="KMIP attributes and delegated access">Details</a>
+                                        <?php
+                                        $o = $k;
+                                        $back = 'keys.php' . ($kind ? '?kind=' . urlencode($kind) : '');
+                                        require __DIR__ . '/../inc/lifecycle_actions.php';
+                                        ?>
+                                    </div>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                         </tbody>

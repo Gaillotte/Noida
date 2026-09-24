@@ -121,6 +121,25 @@ _HINTS = {
 }
 
 
+# Which key sizes are meaningful for which algorithm.
+#
+# This cannot be derived: the engine gates on PKCS#11 *mechanisms*, not on key
+# length, so it has no opinion to read. The sizes come from the algorithms
+# themselves. Without it, `length` is a free number box that will happily
+# submit AES-257 and let the token reject it - which is a worse way to learn.
+#
+# Keyed by CryptographicAlgorithm value. An algorithm absent from here keeps a
+# free number field, which is the honest answer for one whose size is not a
+# short fixed list (EC is chosen by curve, not by bits).
+_LENGTHS_BY_ALGORITHM = {
+    int(CryptographicAlgorithm.AES):  [256, 192, 128],
+    int(CryptographicAlgorithm.TDES): [192, 128],
+    int(CryptographicAlgorithm.DES):  [64],
+    int(CryptographicAlgorithm.RSA):  [2048, 3072, 4096],
+    int(CryptographicAlgorithm.DSA):  [2048, 1024],
+}
+
+
 def _field(param: inspect.Parameter) -> Dict[str, Any]:
     """One form field, described from the parameter itself."""
     annotation = param.annotation
@@ -167,12 +186,23 @@ def _field(param: inspect.Parameter) -> Dict[str, Any]:
         choices = [{"value": int(member), "label": member.name}
                    for member in enum_cls]
 
+    # `length` only means something once an algorithm is chosen, so it is
+    # offered as a list that follows the algorithm field rather than a spinner
+    # that will accept any integer at all.
+    depends_on = choices_by = None
+    if kind == "number" and param.name == "length":
+        kind = "dependent"
+        depends_on = "algorithm"
+        choices_by = {str(k): v for k, v in _LENGTHS_BY_ALGORITHM.items()}
+
     return {
         "name": param.name,
         "type": kind,
         "required": required,
         "default": default,
         "choices": choices,
+        "depends_on": depends_on,
+        "choices_by": choices_by,
         # bytes fields accept either, because a UID is text and a signature is
         # not; the browser cannot know which the user means.
         "hint": (_HINTS.get(param.name)
@@ -203,7 +233,7 @@ def _coerce(raw: Any, field: Dict[str, Any]) -> Any:
     kind = field["type"]
     if raw is None or raw == "":
         return None
-    if kind in ("number", "enum", "flags"):
+    if kind in ("number", "enum", "flags", "dependent"):
         return int(raw)
     if kind == "checkbox":
         return raw if isinstance(raw, bool) else str(raw).lower() in ("1", "true", "on")

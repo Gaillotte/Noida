@@ -126,18 +126,56 @@ function result_badge(?string $result): string
     return '<span class="chl-badge ' . $tone . '">' . e($result ?? '-') . '</span>';
 }
 
+/**
+ * Cache-busts an asset by its modification time.
+ *
+ * The stylesheet is served with an ETag but no Cache-Control, so a browser is
+ * free to apply heuristic freshness and never revalidate - which it did: a
+ * theme fix was live on the server and invisible in the browser. Keying the
+ * URL to mtime means a deploy invalidates the cache by itself, and an
+ * unchanged file still caches for as long as the browser likes.
+ */
+function asset(string $path): string
+{
+    $full = __DIR__ . '/../public/' . $path;
+    $stamp = is_file($full) ? filemtime($full) : null;
+    return $stamp ? $path . '?v=' . $stamp : $path;
+}
+
+/**
+ * The navigation. Each entry carries what the page is *for*, because
+ * "KMIP" and "PKCS#11" and "Keys" all sound like the same thing to anyone
+ * who has not built this, and three of them genuinely do show the same
+ * objects from different angles.
+ */
 const NAV_ITEMS = [
     ['section' => 'Monitor'],
-    ['file' => 'index.php',        'label' => 'Dashboard',       'icon' => '▦'],
-    ['file' => 'keys.php',         'label' => 'Keys',            'icon' => '⚿'],
-    ['file' => 'certificates.php', 'label' => 'Certificates',    'icon' => '▤'],
+    ['file' => 'index.php',        'label' => 'Dashboard',       'icon' => '▦',
+     'desc'    => 'Totals, object states and recent activity at a glance',
+     'purpose' => 'One view of what the system holds and what has happened lately &mdash; objects by type and state, and recent activity.'],
+    ['file' => 'keys.php',         'label' => 'Keys',            'icon' => '⚿',
+     'desc'    => 'Generate keys on the token; see algorithm, size and usage',
+     'purpose' => 'Generate keys on the HSM token, and review what exists: algorithm, size, permitted usage, and whether the material can ever leave the token.'],
+    ['file' => 'certificates.php', 'label' => 'Certificates',    'icon' => '▤',
+     'desc'    => 'X.509 inventory - subject, issuer and expiry',
+     'purpose' => 'The X.509 certificates held as KMIP objects, with subject, issuer and validity parsed from the stored certificate.'],
     ['section' => 'Manage'],
-    ['file' => 'kmip.php',         'label' => 'KMIP',            'icon' => '⇄'],
-    ['file' => 'kmip_client.php',  'label' => 'KMIP Client',     'icon' => '⌨'],
-    ['file' => 'pkcs11.php',       'label' => 'PKCS#11',         'icon' => '⌗'],
+    ['file' => 'kmip.php',         'label' => 'KMIP',            'icon' => '⇄',
+     'desc'    => 'The same objects by lifecycle: attributes, state, grants',
+     'purpose' => 'The same objects as Keys, seen through the protocol: lifecycle state, KMIP attributes, delegated access, and which of the 53 operations the engine implements.'],
+    ['file' => 'kmip_client.php',  'label' => 'KMIP Client',     'icon' => '⌨',
+     'desc'    => 'Run any of the 41 operations over real TTLV on 5696',
+     'purpose' => 'Drive any of the 41 implemented operations against the engine as a real KMIP client, and see the exact bytes that crossed the network.'],
+    ['file' => 'pkcs11.php',       'label' => 'PKCS#11',         'icon' => '⌷',
+     'desc'    => 'What the token itself holds, by slot and CKA attribute',
+     'purpose' => 'What the token itself reports &mdash; slots, mechanisms and the objects stored on it &mdash; one layer below KMIP.'],
     ['section' => 'Govern'],
-    ['file' => 'audit.php',        'label' => 'Audit',           'icon' => '☰'],
-    ['file' => 'admin.php',        'label' => 'Administration',  'icon' => '⚙'],
+    ['file' => 'audit.php',        'label' => 'Audit',           'icon' => '☰',
+     'desc'    => 'Portal actions plus the hash-chained KMIP log',
+     'purpose' => 'Every recorded action: portal activity alongside the hash-chained KMIP log written by the engine, merged here and verifiable.'],
+    ['file' => 'admin.php',        'label' => 'Administration',  'icon' => '⚙',
+     'desc'    => 'Accounts, roles and governance settings',
+     'purpose' => 'Accounts, roles and governance settings. A portal user and a KMIP identity are the same account.'],
 ];
 
 /**
@@ -152,9 +190,20 @@ const NAV_ITEMS = [
  * exist, and on a corporate network the CDN round-trip was the slowest thing
  * on the page by an order of magnitude - the portal itself answers in ~12 ms.
  */
-function render_head(string $title, bool $charts = false): void
+function render_head(string $title, bool $charts = false, ?string $purpose = null): void
 {
     $current = basename($_SERVER['PHP_SELF']);
+    // Three of these pages show substantially the same objects from different
+    // angles, which is the question every newcomer to this portal has asked.
+    // Answering it on the page itself costs one line and saves the question.
+    if ($purpose === null) {
+        foreach (NAV_ITEMS as $item) {
+            if (($item['file'] ?? null) === $current) {
+                $purpose = $item['purpose'] ?? null;
+                break;
+            }
+        }
+    }
     ?>
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -162,10 +211,10 @@ function render_head(string $title, bool $charts = false): void
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title><?= e($title) ?> · IDEMIA CryptoHub Lite</title>
-    <link href="assets/vendor/bootstrap.min.css" rel="stylesheet">
-    <link href="assets/css/idemia.css" rel="stylesheet">
+    <link href="<?= e(asset('assets/vendor/bootstrap.min.css')) ?>" rel="stylesheet">
+    <link href="<?= e(asset('assets/css/idemia.css')) ?>" rel="stylesheet">
     <?php if ($charts): ?>
-    <script src="assets/vendor/chart.umd.min.js"></script>
+    <script src="<?= e(asset('assets/vendor/chart.umd.min.js')) ?>"></script>
     <?php endif; ?>
 </head>
 <body>
@@ -184,9 +233,15 @@ function render_head(string $title, bool $charts = false): void
                     <div class="chl-nav-section"><?= e($item['section']) ?></div>
                 <?php else: ?>
                     <a class="chl-nav-link <?= $current === $item['file'] ? 'active' : '' ?>"
-                       href="<?= e($item['file']) ?>">
+                       href="<?= e($item['file']) ?>"
+                       title="<?= e($item['desc'] ?? '') ?>">
                         <span class="chl-nav-icon"><?= $item['icon'] ?></span>
-                        <?= e($item['label']) ?>
+                        <span class="chl-nav-text">
+                            <span class="chl-nav-label"><?= e($item['label']) ?></span>
+                            <?php if (!empty($item['desc'])): ?>
+                                <span class="chl-nav-desc"><?= e($item['desc']) ?></span>
+                            <?php endif; ?>
+                        </span>
                     </a>
                 <?php endif; ?>
             <?php endforeach; ?>
@@ -199,7 +254,12 @@ function render_head(string $title, bool $charts = false): void
 
     <div class="chl-main">
         <header class="chl-topbar">
-            <h1><?= e($title) ?></h1>
+            <div class="chl-topbar-title">
+                <h1><?= e($title) ?></h1>
+                <?php if ($purpose): ?>
+                    <p class="chl-topbar-purpose"><?= $purpose ?></p>
+                <?php endif; ?>
+            </div>
             <div class="chl-topbar-actions">
                 <button class="chl-btn chl-btn-sm" onclick="toggleTheme()" id="themeBtn"
                         title="Switch theme">☀ Light</button>

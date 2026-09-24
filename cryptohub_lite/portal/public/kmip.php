@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/../inc/layout.php';
+require_once __DIR__ . '/../inc/kmip.php';
 require_login();
 
 $api = new ApiClient();
@@ -176,46 +177,10 @@ if (!$result['ok']) {
                         <td><?= state_badge($o['state'] ?? null) ?></td>
                         <td><?= e($o['owner'] ?? '—') ?></td>
                         <td>
-                            <div class="row-actions" style="display:flex;gap:5px;flex-wrap:wrap">
+                            <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
                                 <a class="chl-btn chl-btn-sm"
                                    href="kmip.php?uid=<?= urlencode((string)$o['uid']) ?>">Inspect</a>
-                                <?php if (can('key.lifecycle') && ($o['state'] ?? '') === 'PreActive'): ?>
-                                    <form method="post" action="kmip_action.php">
-                                        <input type="hidden" name="action" value="activate">
-                                        <input type="hidden" name="uid" value="<?= e($o['uid']) ?>">
-                                        <button class="chl-btn chl-btn-sm" type="submit">Activate</button>
-                                    </form>
-                                <?php endif; ?>
-                                <?php if (can('key.lifecycle') && ($o['state'] ?? '') === 'Active'): ?>
-                                    <form method="post" action="kmip_action.php">
-                                        <input type="hidden" name="action" value="rekey">
-                                        <input type="hidden" name="uid" value="<?= e($o['uid']) ?>">
-                                        <button class="chl-btn chl-btn-sm" type="submit"
-                                                title="Generate a replacement key">Re-Key</button>
-                                    </form>
-                                    <form method="post" action="kmip_action.php">
-                                        <input type="hidden" name="action" value="revoke">
-                                        <input type="hidden" name="uid" value="<?= e($o['uid']) ?>">
-                                        <input type="hidden" name="reason" value="CessationOfOperation">
-                                        <button class="chl-btn chl-btn-sm" type="submit">Revoke</button>
-                                    </form>
-                                <?php endif; ?>
-                                <?php if (can('key.destroy') && !in_array($o['state'] ?? '', ['Destroyed','DestroyedCompromised'], true)): ?>
-                                    <?php
-                                    // Escaped \n, not a real line break. A raw
-                                    // newline inside a JS string literal is a
-                                    // SyntaxError, so the handler never compiled
-                                    // and this — the one irreversible action in
-                                    // the UI — submitted on the first click with
-                                    // no confirmation at all.
-                                    ?>
-                                    <form method="post" action="kmip_action.php"
-                                          onsubmit="return confirm('Destroy this key?\n\nKey material is removed from the HSM. This cannot be undone, and anything encrypted under it becomes unrecoverable.')">
-                                        <input type="hidden" name="action" value="destroy">
-                                        <input type="hidden" name="uid" value="<?= e($o['uid']) ?>">
-                                        <button class="chl-btn chl-btn-sm" type="submit">Destroy</button>
-                                    </form>
-                                <?php endif; ?>
+                                <?php $back = 'kmip.php'; require __DIR__ . '/../inc/lifecycle_actions.php'; ?>
                             </div>
                         </td>
                     </tr>
@@ -241,11 +206,11 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
         <div>
             <h2 class="chl-card-title">Supported KMIP Operations</h2>
             <p class="chl-card-sub"><?= (int)$ops['implemented_count'] ?> of
-                <?= (int)$ops['total'] ?> operations implemented by the KMIP engine<?php
-                if (isset($ops['rest_reachable_count'])): ?> ·
-                <span class="chl-badge green" style="font-size:10px">&#9679;</span>
-                <?= (int)$ops['rest_reachable_count'] ?> of those reachable from this
-                portal, the rest only over the wire on 5696<?php endif; ?></p>
+                <?= (int)$ops['total'] ?> operations implemented by the KMIP engine &mdash;
+                <b>every one of them can be run from this portal</b>, on the
+                <a href="kmip_client.php">KMIP Client</a> page. Some also have
+                buttons and forms of their own &mdash; which take exactly the same
+                route to the engine.</p>
         </div>
     </div>
     <div class="chl-card-body">
@@ -256,24 +221,37 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
         // does not: grey/green are both implemented.
         ?>
         <?php
-        // The earlier wording said the portal-reachable colour meant "you can do
-        // which implied green could not be done by a KMIP client either. The
-        // opposite is true: every implemented operation is available to a KMIP
-        // client. Blue marks the ones that *additionally* have a portal route.
+        // This legend has been wrong twice, in opposite directions, so it is
+        // worth being exact about what the colours now mean.
+        //
+        // They once implied green was portal-only and unavailable to a KMIP
+        // client; that was backwards. It was then reworded to say amber meant
+        // "KMIP client only - no portal route", which was true until the KMIP
+        // Client Application shipped. It is not true now: that page drives all
+        // 41 over real TTLV, so every implemented operation is reachable from a
+        // browser. What is left for the colour to say is only whether an
+        // operation has a screen built around it, or is run from the generic
+        // form - which is a statement about the user interface, not about
+        // capability.
         ?>
         <p style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">
-            <b>All <?= (int)($ops['implemented_count'] ?? 0) ?> implemented
-            operations are available to a KMIP client</b> on port 5696. The colour
-            says whether the <i>portal</i> also offers a way to do it.
+            <b>All <?= (int)($ops['implemented_count'] ?? 0) ?> implemented operations
+            can be run from this portal</b> and by any KMIP client on port 5696 &mdash;
+            and they all take <b>one path</b>: TTLV on 5696, through the dispatcher,
+            into the hash-chained audit log. Nothing here reaches the engine any other
+            way. The colour is about the <i>interface</i> only: whether a page has a
+            screen built around the operation, or you drive it from the generic form.
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:18px;align-items:center;
                     padding-bottom:14px;margin-bottom:16px;
                     border-bottom:1px solid var(--border);font-size:11.5px;
                     color:var(--text-muted)">
             <span><span class="chl-badge green">Example &#9679;</span>
-                &nbsp;KMIP client <b>and</b> this portal</span>
-            <span><span class="chl-badge amber">Example</span>
-                &nbsp;KMIP client <b>only</b> &mdash; no portal or REST route</span>
+                &nbsp;<b>has a button or form here</b></span>
+            <span><span class="chl-badge amber">Example &#9675;</span>
+                &nbsp;drive it from the <b><a href="kmip_client.php">KMIP Client</a></b> page.
+                A hollow dot marks the reads whose information these pages still
+                <i>display</i> without performing the operation</span>
             <span><span class="chl-badge grey"
                        style="opacity:.6;text-decoration:line-through">Example</span>
                 &nbsp;<b>not implemented</b> &mdash; unavailable to anyone</span>
@@ -307,19 +285,48 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
                             $where[] = ($r['kind'] === 'invokes' ? '' : '~ ')
                                      . $r['method'] . ' ' . $r['path'];
                         }
-                        // Three states, three appearances. Green and amber are both
-                        // "the engine implements this"; they differ only in whether
-                        // the portal can reach it. Not-implemented is struck through
-                        // below. Grey was previously used here and read as "missing",
-                        // because the deferred badges were greyish too.
-                        $cls = $rest ? 'green' : 'amber';
-                        $tip = $rest
-                            ? "Available to a KMIP client on 5696, AND from this portal:\n" . implode("\n", $where)
-                            : 'Available to a KMIP client on 5696. No REST endpoint reaches it, '
-                              . 'so it cannot be done from these pages - the engine implements it fully.';
+                        // Green means: a button or form on these pages runs it.
+                        //
+                        // Read from the portal's own action table, not from the
+                        // REST API's route annotations. Those annotations became
+                        // the wrong source when these actions moved onto the KMIP
+                        // path: chl-api still has the endpoints, but the portal no
+                        // longer calls them, so a badge derived from them would
+                        // describe a route nobody takes.
+                        //
+                        // The colour is now a statement about the *interface*
+                        // only. Every operation, green or amber, reaches the
+                        // engine the same way - as TTLV on 5696, through the
+                        // dispatcher, into the hash-chained audit log. What
+                        // differs is whether this portal has built a screen
+                        // around it or you drive it from the generic form.
+                        $performs = in_array($name, KMIP_PORTAL_OPERATIONS, true);
+                        // Kept only to mark the few reads whose information these
+                        // pages still display without performing the operation.
+                        $equivalent = array_values(array_filter(
+                            $rest, fn($r) => ($r['kind'] ?? '') !== 'invokes'));
+                        $cls = $performs ? 'green' : 'amber';
+                        if ($performs) {
+                            $tip = "A form or button on these pages runs it, over KMIP on 5696 - "
+                                 . "the same path a third-party client takes, and the same "
+                                 . "hash-chained audit entry.";
+                        } elseif ($equivalent) {
+                            $tip = "Run it on the KMIP Client page, or from any KMIP client on 5696."
+                                 . "
+
+These pages show the same information without performing "
+                                 . "the operation - they still read the metadata store directly:
+"
+                                 . implode("
+", array_map(
+                                     fn($r) => $r['method'] . ' ' . $r['path'], $equivalent));
+                        } else {
+                            $tip = 'Run it on the KMIP Client page, which drives all 41, or from '
+                                 . 'any KMIP client on 5696. No page here is built around it.';
+                        }
                         ?>
                         <span class="chl-badge <?= $cls ?>" title="<?= e($tip) ?>">
-                            <?= e($name) ?><?= $rest ? ' &#9679;' : '' ?></span>
+                            <?= e($name) ?><?= $performs ? ' &#9679;' : ($equivalent ? ' &#9675;' : '') ?></span>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -344,29 +351,55 @@ $ops = $ops_result['ok'] ? $ops_result['data'] : null;
         <?php endif; ?>
 
         <p style="margin:16px 0 0;color:var(--text-muted);font-size:12px">
-            Operations are executed by the existing KMIP engine over its own TCP listener on
-            port 5696. This portal reads the resulting managed objects; it does not reimplement
-            KMIP.
+            Every operation is executed by the KMIP engine over its own TCP listener on
+            port 5696 &mdash; including the ones driven from this portal, which reach it
+            through <span class="chl-mono">chl-client-app</span>, the one service that
+            speaks KMIP. A key generated from the Keys page and one created by a
+            third-party client are now indistinguishable: same request, same
+            authentication, same entry in the audit chain.
         </p>
     </div>
 </div>
 
 <?php
-// The full definition, at the foot of the page. The compact legend at the top
-// of the operations card is a reminder; this is the reference, because the
-// distinction that matters here is easy to get backwards: a badge that is not
-// amber still means the operation *works* - just not from these pages.
+// The full definition, at the foot of the page.
+//
+// The old wording here drew the line at whether secret material would cross
+// the portal tier, which was the honest reason some operations had no page.
+// The KMIP Client Application changed that: it will run Encrypt or Get from a
+// browser, plaintext and all. Pretending otherwise would make this card the
+// one place in the product that still denies what another page plainly does.
+// So the line is now drawn where it actually falls - a dedicated screen, or
+// the generic form - and the material question is stated where it belongs, as
+// the reason routine work has purpose-built pages and the rest does not.
+// Counted from the portal's own action table - the same source the badges
+// use, so the legend and the badges cannot disagree.
+$performed = 0;
+foreach (($ops['groups'] ?? []) as $g) {
+    foreach ($g['operations'] as $o) {
+        $n = is_array($o) ? ($o['name'] ?? '') : $o;
+        if (in_array($n, KMIP_PORTAL_OPERATIONS, true)) { $performed++; }
+    }
+}
 $legend = [
     ['green', 'Example &#9679;',
-     'Do it here, or from a KMIP client',
-     'Nothing secret passes through the portal. You send parameters and get back '
-     . 'an identifier.',
-     (int)($ops['rest_reachable_count'] ?? 0)],
-    ['amber', 'Example',
-     'KMIP client only',
-     'Would carry your plaintext or your key bytes through the browser. Those go '
-     . 'straight to the engine instead &mdash; or nobody has built the page yet.',
-     (int)($ops['implemented_count'] ?? 0) - (int)($ops['rest_reachable_count'] ?? 0)],
+     'Has a button or form here',
+     'The everyday lifecycle work &mdash; generating a key, activating, revoking, '
+     . 'destroying. Purpose-built controls with sensible defaults, which then send '
+     . 'exactly the KMIP request a third-party client would. Nothing secret passes '
+     . 'through the browser.',
+     $performed],
+    ['amber', 'Example &#9675;',
+     'Drive it from the KMIP Client page',
+     'No screen of its own. Often that is because the operation would carry '
+     . 'plaintext or key bytes through the browser; the KMIP Client page is a '
+     . 'deliberate exception, for proving the engine works, which is why it asks '
+     . 'for a KMIP password every time. A hollow dot marks the few &mdash; '
+     . 'GetAttributes, GetAttributeList, Locate, Query &mdash; whose information '
+     . 'these pages still show by reading the metadata store rather than by asking '
+     . 'the engine. Those reads are the last part of this portal not yet on the '
+     . 'KMIP path.',
+     (int)($ops['implemented_count'] ?? 0) - $performed],
     ['grey', 'Example',
      'Nobody can &mdash; not built',
      'Session and asynchronous operations that do not suit a server which '

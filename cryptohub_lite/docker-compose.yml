@@ -2,7 +2,7 @@
 #
 #   docker compose -f cryptohub_lite/docker-compose.yml up -d --build
 #
-# Deliberately four plain services with no orchestration layer, matching the
+# Deliberately five plain services with no orchestration layer, matching the
 # brief's constraint to avoid Kubernetes and microservice sprawl.
 #
 # The API and the KMIP server run the same image and share one SoftHSM2 token
@@ -102,6 +102,35 @@ services:
         condition: service_healthy
     networks: [chl]
 
+  # The only component that speaks KMIP.
+  #
+  # Same image as the API, different entry point - and a deliberately smaller
+  # surface: no database DSN, no token volume, no PKCS#11 settings, because it
+  # needs none of them. It verifies the portal's JWT with the shared secret,
+  # then translates REST into TTLV on 5696.
+  client-app:
+    build:
+      context: ..
+      dockerfile: cryptohub_lite/docker/Dockerfile.api
+    image: cryptohub-lite/api:dev
+    container_name: chl-client-app
+    environment:
+      SERVICE: client-app
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      KMIP_CLIENT_HOST: kmip
+      KMIP_CLIENT_PORT: "5696"
+    ports:
+      - "8002:8002"
+    depends_on:
+      - kmip
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8002/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [chl]
+
   portal:
     build:
       context: ..
@@ -112,10 +141,16 @@ services:
       # Service name, not localhost: the portal reaches the API across the
       # compose network, not through the published host port.
       CRYPTOHUB_API: http://api:8000
+      # KMIP operations do not go to the API - they go to the one service
+      # that speaks KMIP. Keeping them separate in configuration is what
+      # stops them quietly converging again.
+      CRYPTOHUB_KMIP_CLIENT: http://client-app:8002
     ports:
       - "8081:80"
     depends_on:
       api:
+        condition: service_healthy
+      client-app:
         condition: service_healthy
     networks: [chl]
 

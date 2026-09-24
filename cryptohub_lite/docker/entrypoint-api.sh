@@ -11,6 +11,13 @@ TOKEN_LABEL="${PKCS11_TOKEN:-CryptoHubLite}"
 PIN="${PKCS11_PIN:-1234}"
 SO_PIN="${PKCS11_SO_PIN:-4321}"
 
+if [ "${SERVICE:-api}" = "client-app" ]; then
+    # Stateless translator: no database, no PKCS#11, no token. Skip the whole
+    # SoftHSM2 preparation rather than initialising a token nothing will open.
+    echo "[entrypoint] starting KMIP client service on :8002"
+    exec uvicorn app.client_app_main:app --host 0.0.0.0 --port 8002
+fi
+
 mkdir -p /var/lib/softhsm/tokens
 cat > /etc/softhsm2.conf <<CONF
 directories.tokendir = /var/lib/softhsm/tokens

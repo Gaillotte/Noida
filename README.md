@@ -25,6 +25,8 @@ happens on the token.
 8. [Operating](#operating)
 9. [Configuration](#configuration)
 10. [Architecture at a glance](#architecture-at-a-glance)
+    - [What each part is responsible for](#what-each-part-is-responsible-for)
+    - [How REST becomes TTLV](#how-rest-becomes-ttlv)
 11. [Known limitations](#known-limitations)
 12. [Further documentation](#further-documentation)
 
@@ -68,21 +70,25 @@ setup.cmd
 
 ## Container services
 
-Four containers, no orchestration layer. All of them must be running for the
+Five containers, no orchestration layer. All of them must be running for the
 system to work as described — the portal renders nothing useful without the
-API, and the API answers but cannot create keys without the token.
+API, and no key can be created without the KMIP client service and the token
+behind it.
 
 | Container | Image | Published port | What it does |
 |---|---|---|---|
 | `chl-postgres` | `postgres:16-alpine` | none | Holds **everything persistent**: portal accounts, the portal audit trail, and all KMIP object metadata. Deliberately not published to the host — nothing outside the stack has any business connecting to it. |
-| `chl-api` | `cryptohub-lite/api:dev` | `8000:8000` | The REST API the portal calls, and the only service that talks to the HSM for portal-driven operations. |
-| `chl-kmip` | `cryptohub-lite/api:dev` | `5696:5696` | The KMIP 2.1 wire server, for external KMIP clients. **Same image as the API**, started with `SERVICE=kmip`. |
+| `chl-api` | `cryptohub-lite/api:dev` | `8000:8000` | Sign-in and JWTs, users and roles, audit reads, dashboard totals, PKCS#11 slot information. **Speaks no KMIP** — it opens no socket to 5696. |
+| `chl-client-app` | `cryptohub-lite/api:dev` | `8002:8002` | The **only** service that speaks KMIP. Stateless: REST in, TTLV out. No database, no token, no PKCS#11. **Same image**, started with `SERVICE=client-app`. |
+| `chl-kmip` | `cryptohub-lite/api:dev` | `5696:5696` | The KMIP 2.1 wire server — for `chl-client-app` and for external KMIP clients alike. **Same image**, started with `SERVICE=kmip`. |
 | `chl-portal` | `cryptohub-lite/portal:dev` | `8081:80` | Server-rendered PHP. Holds no state and does no crypto; every page is a call to the API. |
 
-`chl-api` and `chl-kmip` being one image is the point, not a shortcut: they
-share the same SoftHSM2 token volume and the same database, which is what makes
-the portal and a KMIP client two views of one system instead of two systems
-that have to be reconciled.
+Three services from one image is the point, not a shortcut. `chl-api` and
+`chl-kmip` share the same SoftHSM2 token volume and the same database, which is
+what makes the portal and a KMIP client two views of one system instead of two
+systems that have to be reconciled. `chl-client-app` shares neither — it holds
+nothing at all, and only needs the image because the KMIP client library lives
+in it.
 
 ### Start order
 
@@ -91,18 +97,20 @@ Not arbitrary, and enforced by health checks rather than by sleeping:
 ```
 chl-postgres  (healthy: pg_isready)
      └── chl-api  (healthy: GET /api/health)
-              ├── chl-kmip
-              └── chl-portal
+              └── chl-kmip
+                       └── chl-client-app  (healthy: GET /api/health)
+                                └── chl-portal
 ```
 
-`chl-api` waits for a *healthy* database, not merely a started one, and both
-`chl-kmip` and `chl-portal` wait for a healthy API. Starting `chl-portal`
+`chl-api` waits for a *healthy* database, not merely a started one, and the
+portal waits for both `chl-api` and `chl-client-app` to be healthy — it needs
+one for sign-in and the other for every key operation. Starting `chl-portal`
 on its own therefore starts the whole chain.
 
 ### Checking they are running
 
 ```bat
-setup status               REM all four, with health state
+setup status               REM all five, with health state
 setup logs api             REM follow one service
 setup logs                 REM follow everything
 ```
@@ -111,7 +119,8 @@ setup logs                 REM follow everything
 necessarily working — `chl-api` reports `starting` for up to 20 seconds while
 it opens the HSM session and provisions the master key, and `chl-kmip` refuses
 to start at all if TLS is unconfigured and `KMIP_ALLOW_PLAINTEXT` is not set.
-Expect all four `running`, with `chl-postgres` and `chl-api` also `(healthy)`.
+Expect all five `running`, with `chl-postgres`, `chl-api` and
+`chl-client-app` also `(healthy)`.
 
 If a container is missing from the list it never started; check
 `setup logs <service>` rather than restarting blindly.
@@ -127,6 +136,7 @@ root; `setup.sh` is the same thing for Git Bash, macOS and Linux.
 ```bat
 setup                      REM build, start, wait until it is serving
 setup up                   REM same
+setup start                REM start without building - after a 'setup stop'
 setup restart api          REM after changing API code
 setup restart portal       REM after editing a .php file
 setup stop                 REM stop, keep the containers
@@ -393,6 +403,89 @@ rather than a silent failure.
 
 The wire protocol itself is complete: full TTLV binary encoding and decoding,
 batching, `BatchErrorContinuationOption` and `MaximumResponseSize`.
+
+### Why only 6 have a screen of their own
+
+**All 41 implemented operations can be run from the portal**, on the
+[KMIP Client](#how-rest-becomes-ttlv) page, and all of them travel the same
+way: TTLV on 5696, through the dispatcher, into the hash-chained audit log.
+There is no second, lesser route any more.
+
+What differs is the *interface*. **Six** have purpose-built controls — the ones
+the KMIP page marks with a solid green dot:
+
+`Create` · `CreateKeyPair` · `Activate` · `Revoke` · `ReKey` · `Destroy`
+
+Those are the everyday lifecycle, and they earn a form with valid key sizes, a
+curve picker, `CKA_` names and sensible defaults. The other 35 are driven from
+the generic form, which asks for raw enum values and a KMIP password each time.
+
+That split is not one decision. It is four, and they deserve different
+treatment if you are deciding what to build next.
+
+**Deliberate — data-plane, not control-plane (10 operations)**
+
+`Encrypt` · `Decrypt` · `Sign` · `SignatureVerify` · `MAC` · `MACVerify` ·
+`Hash` · `RNGRetrieve` · `RNGSeed` · `Validate`
+
+These *use* keys rather than manage them. A dedicated page would mean routing
+application plaintext through a browser and a PHP tier that have no business
+seeing it. Humans manage keys; applications use them, by connecting to 5696
+themselves. This boundary is worth keeping.
+
+The KMIP Client page is a deliberate exception: it *will* run `Encrypt` from a
+browser, because proving the engine works is worth more than the purity of the
+rule — which is why it asks for a KMIP password every time and is not the route
+for routine work.
+
+**Deliberate — they return key material (2 operations)**
+
+`Get` · `Export`
+
+A "download this key" button is a poor affordance even when it is safe, and
+here it *is* safe: every key this system creates is non-extractable, so the
+token refuses with `Key is not extractable`. Leaving these to the generic form
+means retrieving material takes a deliberate act and a deliberately extractable
+key.
+
+**Displayed without being performed (4 operations)**
+
+`GetAttributes` · `GetAttributeList` · `Locate` · `Query`
+
+The Keys and KMIP pages show exactly what these return — object lists,
+attributes, engine capabilities — but they do not perform the operations. They
+read the metadata store directly, because listing objects for a table needs no
+protocol round trip and would otherwise write an audit entry per row on every
+page view. The KMIP page marks these with a hollow dot.
+
+**These are the last part of the portal not on the KMIP path.** Moving them
+needs attribute-name translation and batched requests; until then, the hollow
+dot is the honest marker.
+
+**Not deliberate — simply not built (19 operations)**
+
+`Register` · `Import` · `DeriveKey` · `ReKeyKeyPair` · `Certify` · `ReCertify` ·
+`CreateSplitKey` · `JoinSplitKey` · `Archive` · `Recover` · `Check` ·
+`ObtainLease` · `DiscoverVersions` · `GetUsageAllocation` · and all five
+attribute operations
+
+A UI gap, not a design position. The portal was built around the common path
+and these were never given controls — though every one of them is runnable
+today from the KMIP Client page. Three groups stand out as candidates:
+
+* **The five attribute operations** (`AddAttribute`, `ModifyAttribute`,
+  `DeleteAttribute`, `SetAttribute`, `AdjustAttribute`) are the clearest
+  omission. The Inspect panel *reads* KMIP attributes but offers no way to
+  change one — an asymmetry that is hard to defend.
+* **`Archive` and `Recover`** are ordinary lifecycle actions and would sit
+  naturally beside the existing Activate, Revoke and Destroy buttons.
+* **`Register` and `Import`** bring external key material *in*, so they need
+  upload handling and a security review. Closer in character to the second
+  group than the fourth.
+
+So of the 35: roughly **16 by design, 19 by omission**. Anything in the last
+list can be given a screen without argument; anything in the first two should
+not be without one.
 
 ### Algorithm coverage
 
@@ -825,7 +918,7 @@ uses, so every `docker …` command in this README is literally correct. The
 then need `nerdctl`. Force a choice with `CHL_ENGINE=nerdctl` if both are live.
 
 **Kubernetes can be switched off** — and should be, unless you need it for
-something else. The stack is four containers on one network and never touches
+something else. The stack is five containers on one network and never touches
 it; disabling it makes Rancher start faster and use noticeably less memory.
 
 ```bash
@@ -940,57 +1033,268 @@ configuration — see `deploy/config.example.yaml` for the annotated template.
 | Layer | Technology | Responsibility |
 |---|---|---|
 | Portal | PHP 8.3, Bootstrap 5, Chart.js | Presentation only |
-| API | FastAPI (Python 3.11) | Authentication, RBAC, audit, aggregation |
+| API | FastAPI (Python 3.11) | Authentication, RBAC, audit, aggregation — **no KMIP** |
+| KMIP client | `chl-client-app`, FastAPI | The only service that speaks KMIP. Stateless: REST in, TTLV out |
 | Engine | `kmip_pkcs11` | KMIP 2.1 — 41 of 53 operations |
 | Store | PostgreSQL 16 | KMIP metadata + portal data, one database |
 | HSM | SoftHSM2 (source build) | Key storage and cryptography |
+| Client app | `test_app.client` + `core.ttlv` | Drives all 41 operations over real TTLV |
 
 ```
-Browser ──HTTPS──► PHP portal ──REST+JWT──► FastAPI ──in-process──► kmip_pkcs11
-                                                │                        │
-KMIP client ──TTLV/5696──────────────────► KMIP server ──────────────────┘
-                                                │                        │
-                                          PostgreSQL              PKCS#11 / HSM
+                       ┌──► chl-api :8000 ───────────────► PostgreSQL
+                       │    accounts, roles, audit,        (portal data)
+Browser ──► chl-portal ┤    dashboard — no KMIP
+            :8081      │
+                       └──► chl-client-app :8002 ──TTLV/5696──┐
+                            the only KMIP client              ▼
+KMIP client ──────────────────TTLV/5696──────────────► chl-kmip :5696
+                                                              │
+                                                       kmip_pkcs11
+                                                      ┌───────┴───────┐
+                                                 PostgreSQL     PKCS#11 / HSM
 ```
 
-**KMIP logic lives in `kmip_pkcs11/` and nowhere else.** The REST API calls the
-engine's own operation handlers in-process; the PHP tier calls the REST API and
-holds no cryptographic or KMIP knowledge at all. The shim is the only module
-that imports `pkcs11`, so swapping in a different — for example FIPS-validated
-— token needs no change above it.
+**Every managed-object operation takes one path.** Generating a key from the
+portal and creating one from a third-party client produce the same request, the
+same per-request authentication, and the same entry in the hash-chained audit
+log. `chl-api` never opens a socket to 5696.
+
+The one thing still on the old route: the portal's *reads* — the Keys and KMIP
+tables — are served by `chl-api` reading the metadata store directly. Those are
+the last endpoints not yet on the KMIP path.
+
+**KMIP logic lives in `kmip_pkcs11/` and nowhere else.** `chl-client-app`
+imports only the *client* side of it — `test_app.client` and `core.ttlv` — and
+speaks to the engine over the wire like any other client. The PHP tier calls
+REST and holds no cryptographic or KMIP knowledge at all. The shim is the only
+module that imports `pkcs11`, so swapping in a different — for example
+FIPS-validated — token needs no change above it.
 
 An editable diagram of all of this is at
 [`cryptohub_lite/docs/architecture.drawio`](cryptohub_lite/docs/architecture.drawio)
 — open it at [app.diagrams.net](https://app.diagrams.net) or with the *Draw.io
-Integration* extension in VS Code.
+Integration* extension in VS Code. Three tabs:
+
+| Tab | For | Shows |
+|---|---|---|
+| **Overview (non-technical)** | briefings, management | What the product is, in plain words — no protocols, no container names |
+| **Components** | engineers | Containers, the three routes in, and where REST becomes TTLV |
+| **Technology stack** | engineers | One row per layer, plus the toolchain and local paths |
+
+### What each part is responsible for
+
+Four pieces do most of the work, and they are easy to conflate. They answer
+four different questions.
+
+```
+Request ─► OperationDispatcher ─► handler ─┬─► MetadataStore ─► db.py ─► PostgreSQL
+           (who are you,                   │                            facts, audit
+            may you, record it)            │
+                                           └─► PKCS11Shim ─► SoftHSM2 token
+                                                             the secret itself
+```
+
+| Part | Answers | Source |
+|---|---|---|
+| `OperationDispatcher` | *Are you allowed, and is it recorded?* | [`kmip_pkcs11/server/`](kmip_pkcs11/server/) |
+| `MetadataStore` + `db.py` | *What do we know about this key?* | [`metadata/store.py`](kmip_pkcs11/metadata/store.py), [`metadata/db.py`](kmip_pkcs11/metadata/db.py) |
+| PostgreSQL | Stores that knowledge durably — and never the secret | container `chl-postgres` |
+| SoftHSM2 token | *Holds the secret, and does the maths so it never has to leave* | volume `chl_tokens` |
+
+#### SoftHSM2 token — holds the secrets
+
+Key *material* lives here: the actual bytes of an AES or RSA key. It is a
+software stand-in for a hardware security module, and it enforces the rule that
+matters — **a key created inside it never comes out**. Plaintext goes in,
+ciphertext comes out; the key itself never travels.
+
+This is why `Get` on a key generated by this system refuses with
+`NotExtractable (23)`. That is the product working, not failing. In production
+the token is swapped for a real HSM, and because
+[`kmip_pkcs11/pkcs11_shim/shim.py`](kmip_pkcs11/pkcs11_shim/shim.py) is the only module that imports
+`pkcs11`, that swap touches nothing above it.
+
+#### PostgreSQL — holds everything *about* the keys
+
+Names, algorithms, sizes, states, ownership, grants, and the audit trail. A
+stolen copy of this database reveals that a key called `payments-2026` exists
+and is Active — and not one byte of the key.
+
+**The one exception**, because it has bitten us: a few KMIP object types
+(`SecretData`, `OpaqueObject`, split-key shares) are raw payloads with no
+PKCS#11 object behind them, so their bytes *do* land in `kmip_objects`. Those
+are enveloped under a master key that lives on the token — see
+[Key material at rest](#key-material-at-rest). The database alone is still
+useless, but both containers that open it must agree on that encryption, or the
+one without the master key cannot read what the other wrote.
+
+#### MetadataStore + db.py — the only way to reach PostgreSQL
+
+`MetadataStore` is the single gate to the database. Nothing else issues SQL. It
+owns the schema, transactions, the envelope encryption above, and the
+hash-chaining of the audit log.
+
+`db.py` sits underneath it as the **dialect layer**. The engine was written
+against SQLite; this deployment runs PostgreSQL. Rather than maintain two
+schemas that drift, `db.translate_ddl()` *derives* the PostgreSQL schema from
+the engine's own `store.SCHEMA` and raises `UnsupportedDDL` on any construct it
+does not recognise. A column added upstream either translates or fails loudly —
+it never silently diverges. Never hand-write that schema.
+
+#### OperationDispatcher — the checkpoint every KMIP request passes
+
+It sits between the network and the 41 handlers and does the cross-cutting
+work: authenticate *this request* against `kmip_identities`, check the identity
+may perform this operation on this object, enforce dual control where
+configured, and write the hash-chained audit entry.
+
+**Nothing bypasses it any more.** The portal's own pages used to: clicking
+*Generate key* had the API call the handler as a Python function, so the key
+was created with no per-request authentication and left no entry in the
+hash-chained log — invisible to an auditor verifying that chain, while an
+identical key from a KMIP client was not.
+
+Those pages now go through `chl-client-app` like any other client, and the
+six REST endpoints that allowed the shortcut have been removed rather than
+deprecated: an unused bypass is still a bypass.
+
+#### Why both routes produce the same object
+
+Not because one calls the other. Because both write the same PostgreSQL rows
+and use the same token. **That shared state is the whole of the coupling** —
+which is also its sharp edge: two containers sharing one database have to agree
+on how it is encrypted, or one of them cannot read what the other wrote.
 
 ### KMIP is not the REST API
 
 Worth stating plainly, because the endpoint names invite the opposite
-conclusion. There are **two separate front doors**, and only one of them speaks
-KMIP:
+conclusion. Three ports, and only one of them carries KMIP:
 
 | | Port | Protocol | Goes through |
 |---|---|---|---|
 | **KMIP** | `5696` | **TTLV binary frames over TCP/TLS** — the OASIS wire format, not HTTP at all | `KMIPServer` → `OperationDispatcher` → handlers |
-| **REST API** | `8000` | Ordinary JSON over HTTP, with a JWT | FastAPI → handlers, called directly as Python functions |
+| **KMIP client service** | `8002` | JSON over HTTP in, TTLV out | `chl-client-app` → **5696**, as a real client |
+| **REST API** | `8000` | Ordinary JSON over HTTP, with a JWT | `chl-api` → portal data. Reads KMIP metadata; performs no KMIP operation |
 
 So `http://localhost:8000/api/kmip/objects` is **not** KMIP. It is a JSON
 endpoint named after the objects it returns; a KMIP client cannot talk to it,
 and `curl` cannot talk to 5696. A real client connects to 5696 and sends
 encoded TTLV, as in [Connecting a KMIP client](#connecting-a-kmip-client).
 
-Both routes end at the *same* 41 handlers, the same metadata store and the same
-token — which is what makes a key created either way the same object. But they
-differ in what wraps them, and the difference is visible in the audit trail:
+What changed, and why it matters: every operation that *does* something to a
+managed object now reaches the engine the same way — through the dispatcher,
+authenticated per request, into `kmip_audit`. The portal is a KMIP client with
+a friendlier face, not a privileged insider. A key generated from the Keys page
+and one created by `svc-payments` are indistinguishable in the audit trail.
 
-* The **KMIP path** passes the dispatcher, so it gets per-request
-  authentication against `kmip_identities`, the hash-chained `kmip_audit`
-  entry, and dual control where enabled.
-* The **REST path bypasses the dispatcher.** Those concerns are the API's own:
-  JWT and the five roles for authorization, and a row in the portal's audit
-  table. A key created in the portal therefore appears as a `portal` row, while
-  the same operation over the wire appears as a chained `kmip` row.
+`chl-api` still answers `GET /api/keys` and `GET /api/kmip/objects` by reading
+the metadata store, because listing objects for a table needs no protocol round
+trip and would otherwise write an audit entry per row on every page view. Those
+reads are the remaining exception, and the only one.
+
+### How REST becomes TTLV
+
+This is the path every managed-object operation takes — whether you clicked
+*Generate key* on the Keys page or drove `Create` from the KMIP Client page. A
+browser form goes out as REST, and `chl-client-app` turns it into genuine TTLV
+on 5696. This is the sequence, and where each step lives.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant P as chl-portal<br/>inc/kmip.php
+    participant A as chl-client-app<br/>app/kmip_client.py
+    participant C as KMIPClient<br/>kmip_pkcs11.test_app.client
+    participant T as TTLV codec<br/>kmip_pkcs11.core.ttlv
+    participant K as chl-kmip:5696<br/>KMIPServer
+
+    B->>P: POST form (operation, args, credential)
+    P->>A: POST /api/kmip/client/execute<br/>JSON over HTTP + Bearer JWT
+    Note over A: still REST here
+    A->>A: _coerce() each field to the type<br/>the client method declares
+    A->>C: getattr(client, method)(**kwargs)
+    C->>T: encode_enumeration / encode_integer /<br/>encode_text_string / encode_structure
+    T-->>C: TTLV bytes (tag·type·length·value)
+    C->>C: _build_batch_request()<br/>adds ProtocolVersion + Credential + BatchItem
+    C->>K: socket.sendall(request)
+    Note over C,K: no longer HTTP — binary TTLV over TCP
+    K->>K: OperationDispatcher → handler<br/>per-request auth, hash-chained audit
+    K-->>C: TTLV ResponseMessage
+    C->>T: decode_one(raw)
+    T-->>C: TTLVItem tree
+    C-->>A: Python return value
+    A->>A: _jsonable() + _readable()<br/>decode enums against the engine's own
+    A-->>P: JSON result + both wire hops
+    P-->>B: rendered result, decoded view, and the frames
+```
+
+Only steps 1 to 3 are ours. Everything from `KMIPClient` down is `kmip_pkcs11`
+— the same modules the test suite and any third-party Python client import — so
+nothing about the encoding is specific to this portal. That is the whole point
+of the page: the claim is checkable rather than asserted.
+
+| # | Source | Package | Does |
+|---|---|---|---|
+| 1 | [`portal/inc/kmip.php`](cryptohub_lite/portal/inc/kmip.php) — `kmip_run()` | portal | The single place the portal speaks KMIP. Every page goes through it |
+| 2 | [`api/app/client_app_main.py`](cryptohub_lite/api/app/client_app_main.py) — `execute()` | client-app | REST endpoint on `:8002`, JWT check. Stateless |
+| 3 | [`api/app/kmip_client.py`](cryptohub_lite/api/app/kmip_client.py) — `execute()`, `_coerce()` | client-app | Bridges JSON to the client's signature. **Encodes nothing** |
+| 4 | [`kmip_pkcs11/test_app/client.py`](kmip_pkcs11/test_app/client.py) — e.g. `create()` | engine | Builds the operation payload from KMIP attributes |
+| 5 | `client.py` — `_build_batch_request()` | engine | Wraps it: ProtocolVersion, Credential, BatchItem |
+| 6 | [`kmip_pkcs11/core/ttlv.py`](kmip_pkcs11/core/ttlv.py) — `encode_item()` | engine | **The actual bytes.** Tag, type, length, value, padded to 8 |
+| 7 | `client.py` — `_send()` / `_recv()` | engine | `socket.sendall()` to 5696 and back |
+| 8 | `core/ttlv.py` — `decode_one()` | engine | Parses the response into a `TTLVItem` tree |
+
+Every encoder bottoms out in nine lines:
+
+```python
+def encode_item(tag: int, type_: int, value_bytes: bytes) -> bytes:
+    """Encode a single TTLV item (header + padded value)."""
+    length = len(value_bytes)
+    padded = value_bytes + b'\x00' * (_pad8(length) - length)
+    # 3-byte tag + 1-byte type packed as big-endian uint32
+    header = struct.pack('>I', (tag << 8) | (type_ & 0xFF))
+    header += struct.pack('>I', length)   # 4-byte length
+    return header + padded
+```
+
+#### What actually goes on the wire
+
+`Create(algorithm=3, length=256, usage_mask=12, name="ttlv-demo")` submitted
+through the portal produces 440 bytes out and 184 back. Decoded:
+
+```
+RequestMessage             Structure
+  RequestHeader              Structure
+    ProtocolVersion            Structure
+      ProtocolVersionMajor       Integer      2
+      ProtocolVersionMinor       Integer      1
+    Authentication             Structure
+      Credential                 Structure
+        CredentialType             Enumeration  1
+        CredentialValue            Structure
+          Username                   TextString   'admin'
+          Password                   TextString   '********'
+    BatchCount                 Integer      1
+  BatchItem                  Structure
+    Operation                  Enumeration  1          <- Create
+    UniqueBatchItemID          ByteString   b'\x00\x00\x00\x01'
+    RequestPayload             Structure
+      ObjectType                 Enumeration  2        <- SymmetricKey
+      TemplateAttribute          Structure
+        Attribute … 'Cryptographic Algorithm'   Enumeration  3
+        Attribute … 'Cryptographic Length'      Integer      256
+        Attribute … 'Cryptographic Usage Mask'  Integer      12
+        Attribute … 'Name' -> NameValue         TextString   'ttlv-demo'
+```
+
+Two things this makes plain. The credential travels in **every** request rather
+than being established once at connect — which is why the page asks for a
+password each time. And the JSON field `"algorithm": 3` is carried as
+`Enumeration 3`: the numbers are the protocol, which is why the page decodes
+them back to `AES (3)` and `Encrypt, Decrypt (12)` for display.
+
+The page shows both hops live, under *What actually happened on the network*.
 
 ---
 

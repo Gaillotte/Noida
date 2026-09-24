@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from kmip_pkcs11.metadata.store import MetadataStore
 
-from . import audit_view, kmip_client
+from . import audit_view
 from .config import settings
 from .kmip_mapping import API_DESCRIPTION, OPENAPI_TAGS, kmip_op, rest_index
 from .kmip_identity import KmipIdentityMirror
@@ -205,8 +205,10 @@ def login(body: LoginRequest, request: Request):
                     user["username"])
 
     from .security import CAPABILITIES
+    token = create_token(user["username"], user["role"])
+
     return LoginResponse(
-        access_token=create_token(user["username"], user["role"]),
+        access_token=token,
         username=user["username"],
         role=user["role"],
         display_name=user.get("display_name") or user["username"],
@@ -403,110 +405,24 @@ class RevokeRequest(BaseModel):
     message: str = ""
 
 
-@app.post("/api/kmip/objects", status_code=status.HTTP_201_CREATED, tags=["KMIP"], response_model=schemas.CreatedObject)
-@kmip_op(invokes=["Create"])
-def create_key(body: CreateKeyRequest, request: Request,
-               user: Dict[str, Any] = Depends(requires("key.create"))):
-    service: KmipService = request.app.state.kmip
-    portal: PortalStore = request.app.state.portal
-    try:
-        uid = service.create_symmetric_key(
-            body.name, body.algorithm, body.length, owner=user["username"],
-            encrypt=body.encrypt, decrypt=body.decrypt,
-            wrap=body.wrap, unwrap=body.unwrap,
-            sensitive=body.sensitive, extractable=body.extractable,
-        )
-    except Exception as exc:                    # noqa: BLE001
-        portal.audit("kmip.Create", "FAILURE", username=user["username"],
-                     source_ip=client_ip(request), provider="KMIP", detail=str(exc))
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-
-    portal.audit("kmip.Create", "SUCCESS", username=user["username"],
-                 source_ip=client_ip(request), object_uid=uid, provider="KMIP",
-                 detail=f"{body.algorithm}-{body.length} '{body.name}'")
-    return {"uid": uid, "name": body.name}
-
-
-@app.post("/api/kmip/keypairs", status_code=status.HTTP_201_CREATED, tags=["KMIP"], response_model=schemas.CreatedKeyPair)
-@kmip_op(invokes=["CreateKeyPair"])
-def create_key_pair(body: CreateKeyPairRequest, request: Request,
-                    user: Dict[str, Any] = Depends(requires("key.create"))):
-    """Creates an asymmetric key pair, producing two linked managed objects."""
-    service: KmipService = request.app.state.kmip
-    portal: PortalStore = request.app.state.portal
-    try:
-        pair = service.create_key_pair(
-            body.name, body.algorithm, body.length, body.curve,
-            owner=user["username"], sign=body.sign, verify=body.verify,
-            derive=body.derive,
-        )
-    except Exception as exc:                    # noqa: BLE001
-        portal.audit("kmip.CreateKeyPair", "FAILURE", username=user["username"],
-                     source_ip=client_ip(request), provider="KMIP", detail=str(exc))
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-
-    # The private key is the one that matters for custody, so it is the object
-    # the audit record points at; the public half is named in the detail.
-    detail = f"{body.algorithm} '{body.name}', public {pair['public_uid']}"
-    portal.audit("kmip.CreateKeyPair", "SUCCESS", username=user["username"],
-                 source_ip=client_ip(request), object_uid=pair["private_uid"],
-                 provider="KMIP", detail=detail)
-    return {**pair, "name": body.name}
-
-
-@app.post("/api/kmip/objects/{uid}/activate", tags=["KMIP"], response_model=schemas.LifecycleResult)
-@kmip_op(invokes=["Activate"])
-def activate_object(uid: str, request: Request,
-                    user: Dict[str, Any] = Depends(requires("key.lifecycle"))):
-    return _lifecycle_action(request, user, uid, "Activate")
-
-
-@app.post("/api/kmip/objects/{uid}/revoke", tags=["KMIP"], response_model=schemas.LifecycleResult)
-@kmip_op(invokes=["Revoke"])
-def revoke_object(uid: str, body: RevokeRequest, request: Request,
-                  user: Dict[str, Any] = Depends(requires("key.lifecycle"))):
-    return _lifecycle_action(request, user, uid, "Revoke",
-                             reason=body.reason, message=body.message)
-
-
-@app.post("/api/kmip/objects/{uid}/rekey", tags=["KMIP"], response_model=schemas.LifecycleResult)
-@kmip_op(invokes=["ReKey"])
-def rekey_object(uid: str, request: Request,
-                 user: Dict[str, Any] = Depends(requires("key.lifecycle"))):
-    return _lifecycle_action(request, user, uid, "ReKey")
-
-
-@app.delete("/api/kmip/objects/{uid}", tags=["KMIP"], response_model=schemas.LifecycleResult)
-@kmip_op(invokes=["Destroy"])
-def destroy_object(uid: str, request: Request,
-                   user: Dict[str, Any] = Depends(requires("key.destroy"))):
-    return _lifecycle_action(request, user, uid, "Destroy")
-
-
-def _lifecycle_action(request: Request, user: Dict[str, Any], uid: str,
-                      action: str, **kwargs):
-    """Runs one lifecycle operation and records the outcome either way.
-
-    Failures are audited as well as successes: a refused Destroy is exactly
-    the event worth keeping, and auditing only what succeeded would hide
-    every attempt that was denied.
-    """
-    service: KmipService = request.app.state.kmip
-    portal: PortalStore = request.app.state.portal
-
-    try:
-        result = service.lifecycle(uid, action, owner=user["username"], **kwargs)
-    except Exception as exc:                    # noqa: BLE001
-        portal.audit(f"kmip.{action}", "FAILURE", username=user["username"],
-                     source_ip=client_ip(request), object_uid=uid,
-                     provider="KMIP", detail=str(exc))
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-
-    portal.audit(f"kmip.{action}", "SUCCESS", username=user["username"],
-                 source_ip=client_ip(request), object_uid=uid, provider="KMIP",
-                 detail=kwargs.get("reason"))
-    return {"uid": uid, "action": action, "result": result}
-
+# ── KMIP writes live in chl-client-app, not here ────────────────────────────
+#
+# This API used to expose Create, CreateKeyPair, Activate, Revoke, ReKey and
+# Destroy, each calling the engine's handler in-process. That worked, and it
+# skipped the OperationDispatcher: no per-request KMIP authentication, no
+# dual control, and no entry in the hash-chained audit log. A key generated
+# from the portal was invisible to an auditor verifying that chain, while an
+# identical key from a KMIP client was not.
+#
+# The portal now performs those operations as a real KMIP client, through
+# chl-client-app. These endpoints were left behind unused - and an unused
+# bypass is still a bypass, since anything holding a JWT could call it and
+# write a key that never reached the chain. So they are gone rather than
+# deprecated.
+#
+# The reads below stay for now: they serve the portal's tables and dashboards
+# by reading the metadata store directly, which costs no audit noise. Moving
+# them is the remaining step.
 
 @app.get("/api/certificates", tags=["Certificates"], response_model=List[schemas.KMIPObject])
 @kmip_op(equivalent=["Locate"], note="Filtered to certificate object types.")
@@ -736,68 +652,14 @@ def delete_user(username: str, request: Request,
 # ── KMIP client application ─────────────────────────────────────────────────────────────
 # The one place this API talks KMIP over a socket rather than in-process.
 
-class ClientRequest(BaseModel):
-    operation: str = Field(description="KMIP operation name, e.g. Create")
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-    username: str = Field(description="a KMIP identity - a portal account that "
-                                      "has signed in at least once")
-    password: str = Field(description="used for this one request and not stored")
-
-
-@app.get("/api/kmip/client/operations", tags=["KMIP client"])
-def client_operations(user: Dict[str, Any] = Depends(requires("read"))):
-    """The operations the client application can drive, each with the form it needs.
-
-    Derived from `inspect.signature()` on the KMIP client, so the fields asked
-    for are the arguments the client actually takes — no hand-maintained list.
-    """
-    ops = kmip_client.describe()
-    return {"total": len(ops), "operations": ops}
-
-
-@app.post("/api/kmip/client/execute", tags=["KMIP client"])
-def client_execute(body: ClientRequest, request: Request,
-                    user: Dict[str, Any] = Depends(requires("read"))):
-    """Run one KMIP operation as a real client, over TTLV on port 5696.
-
-    Unlike every other KMIP endpoint here, this opens a socket. The request is
-    encoded as TTLV, authenticated per-request against `kmip_identities`, and
-    passes the `OperationDispatcher` — so it lands in the hash-chained audit log
-    exactly as a third-party client's would.
-
-    **Credentials are supplied per call and never stored.** The API holds a JWT
-    for the signed-in user, not their password, and the engine hashes
-    credentials separately — so it cannot re-use the portal session to
-    authenticate over KMIP. Asking each time is the honest option; the
-    alternative would be the portal keeping a password it has no business
-    keeping.
-
-    The caller's `read` capability governs reaching this endpoint. What the
-    operation is then *allowed* to do is decided by the engine, against the KMIP
-    identity supplied here — which may be a different, lesser identity.
-    """
-    try:
-        result = kmip_client.execute(
-            body.operation, body.arguments,
-            host=os.getenv("KMIP_CLIENT_HOST", "kmip"),
-            port=int(os.getenv("KMIP_CLIENT_PORT", "5696")),
-            username=body.username, password=body.password)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    except OSError as exc:
-        # Transport, not protocol: the KMIP server is unreachable.
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
-                            f"Could not reach the KMIP server: {exc}")
-
-    portal: PortalStore = request.app.state.portal
-    # Audited on the portal side too. The engine records the KMIP identity; this
-    # records which portal user drove it, which is a different question.
-    portal.audit(f"client.{body.operation}",
-                 "SUCCESS" if result.get("ok") else "FAILURE",
-                 username=user["username"], source_ip=client_ip(request),
-                 provider="KMIP", detail=f"as {body.username}")
-    return result
-
+# The KMIP client routes moved to chl-client-app.
+#
+# They lived here, which meant this service opened TTLV sockets to 5696 while
+# the architecture said it never would. Now a single service speaks KMIP and
+# this one genuinely does not: no socket, no TTLV, no KMIP client library, and
+# no user password held in memory to authenticate with. What is left here is
+# what KMIP has no operation for - sign-in, users and roles, audit reads,
+# dashboard totals, PKCS#11 slot information.
 
 @app.get("/api/health", tags=["System"], response_model=schemas.Health)
 def health(request: Request):
