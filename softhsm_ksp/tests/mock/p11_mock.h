@@ -26,6 +26,8 @@ typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_GetAttributeValue;
     CK_RV rv_SignInit;
     CK_RV rv_Sign;
+    CK_RV rv_VerifyInit;
+    CK_RV rv_Verify;
     CK_RV rv_DecryptInit;
     CK_RV rv_Decrypt;
     CK_RV rv_DestroyObject;
@@ -169,6 +171,15 @@ typedef struct _P11_MOCK_CONFIG {
     CK_MECHANISM_TYPE lastSignMech;
     /* Object handle passed to the last C_SignInit. */
     CK_OBJECT_HANDLE  lastSignKey;
+    /* Mechanism and object handle from the last C_VerifyInit. The handle
+     * matters: verification must use the PUBLIC object, and passing the
+     * private one is exactly the class of mistake that made HMAC signing
+     * impossible for six sessions. */
+    CK_MECHANISM_TYPE lastVerifyMech;
+    CK_OBJECT_HANDLE  lastVerifyKey;
+    /* Non-zero when the last C_VerifyInit carried CK_EDDSA_PARAMS. Ed448
+     * requires them and Ed25519 must not have them. */
+    int               lastVerifyEddsaParams;
     /* CKA_WRAP from the last C_GenerateKey template, or 0xFF if the
      * template did not carry it. */
     CK_BBOOL          lastGenWrap;
@@ -199,6 +210,8 @@ typedef struct _P11_MOCK_CALLS {
     int nDigestFinal;
     int nSignInit;
     int nSign;
+    int nVerifyInit;
+    int nVerify;
     int nDecryptInit;
     int nDecrypt;
     int nDestroyObject;

@@ -111,6 +111,11 @@ typedef long SECURITY_STATUS;
 #define NCRYPT_CHAINING_MODE_PROPERTY   L"Chaining Mode"
 #define NCRYPT_INITIALIZATION_VECTOR    L"IV"
 #define NCRYPT_AUTH_TAG_LENGTH          L"AuthTagLength"
+
+/* Key change notification flags. Values from <ncrypt.h>; check_mock_drift.py
+ * verifies them against the real header. */
+#define NCRYPT_REGISTER_NOTIFY_FLAG     0x00000001
+#define NCRYPT_UNREGISTER_NOTIFY_FLAG   0x00000002
 #define NCRYPT_MACHINE_KEY_FLAG         0x00000020
 #define NCRYPT_PERSIST_ONLY_FLAG  0x40000000
 

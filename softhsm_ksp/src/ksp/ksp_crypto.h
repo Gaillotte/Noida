@@ -93,4 +93,14 @@ SECURITY_STATUS WINAPI KSP_FreeSecret(
 /* Validate an agreed-secret handle */
 BOOL KSP_IsValidSecret(NCRYPT_SECRET_HANDLE hSecret);
 
+SECURITY_STATUS WINAPI KSP_VerifySignature(
+    NCRYPT_PROV_HANDLE hProvider,
+    NCRYPT_KEY_HANDLE  hKey,
+    VOID              *pPaddingInfo,
+    PBYTE              pbHashValue,
+    DWORD              cbHashValue,
+    PBYTE              pbSignature,
+    DWORD              cbSignature,
+    DWORD              dwFlags);
+
 #endif /* KSP_CRYPTO_H */

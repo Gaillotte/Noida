@@ -1793,7 +1793,86 @@ int main(void)
         }
     }
 
-    /* ── Suite 24 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 24 : verification on the token ───────────────────────────── */
+    TEST_SUITE("KSP_VerifySignature");
+
+    /* The slot was a stub until now. Against a real token the test that
+     * matters is the round trip: sign, verify, then change one bit and
+     * require the verdict to flip. A verifier that always returns success
+     * passes every check except the last one. */
+    {
+        struct { LPCWSTR szAlg; LPCWSTR szName; DWORD dwFlags; } aCases[] = {
+            { ALG_RSA,        L"phase8-vrfy-rsa",   NCRYPT_PAD_PKCS1_FLAG },
+            { ALG_ECDSA_P256, L"phase8-vrfy-ec",    0 },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(aCases) / sizeof(aCases[0]); i++) {
+            NCRYPT_KEY_HANDLE hK = 0, hOld = 0;
+            BYTE  abHash[32];
+            BYTE  abSig[512];
+            DWORD cbSig = 0;
+            DWORD j;
+
+            for (j = 0; j < sizeof(abHash); j++)
+                abHash[j] = (BYTE)(j * 5 + 3);
+
+            if (KSP_OpenKey(hProv, &hOld, aCases[i].szName, 0, 0)
+                    == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+
+            ss = KSP_CreatePersistedKey(hProv, &hK, aCases[i].szAlg,
+                                        aCases[i].szName, AT_SIGNATURE, 0);
+            ASSERT_OK("Key generated for verification", ss);
+            if (ss != ERROR_SUCCESS)
+                continue;
+
+            cbSig = 0;
+            ss = KSP_SignHash(hProv, hK, NULL, abHash, sizeof(abHash),
+                              abSig, sizeof(abSig), &cbSig,
+                              aCases[i].dwFlags);
+            ASSERT_OK("Signed", ss);
+
+            if (ss == ERROR_SUCCESS) {
+                ss = KSP_VerifySignature(hProv, hK, NULL,
+                                         abHash, sizeof(abHash),
+                                         abSig, cbSig, aCases[i].dwFlags);
+                ASSERT_OK("and the token verifies its own signature", ss);
+
+                /* Flip one bit of the signature. */
+                abSig[cbSig / 2] ^= 0x01;
+                ss = KSP_VerifySignature(hProv, hK, NULL,
+                                         abHash, sizeof(abHash),
+                                         abSig, cbSig, aCases[i].dwFlags);
+                ASSERT("A corrupted signature is rejected",
+                       ss != ERROR_SUCCESS);
+                abSig[cbSig / 2] ^= 0x01;
+
+                /* Change the hash instead. Both must fail, and for the
+                 * same reason: the pair no longer matches. */
+                abHash[0] ^= 0xFF;
+                ss = KSP_VerifySignature(hProv, hK, NULL,
+                                         abHash, sizeof(abHash),
+                                         abSig, cbSig, aCases[i].dwFlags);
+                ASSERT("A different hash is rejected", ss != ERROR_SUCCESS);
+                abHash[0] ^= 0xFF;
+
+                /* And the untouched pair still verifies, so the rejections
+                 * above were about the tampering and not about the key
+                 * having been left in a bad state. */
+                ss = KSP_VerifySignature(hProv, hK, NULL,
+                                         abHash, sizeof(abHash),
+                                         abSig, cbSig, aCases[i].dwFlags);
+                ASSERT_OK("and the original pair still verifies", ss);
+            }
+
+            ss = KSP_DeleteKey(hProv, hK, 0);
+            ASSERT_OK("Verification key deleted", ss);
+        }
+    }
+
+    /* ── Suite 25 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

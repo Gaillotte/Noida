@@ -197,12 +197,14 @@ int main(void)
     ss = KSP_FreeObject(pBuf);
     ASSERT_OK("FreeObject → OK", ss);
 
-    /* ── Suite 6 : Stubs obligatoires ───────────────────────────────────── */
-    TEST_SUITE("Stubs obligatoires (NotifyChangeKey, PromptUser, GetOperationProperty)");
+    /* ── Suite 6 : the slots that must exist ───────────────────────────── */
+    TEST_SUITE("Required slots (PromptUser, GetOperationProperty)");
 
+    /* KSP_NotifyChangeKey has its own suite below. It used to be asserted
+     * here as "NotifyChangeKey → ERROR_SUCCESS", which was the defect
+     * written down as a test: it returned success without writing the
+     * caller's HANDLE. */
     NCRYPT_KEY_HANDLE dummy = 0;
-    ss = KSP_NotifyChangeKey(hProv, dummy, 0);
-    ASSERT_OK("NotifyChangeKey → ERROR_SUCCESS", ss);
 
     ss = KSP_PromptUser(hProv, dummy, L"Sign", 0);
     ASSERT_EQ("PromptUser → NTE_NOT_SUPPORTED",
@@ -330,16 +332,36 @@ int main(void)
             (SECURITY_STATUS)NTE_INVALID_HANDLE);
     }
 
-    /* ── Suite : KSP_VerifySignature ───────────────────────────────────── */
-    TEST_SUITE("KSP_VerifySignature");
+    /* ── Suite : KSP_NotifyChangeKey ───────────────────────────────────── */
+    TEST_SUITE("KSP_NotifyChangeKey");
 
-    /* Deliberately unimplemented: callers verify far more cheaply with
-     * BCryptVerifySignature against the exported public key. The slot is
-     * wired to this stub rather than left NULL, which ncrypt.dll would
-     * call regardless. */
-    ASSERT_EQ("VerifySignature → NTE_NOT_SUPPORTED",
-        KSP_VerifySignature(hProv, 0, NULL, (PBYTE)"h", 1, (PBYTE)"s", 1, 0),
-        (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+    /* This returned ERROR_SUCCESS and never wrote *phEvent, so a caller
+     * registering for notification was told it had succeeded and then
+     * waited on an uninitialised HANDLE. The refusal below is the honest
+     * answer: a PKCS#11 token has no key-change channel to register on. */
+    {
+        HANDLE hEvent = (HANDLE)(ULONG_PTR)0xDEADBEEF;
+
+        ASSERT_EQ("Registering is refused, not falsely granted",
+            KSP_NotifyChangeKey(hProv, &hEvent, NCRYPT_REGISTER_NOTIFY_FLAG),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        ASSERT("and *phEvent is cleared, so a caller that ignores the "
+               "return value waits on nothing rather than on a stale value",
+               hEvent == NULL);
+
+        /* Tearing down something that was never registered is not an
+         * error worth raising. */
+        ASSERT_OK("Unregistering succeeds",
+            KSP_NotifyChangeKey(hProv, NULL,
+                                NCRYPT_UNREGISTER_NOTIFY_FLAG));
+
+        ASSERT_EQ("An unknown flag is refused",
+            KSP_NotifyChangeKey(hProv, &hEvent, 0x80000000),
+            (SECURITY_STATUS)NTE_BAD_FLAGS);
+        ASSERT_EQ("An invalid provider is refused",
+            KSP_NotifyChangeKey(0, &hEvent, NCRYPT_REGISTER_NOTIFY_FLAG),
+            (SECURITY_STATUS)NTE_INVALID_HANDLE);
+    }
 
     /* ── Suite : KSP_SetProviderProperty — PIN (IFACE-04) ─────────────── */
     TEST_SUITE("KSP_SetProviderProperty — NCRYPT_PIN_PROPERTY");

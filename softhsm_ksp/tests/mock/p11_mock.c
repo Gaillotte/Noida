@@ -550,10 +550,24 @@ static CK_RV mock_SignRecover(CK_SESSION_HANDLE h, CK_BYTE_PTR d, CK_ULONG dl,
     (void)h; (void)d; (void)dl; (void)s; (void)sl; return CKR_OK;
 }
 static CK_RV mock_VerifyInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
-    CK_OBJECT_HANDLE k) { (void)h; (void)m; (void)k; return CKR_OK; }
+    CK_OBJECT_HANDLE k)
+{
+    (void)h;
+    g_calls.nVerifyInit++;
+    if (m) {
+        g_cfg.lastVerifyMech = m->mechanism;
+        g_cfg.lastVerifyEddsaParams =
+            (m->mechanism == CKM_EDDSA && m->pParameter != NULL &&
+             m->ulParameterLen == sizeof(CK_EDDSA_PARAMS));
+    }
+    g_cfg.lastVerifyKey = k;
+    return g_cfg.rv_VerifyInit;
+}
 static CK_RV mock_Verify(CK_SESSION_HANDLE h, CK_BYTE_PTR d, CK_ULONG dl,
     CK_BYTE_PTR s, CK_ULONG sl) {
-    (void)h; (void)d; (void)dl; (void)s; (void)sl; return CKR_OK;
+    (void)h; (void)d; (void)dl; (void)s; (void)sl;
+    g_calls.nVerify++;
+    return g_cfg.rv_Verify;
 }
 static CK_RV mock_VerifyUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p, CK_ULONG pl) {
     (void)h; (void)p; (void)pl; return CKR_OK;

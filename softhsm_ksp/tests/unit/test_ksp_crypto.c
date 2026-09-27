@@ -977,6 +977,121 @@ int main(void)
         if (hSym) KSP_Free((void *)(ULONG_PTR)hSym);
     }
 
+    /* ── Suite : KSP_VerifySignature ───────────────────────────────────── */
+    TEST_SUITE("KSP_VerifySignature");
+
+    /* The slot used to be a stub returning NTE_NOT_SUPPORTED. It now goes
+     * to C_Verify, and the thing most worth pinning down is WHICH object
+     * it verifies with: an asymmetric key must present its PUBLIC object.
+     * Passing the private one is the same class of mistake that left HMAC
+     * signing impossible for six sessions. */
+    {
+        NCRYPT_KEY_HANDLE hKey;
+        KSP_KEY          *k;
+
+        /* A full reset, not just the counters: an earlier suite may have
+         * left an injected return value in the config. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+
+        ASSERT_EQ("A bad key handle is refused",
+            KSP_VerifySignature(hProv, 0, NULL, (PBYTE)"h", 1, (PBYTE)"s", 1, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        hKey = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
+        k = (KSP_KEY *)(ULONG_PTR)hKey;
+        k->hPubKey  = (CK_OBJECT_HANDLE)0x99;
+        k->hPrivKey = (CK_OBJECT_HANDLE)0x21;
+
+        ASSERT_EQ("A NULL hash is refused",
+            KSP_VerifySignature(hProv, hKey, NULL, NULL, 0, (PBYTE)"s", 1, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        ASSERT_EQ("An empty signature is refused",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"h", 1, (PBYTE)"s", 0, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        P11Mock_ResetCalls();
+        ASSERT_OK("RSA PKCS#1 signature verified",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"hash", 4,
+                                (PBYTE)"sig", 3, NCRYPT_PAD_PKCS1_FLAG));
+        ASSERT_EQ("C_VerifyInit was called once",
+                  (DWORD)P11Mock_GetCalls()->nVerifyInit, 1U);
+        ASSERT_EQ("with CKM_RSA_PKCS",
+                  P11Mock_GetConfig()->lastVerifyMech,
+                  (CK_MECHANISM_TYPE)CKM_RSA_PKCS);
+        ASSERT_EQ("and with the PUBLIC key object, not the private one",
+                  (DWORD)P11Mock_GetConfig()->lastVerifyKey, 0x99U);
+
+        /* A rejected signature is a verdict, not a malfunction. */
+        P11Mock_ResetCalls();
+        P11Mock_GetConfig()->rv_Verify = CKR_SIGNATURE_INVALID;
+        ASSERT_EQ("A bad signature reports NTE_BAD_SIGNATURE",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"hash", 4,
+                                (PBYTE)"sig", 3, NCRYPT_PAD_PKCS1_FLAG),
+            (SECURITY_STATUS)NTE_BAD_SIGNATURE);
+        P11Mock_GetConfig()->rv_Verify = CKR_OK;
+
+        /* A key with no public object cannot verify, and must say so
+         * rather than reaching for the private one. */
+        k->hPubKey = CK_INVALID_HANDLE;
+        ASSERT_EQ("Without a public object, verification is refused",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"h", 1,
+                                (PBYTE)"s", 1, NCRYPT_PAD_PKCS1_FLAG),
+            (SECURITY_STATUS)NTE_INVALID_HANDLE);
+
+        KSP_FreeKey(hProv, hKey);
+    }
+
+    /* A symmetric key verifies with itself — it has no public object. */
+    {
+        NCRYPT_KEY_HANDLE hMac = make_test_key(ALG_AES, 256, 0, TRUE);
+        KSP_KEY          *k    = (KSP_KEY *)(ULONG_PTR)hMac;
+
+        k->dwKeyClass = KSP_KEY_CLASS_SYMMETRIC;
+        k->hSecretKey = (CK_OBJECT_HANDLE)0x55;
+        k->hPubKey    = CK_INVALID_HANDLE;
+        wcscpy_s(k->szAlgId, MAX_ALG_ID_LEN, BCRYPT_AES_CMAC_ALGORITHM);
+
+        P11Mock_ResetCalls();
+        ASSERT_OK("A CMAC key verifies",
+            KSP_VerifySignature(hProv, hMac, NULL, (PBYTE)"hash", 4,
+                                (PBYTE)"sig", 3, 0));
+        ASSERT_EQ("using its secret object",
+                  (DWORD)P11Mock_GetConfig()->lastVerifyKey, 0x55U);
+
+        KSP_FreeKey(hProv, hMac);
+    }
+
+    /* Ed448 requires CK_EDDSA_PARAMS and Ed25519 must not be given them —
+     * the same asymmetry signing has, for the same RFC 8032 reason. */
+    {
+        NCRYPT_KEY_HANDLE hEd;
+        KSP_KEY          *k;
+
+        hEd = make_test_key(ALG_EDDSA_ED25519, 255, AT_SIGNATURE, TRUE);
+        k = (KSP_KEY *)(ULONG_PTR)hEd;
+        k->hPubKey = (CK_OBJECT_HANDLE)0x77;
+        P11Mock_ResetCalls();
+        ASSERT_OK("Ed25519 verifies",
+            KSP_VerifySignature(hProv, hEd, NULL, (PBYTE)"m", 1,
+                                (PBYTE)"s", 1, 0));
+        ASSERT("and is given NO CK_EDDSA_PARAMS — params would select "
+               "Ed25519ctx, a different scheme",
+               P11Mock_GetConfig()->lastVerifyEddsaParams == 0);
+        KSP_FreeKey(hProv, hEd);
+
+        hEd = make_test_key(ALG_EDDSA_ED448, 448, AT_SIGNATURE, TRUE);
+        k = (KSP_KEY *)(ULONG_PTR)hEd;
+        k->hPubKey = (CK_OBJECT_HANDLE)0x78;
+        P11Mock_ResetCalls();
+        ASSERT_OK("Ed448 verifies",
+            KSP_VerifySignature(hProv, hEd, NULL, (PBYTE)"m", 1,
+                                (PBYTE)"s", 1, 0));
+        ASSERT("and IS given CK_EDDSA_PARAMS, which it cannot work without",
+               P11Mock_GetConfig()->lastVerifyEddsaParams != 0);
+        KSP_FreeKey(hProv, hEd);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

@@ -48,7 +48,7 @@ SECURITY_STATUS WINAPI KSP_FreeObject(PVOID pvInput);
 /* Required stubs */
 SECURITY_STATUS WINAPI KSP_NotifyChangeKey(
     NCRYPT_PROV_HANDLE hProvider,
-    NCRYPT_KEY_HANDLE  hKey,
+    HANDLE            *phEvent,
     DWORD              dwFlags);
 
 SECURITY_STATUS WINAPI KSP_PromptUser(
@@ -83,14 +83,6 @@ SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
     DWORD                 dwFlags);
 
 /* Signature verification (returns NTE_NOT_SUPPORTED) */
-SECURITY_STATUS WINAPI KSP_VerifySignature(
-    NCRYPT_PROV_HANDLE hProvider,
-    NCRYPT_KEY_HANDLE  hKey,
-    VOID              *pPaddingInfo,
-    PBYTE              pbHashValue,
-    DWORD              cbHashValue,
-    PBYTE              pbSignature,
-    DWORD              cbSignature,
-    DWORD              dwFlags);
+/* KSP_VerifySignature is declared in ksp_crypto.h */
 
 #endif /* KSP_PROVIDER_H */

@@ -263,6 +263,129 @@ static SECURITY_STATUS KspBuildAesMechanism(
     return ERROR_SUCCESS;
 }
 
+/* Verify a signature on the token.
+ *
+ * This slot was a stub returning NTE_NOT_SUPPORTED, on the reasoning that a
+ * caller can export the public key and verify in software with BCrypt more
+ * cheaply. That is true and it is not the whole picture: ncrypt.dll calls
+ * this slot for NCryptVerifySignature, a caller holding only a key handle
+ * should not have to export anything to check a signature, and a public key
+ * that lives on the token is the one the token will verify against — which
+ * is the point of asking it rather than a copy.
+ *
+ * Everything here mirrors KSP_SignHash deliberately, including the parts
+ * that look like they could be simplified:
+ *
+ *   - the verifying object follows the key class, because an HMAC or CMAC
+ *     key lives in hSecretKey and has no public object at all;
+ *   - ECDSA signatures pass through untouched, because CNG's raw r||s is
+ *     already what PKCS#11 v2.40 §2.3.1 mandates;
+ *   - Ed448 needs CK_EDDSA_PARAMS and Ed25519 must not be given it, the
+ *     same asymmetry RFC 8032 forces on signing.
+ *
+ * A wrong signature is CKR_SIGNATURE_INVALID, which P11RvToSecStatus maps
+ * to NTE_BAD_SIGNATURE. That is a verdict, not a failure: the caller asked
+ * a question and got the answer no.
+ */
+SECURITY_STATUS WINAPI KSP_VerifySignature(
+    NCRYPT_PROV_HANDLE hProvider,
+    NCRYPT_KEY_HANDLE  hKey,
+    VOID              *pPaddingInfo,
+    PBYTE              pbHashValue,
+    DWORD              cbHashValue,
+    PBYTE              pbSignature,
+    DWORD              cbSignature,
+    DWORD              dwFlags)
+{
+    P11_CONTEXT           *pCtx = P11_GetContext();
+    KSP_KEY               *pKey;
+    CK_SESSION_HANDLE      hSession = CK_INVALID_HANDLE;
+    CK_MECHANISM           mech;
+    CK_RSA_PKCS_PSS_PARAMS pssParams;
+    CK_EDDSA_PARAMS        eddsaParams;
+    CK_OBJECT_HANDLE       hVerifyKey;
+    CK_RV                  rv;
+    SECURITY_STATUS        ss;
+
+    LOG_ENTER("KSP_VerifySignature");
+
+    if (!KSP_IsValidProvider(hProvider) || !KSP_IsValidKey(hKey) ||
+        !pbHashValue || !pbSignature || cbSignature == 0) {
+        LOG_LEAVE("KSP_VerifySignature", NTE_INVALID_PARAMETER);
+        return NTE_INVALID_PARAMETER;
+    }
+
+    pKey = (KSP_KEY *)(ULONG_PTR)hKey;
+
+    /* A symmetric key verifies with itself; an asymmetric one needs its
+     * public object, which a generated or reopened key carries. */
+    hVerifyKey = (pKey->dwKeyClass == KSP_KEY_CLASS_SYMMETRIC)
+                 ? pKey->hSecretKey : pKey->hPubKey;
+
+    if (!pKey->bFinalized || hVerifyKey == CK_INVALID_HANDLE) {
+        LOG_LEAVE("KSP_VerifySignature", NTE_INVALID_HANDLE);
+        return NTE_INVALID_HANDLE;
+    }
+
+    memset(&pssParams, 0, sizeof(pssParams));
+    ss = P11_ResolveMechanism(pKey->szAlgId, dwFlags, &mech, &pssParams);
+    if (ss != ERROR_SUCCESS) {
+        LOG_LEAVE("KSP_VerifySignature", ss);
+        return ss;
+    }
+
+    if (mech.mechanism == CKM_RSA_PKCS_PSS && pPaddingInfo) {
+        FillPssParams((BCRYPT_PSS_PADDING_INFO *)pPaddingInfo, &pssParams);
+        mech.pParameter     = &pssParams;
+        mech.ulParameterLen = sizeof(pssParams);
+    }
+
+    /* See KSP_SignHash: absent parameters mean pure Ed25519, present ones
+     * mean Ed25519ctx, and Ed448 has no parameter-free form at all. */
+    if (mech.mechanism == CKM_EDDSA &&
+        _wcsicmp(pKey->szAlgId, ALG_EDDSA_ED448) == 0) {
+        memset(&eddsaParams, 0, sizeof(eddsaParams));
+        eddsaParams.phFlag           = CK_FALSE;
+        eddsaParams.ulContextDataLen = 0;
+        eddsaParams.pContextData     = NULL;
+        mech.pParameter     = &eddsaParams;
+        mech.ulParameterLen = sizeof(eddsaParams);
+    }
+
+    ss = P11_AcquireSession(&hSession);
+    if (ss != ERROR_SUCCESS) {
+        LOG_LEAVE("KSP_VerifySignature", ss);
+        return ss;
+    }
+
+    rv = pCtx->pFunctionList->C_VerifyInit(hSession, &mech, hVerifyKey);
+    if (rv != CKR_OK) {
+        P11_ReleaseSession(hSession);
+        ss = P11RvToSecStatus(rv);
+        LOG_LEAVE("KSP_VerifySignature", ss);
+        return ss;
+    }
+
+    /* C_Verify completes the operation whatever the verdict, so the session
+     * goes back to the pool clean — the failure mode that made size queries
+     * poison the pool does not arise here. */
+    rv = pCtx->pFunctionList->C_Verify(
+        hSession,
+        pbHashValue, (CK_ULONG)cbHashValue,
+        pbSignature, (CK_ULONG)cbSignature);
+
+    P11_ReleaseSession(hSession);
+
+    if (rv != CKR_OK) {
+        ss = P11RvToSecStatus(rv);
+        LOG_LEAVE("KSP_VerifySignature", ss);
+        return ss;
+    }
+
+    LOG_LEAVE("KSP_VerifySignature", ERROR_SUCCESS);
+    return ERROR_SUCCESS;
+}
+
 /* Sign a hash — implements the CNG double-call pattern */
 /* Re-authenticate for a key that carries a per-key PIN (PROP-13).
  *

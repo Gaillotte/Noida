@@ -253,17 +253,55 @@ SECURITY_STATUS WINAPI KSP_FreeObject(PVOID pvInput)
     return ERROR_SUCCESS;
 }
 
-/* Notify a key change (stub) */
+/* Register or remove a key change notification.
+ *
+ * The second parameter is NOT a key handle. Microsoft documents
+ * NCryptNotifyChangeKey(hProvider, HANDLE *phEvent, dwFlags) with phEvent
+ * as [in, out]: "the address of a HANDLE variable that either receives or
+ * contains the key change notification event handle", and the caller then
+ * passes that handle to the wait functions.
+ *
+ * This took NCRYPT_KEY_HANDLE and returned ERROR_SUCCESS. Both halves were
+ * wrong and the second is the dangerous one: a caller registering for
+ * notification was told it had succeeded and never had its HANDLE written,
+ * so it went on to wait on whatever was in that variable. Success with an
+ * untouched out-parameter is the worst answer available — worse than the
+ * refusal below, which at least tells the truth.
+ *
+ * The honest answer is a refusal. Key change notification is a property of
+ * a key store that can announce changes; a PKCS#11 token has no such
+ * channel. There is no C_WaitForSlotEvent equivalent for objects, and
+ * polling C_FindObjects on a timer would be a fabrication rather than a
+ * notification. *phEvent is cleared first so a caller that ignores the
+ * return value waits on nothing rather than on a stale value.
+ *
+ * Both halves of this are unverifiable on Linux: the mock's function table
+ * types every slot as void *, so a wrong parameter TYPE is not a build
+ * error here, and the MSVC job that would catch it cannot compile
+ * ksp_main.c without ncrypt_provider.h. That is how this survived.
+ */
 SECURITY_STATUS WINAPI KSP_NotifyChangeKey(
     NCRYPT_PROV_HANDLE hProvider,
-    NCRYPT_KEY_HANDLE  hKey,
+    HANDLE            *phEvent,
     DWORD              dwFlags)
 {
-    UNREFERENCED_PARAMETER(hProvider);
-    UNREFERENCED_PARAMETER(hKey);
-    UNREFERENCED_PARAMETER(dwFlags);
+    if (!KSP_IsValidProvider(hProvider))
+        return NTE_INVALID_HANDLE;
 
-    return ERROR_SUCCESS;
+    if (dwFlags & ~(NCRYPT_REGISTER_NOTIFY_FLAG |
+                    NCRYPT_UNREGISTER_NOTIFY_FLAG))
+        return NTE_BAD_FLAGS;
+
+    /* Unregistering something that was never registered is not an error
+     * worth raising: there is nothing to tear down. */
+    if (dwFlags & NCRYPT_UNREGISTER_NOTIFY_FLAG)
+        return ERROR_SUCCESS;
+
+    if (!phEvent)
+        return NTE_INVALID_PARAMETER;
+
+    *phEvent = NULL;
+    return NTE_NOT_SUPPORTED;
 }
 
 /* Prompt the user (not supported) */
@@ -499,30 +537,5 @@ SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
     return ERROR_SUCCESS;
 }
 
-/* Verify a signature.
- *
- * Not supported: SoftHSM2 can verify through C_Verify, but the public key
- * is exportable and callers verify far more cheaply in software with
- * BCryptVerifySignature. Returning NTE_NOT_SUPPORTED is the honest answer
- * rather than a slot left NULL, which ncrypt.dll would call anyway. */
-SECURITY_STATUS WINAPI KSP_VerifySignature(
-    NCRYPT_PROV_HANDLE hProvider,
-    NCRYPT_KEY_HANDLE  hKey,
-    VOID              *pPaddingInfo,
-    PBYTE              pbHashValue,
-    DWORD              cbHashValue,
-    PBYTE              pbSignature,
-    DWORD              cbSignature,
-    DWORD              dwFlags)
-{
-    UNREFERENCED_PARAMETER(hProvider);
-    UNREFERENCED_PARAMETER(hKey);
-    UNREFERENCED_PARAMETER(pPaddingInfo);
-    UNREFERENCED_PARAMETER(pbHashValue);
-    UNREFERENCED_PARAMETER(cbHashValue);
-    UNREFERENCED_PARAMETER(pbSignature);
-    UNREFERENCED_PARAMETER(cbSignature);
-    UNREFERENCED_PARAMETER(dwFlags);
-
-    return NTE_NOT_SUPPORTED;
-}
+/* KSP_VerifySignature now lives in ksp_crypto.c, beside KSP_SignHash:
+ * it is the same mechanism resolution and the same three format rules. */
