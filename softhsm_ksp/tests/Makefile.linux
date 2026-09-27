@@ -7,7 +7,12 @@ CC      = gcc
 # returning a pointer has its result truncated to 32 bits — a segfault at
 # the call site and nothing at the definition. That cost a debugging
 # session here. MSVC at /W3 /WX rejects it; this makes Linux agree.
+# -Werror=incompatible-pointer-types makes the signature checks in
+# test_function_table.c bite. Assigning a function to a pointer of the
+# wrong shape is only a warning in C, and the one slot whose parameter type
+# was wrong went unnoticed for thirteen sessions because nothing objected.
 CFLAGS  = -Wall -Wextra -Werror=implicit-function-declaration \
+          -Werror=incompatible-pointer-types \
           -Wno-unused-parameter -Wno-unused-function \
           -g --coverage \
           -I../mock \

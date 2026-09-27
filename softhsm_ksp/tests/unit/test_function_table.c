@@ -26,6 +26,53 @@
 #include "test_framework.h"
 #include <string.h>
 
+/* ── Signature checks against the public NCrypt API ─────────────────────── */
+/*
+ * The table's LAYOUT cannot be proven here, but individual slot SIGNATURES
+ * partly can, and that distinction matters: KSP_NotifyChangeKey took an
+ * NCRYPT_KEY_HANDLE where the second parameter is `HANDLE *phEvent`, and
+ * nothing on any platform objected. The mock's table types every slot as
+ * `void *`, so a wrong type is not a build error on Linux, and the MSVC job
+ * cannot compile ksp_main.c without ncrypt_provider.h.
+ *
+ * For PROVIDER-scoped operations the KSP entry point takes the same
+ * parameter list as the documented public function, because the public
+ * function already carries the provider handle. Those shapes are copied
+ * from <ncrypt.h> below and each provider function is assigned to one. A
+ * mismatch is an incompatible-pointer-types error, which the unit
+ * Makefile promotes to a hard failure.
+ *
+ * KEY-scoped operations are deliberately absent: NCryptSignHash takes
+ * (hKey, ...) while the KSP slot takes (hProvider, hKey, ...), so the
+ * public prototype is NOT the slot's shape and asserting it would be
+ * inventing a fact. Those stay unverifiable until ncrypt_provider.h is
+ * available — which is BUILD-01, and is the reason it outranks everything.
+ */
+typedef SECURITY_STATUS (WINAPI *PFN_OpenStorageProvider)(
+    NCRYPT_PROV_HANDLE *, LPCWSTR, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_OpenKey)(
+    NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, LPCWSTR, DWORD, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_CreatePersistedKey)(
+    NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, LPCWSTR, LPCWSTR, DWORD, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_EnumKeys)(
+    NCRYPT_PROV_HANDLE, LPCWSTR, NCryptKeyName **, PVOID *, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_EnumAlgorithms)(
+    NCRYPT_PROV_HANDLE, DWORD, DWORD *, NCryptAlgorithmName **, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_IsAlgSupported)(
+    NCRYPT_PROV_HANDLE, LPCWSTR, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_NotifyChangeKey)(
+    NCRYPT_PROV_HANDLE, HANDLE *, DWORD);
+typedef SECURITY_STATUS (WINAPI *PFN_FreeBuffer)(PVOID);
+
+static PFN_OpenStorageProvider s_sigOpenProvider     = KSP_OpenProvider;
+static PFN_OpenKey             s_sigOpenKey          = KSP_OpenKey;
+static PFN_CreatePersistedKey  s_sigCreatePersisted  = KSP_CreatePersistedKey;
+static PFN_EnumKeys            s_sigEnumKeys         = KSP_EnumKeys;
+static PFN_EnumAlgorithms      s_sigEnumAlgorithms   = KSP_EnumAlgorithms;
+static PFN_IsAlgSupported      s_sigIsAlgSupported   = KSP_IsAlgSupported;
+static PFN_NotifyChangeKey     s_sigNotifyChangeKey  = KSP_NotifyChangeKey;
+static PFN_FreeBuffer          s_sigFreeBuffer       = KSP_FreeBuffer;
+
 /* ── Stubs for everything ksp_main.c's table references ─────────────────── */
 typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
                  CK_SLOT_ID slotId; BOOL bInitialized; } P11_CONTEXT;

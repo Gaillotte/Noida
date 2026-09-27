@@ -30,7 +30,10 @@ import argparse
 import glob
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 
 # Names the mock may define even though mingw-w64 does not know them.
 # Each needs a reason, so the list cannot quietly become a dumping ground.
@@ -127,6 +130,73 @@ def sources_text(src_dir):
     return "\n".join(out)
 
 
+# ── Typedef widths ──────────────────────────────────────────────────────────
+#
+# The checks above compare macro VALUES. A wrong typedef is invisible to
+# them, and one went unnoticed for thirteen sessions: BOOL was `unsigned
+# char` in the mock where Windows makes it `int`. That is a different width
+# and a different ABI — a function returning a masked flag wider than eight
+# bits truncates on Linux and not on Windows, and every struct carrying a
+# BOOL lays out differently in the tests than in production.
+#
+# WIDTH is the thing to compare, not spelling. mingw-w64 writes DWORD as
+# `unsigned long`, which is 32 bits under Windows x64 (LLP64) and 64 bits
+# under Linux x86-64 (LP64) — so a checker that matched the SPELLING would
+# demand a change that doubled the width and made the mock worse. The
+# numbers below are the Windows x64 widths in bytes, which are ABI and do
+# not move; the mock's are measured by compiling it.
+TYPEDEF_WIDTHS = {
+    "BOOL":   4,
+    "DWORD":  4,
+    "ULONG":  4,
+    "BYTE":   1,
+    "WORD":   2,
+}
+
+
+def check_typedefs(mock_path):
+    """Compile a probe against the mock and compare sizeof to Windows x64.
+
+    Returns a list of (name, mock_bytes, windows_bytes) that disagree, or
+    None when the probe could not be built (no compiler — skip rather than
+    invent a result).
+    """
+    names = sorted(TYPEDEF_WIDTHS)
+    src = ['#include "%s"' % mock_path, "#include <stdio.h>", "int main(void){"]
+    for n in names:
+        src.append('    printf("%s %%zu\\n", sizeof(%s));' % (n, n))
+    src.append("    return 0; }")
+
+    tmp = tempfile.mkdtemp()
+    try:
+        cpath = os.path.join(tmp, "probe.c")
+        bpath = os.path.join(tmp, "probe")
+        with open(cpath, "w") as fh:
+            fh.write("\n".join(src) + "\n")
+        rc = subprocess.call(
+            ["gcc", "-o", bpath, cpath],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if rc != 0:
+            return None
+        out = subprocess.check_output([bpath]).decode()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    bad = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        name, got = parts[0], int(parts[1])
+        want = TYPEDEF_WIDTHS.get(name)
+        if want is not None and got != want:
+            bad.append((name, got, want))
+    return bad
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
@@ -199,7 +269,25 @@ def main():
             "  stop depending on it."
         )
 
-    if wrong_value or invented:
+    wrong_type = check_typedefs(os.path.join(here, "mock", "windows_compat.h"))
+    if wrong_type is None:
+        print("\n  (typedef widths not checked: no working compiler)")
+        wrong_type = []
+    if wrong_type:
+        print(
+            "\nTYPEDEF WIDTH MISMATCH (%d) — the mock's type is a different "
+            "size than Windows x64:" % len(wrong_type)
+        )
+        for name, have, want in wrong_type:
+            print("  %-38s mock=%d bytes  windows=%d bytes"
+                  % (name, have, want))
+        print(
+            "\n  A wrong width is a different ABI, not a cosmetic issue: it\n"
+            "  changes struct layout and can truncate return values on one\n"
+            "  platform and not the other."
+        )
+
+    if wrong_value or invented or wrong_type:
         print("\nFAIL: the mock has drifted from the Windows headers.")
         return 1
 

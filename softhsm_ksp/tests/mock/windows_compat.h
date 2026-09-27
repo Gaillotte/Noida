@@ -32,7 +32,17 @@
 
 /* ── Basic Windows types ────────────────────────────────────────────────── */
 typedef unsigned char      BYTE;
-typedef unsigned char      BOOL;
+/* Windows defines BOOL as int (minwindef.h: `typedef int WINBOOL;` then
+ * `#define BOOL WINBOOL`). It was `unsigned char` here, which is a
+ * different width and a different ABI: a function returning a masked flag
+ * wider than 8 bits would have truncated on Linux and not on Windows, and
+ * every struct carrying a BOOL laid out differently in the tests than in
+ * production. check_mock_drift.py compares macro VALUES, so a wrong
+ * typedef was outside what it could see.
+ *
+ * Not to be confused with CK_BBOOL, which PKCS#11 genuinely defines as one
+ * byte. That one is correct and stays. */
+typedef int                BOOL;
 typedef unsigned short     WORD;
 typedef unsigned short     USHORT;
 typedef unsigned int       DWORD;
