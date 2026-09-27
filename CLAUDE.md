@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 22 test suites, 1582 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 22 test suites, 1600 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -88,7 +88,7 @@ noida/
 │   │   │   ├── p11_real_loader.c    LoadLibraryW → dlopen
 │   │   │   ├── p11_init_token.c     C_InitToken / C_InitPIN standalone tool
 │   │   │   ├── real_cert.c          a genuine openssl-generated certificate
-│   │   │   ├── test_real_backend.c  216 (base) assertions, run twice
+│   │   │   ├── test_real_backend.c  230 (base) assertions, run twice
 │   │   │   ├── test_concurrent.c    32 threads over the 16-session pool
 │   │   │   └── tsan.supp            why Kryoptic's TSan reports are false
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
@@ -129,6 +129,62 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 14 — the two stubs, and what they exposed
+
+Neither is in the feature matrix: it tracks capabilities against the
+market, not the provider's own surface, so nothing had ever pointed at
+them.
+
+- **`KSP_VerifySignature` is implemented**, over `C_Verify`. The old
+  reasoning — a caller can export the public key and verify in software
+  more cheaply — is true and not the whole picture: `ncrypt.dll` calls the
+  slot for `NCryptVerifySignature`, and a caller holding only a key handle
+  should not have to export anything. It mirrors `KSP_SignHash`: the
+  object follows the key class, ECDSA passes through raw, Ed448 gets
+  `CK_EDDSA_PARAMS` and Ed25519 must not. `CKR_SIGNATURE_INVALID` →
+  `NTE_BAD_SIGNATURE` is a verdict, not a malfunction.
+- **`KSP_NotifyChangeKey` was worse than unimplemented.** Microsoft
+  documents `NCryptNotifyChangeKey(hProvider, HANDLE *phEvent, dwFlags)`
+  with `phEvent` as **[in, out]** — the handle the caller then waits on.
+  This took an `NCRYPT_KEY_HANDLE` and returned `ERROR_SUCCESS`, so an
+  application registering for notification was told it had succeeded and
+  never had its `HANDLE` written. It now clears `*phEvent` and refuses.
+  The old unit test asserted `"NotifyChangeKey → ERROR_SUCCESS"` — the
+  defect written down as a test, in a suite still titled *"Stubs
+  obligatoires"*, a line session 1's French→English pass missed.
+
+**Why they survived is the more useful finding.** The mock's function
+table types every slot as `void *`, so a wrong parameter TYPE is not a
+build error on Linux, and the MSVC job cannot compile `ksp_main.c` without
+`ncrypt_provider.h`. Session 7 made the table safe against a wrong *name*;
+the types were never covered at all.
+
+**Part of that is now checkable.** For provider-scoped operations the KSP
+entry point takes the same parameter list as the documented public
+function, because the public function already carries the provider handle.
+`test_function_table.c` assigns eight such functions to pointer types
+copied from `<ncrypt.h>`, and the unit build promotes
+`incompatible-pointer-types` to an error. **Key-scoped operations are
+deliberately excluded**: `NCryptSignHash` takes `(hKey, …)` while the slot
+takes `(hProvider, hKey, …)`, so asserting the public shape would be
+inventing a fact. Those stay unverifiable until `ncrypt_provider.h` exists.
+
+**Turning the flag on immediately found another:** `BOOL` was `unsigned
+char` in the mock where Windows makes it `int`. Different width, different
+ABI — a masked flag wider than eight bits would truncate on Linux and not
+on Windows, and every struct carrying a `BOOL` laid out differently in the
+tests than in production. Nothing returns such a value today, so it was a
+latent trap rather than a live defect.
+
+`check_mock_drift.py` now checks typedef **widths**, by compiling a probe
+against the mock and comparing `sizeof` to the Windows x64 ABI. Width, not
+spelling: mingw writes `DWORD` as `unsigned long`, which is 32 bits on
+Windows x64 and **64 on Linux**, so a spelling check would have demanded a
+change that doubled the width. That mistake was made first and caught by
+running it.
+
+Unit 1582 → **1600 assertions**, live token 216 → **230**.
 
 ### Session 13 — Phase 6: the three mechanisms SoftHSM2 cannot do
 
@@ -807,7 +863,16 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 - **Never hand-edit `tests/mock/windows_compat.h` values.** That mock once
   invented two constants and mis-valued two more, and every test passed
   because the tests read the same wrong numbers. `tests/check_mock_drift.py`
-  now fails CI on any disagreement with the real Windows headers.
+  now fails CI on any disagreement with the real Windows headers, and since
+  session 14 also on any typedef whose **width** differs from the Windows
+  x64 ABI — `BOOL` had been `unsigned char` where Windows makes it `int`.
+- **The mock's function table types every slot as `void *`.** A wrong slot
+  NAME is a build error (designated initialisers, session 7); a wrong
+  parameter TYPE is not, and that is how `KSP_NotifyChangeKey` kept an
+  `NCRYPT_KEY_HANDLE` where the parameter is `HANDLE *phEvent`. Eight
+  provider-scoped slots are now signature-checked against `<ncrypt.h>` in
+  `test_function_table.c`; key-scoped slots cannot be, because the public
+  prototype is not the slot's shape.
 - **Post-quantum needs a PKCS#11 v3.2 token.** ML-DSA is implemented and
   gated on the capability probe. SoftHSM2 2.7.0 defines the mechanisms and
   implements none of them, so it never advertises them and the provider
@@ -893,7 +958,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 22 suites, 1582 assertions
+make run           # 22 suites, 1600 assertions
 make coverage      # → coverage_html/index.html (87.1 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```

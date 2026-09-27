@@ -132,7 +132,7 @@ The roadmap below is ordered for those two targets.
 | Defects 1–6 fixed | See the table below for each |
 | Function table by name | Designated initialisers; the SDK header assigns the slots |
 | `IsAlgSupported`, `EnumAlgorithms` | Implemented — closes `LIFE-06` and `LIFE-07` |
-| `VerifySignature` | Stub returning `NTE_NOT_SUPPORTED`; the slot is no longer absent |
+| `VerifySignature` | Implemented in session 14 over `C_Verify`; was a stub returning `NTE_NOT_SUPPORTED` |
 | SHA-224 | Kept, as the provider extension `KSP_SHA224_ALGORITHM` |
 | Mock drift guard | `tests/check_mock_drift.py`, run in CI |
 | CI | `.github/workflows/ksp-ci.yml` — three jobs |

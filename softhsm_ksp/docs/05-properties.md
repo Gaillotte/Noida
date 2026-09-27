@@ -318,5 +318,16 @@ The following properties always return `NTE_NOT_SUPPORTED`:
 - `SetProviderProperty` (all)
 - `SetKeyProperty` for any property other than `NCRYPT_LENGTH_PROPERTY`
 - `PromptUser`
-- `VerifySignature` — callers verify with `BCryptVerifySignature` against
-  the exported public key, which is far cheaper than a token round trip
+
+`VerifySignature` used to be on this list. It is implemented now, over
+`C_Verify`: `ncrypt.dll` calls the slot for `NCryptVerifySignature`, and a
+caller holding only a key handle should not have to export anything to
+check a signature. Verifying in software with `BCryptVerifySignature`
+against an exported public key is still cheaper and still available — it
+is a choice the caller makes, not one the provider makes for them.
+
+`NotifyChangeKey` is refused rather than granted. Its second parameter is
+an `[in, out] HANDLE *phEvent` that the caller waits on; this provider
+returned `ERROR_SUCCESS` without writing it, so an application that
+registered for notification waited on an uninitialised handle. A PKCS#11
+token has no key-change channel to register on.

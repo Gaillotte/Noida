@@ -795,3 +795,31 @@ different key.
 All KDFs share the same keyed machinery, so each HMAC is still a
 create/sign/destroy cycle and the suite asserts no key object leaks across a
 multi-block expansion.
+
+---
+
+## VerifySignature
+
+`NCryptVerifySignature` reaches the provider through the `VerifySignature`
+slot, which was a stub returning `NTE_NOT_SUPPORTED` until session 14. It
+now goes to `C_VerifyInit` + `C_Verify`.
+
+It mirrors `SignHash` deliberately, including the parts that look like they
+could be simplified:
+
+| | `SignHash` | `VerifySignature` |
+|---|---|---|
+| Object used | `hPrivKey`, or `hSecretKey` for a MAC key | `hPubKey`, or `hSecretKey` for a MAC key |
+| ECDSA format | raw `r‖s` through, no conversion | raw `r‖s` through, no conversion |
+| Ed25519 | `CKM_EDDSA`, **no** params | `CKM_EDDSA`, **no** params |
+| Ed448 | `CKM_EDDSA` + `CK_EDDSA_PARAMS` | `CKM_EDDSA` + `CK_EDDSA_PARAMS` |
+
+A key with no public object cannot verify and says so with
+`NTE_INVALID_HANDLE` rather than reaching for the private one.
+
+`CKR_SIGNATURE_INVALID` maps to `NTE_BAD_SIGNATURE`. **That is a verdict,
+not a malfunction** — the caller asked a question and got the answer no.
+
+Unlike a size query, `C_Verify` completes its operation whatever the
+verdict, so the session returns to the pool clean and the failure mode that
+made size queries poison the pool does not arise here.
