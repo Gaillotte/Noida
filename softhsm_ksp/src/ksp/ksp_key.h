@@ -26,6 +26,29 @@ typedef struct _KSP_KEY {
     BOOL             bMachineKey;               /* NCRYPT_MACHINE_KEY_FLAG was set */
     BOOL             bCurvePending;             /* generic ECDSA/ECDH awaiting BCRYPT_ECC_CURVE_NAME */
 
+    /* NCRYPT_EXPORT_POLICY_PROPERTY, as set before FinalizeKey.
+     *
+     * Zero — the default — means the key never leaves the token, which is
+     * the posture every key had before this existed and the one every key
+     * still has unless a caller deliberately asks otherwise.
+     *
+     * The two CNG flags are NOT interchangeable and must not be collapsed
+     * into one boolean:
+     *
+     *   NCRYPT_ALLOW_EXPORT_FLAG            -> CKA_EXTRACTABLE=TRUE only.
+     *       C_WrapKey succeeds, so the key can leave WRAPPED under a KEK
+     *       already on the token. CKA_SENSITIVE stays TRUE, so CKA_VALUE
+     *       is still refused and plaintext export still fails.
+     *
+     *   NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG  -> also CKA_SENSITIVE=FALSE.
+     *       CKA_VALUE becomes readable, which is what BCRYPT_KEY_DATA_BLOB
+     *       export needs. Strictly weaker than the line above.
+     *
+     * CKA_SENSITIVE is what stops CKA_VALUE being read; CKA_EXTRACTABLE is
+     * what stops C_WrapKey. Relaxing the wrong one grants the wrong thing.
+     */
+    DWORD            dwExportPolicy;
+
     /* Symmetric cipher state (AES) — set via NCryptSetProperty */
     WCHAR            szChainingMode[MAX_ALG_ID_LEN]; /* NCRYPT_CHAINING_MODE_PROPERTY */
     BYTE             pbIV[AES_BLOCK_SIZE];      /* NCRYPT_INITIALIZATION_VECTOR */

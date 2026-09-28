@@ -183,6 +183,16 @@ typedef struct _P11_MOCK_CONFIG {
     /* CKA_WRAP from the last C_GenerateKey template, or 0xFF if the
      * template did not carry it. */
     CK_BBOOL          lastGenWrap;
+    /* CKA_SENSITIVE / CKA_EXTRACTABLE from the last generation template —
+     * C_GenerateKey, or the PRIVATE half of C_GenerateKeyPair. 0xFF when
+     * the template did not carry the attribute, which would itself be the
+     * defect: a key generated without them takes the token's default.
+     *
+     * These are the attributes NCRYPT_EXPORT_POLICY_PROPERTY maps onto, and
+     * they guard different operations, so a test has to be able to see them
+     * separately. */
+    CK_BBOOL          lastGenSensitive;
+    CK_BBOOL          lastGenExtractable;
     /* CK_RSA_PKCS_PSS_PARAMS captured by the last C_SignInit call. Valid
      * only when lastSignPssValid is non-zero. */
     CK_RSA_PKCS_PSS_PARAMS lastSignPss;

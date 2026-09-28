@@ -73,8 +73,13 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_EXPORT_POLICY_PROPERTY) == 0) {
-        /* Not exportable from the HSM */
-        DWORD dwPolicy = 0;
+        /* What the caller asked for before finalize, which is also what the
+         * key's CKA_SENSITIVE / CKA_EXTRACTABLE were built from. Zero — the
+         * default — means nothing leaves the token.
+         *
+         * This used to be a hard-coded zero whatever the caller had set,
+         * because a set was never accepted. */
+        DWORD dwPolicy = pKey->dwExportPolicy;
         *pcbResult = sizeof(DWORD);
         if (pbOutput) {
             if (cbOutput < sizeof(DWORD))
@@ -453,6 +458,50 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
          * pPaddingInfo, which KSP_Encrypt and KSP_Decrypt now read. No
          * test ever exercised this, which is why it survived. */
         ss = NTE_NOT_SUPPORTED;
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_EXPORT_POLICY_PROPERTY) == 0) {
+        /* Whether this key may ever leave the token, and in what form.
+         *
+         * Settable only BEFORE FinalizeKey. CKA_SENSITIVE and
+         * CKA_EXTRACTABLE are fixed on the token when the key is generated,
+         * and PKCS#11 gives no way to relax them afterwards — a token is
+         * entitled to refuse, and several do. Accepting the property on a
+         * finalized key would therefore return success and change nothing,
+         * which is the KSP_NotifyChangeKey mistake: an answer that reads as
+         * a grant and is not one.
+         *
+         * The ARCHIVING flags are about escrowing a copy of the key with a
+         * third party. That is a different feature with a different threat
+         * model, it is not implemented, and it is refused by name rather
+         * than silently ignored. */
+        if (!pbInput || cbInput != sizeof(DWORD)) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            DWORD dwPolicy;
+            memcpy(&dwPolicy, pbInput, sizeof(DWORD));
+
+#if !KSP_ALLOW_EXPORT_POLICY
+            /* Built with the policy disabled: every key stays sealed. */
+            ss = (dwPolicy == 0) ? ERROR_SUCCESS : NTE_NOT_SUPPORTED;
+#else
+            if (dwPolicy & (NCRYPT_ALLOW_ARCHIVING_FLAG |
+                            NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG)) {
+                ss = NTE_NOT_SUPPORTED;
+            } else if (dwPolicy & ~(DWORD)(NCRYPT_ALLOW_EXPORT_FLAG |
+                                           NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG)) {
+                ss = NTE_BAD_FLAGS;
+            } else if (pKey->bFinalized) {
+                /* Too late — the attributes are already on the token. */
+                LOG_ERROR("Export policy cannot be set after FinalizeKey: "
+                          "CKA_SENSITIVE and CKA_EXTRACTABLE are fixed at "
+                          "generation", NTE_INVALID_HANDLE);
+                ss = NTE_INVALID_HANDLE;
+            } else {
+                pKey->dwExportPolicy = dwPolicy;
+                ss = ERROR_SUCCESS;
+            }
+#endif
+        }
 
     } else if (_wcsicmp(pszProperty, BCRYPT_MESSAGE_BLOCK_LENGTH) == 0) {
         /* CFB feedback size in bytes. 1 is 8-bit CFB (CNG's default) and

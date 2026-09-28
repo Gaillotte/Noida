@@ -357,6 +357,21 @@
 
 /* Chaining mode for AES-CTR. CNG defines no standard string for counter
  * mode, so the KSP accepts this name in NCRYPT_CHAINING_MODE_PROPERTY. */
+/* Whether NCRYPT_EXPORT_POLICY_PROPERTY may be set at all.
+ *
+ * On by default: CNG defines the property, callers legitimately use it for
+ * key backup and migration, and a provider that silently ignores it is not
+ * safer — only harder to reason about. A deployment that wants the absolute
+ * guarantee that no key material can ever leave the token, whatever the
+ * caller asks, builds with -DKSP_ALLOW_EXPORT_POLICY=0 and every key stays
+ * CKA_SENSITIVE=TRUE / CKA_EXTRACTABLE=FALSE as before.
+ *
+ * Same shape as KSP_RSA_MIN_BITS: the weaker option exists, is reachable,
+ * and is never the default. */
+#ifndef KSP_ALLOW_EXPORT_POLICY
+#define KSP_ALLOW_EXPORT_POLICY 1
+#endif
+
 #define KSP_CHAIN_MODE_CTR  L"ChainingModeCTR"
 
 /* CCM nonce bounds, NIST SP 800-38C §A.1: the nonce is 7 to 13 bytes, and

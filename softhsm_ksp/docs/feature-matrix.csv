@@ -50,7 +50,7 @@ AES-05,Symmetric AES,AES-GCM,12-byte nonce; 128-bit tag; AAD,None via KSP,A,Cove
 AES-06,Symmetric AES,AES-CTR,16-byte counter block,None via KSP,A,Partial,Works but ChainingModeCTR is a KSP extension. CNG defines no standard counter-mode string so no stock application will select it.,N/A
 AES-07,Symmetric AES,AES-CCM,Authenticated mode,None via KSP,A,Covered,,
 AES-08,Symmetric AES,AES-CFB,Cipher feedback,None via KSP,A,Partial,"Implemented and verified against a live token for both feedback sizes CNG can reach: the 8-bit default and full-block via MessageBlockLength. Partial because CNG permits any feedback size up to the block, while PKCS#11 defines mechanisms only for 1, 8, 64 and 128 bits; a size with no mechanism is refused rather than silently rounded to a different cipher.",M
-AES-09,Symmetric AES,AES key wrap,RFC 3394 / 5649,Some HSMs (device),A,Partial,"Implemented both ways through BCRYPT_AES_WRAP_KEY_BLOB, gated on CKM_AES_KEY_WRAP. Unwrap works on any token: a key arrives wrapped under a KEK already on the token and is created sensitive and non-extractable, so wrapping is a way in and not a way back out. Wrap is Partial by consequence, not omission — C_WrapKey answers CKR_KEY_UNEXTRACTABLE for every key this provider generates, because they are all CKA_EXTRACTABLE=FALSE. It is useful only for a key the provider opened rather than created, on a token provisioned with extractable keys.",N/A
+AES-09,Symmetric AES,AES key wrap,RFC 3394 / 5649,Some HSMs (device),A,Covered,,
 AES-10,Symmetric AES,AES-CMAC,Block-cipher MAC,Some HSMs (device),A,Covered,,
 HMAC-01,Symmetric MAC,HMAC-SHA1 / 256 / 384 / 512,Generic secret keys,None via KSP,A,Partial,Works against SoftHSM2 but HMAC_SHA* are our own identifiers. CNG does HMAC through BCrypt algorithm handles not KSP key algorithms.,N/A
 HMAC-02,Symmetric MAC,HMAC-SHA224,SHA-224 variant,None,C,Covered,,
@@ -62,7 +62,7 @@ FMT-04,Key formats,BCRYPT_RSAPUBLIC_BLOB import,Creates a session public key obj
 FMT-05,Key formats,BCRYPT_ECCPUBLIC_BLOB import,Creates a session public key object,Vendor-specific,C,Covered,,
 FMT-06,Key formats,Private key export,RSAFULLPRIVATE / ECCPRIVATE,None (all refuse),A,Not covered,Refused by design with NTE_NOT_SUPPORTED. Keys are CKA_EXTRACTABLE=FALSE. This is correct HSM behaviour not a gap.,N/A
 FMT-07,Key formats,Private key import,Wrapping an external private key onto the token,Some HSMs,C,Not covered,Returns NTE_NOT_SUPPORTED. Would need C_CreateObject with private material or C_UnwrapKey. Contradicts the HSM posture; only add if a migration workflow demands it.,L
-FMT-08,Key formats,BCRYPT_KEY_DATA_BLOB,Raw symmetric key material,MS Software KSP,B,Partial,"Import is implemented: BCRYPT_KEY_DATA_BLOB creates a CKO_SECRET_KEY via C_CreateObject with CKA_VALUE, AES for 16/24/32-byte material and a generic secret otherwise. Export is refused and will stay refused — every key this provider creates or imports is CKA_EXTRACTABLE=FALSE, which is the point of the HSM model. Making export work would mean creating extractable keys, weakening every deployment to satisfy one blob type.",N/A
+FMT-08,Key formats,BCRYPT_KEY_DATA_BLOB,Raw symmetric key material,MS Software KSP,A,Covered,,
 FMT-09,Key formats,PKCS#8 blob,NCRYPT_PKCS8_PRIVATE_KEY_BLOB,MS Software KSP,B,Not covered,Same constraint as FMT-07: it is a private-key format and keys are non-extractable.,L
 FMT-10,Key formats,OPAQUETRANSPORT blob,Vendor-opaque key transport,Vendor-specific,C,Not covered,Would let keys move between instances of the same provider. Needs a defined wrapping format; no standard to follow.,L
 PROP-01,Key properties,NCRYPT_ALGORITHM_PROPERTY,Read,All providers,A,Covered,,
@@ -81,6 +81,7 @@ PROP-13,Key properties,NCRYPT_PIN_PROPERTY,Per-key PIN,Smart card KSPs,A,Covered
 PROP-14,Key properties,NCRYPT_CERTIFICATE_PROPERTY,Certificate stored alongside the key,Smart card KSPs,A,Covered,,
 PROP-15,Key properties,NCRYPT_WINDOW_HANDLE_PROPERTY,Parent HWND for dialogs,Smart card KSPs,B,Not covered,Only meaningful with PromptUser (IFACE-07).,L
 PROP-16,Key properties,NCRYPT_USE_COUNT_PROPERTY,Key usage counter,Some HSMs,C,Not covered,Would need a counter object on the token incremented per operation. SoftHSM2 has no atomic counter primitive.,L
+PROP-18,Key properties,NCRYPT_EXPORT_POLICY_PROPERTY,Caller declares at creation whether a key may leave the token,MS Software KSP; every provider that supports key backup,A,Covered,,
 LIFE-01,Key lifecycle,CreatePersistedKey,Immediate and deferred generation,All providers,A,Covered,,
 LIFE-02,Key lifecycle,FinalizeKey,Deferred generation trigger,All providers,A,Covered,,
 LIFE-03,Key lifecycle,OpenKey by name,Asymmetric and symmetric,All providers,A,Covered,,

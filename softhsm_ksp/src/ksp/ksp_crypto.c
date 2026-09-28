@@ -944,18 +944,85 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
         return NTE_NOT_SUPPORTED;
     }
 
-    /* Nor is raw symmetric key material. Every key this provider creates
-     * or imports is CKA_EXTRACTABLE=FALSE, so C_GetAttributeValue would
-     * refuse CKA_VALUE and the failure would surface as a generic PKCS#11
-     * error several layers down. Say so here instead.
+    /* Raw symmetric key material, when the key was created with an export
+     * policy that permits it.
      *
-     * BCRYPT_KEY_DATA_BLOB is supported for IMPORT — see KSP_ImportKey. */
+     * This used to refuse outright, on the reasoning that every key is
+     * CKA_EXTRACTABLE=FALSE so C_GetAttributeValue would refuse CKA_VALUE
+     * anyway. That reasoning was right about the old default and wrong as a
+     * permanent rule: a caller can now ask for
+     * NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG before FinalizeKey, and a key
+     * created that way is CKA_SENSITIVE=FALSE and genuinely readable.
+     *
+     * The check is deliberately NOT "does this provider think the policy
+     * allows it". The token holds the attributes and the token enforces
+     * them; asking it and passing its answer through is the only way the
+     * two cannot disagree. A provider-side gate that said no where the
+     * token would have said yes — or worse, yes where the token said no —
+     * would be a second opinion nobody asked for. */
     if (_wcsicmp(pszBlobType, BCRYPT_KEY_DATA_BLOB) == 0) {
-        LOG_ERROR("KSP_ExportKey - symmetric key material is not extractable "
-                  "(CKA_EXTRACTABLE=FALSE); import is supported, export is not",
-                  NTE_NOT_SUPPORTED);
-        LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
-        return NTE_NOT_SUPPORTED;
+        BYTE  *pbValue = NULL;
+        DWORD  cbValue = 0;
+        DWORD  cbNeeded;
+        CK_RV  rvVal;
+
+        if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC ||
+            pKey->hSecretKey == CK_INVALID_HANDLE) {
+            LOG_LEAVE("KSP_ExportKey", NTE_NOT_SUPPORTED);
+            return NTE_NOT_SUPPORTED;
+        }
+
+        ss = P11_AcquireSession(&hSession);
+        if (ss != ERROR_SUCCESS) {
+            LOG_LEAVE("KSP_ExportKey", ss);
+            return ss;
+        }
+
+        rvVal = P11_GetBinaryAttr(hSession, pKey->hSecretKey, CKA_VALUE,
+                                  &pbValue, &cbValue);
+        P11_ReleaseSession(hSession);
+
+        if (rvVal != CKR_OK) {
+            /* The usual answer for a key created without the policy:
+             * CKR_ATTRIBUTE_SENSITIVE. Passed through rather than
+             * flattened, so the caller can tell "sealed key" from
+             * "something went wrong". */
+            ss = P11RvToSecStatus(rvVal);
+            LOG_ERROR("KSP_ExportKey - the token refused CKA_VALUE; the key "
+                      "was not created with NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG",
+                      ss);
+            LOG_LEAVE("KSP_ExportKey", ss);
+            return ss;
+        }
+
+        cbNeeded = (DWORD)sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + cbValue;
+        *pcbResult = cbNeeded;
+
+        if (pbOutput) {
+            BCRYPT_KEY_DATA_BLOB_HEADER *pHdr;
+
+            if (cbOutput < cbNeeded) {
+                SecureZeroMemory(pbValue, cbValue);
+                KSP_Free(pbValue);
+                LOG_LEAVE("KSP_ExportKey", NTE_BUFFER_TOO_SMALL);
+                return NTE_BUFFER_TOO_SMALL;
+            }
+
+            pHdr = (BCRYPT_KEY_DATA_BLOB_HEADER *)pbOutput;
+            pHdr->dwMagic     = BCRYPT_KEY_DATA_BLOB_MAGIC;
+            pHdr->dwVersion   = BCRYPT_KEY_DATA_BLOB_VERSION1;
+            pHdr->cbKeyData   = cbValue;
+            memcpy(pbOutput + sizeof(BCRYPT_KEY_DATA_BLOB_HEADER),
+                   pbValue, cbValue);
+        }
+
+        /* The plaintext key is in this buffer; do not leave it in freed
+         * heap for the next allocation to inherit. */
+        SecureZeroMemory(pbValue, cbValue);
+        KSP_Free(pbValue);
+
+        LOG_LEAVE("KSP_ExportKey", ERROR_SUCCESS);
+        return ERROR_SUCCESS;
     }
 
     /* ML-DSA public keys are not exported, deliberately.

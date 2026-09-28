@@ -171,3 +171,6 @@ vcpkg/
 *.pfx
 *.p12
 *.snk
+
+# SoftHSM2 test token created by the live suite when run against SoftHSM2
+softhsm_ksp/tests/linux/.shsm-token/

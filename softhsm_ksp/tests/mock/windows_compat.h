@@ -582,6 +582,17 @@ typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
 #define NCRYPT_KEY_TYPE_PROPERTY        L"Key Type"
 #define NCRYPT_UNIQUE_NAME_PROPERTY     L"Unique Name"
 #define NCRYPT_EXPORT_POLICY_PROPERTY   L"Export Policy"
+
+/* Export policy flags. Values from <ncrypt.h>; check_mock_drift.py verifies
+ * them against the real header. ALLOW_EXPORT permits wrapped export,
+ * ALLOW_PLAINTEXT_EXPORT permits reading the key in the clear — they are
+ * different permissions and this provider maps them to different PKCS#11
+ * attributes. The ARCHIVING pair is about key escrow and is deliberately
+ * not honoured. */
+#define NCRYPT_ALLOW_EXPORT_FLAG                0x00000001
+#define NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG      0x00000002
+#define NCRYPT_ALLOW_ARCHIVING_FLAG             0x00000004
+#define NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG   0x00000008
 #define NCRYPT_KEY_USAGE_PROPERTY       L"Key Usage"
 #define NCRYPT_ALGORITHM_GROUP_PROPERTY L"Algorithm Group"
 

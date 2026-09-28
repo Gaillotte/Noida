@@ -1872,7 +1872,122 @@ int main(void)
         }
     }
 
-    /* ── Suite 25 : enumeration and cleanup ─────────────────────────────── */
+
+    /* ── Suite 25 : export policy, enforced by the token ────────────────── */
+    TEST_SUITE("NCRYPT_EXPORT_POLICY_PROPERTY");
+
+    /* The unit suite asserts which attributes the provider PUTS in the
+     * template. Only the token can say whether those attributes actually
+     * buy what they are supposed to buy, and this is the assertion the
+     * mock cannot make: it would agree with whatever the template said. */
+    {
+        struct {
+            DWORD       dwPolicy;
+            LPCWSTR     szName;
+            BOOL        bWrapShouldWork;
+            BOOL        bPlainShouldWork;
+            const char *szWhat;
+        } aCases[] = {
+            { 0,
+              L"phase9-sealed",  FALSE, FALSE, "default (sealed)" },
+            { NCRYPT_ALLOW_EXPORT_FLAG,
+              L"phase9-wrap",    TRUE,  FALSE, "ALLOW_EXPORT" },
+            { NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG,
+              L"phase9-plain",   TRUE,  TRUE,  "ALLOW_PLAINTEXT_EXPORT" },
+        };
+        size_t i;
+        NCRYPT_KEY_HANDLE hKek = 0;
+
+        /* A KEK to wrap with. It never needs to leave, so it keeps the
+         * default policy. */
+        {
+            NCRYPT_KEY_HANDLE hOld = 0;
+            if (KSP_OpenKey(hProv, &hOld, L"phase9-kek", 0, 0) == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+        }
+        ss = KSP_CreatePersistedKey(hProv, &hKek, ALG_AES, L"phase9-kek", 0, 0);
+        ASSERT_OK("KEK generated", ss);
+
+        for (i = 0; i < sizeof(aCases) / sizeof(aCases[0]); i++) {
+            NCRYPT_KEY_HANDLE hKey = 0, hOld = 0;
+            DWORD  dwBits = 256;
+            BYTE   abBlob[512];
+            DWORD  cbBlob = 0;
+            SECURITY_STATUS ssWrap, ssPlain;
+
+            printf("      [%s]\n", aCases[i].szWhat);
+
+            if (KSP_OpenKey(hProv, &hOld, aCases[i].szName, 0, 0)
+                    == ERROR_SUCCESS)
+                KSP_DeleteKey(hProv, hOld, 0);
+
+            ss = KSP_CreatePersistedKey(hProv, &hKey, ALG_AES,
+                                        aCases[i].szName, 0,
+                                        NCRYPT_PERSIST_ONLY_FLAG);
+            ASSERT_OK("Deferred AES key created", ss);
+            if (ss != ERROR_SUCCESS)
+                continue;
+
+            if (aCases[i].dwPolicy) {
+                ss = KSP_SetKeyProperty(hProv, hKey,
+                        NCRYPT_EXPORT_POLICY_PROPERTY,
+                        (PBYTE)&aCases[i].dwPolicy,
+                        sizeof(aCases[i].dwPolicy), 0);
+                ASSERT_OK("Export policy set before finalize", ss);
+            }
+            (void)KSP_SetKeyProperty(hProv, hKey, NCRYPT_LENGTH_PROPERTY,
+                                     (PBYTE)&dwBits, sizeof(dwBits), 0);
+
+            ss = KSP_FinalizeKey(hProv, hKey, 0);
+            ASSERT_OK("Key generated on the token", ss);
+            if (ss != ERROR_SUCCESS) { KSP_FreeKey(hProv, hKey); continue; }
+
+            /* Wrapped export — gated by CKA_EXTRACTABLE. */
+            cbBlob = 0;
+            ssWrap = KSP_ExportKey(hProv, hKey, hKek,
+                                   BCRYPT_AES_WRAP_KEY_BLOB, NULL,
+                                   abBlob, sizeof(abBlob), &cbBlob, 0);
+            if (aCases[i].bWrapShouldWork) {
+                ASSERT_OK("the token permits wrapped export", ssWrap);
+                ASSERT("and returns a wrapped blob",
+                       ssWrap != ERROR_SUCCESS || cbBlob > 0);
+            } else {
+                ASSERT("the token refuses wrapped export",
+                       ssWrap != ERROR_SUCCESS);
+            }
+
+            /* Plaintext export — gated by CKA_SENSITIVE, which is a
+             * DIFFERENT attribute. This is the pair that must not be
+             * collapsed: the ALLOW_EXPORT case above wraps and must still
+             * fail here. */
+            cbBlob = 0;
+            ssPlain = KSP_ExportKey(hProv, hKey, 0, BCRYPT_KEY_DATA_BLOB,
+                                    NULL, abBlob, sizeof(abBlob), &cbBlob, 0);
+            if (aCases[i].bPlainShouldWork) {
+                ASSERT_OK("the token permits plaintext export", ssPlain);
+                if (ssPlain == ERROR_SUCCESS) {
+                    BCRYPT_KEY_DATA_BLOB_HEADER *pHdr =
+                        (BCRYPT_KEY_DATA_BLOB_HEADER *)abBlob;
+                    ASSERT_EQ("with the CNG blob magic", pHdr->dwMagic,
+                              (DWORD)BCRYPT_KEY_DATA_BLOB_MAGIC);
+                    ASSERT_EQ("and 32 bytes of AES-256 key",
+                              pHdr->cbKeyData, 32U);
+                    ASSERT_EQ("so the blob is header plus key", cbBlob,
+                              (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32));
+                }
+            } else {
+                ASSERT("the token refuses plaintext export",
+                       ssPlain != ERROR_SUCCESS);
+            }
+
+            ss = KSP_DeleteKey(hProv, hKey, 0);
+            ASSERT_OK("Key deleted", ss);
+        }
+
+        if (hKek) KSP_DeleteKey(hProv, hKek, 0);
+    }
+
+    /* ── Suite 26 : enumeration and cleanup ─────────────────────────────── */
     TEST_SUITE("EnumKeys and deletion");
 
     {

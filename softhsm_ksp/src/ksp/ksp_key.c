@@ -249,6 +249,49 @@ static SECURITY_STATUS GenerateForAlg(KSP_KEY *pKey)
     return NTE_BAD_ALGID;
 }
 
+/* Translate the key's export policy into the two PKCS#11 attributes that
+ * enforce it.
+ *
+ * These are separate attributes guarding separate operations, and the
+ * mapping is deliberately asymmetric:
+ *
+ *   CKA_EXTRACTABLE=FALSE  makes C_WrapKey answer CKR_KEY_UNEXTRACTABLE.
+ *   CKA_SENSITIVE=TRUE     makes C_GetAttributeValue refuse CKA_VALUE.
+ *
+ * So wrapped export needs only the first relaxed, and plaintext export
+ * needs both. Collapsing them into one boolean would hand a caller who
+ * asked for wrapped export the ability to read the key in the clear.
+ *
+ * With KSP_ALLOW_EXPORT_POLICY=0 the policy is ignored entirely and every
+ * key is created non-extractable, which is what every key was before this
+ * function existed. */
+static void KspExportAttributes(const KSP_KEY *pKey,
+                                CK_BBOOL *pbSensitive,
+                                CK_BBOOL *pbExtractable)
+{
+    DWORD dwPolicy = 0;
+
+#if KSP_ALLOW_EXPORT_POLICY
+    if (pKey)
+        dwPolicy = pKey->dwExportPolicy;
+#else
+    (void)pKey;
+#endif
+
+    /* Plaintext export implies wrapped export: a caller who may read the
+     * key in the clear can certainly have it wrapped. */
+    if (dwPolicy & NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG) {
+        *pbSensitive   = CK_FALSE;
+        *pbExtractable = CK_TRUE;
+    } else if (dwPolicy & NCRYPT_ALLOW_EXPORT_FLAG) {
+        *pbSensitive   = CK_TRUE;
+        *pbExtractable = CK_TRUE;
+    } else {
+        *pbSensitive   = CK_TRUE;
+        *pbExtractable = CK_FALSE;
+    }
+}
+
 /* Generate an RSA key pair in SoftHSM2 */
 SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
 {
@@ -263,10 +306,11 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
     CK_BYTE           pubExp[4];                 /* big-endian, minimal length */
     CK_ULONG          cbPubExp;
     CK_BBOOL          bTrue     = CK_TRUE;
-    CK_BBOOL          bFalse    = CK_FALSE;
     CK_BBOOL          bSign, bDecrypt;
     CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
     CK_OBJECT_CLASS   classPub  = CKO_PUBLIC_KEY;
+    CK_BBOOL          bSensitive, bExtractable;
+    KspExportAttributes(pKey, &bSensitive, &bExtractable);
 
     nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
@@ -294,8 +338,8 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
         { CKA_CLASS,       &classPriv,  sizeof(classPriv)  },
         { CKA_TOKEN,       &bTrue,      sizeof(bTrue)      },
         { CKA_LABEL,       szLabel,     (CK_ULONG)nLabelLen },
-        { CKA_SENSITIVE,   &bTrue,      sizeof(bTrue)      },
-        { CKA_EXTRACTABLE, &bFalse,     sizeof(bFalse)     },
+        { CKA_SENSITIVE,   &bSensitive,   sizeof(bSensitive)   },
+        { CKA_EXTRACTABLE, &bExtractable, sizeof(bExtractable) },
         { CKA_SIGN,        &bSign,      sizeof(bSign)      },
         { CKA_DECRYPT,     &bDecrypt,   sizeof(bDecrypt)   },
     };
@@ -335,11 +379,12 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
     char              szLabel[MAX_KEY_LABEL_LEN];
     int               nLabelLen;
     CK_BBOOL          bTrue  = CK_TRUE;
-    CK_BBOOL          bFalse = CK_FALSE;
     CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
     CK_OBJECT_CLASS   classPub  = CKO_PUBLIC_KEY;
     const char       *pbOid;
     CK_ULONG          cbOid;
+    CK_BBOOL          bSensitive, bExtractable;
+    KspExportAttributes(pKey, &bSensitive, &bExtractable);
 
     /* ECDH keys derive; ECDSA keys sign */
     CK_BBOOL bDerive = KSP_IsEcdhAlg(pKey->szAlgId) ? CK_TRUE : CK_FALSE;
@@ -367,8 +412,8 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
         { CKA_CLASS,       &classPriv, sizeof(classPriv) },
         { CKA_TOKEN,       &bTrue,     sizeof(bTrue)     },
         { CKA_LABEL,       szLabel,    (CK_ULONG)nLabelLen },
-        { CKA_SENSITIVE,   &bTrue,     sizeof(bTrue)     },
-        { CKA_EXTRACTABLE, &bFalse,    sizeof(bFalse)    },
+        { CKA_SENSITIVE,   &bSensitive,   sizeof(bSensitive)   },
+        { CKA_EXTRACTABLE, &bExtractable, sizeof(bExtractable) },
         { CKA_SIGN,        &bSign,     sizeof(bSign)     },
         { CKA_DERIVE,      &bDerive,   sizeof(bDerive)   },
     };
@@ -424,6 +469,8 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
     const char       *pbOid;
     CK_ULONG          cbOid;
     BOOL              bAgreement;
+    CK_BBOOL          bSensitive, bExtractable;
+    KspExportAttributes(pKey, &bSensitive, &bExtractable);
 
     nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
@@ -457,8 +504,8 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
         { CKA_KEY_TYPE,    &keyType,   sizeof(keyType)     },
         { CKA_TOKEN,       &bTrue,     sizeof(bTrue)       },
         { CKA_LABEL,       szLabel,    (CK_ULONG)nLabelLen },
-        { CKA_SENSITIVE,   &bTrue,     sizeof(bTrue)       },
-        { CKA_EXTRACTABLE, &bFalse,    sizeof(bFalse)      },
+        { CKA_SENSITIVE,   &bSensitive,   sizeof(bSensitive)   },
+        { CKA_EXTRACTABLE, &bExtractable, sizeof(bExtractable) },
         { CKA_SIGN,        bAgreement ? &bFalse : &bTrue, sizeof(bTrue) },
         { CKA_DERIVE,      bAgreement ? &bTrue : &bFalse, sizeof(bTrue) },
     };
@@ -510,11 +557,12 @@ SECURITY_STATUS KSP_GenerateMlDsaKeyPair(KSP_KEY *pKey)
     char              szLabel[MAX_KEY_LABEL_LEN];
     int               nLabelLen;
     CK_BBOOL          bTrue  = CK_TRUE;
-    CK_BBOOL          bFalse = CK_FALSE;
     CK_OBJECT_CLASS   classPriv = CKO_PRIVATE_KEY;
     CK_OBJECT_CLASS   classPub  = CKO_PUBLIC_KEY;
     CK_KEY_TYPE       keyType   = CKK_ML_DSA;
     CK_ULONG          ulParamSet;
+    CK_BBOOL          bSensitive, bExtractable;
+    KspExportAttributes(pKey, &bSensitive, &bExtractable);
 
     ulParamSet = P11_MlDsaParameterSet(pKey->szAlgId);
     if (ulParamSet == 0)
@@ -547,8 +595,8 @@ SECURITY_STATUS KSP_GenerateMlDsaKeyPair(KSP_KEY *pKey)
             { CKA_TOKEN,         &bTrue,      sizeof(bTrue)       },
             { CKA_LABEL,         szLabel,     (CK_ULONG)nLabelLen },
             { CKA_PARAMETER_SET, &ulParamSet, sizeof(ulParamSet)  },
-            { CKA_SENSITIVE,     &bTrue,      sizeof(bTrue)       },
-            { CKA_EXTRACTABLE,   &bFalse,     sizeof(bFalse)      },
+            { CKA_SENSITIVE,     &bSensitive,   sizeof(bSensitive)   },
+            { CKA_EXTRACTABLE,   &bExtractable, sizeof(bExtractable) },
             { CKA_SIGN,          &bTrue,      sizeof(bTrue)       },
         };
 
@@ -592,7 +640,6 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
     char              szLabel[MAX_KEY_LABEL_LEN];
     int               nLabelLen;
     CK_BBOOL          bTrue  = CK_TRUE;
-    CK_BBOOL          bFalse = CK_FALSE;
     CK_OBJECT_CLASS   classSecret = CKO_SECRET_KEY;
     CK_KEY_TYPE       keyType;
     CK_ULONG          ulValueLen;
@@ -601,6 +648,8 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
      * The two questions are separate, so they are separate flags. */
     BOOL              bCmac = (_wcsicmp(pKey->szAlgId,
                                         BCRYPT_AES_CMAC_ALGORITHM) == 0);
+    CK_BBOOL          bSensitive, bExtractable;
+    KspExportAttributes(pKey, &bSensitive, &bExtractable);
 
     nLabelLen = BuildScopedLabel(pKey, szLabel, sizeof(szLabel));
     if (nLabelLen <= 0)
@@ -654,8 +703,8 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
             { CKA_TOKEN,       &bTrue,       sizeof(bTrue)       },
             { CKA_LABEL,       szLabel,      (CK_ULONG)nLabelLen },
             { CKA_VALUE_LEN,   &ulValueLen,  sizeof(ulValueLen)  },
-            { CKA_SENSITIVE,   &bTrue,       sizeof(bTrue)       },
-            { CKA_EXTRACTABLE, &bFalse,      sizeof(bFalse)      },
+            { CKA_SENSITIVE,   &bSensitive,   sizeof(bSensitive)   },
+            { CKA_EXTRACTABLE, &bExtractable, sizeof(bExtractable) },
             { CKA_ENCRYPT,     &bCipher,     sizeof(bCipher)     },
             { CKA_DECRYPT,     &bCipher,     sizeof(bCipher)     },
             { CKA_SIGN,        &bMac,        sizeof(bMac)        },

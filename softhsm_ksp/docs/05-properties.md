@@ -26,6 +26,37 @@ correct route at all. It belongs in
 `NCryptEncrypt` / `NCryptDecrypt`, which the provider now reads. No test
 had ever exercised the property, which is why it survived.
 
+**`NCRYPT_EXPORT_POLICY_PROPERTY` decides whether a key can ever leave.**
+Settable only *before* `NCryptFinalizeKey`, because `CKA_SENSITIVE` and
+`CKA_EXTRACTABLE` are fixed on the token when the key is generated and
+PKCS#11 gives no way to relax them afterwards. Accepting it on a finalized
+key would return success and change nothing.
+
+The two flags guard **different** operations and map to **different**
+attributes. Collapsing them would hand a caller who asked only for wrapped
+export the ability to read the key in the clear:
+
+| Policy | `CKA_EXTRACTABLE` | `CKA_SENSITIVE` | Effect |
+|---|---|---|---|
+| *(unset — default)* | `FALSE` | `TRUE` | Nothing leaves the token |
+| `NCRYPT_ALLOW_EXPORT_FLAG` | `TRUE` | `TRUE` | `C_WrapKey` works; plaintext still refused |
+| `NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG` | `TRUE` | `FALSE` | `CKA_VALUE` readable, so `BCRYPT_KEY_DATA_BLOB` export works |
+
+`NCRYPT_ALLOW_ARCHIVING_FLAG` and `NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG`
+are about escrowing a copy with a third party — a different feature with a
+different threat model. They are refused by name rather than silently
+dropped. Unknown bits give `NTE_BAD_FLAGS`.
+
+**The provider does not second-guess the token.** `KSP_ExportKey` asks for
+`CKA_VALUE` and passes the token's answer through, so the two cannot
+disagree. A key created without the policy gets `CKR_ATTRIBUTE_SENSITIVE`
+mapped to its `SECURITY_STATUS`, which tells a caller "sealed key" rather
+than "something went wrong".
+
+Building with `-DKSP_ALLOW_EXPORT_POLICY=0` removes the property entirely
+and every key stays sealed, whatever the caller asks — the same shape as
+`KSP_RSA_MIN_BITS`.
+
 **`BCRYPT_MESSAGE_BLOCK_LENGTH` is the CFB feedback size in bytes.** Unset
 reads back as 1, which is CNG's documented default of 8-bit CFB — *not*
 the full block. Only 1 and the AES block size are accepted; PKCS#11
@@ -113,6 +144,37 @@ correct route at all. It belongs in
 `BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`, passed as `pPaddingInfo` to
 `NCryptEncrypt` / `NCryptDecrypt`, which the provider now reads. No test
 had ever exercised the property, which is why it survived.
+
+**`NCRYPT_EXPORT_POLICY_PROPERTY` decides whether a key can ever leave.**
+Settable only *before* `NCryptFinalizeKey`, because `CKA_SENSITIVE` and
+`CKA_EXTRACTABLE` are fixed on the token when the key is generated and
+PKCS#11 gives no way to relax them afterwards. Accepting it on a finalized
+key would return success and change nothing.
+
+The two flags guard **different** operations and map to **different**
+attributes. Collapsing them would hand a caller who asked only for wrapped
+export the ability to read the key in the clear:
+
+| Policy | `CKA_EXTRACTABLE` | `CKA_SENSITIVE` | Effect |
+|---|---|---|---|
+| *(unset — default)* | `FALSE` | `TRUE` | Nothing leaves the token |
+| `NCRYPT_ALLOW_EXPORT_FLAG` | `TRUE` | `TRUE` | `C_WrapKey` works; plaintext still refused |
+| `NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG` | `TRUE` | `FALSE` | `CKA_VALUE` readable, so `BCRYPT_KEY_DATA_BLOB` export works |
+
+`NCRYPT_ALLOW_ARCHIVING_FLAG` and `NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG`
+are about escrowing a copy with a third party — a different feature with a
+different threat model. They are refused by name rather than silently
+dropped. Unknown bits give `NTE_BAD_FLAGS`.
+
+**The provider does not second-guess the token.** `KSP_ExportKey` asks for
+`CKA_VALUE` and passes the token's answer through, so the two cannot
+disagree. A key created without the policy gets `CKR_ATTRIBUTE_SENSITIVE`
+mapped to its `SECURITY_STATUS`, which tells a caller "sealed key" rather
+than "something went wrong".
+
+Building with `-DKSP_ALLOW_EXPORT_POLICY=0` removes the property entirely
+and every key stays sealed, whatever the caller asks — the same shape as
+`KSP_RSA_MIN_BITS`.
 
 **`BCRYPT_MESSAGE_BLOCK_LENGTH` is the CFB feedback size in bytes.** Unset
 reads back as 1, which is CNG's documented default of 8-bit CFB — *not*

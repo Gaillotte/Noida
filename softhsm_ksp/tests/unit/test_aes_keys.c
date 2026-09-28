@@ -656,6 +656,153 @@ int main(void)
         KSP_FreeKey(hProv, hMacKey);
     }
 
+    /* ── Suite : NCRYPT_EXPORT_POLICY_PROPERTY (proposal A) ─────────────── */
+    TEST_SUITE("Export policy → CKA_SENSITIVE / CKA_EXTRACTABLE");
+
+    /* The two CNG flags guard DIFFERENT operations and map to DIFFERENT
+     * PKCS#11 attributes. CKA_EXTRACTABLE=FALSE is what makes C_WrapKey
+     * refuse; CKA_SENSITIVE=TRUE is what makes CKA_VALUE unreadable. A
+     * provider that collapsed them into one boolean would hand a caller who
+     * asked only for wrapped export the ability to read the key in clear,
+     * so each case below asserts BOTH attributes, not just the one the
+     * flag is named after. */
+    {
+        struct {
+            DWORD    dwPolicy;
+            CK_BBOOL bSensitive;
+            CK_BBOOL bExtractable;
+            const char *szWhat;
+        } aCases[] = {
+            { 0,
+              CK_TRUE,  CK_FALSE, "default: nothing leaves the token" },
+            { NCRYPT_ALLOW_EXPORT_FLAG,
+              CK_TRUE,  CK_TRUE,  "ALLOW_EXPORT: wrapped only" },
+            { NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG,
+              CK_FALSE, CK_TRUE,  "ALLOW_PLAINTEXT_EXPORT: readable" },
+            { NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG,
+              CK_FALSE, CK_TRUE,  "both flags: plaintext wins" },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(aCases) / sizeof(aCases[0]); i++) {
+            NCRYPT_KEY_HANDLE h = 0;
+            DWORD dwBits = 2048;
+
+            P11Mock_Reset();
+            g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+
+            ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"PolicyKey",
+                                        AT_SIGNATURE,
+                                        NCRYPT_PERSIST_ONLY_FLAG);
+            ASSERT_OK("Deferred key created", ss);
+
+            if (aCases[i].dwPolicy) {
+                ss = KSP_SetKeyProperty(hProv, h,
+                        NCRYPT_EXPORT_POLICY_PROPERTY,
+                        (PBYTE)&aCases[i].dwPolicy,
+                        sizeof(aCases[i].dwPolicy), 0);
+                ASSERT_OK("Export policy accepted before finalize", ss);
+            }
+            (void)KSP_SetKeyProperty(hProv, h, NCRYPT_LENGTH_PROPERTY,
+                                     (PBYTE)&dwBits, sizeof(dwBits), 0);
+
+            ss = KSP_FinalizeKey(hProv, h, 0);
+            ASSERT_OK("Key generated", ss);
+
+            ASSERT_EQ(aCases[i].szWhat,
+                      (DWORD)P11Mock_GetConfig()->lastGenSensitive,
+                      (DWORD)aCases[i].bSensitive);
+            ASSERT_EQ("and the matching CKA_EXTRACTABLE",
+                      (DWORD)P11Mock_GetConfig()->lastGenExtractable,
+                      (DWORD)aCases[i].bExtractable);
+
+            /* The policy reads back as asked, rather than the hard-coded
+             * zero this property used to return whatever was set. */
+            {
+                DWORD dwRead = 0xFFFFFFFF, cb = 0;
+                ss = KSP_GetKeyProperty(hProv, h,
+                        NCRYPT_EXPORT_POLICY_PROPERTY,
+                        (PBYTE)&dwRead, sizeof(dwRead), &cb, 0);
+                ASSERT_OK("Export policy readable", ss);
+                ASSERT_EQ("and reads back what was set",
+                          dwRead, aCases[i].dwPolicy);
+            }
+
+            /* Too late now: the attributes are on the token. Accepting it
+             * here would return success and change nothing. */
+            {
+                DWORD dwLate = NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
+                ASSERT_EQ("Setting the policy after finalize is refused",
+                    KSP_SetKeyProperty(hProv, h,
+                        NCRYPT_EXPORT_POLICY_PROPERTY,
+                        (PBYTE)&dwLate, sizeof(dwLate), 0),
+                    (SECURITY_STATUS)NTE_INVALID_HANDLE);
+            }
+
+            KSP_FreeKey(hProv, h);
+        }
+    }
+
+    /* A symmetric key takes the same route — it is the one whose material
+     * a caller can actually read back. */
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        DWORD dwPolicy = NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
+        DWORD dwBits = 256;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"PolicyAes", 0,
+                                    NCRYPT_PERSIST_ONLY_FLAG);
+        ASSERT_OK("Deferred AES key created", ss);
+        ASSERT_OK("Plaintext export policy set",
+            KSP_SetKeyProperty(hProv, h, NCRYPT_EXPORT_POLICY_PROPERTY,
+                               (PBYTE)&dwPolicy, sizeof(dwPolicy), 0));
+        (void)KSP_SetKeyProperty(hProv, h, NCRYPT_LENGTH_PROPERTY,
+                                 (PBYTE)&dwBits, sizeof(dwBits), 0);
+        ASSERT_OK("AES key generated", KSP_FinalizeKey(hProv, h, 0));
+
+        ASSERT_EQ("AES key is created non-sensitive",
+                  (DWORD)P11Mock_GetConfig()->lastGenSensitive, (DWORD)CK_FALSE);
+        ASSERT_EQ("and extractable",
+                  (DWORD)P11Mock_GetConfig()->lastGenExtractable, (DWORD)CK_TRUE);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Flag validation. Archiving is a different feature with a different
+     * threat model and is refused by name rather than quietly dropped. */
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        DWORD dw;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"FlagKey",
+                                    AT_SIGNATURE, NCRYPT_PERSIST_ONLY_FLAG);
+        ASSERT_OK("Deferred key created", ss);
+
+        dw = NCRYPT_ALLOW_ARCHIVING_FLAG;
+        ASSERT_EQ("Archiving is refused, not silently ignored",
+            KSP_SetKeyProperty(hProv, h, NCRYPT_EXPORT_POLICY_PROPERTY,
+                               (PBYTE)&dw, sizeof(dw), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        dw = 0x80000000;
+        ASSERT_EQ("An unknown flag bit is refused",
+            KSP_SetKeyProperty(hProv, h, NCRYPT_EXPORT_POLICY_PROPERTY,
+                               (PBYTE)&dw, sizeof(dw), 0),
+            (SECURITY_STATUS)NTE_BAD_FLAGS);
+
+        dw = NCRYPT_ALLOW_EXPORT_FLAG;
+        ASSERT_EQ("A wrong-sized value is refused",
+            KSP_SetKeyProperty(hProv, h, NCRYPT_EXPORT_POLICY_PROPERTY,
+                               (PBYTE)&dw, 2, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        KSP_FreeKey(hProv, h);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

@@ -906,8 +906,26 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
 - `NCRYPT_MACHINE_KEY_FLAG` scopes keys by a `CKA_LABEL` prefix (`m/`, `u/`).
   **Namespacing, not isolation** — anyone who can log into the token reads
   both scopes. Use separate tokens if separation must be enforced.
-- Symmetric key material can be imported (`BCRYPT_KEY_DATA_BLOB`) but never
-  exported: every key is `CKA_EXTRACTABLE=FALSE`
+- **Key export follows `NCRYPT_EXPORT_POLICY_PROPERTY`, set before
+  `FinalizeKey`.** The default is unchanged — every key is
+  `CKA_SENSITIVE=TRUE` / `CKA_EXTRACTABLE=FALSE` and nothing leaves the
+  token. `NCRYPT_ALLOW_EXPORT_FLAG` relaxes `CKA_EXTRACTABLE` only, so the
+  key can leave **wrapped** under a KEK already on the token while plaintext
+  export still fails; `NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG` also relaxes
+  `CKA_SENSITIVE`, making `CKA_VALUE` readable for
+  `BCRYPT_KEY_DATA_BLOB` export. **The two are different permissions on
+  different attributes and must never be collapsed.** The archiving flags
+  are refused by name. Setting the property after finalize is refused: the
+  attributes are fixed on the token at generation. Build with
+  `-DKSP_ALLOW_EXPORT_POLICY=0` to remove the property and seal every key
+- **SoftHSM2's OAEP accepts only SHA-1.** `SoftHSM.cpp` rejects any
+  `hashAlg` other than `CKM_SHA_1` and any `mgf` other than
+  `CKG_MGF1_SHA1`. The provider maps SHA-1/224/256/384/512 and the
+  capability probe cannot narrow this: `C_GetMechanismList` reports
+  `CKM_RSA_PKCS_OAEP` as present, and the hash restriction lives inside the
+  mechanism *parameters*, which the probe does not see. **A mechanism being
+  advertised does not mean every parameterisation of it works** — the probe
+  is mechanism-granular and some limits are finer than that
 - RSA sizes below `KSP_RSA_MIN_BITS` (2048 by default), above 16384, or not a
   multiple of 64 → `NTE_BAD_LEN`
 - AES sizes outside {128, 192, 256} → `NTE_BAD_LEN`

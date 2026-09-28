@@ -632,6 +632,17 @@ static CK_RV mock_GenerateKey(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
             if (t[i].type == CKA_WRAP && t[i].pValue)
                 g_cfg.lastGenWrap = *(CK_BBOOL *)t[i].pValue;
     }
+    g_cfg.lastGenSensitive   = 0xFF;
+    g_cfg.lastGenExtractable = 0xFF;
+    {
+        CK_ULONG i;
+        for (i = 0; t && i < n; i++) {
+            if (t[i].type == CKA_SENSITIVE && t[i].pValue)
+                g_cfg.lastGenSensitive = *(CK_BBOOL *)t[i].pValue;
+            else if (t[i].type == CKA_EXTRACTABLE && t[i].pValue)
+                g_cfg.lastGenExtractable = *(CK_BBOOL *)t[i].pValue;
+        }
+    }
     if (g_cfg.rv_GenerateKey != CKR_OK) return g_cfg.rv_GenerateKey;
     /* Distinct handles per key. Handing every generated key the same
      * object handle made two different keys indistinguishable, so a test
@@ -651,6 +662,21 @@ static CK_RV mock_GenerateKeyPair(
     capture_label(privT, nPriv);
     if (g_cfg.lastLabel[0] == '\0') capture_label(pubT, nPub);
     if (m) g_cfg.lastGenerateKeyPairMech = m->mechanism;
+
+    /* From the PRIVATE half: the public key is public by definition, so
+     * its sensitivity says nothing. */
+    g_cfg.lastGenSensitive   = 0xFF;
+    g_cfg.lastGenExtractable = 0xFF;
+    {
+        CK_ULONG i;
+        for (i = 0; privT && i < nPriv; i++) {
+            if (privT[i].type == CKA_SENSITIVE && privT[i].pValue)
+                g_cfg.lastGenSensitive = *(CK_BBOOL *)privT[i].pValue;
+            else if (privT[i].type == CKA_EXTRACTABLE && privT[i].pValue)
+                g_cfg.lastGenExtractable = *(CK_BBOOL *)privT[i].pValue;
+        }
+    }
+
     if (g_cfg.rv_GenerateKeyPair != CKR_OK) return g_cfg.rv_GenerateKeyPair;
     *phPub  = 0x20;
     *phPriv = 0x21;
