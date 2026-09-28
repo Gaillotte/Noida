@@ -486,6 +486,106 @@ int main(void)
         KSP_Free((void *)(ULONG_PTR)h);
     }
 
+    /* ── Suite : AuthTagLength and MessageBlockLength (phase 6) ────────── */
+    TEST_SUITE("AuthTagLength and MessageBlockLength");
+
+    /* Both arrived in phase 6 and were exercised only against the live
+     * token, so the mock suite had no opinion on them at all. */
+    {
+        NCRYPT_KEY_HANDLE hAes = make_test_key(ALG_AES, 256, 0, TRUE);
+        KSP_KEY          *k    = (KSP_KEY *)(ULONG_PTR)hAes;
+        NCRYPT_KEY_HANDLE hRsaK = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
+        BCRYPT_AUTH_TAG_LENGTHS_STRUCT tags;
+        DWORD cb = 0;
+        DWORD dwBlock;
+        BYTE  abJunk[4] = { 1, 2, 3, 4 };
+
+        k->dwKeyClass = KSP_KEY_CLASS_SYMMETRIC;
+
+        /* AuthTagLength is a read-only ALGORITHM property. Setting it used
+         * to copy the caller's bytes into the key's AAD buffer. */
+        ASSERT_EQ("Setting AuthTagLength is refused",
+            KSP_SetKeyProperty(hProv, hAes, NCRYPT_AUTH_TAG_LENGTH,
+                               abJunk, sizeof(abJunk), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        /* An unauthenticated mode has no tag, so there is no range. */
+        wcscpy_s(k->szChainingMode, MAX_ALG_ID_LEN, BCRYPT_CHAIN_MODE_CBC);
+        ASSERT_EQ("CBC reports no tag range",
+            KSP_GetKeyProperty(hProv, hAes, NCRYPT_AUTH_TAG_LENGTH,
+                               (PBYTE)&tags, sizeof(tags), &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        wcscpy_s(k->szChainingMode, MAX_ALG_ID_LEN, BCRYPT_CHAIN_MODE_GCM);
+        memset(&tags, 0, sizeof(tags));
+        ASSERT_OK("GCM reports a tag range",
+            KSP_GetKeyProperty(hProv, hAes, NCRYPT_AUTH_TAG_LENGTH,
+                               (PBYTE)&tags, sizeof(tags), &cb, 0));
+        ASSERT_EQ("of the documented struct size", cb, (DWORD)sizeof(tags));
+        ASSERT("12..16 in steps of 1",
+               tags.dwMinLength == 12 && tags.dwMaxLength == 16 &&
+               tags.dwIncrement == 1);
+
+        wcscpy_s(k->szChainingMode, MAX_ALG_ID_LEN, BCRYPT_CHAIN_MODE_CCM);
+        memset(&tags, 0, sizeof(tags));
+        ASSERT_OK("CCM reports a tag range",
+            KSP_GetKeyProperty(hProv, hAes, NCRYPT_AUTH_TAG_LENGTH,
+                               (PBYTE)&tags, sizeof(tags), &cb, 0));
+        ASSERT("4..16 in steps of 2 — CCM does not take GCM's set",
+               tags.dwMinLength == 4 && tags.dwMaxLength == 16 &&
+               tags.dwIncrement == 2);
+
+        ASSERT_EQ("An RSA key has no tag range at all",
+            KSP_GetKeyProperty(hProv, hRsaK, NCRYPT_AUTH_TAG_LENGTH,
+                               (PBYTE)&tags, sizeof(tags), &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        /* MessageBlockLength: the CFB feedback size. */
+        dwBlock = 0;
+        ASSERT_OK("Unset MessageBlockLength reads back",
+            KSP_GetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), &cb, 0));
+        ASSERT_EQ("as 1 — CNG's default is 8-bit CFB, not the full block",
+                  dwBlock, 1U);
+
+        dwBlock = AES_BLOCK_SIZE;
+        ASSERT_OK("The block size is accepted",
+            KSP_SetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), 0));
+        dwBlock = 0;
+        ASSERT_OK("and reads back",
+            KSP_GetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), &cb, 0));
+        ASSERT_EQ("as the block size", dwBlock, (DWORD)AES_BLOCK_SIZE);
+
+        dwBlock = 1;
+        ASSERT_OK("1 is accepted",
+            KSP_SetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), 0));
+
+        /* PKCS#11 has mechanisms for 1, 8, 64 and 128-bit feedback; this
+         * provider wires the two CNG reaches. Anything else is refused
+         * rather than rounded to a different cipher. */
+        dwBlock = 8;
+        ASSERT_EQ("An unwired feedback size is refused",
+            KSP_SetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        ASSERT_EQ("A wrong-sized value is refused",
+            KSP_SetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, 2, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("and an asymmetric key has no feedback size",
+            KSP_SetKeyProperty(hProv, hRsaK, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        KSP_Free((void *)(ULONG_PTR)hAes);
+        KSP_Free((void *)(ULONG_PTR)hRsaK);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

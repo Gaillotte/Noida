@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 22 test suites, 1600 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 22 test suites, 1623 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -184,7 +184,14 @@ Windows x64 and **64 on Linux**, so a spelling check would have demanded a
 change that doubled the width. That mistake was made first and caught by
 running it.
 
-Unit 1582 → **1600 assertions**, live token 216 → **230**.
+Unit 1582 → **1623 assertions**, live token 216 → **230**. Coverage
+87.1 % → **86.2 % lines at 100 % functions**, and the fall is real rather
+than cosmetic: sessions 13 and 14 added 165 lines (3119 → 3284) and much
+of the CCM, CFB and raw-RSA work is only reachable against a live token.
+**The 87.1 % figure had not been re-measured since session 11** — two
+sessions of new code went in under a stale number, which is the same
+failure mode as a stale document. Adding unit coverage for the phase-6
+properties and the VerifySignature branches recovered 85.0 % → 86.2 %.
 
 ### Session 13 — Phase 6: the three mechanisms SoftHSM2 cannot do
 
@@ -958,8 +965,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 22 suites, 1600 assertions
-make coverage      # → coverage_html/index.html (87.1 % lines, 100 % functions)
+make run           # 22 suites, 1623 assertions
+make coverage      # → coverage_html/index.html (86.2 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 

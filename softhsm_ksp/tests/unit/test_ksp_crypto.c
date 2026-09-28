@@ -1031,6 +1031,47 @@ int main(void)
             (SECURITY_STATUS)NTE_BAD_SIGNATURE);
         P11Mock_GetConfig()->rv_Verify = CKR_OK;
 
+        /* PSS carries its parameters in pPaddingInfo, exactly as signing
+         * does — a verifier that ignored them would check against the
+         * wrong salt length and hash. */
+        {
+            BCRYPT_PSS_PADDING_INFO pssInfo;
+            pssInfo.pszAlgId = BCRYPT_SHA384_ALGORITHM;
+            pssInfo.cbSalt   = 48;
+
+            P11Mock_ResetCalls();
+            ASSERT_OK("RSA-PSS signature verified",
+                KSP_VerifySignature(hProv, hKey, &pssInfo, (PBYTE)"hash", 4,
+                                    (PBYTE)"sig", 3, NCRYPT_PAD_PSS_FLAG));
+            ASSERT_EQ("with CKM_RSA_PKCS_PSS",
+                      P11Mock_GetConfig()->lastVerifyMech,
+                      (CK_MECHANISM_TYPE)CKM_RSA_PKCS_PSS);
+        }
+
+        /* A token that refuses C_VerifyInit reports its own reason, not a
+         * bad-signature verdict — the two mean very different things to a
+         * caller. */
+        P11Mock_ResetCalls();
+        P11Mock_GetConfig()->rv_VerifyInit = CKR_KEY_FUNCTION_NOT_PERMITTED;
+        ASSERT("A refused C_VerifyInit is not reported as a bad signature",
+               KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"hash", 4,
+                                   (PBYTE)"sig", 3, NCRYPT_PAD_PKCS1_FLAG)
+               != (SECURITY_STATUS)NTE_BAD_SIGNATURE);
+        ASSERT_EQ("and C_Verify is never reached",
+                  (DWORD)P11Mock_GetCalls()->nVerify, 0U);
+        P11Mock_GetConfig()->rv_VerifyInit = CKR_OK;
+
+        /* An algorithm the provider cannot map is refused before any
+         * session is taken. */
+        wcscpy_s(k->szAlgId, MAX_ALG_ID_LEN, L"NoSuchAlgorithm");
+        P11Mock_ResetCalls();
+        ASSERT("An unresolvable algorithm is refused",
+               KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"h", 1,
+                                   (PBYTE)"s", 1, 0) != ERROR_SUCCESS);
+        ASSERT_EQ("without calling the token",
+                  (DWORD)P11Mock_GetCalls()->nVerifyInit, 0U);
+        wcscpy_s(k->szAlgId, MAX_ALG_ID_LEN, ALG_RSA);
+
         /* A key with no public object cannot verify, and must say so
          * rather than reaching for the private one. */
         k->hPubKey = CK_INVALID_HANDLE;
