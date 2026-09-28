@@ -22,6 +22,7 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [11 — CNG KSP market comparison](./11-market-comparison.md) | Capability audit against Microsoft, AWS, Utimaco, Thales, Entrust and Securosys providers, with evidence grades on every claim |
 | [12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) | Every function, mechanism, attribute and parameter a token must provide, in capability tiers, with a backend evaluation checklist |
 | [13 — Roadmap to market parity](./13-roadmap.md) | Why the Windows build has never worked, the six defects behind it, and the phased plan to interface parity |
+| [14 — Closing the Partial rows](./14-partial-remediation-plan.md) | What to do about each of the 14 Partial capabilities: four are fixable on SoftHSM2, one is improvable, nine are blocked outside this repository or are deliberate positions |
 
 ### Generated deliverables
 
