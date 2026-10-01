@@ -12,6 +12,7 @@
 #include "../../src/ksp/ksp_crypto.h"
 #include "../../src/ksp/ksp_properties.h"
 #include "../../src/ksp/ksp_provider.h"
+#include "../../src/pkcs11/p11_caps.h"
 #include "../../src/common/config.h"
 #include "../../src/common/memory.h"
 #include "test_framework.h"
@@ -24,7 +25,18 @@ P11_CONTEXT *P11_GetContext(void) { return &g_testCtx; }
 SECURITY_STATUS P11_Initialize(void)             { return ERROR_SUCCESS; }
 SECURITY_STATUS P11_SessionPool_Initialize(void) { return ERROR_SUCCESS; }
 
-SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
+/* The scope parameter is not used here: these suites run against one mock
+ * token, which is a single-token deployment, and PoolFor() collapses every
+ * scope onto one pool in that configuration.
+ *
+ * p11_session.h is included above so the COMPILER checks this stub against
+ * the real prototype. It was not, and when P11_AcquireSession gained the
+ * scope parameter every one of these stubs kept its old shape: no
+ * diagnostic, because the mismatch is across translation units, and then
+ * ten segfaults as the scope argument arrived in the pointer parameter. A
+ * stub that is not checked against the thing it stands in for is a trap
+ * waiting for the next signature change. */
+SECURITY_STATUS P11_AcquireSession(int nScope, CK_SESSION_HANDLE *ph)
 {
     *ph = (CK_SESSION_HANDLE)1;
     return ERROR_SUCCESS;
@@ -654,6 +666,120 @@ int main(void)
         ASSERT_EQ("using CKM_AES_CMAC", P11Mock_GetConfig()->lastSignMech,
                   (CK_MECHANISM_TYPE)CKM_AES_CMAC);
         KSP_FreeKey(hProv, hMacKey);
+    }
+
+    /* ── Suite : CFB feedback size → mechanism (proposal D) ─────────────── */
+    TEST_SUITE("CFB feedback size selects the mechanism");
+
+    /* CNG states the feedback size in BYTES, PKCS#11 names a mechanism per
+     * size in BITS, and all three sizes CNG can express have one.
+     *
+     * This is checked here rather than against a live token because NO
+     * token available in this workspace implements CKM_AES_CFB64: SoftHSM2
+     * has no CFB at all and Kryoptic advertises only CFB8 (0x2106) and
+     * CFB128 (0x2107). The mapping is therefore verified against a mock
+     * told to advertise it, and the live suite's CFB64 case is gated on the
+     * probe and skips. Saying so is better than implying the mapping has
+     * been proven end to end — it has not, and cannot be here. */
+    {
+        static const CK_MECHANISM_TYPE aCfbToken[] = {
+            CKM_AES_KEY_GEN, CKM_AES_CBC, CKM_AES_ECB,
+            CKM_AES_CFB8, CKM_AES_CFB64, CKM_AES_CFB128,
+        };
+        struct { DWORD cbBlock; CK_MECHANISM_TYPE mech; const char *szWhat; }
+        aCases[] = {
+            { 0,  CKM_AES_CFB8,   "unset  → CKM_AES_CFB8 (CNG's default)" },
+            { 1,  CKM_AES_CFB8,   "1 byte → CKM_AES_CFB8" },
+            { 8,  CKM_AES_CFB64,  "8 bytes → CKM_AES_CFB64" },
+            { 16, CKM_AES_CFB128, "16 bytes → CKM_AES_CFB128" },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(aCases) / sizeof(aCases[0]); i++) {
+            NCRYPT_KEY_HANDLE h = 0;
+            BYTE  abIv[AES_BLOCK_SIZE];
+            BYTE  abPlain[32], abCipher[128];
+            DWORD cb = 0;
+
+            memset(abIv, 0x22, sizeof(abIv));
+            memset(abPlain, 0x33, sizeof(abPlain));
+
+            P11Mock_Reset();
+            g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+            P11Mock_SetMechanisms(aCfbToken,
+                                  sizeof(aCfbToken) / sizeof(aCfbToken[0]));
+            P11_ProbeCapabilities();
+            P11Mock_GetConfig()->cbCiphertext = sizeof(abPlain);
+
+            ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"CfbKey", 0, 0);
+            ASSERT_OK("AES key created", ss);
+
+            ss = KSP_SetKeyProperty(hProv, h, NCRYPT_CHAINING_MODE_PROPERTY,
+                    (PBYTE)BCRYPT_CHAIN_MODE_CFB,
+                    (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CFB) + 1) * sizeof(WCHAR)),
+                    0);
+            ASSERT_OK("CFB selected", ss);
+
+            if (aCases[i].cbBlock) {
+                ss = KSP_SetKeyProperty(hProv, h, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                        (PBYTE)&aCases[i].cbBlock,
+                        sizeof(aCases[i].cbBlock), 0);
+                ASSERT_OK("Feedback size set", ss);
+            }
+            ss = KSP_SetKeyProperty(hProv, h, NCRYPT_INITIALIZATION_VECTOR,
+                                    abIv, sizeof(abIv), 0);
+            ASSERT_OK("IV set", ss);
+
+            cb = 0;
+            ss = KSP_Encrypt(hProv, h, abPlain, sizeof(abPlain), NULL,
+                             abCipher, sizeof(abCipher), &cb, 0);
+            ASSERT_OK("CFB encryption", ss);
+            ASSERT_EQ(aCases[i].szWhat,
+                      P11Mock_GetConfig()->lastEncryptMech, aCases[i].mech);
+
+            KSP_FreeKey(hProv, h);
+        }
+
+        /* A token with CFB8 but not CFB64 must refuse 8 bytes rather than
+         * fall back to a feedback size the caller did not ask for. */
+        {
+            static const CK_MECHANISM_TYPE aNoCfb64[] = {
+                CKM_AES_KEY_GEN, CKM_AES_CBC, CKM_AES_CFB8, CKM_AES_CFB128,
+            };
+            NCRYPT_KEY_HANDLE h = 0;
+            BYTE  abIv[AES_BLOCK_SIZE];
+            BYTE  abPlain[32], abCipher[128];
+            DWORD cb = 0, cbBlock = 8;
+
+            memset(abIv, 0x22, sizeof(abIv));
+            memset(abPlain, 0x33, sizeof(abPlain));
+
+            P11Mock_Reset();
+            g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+            P11Mock_SetMechanisms(aNoCfb64,
+                                  sizeof(aNoCfb64) / sizeof(aNoCfb64[0]));
+            P11_ProbeCapabilities();
+
+            ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"CfbKey2", 0, 0);
+            ASSERT_OK("AES key created", ss);
+            (void)KSP_SetKeyProperty(hProv, h, NCRYPT_CHAINING_MODE_PROPERTY,
+                    (PBYTE)BCRYPT_CHAIN_MODE_CFB,
+                    (DWORD)((wcslen(BCRYPT_CHAIN_MODE_CFB) + 1) * sizeof(WCHAR)),
+                    0);
+            (void)KSP_SetKeyProperty(hProv, h, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                                     (PBYTE)&cbBlock, sizeof(cbBlock), 0);
+            (void)KSP_SetKeyProperty(hProv, h, NCRYPT_INITIALIZATION_VECTOR,
+                                     abIv, sizeof(abIv), 0);
+
+            ss = KSP_Encrypt(hProv, h, abPlain, sizeof(abPlain), NULL,
+                             abCipher, sizeof(abCipher), &cb, 0);
+            ASSERT_EQ("A token without CFB64 refuses 8-byte feedback rather "
+                      "than substituting another size",
+                      ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+            KSP_FreeKey(hProv, h);
+        }
+
+        P11_ReleaseCapabilities();
     }
 
     /* ── Suite : NCRYPT_EXPORT_POLICY_PROPERTY (proposal A) ─────────────── */

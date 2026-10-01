@@ -7,11 +7,38 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* Static session pool */
-static P11_SESSION_ENTRY g_aPool[P11_SESSION_POOL_SIZE];
-static HANDLE            g_hSemaphore = NULL;
+/* Static session pools — one per scope (LIFE-08).
+ *
+ * A session belongs to a token, so two scopes on two tokens cannot share a
+ * pool: a pooled session logged in to the user token can never serve a
+ * machine-scope operation, and handing it over would read the wrong token's
+ * keys under a successful status.
+ *
+ * Both pools exist unconditionally and the second is simply unused when the
+ * deployment has one token — PoolFor() collapses every scope onto pool 0.
+ * That collapse is the reason a single-token deployment still opens at most
+ * P11_SESSION_POOL_SIZE sessions rather than twice that, and the reason it
+ * is a property of one function instead of a rule to remember at every call
+ * site. */
+static P11_SESSION_ENTRY g_aPool[P11_SCOPE_COUNT][P11_SESSION_POOL_SIZE];
+static HANDLE            g_ahSemaphore[P11_SCOPE_COUNT];
 static CRITICAL_SECTION  g_csPool;
 static BOOL              g_bPoolInit  = FALSE;
+
+/* Which pool serves a scope.
+ *
+ * Without per-scope tokens every scope uses pool 0, because there is only
+ * one token and splitting the pool would halve the concurrency for no
+ * reason. P11_SCOPE_USER is 0 precisely so this is the identity in the
+ * common case. */
+static int PoolFor(int nScope)
+{
+    if (nScope < 0 || nScope >= P11_SCOPE_COUNT)
+        return P11_SCOPE_USER;
+    if (!P11_HasPerScopeTokens())
+        return P11_SCOPE_USER;
+    return nScope;
+}
 
 /* PIN override set through NCryptSetProperty(NCRYPT_PIN_PROPERTY).
  * Guarded by g_csPin because it is read on every lazy session open and can
@@ -65,15 +92,40 @@ void P11_ClearPin(void)
     LeaveCriticalSection(&g_csPin);
 }
 
-/* Copy the PIN to use into the caller's buffer.
+/* Copy the PIN to use for a scope into the caller's buffer.
  *
- * Preference: the value set through the provider property, then
- * SOFTHSM2_PIN, then the compiled-in default. */
-static void GetEffectivePin(char *pszOut, size_t cbOut)
+ * Preference: the scope's own PIN variable, then the value set through the
+ * provider property, then SOFTHSM2_PIN, then the compiled-in default.
+ *
+ * The scope's own variable comes FIRST, ahead of the provider property. That
+ * ordering is deliberate and is the opposite of the usual rule here, where a
+ * property outranks the environment because a property is a deliberate act
+ * by the process and a variable is ambient. It is inverted because the two
+ * are not answers to the same question: the property carries ONE PIN and
+ * cannot distinguish the scopes, so treating it as an override would send
+ * the user PIN to the machine token — exactly the failure that per-scope
+ * tokens exist to prevent, and it would fail closed as a login error rather
+ * than loudly.
+ *
+ * With per-scope tokens configured and no per-scope PINs, both tokens are
+ * logged into with the same credential. That is correct for two tokens
+ * initialised identically and is NOT isolation: two tokens sharing one PIN
+ * share one credential. The documentation says so rather than the code
+ * guessing. */
+static void GetEffectivePin(int nScope, char *pszOut, size_t cbOut)
 {
-    DWORD dwLen;
+    DWORD       dwLen;
+    const char *szVar;
 
     InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    if (P11_HasPerScopeTokens()) {
+        szVar = (nScope == P11_SCOPE_MACHINE) ? KSP_MACHINE_PIN_ENV
+                                              : KSP_USER_PIN_ENV;
+        dwLen = GetEnvironmentVariableA(szVar, pszOut, (DWORD)cbOut);
+        if (dwLen > 0 && dwLen < cbOut)
+            return;
+    }
 
     EnterCriticalSection(&g_csPin);
     if (g_bPinSet) {
@@ -91,7 +143,7 @@ static void GetEffectivePin(char *pszOut, size_t cbOut)
 /* Initialise the session pool */
 SECURITY_STATUS P11_SessionPool_Initialize(void)
 {
-    int i;
+    int i, p;
 
     if (g_bPoolInit)
         return ERROR_SUCCESS;
@@ -99,14 +151,27 @@ SECURITY_STATUS P11_SessionPool_Initialize(void)
     InitializeCriticalSection(&g_csPool);
     memset(g_aPool, 0, sizeof(g_aPool));
 
-    for (i = 0; i < P11_SESSION_POOL_SIZE; i++)
-        InitializeCriticalSection(&g_aPool[i].cs);
+    for (p = 0; p < P11_SCOPE_COUNT; p++) {
+        for (i = 0; i < P11_SESSION_POOL_SIZE; i++)
+            InitializeCriticalSection(&g_aPool[p][i].cs);
 
-    g_hSemaphore = CreateSemaphoreW(NULL, P11_SESSION_POOL_SIZE,
-                                    P11_SESSION_POOL_SIZE, NULL);
-    if (!g_hSemaphore) {
-        DeleteCriticalSection(&g_csPool);
-        return NTE_NO_MEMORY;
+        g_ahSemaphore[p] = CreateSemaphoreW(NULL, P11_SESSION_POOL_SIZE,
+                                            P11_SESSION_POOL_SIZE, NULL);
+        if (!g_ahSemaphore[p]) {
+            /* Unwind what this call created, so a failed initialise leaves
+             * nothing behind for the retry OPS-08 exists to allow. */
+            int q, j;
+            for (q = 0; q <= p; q++) {
+                for (j = 0; j < P11_SESSION_POOL_SIZE; j++)
+                    DeleteCriticalSection(&g_aPool[q][j].cs);
+                if (g_ahSemaphore[q]) {
+                    CloseHandle(g_ahSemaphore[q]);
+                    g_ahSemaphore[q] = NULL;
+                }
+            }
+            DeleteCriticalSection(&g_csPool);
+            return NTE_NO_MEMORY;
+        }
     }
 
     g_bPoolInit = TRUE;
@@ -116,7 +181,7 @@ SECURITY_STATUS P11_SessionPool_Initialize(void)
 /* Destroy the session pool */
 void P11_SessionPool_Finalize(void)
 {
-    int i;
+    int i, p;
     P11_CONTEXT *pCtx;
 
     if (!g_bPoolInit)
@@ -124,17 +189,19 @@ void P11_SessionPool_Finalize(void)
 
     pCtx = P11_GetContext();
 
-    for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (g_aPool[i].hSession != CK_INVALID_HANDLE && pCtx->pFunctionList) {
-            pCtx->pFunctionList->C_CloseSession(g_aPool[i].hSession);
-            g_aPool[i].hSession = CK_INVALID_HANDLE;
+    for (p = 0; p < P11_SCOPE_COUNT; p++) {
+        for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
+            if (g_aPool[p][i].hSession != CK_INVALID_HANDLE &&
+                pCtx->pFunctionList) {
+                pCtx->pFunctionList->C_CloseSession(g_aPool[p][i].hSession);
+                g_aPool[p][i].hSession = CK_INVALID_HANDLE;
+            }
+            DeleteCriticalSection(&g_aPool[p][i].cs);
         }
-        DeleteCriticalSection(&g_aPool[i].cs);
-    }
-
-    if (g_hSemaphore) {
-        CloseHandle(g_hSemaphore);
-        g_hSemaphore = NULL;
+        if (g_ahSemaphore[p]) {
+            CloseHandle(g_ahSemaphore[p]);
+            g_ahSemaphore[p] = NULL;
+        }
     }
 
     DeleteCriticalSection(&g_csPool);
@@ -143,14 +210,18 @@ void P11_SessionPool_Finalize(void)
 }
 
 /* Open a new PKCS#11 session and perform login */
-static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
+static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry,
+                                           int nScope)
 {
     P11_CONTEXT *pCtx = P11_GetContext();
     CK_RV        rv;
     char         szPin[P11_MAX_PIN_LEN + 1] = {0};
 
+    /* The scope's token, not the context's. With one token these are the
+     * same slot; with two, using pCtx->slotId here would put every machine
+     * key on the user token and report success. */
     rv = pCtx->pFunctionList->C_OpenSession(
-        pCtx->slotId,
+        P11_GetScopeSlot(nScope),
         CKF_SERIAL_SESSION | CKF_RW_SESSION,
         NULL, NULL,
         &pEntry->hSession);
@@ -160,7 +231,7 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
         return P11RvToSecStatus(rv);
     }
 
-    GetEffectivePin(szPin, sizeof(szPin));
+    GetEffectivePin(nScope, szPin, sizeof(szPin));
 
     rv = pCtx->pFunctionList->C_Login(
         pEntry->hSession,
@@ -179,7 +250,9 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
     }
 
     pEntry->bLoggedIn = TRUE;
-    LOG_INFO("Session opened: handle=0x%lX", (unsigned long)pEntry->hSession);
+    LOG_INFO("Session opened: handle=0x%lX on slot %lu (scope %d)",
+             (unsigned long)pEntry->hSession,
+             (unsigned long)P11_GetScopeSlot(nScope), nScope);
     return ERROR_SUCCESS;
 }
 
@@ -240,17 +313,28 @@ static void DiscardSession(P11_SESSION_ENTRY *pEntry)
 }
 
 /* Acquire a session from the pool */
-SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
+SECURITY_STATUS P11_AcquireSession(int nScope, CK_SESSION_HANDLE *phSession)
 {
     DWORD  dwWait;
-    int    i;
+    int    i, p;
     SECURITY_STATUS ss;
 
     if (!phSession)
         return NTE_INVALID_PARAMETER;
 
+    /* Bind the slot if nothing has yet. This is the point at which token
+     * selection closes — a session belongs to a token, so there is no
+     * later moment at which the choice could still be honoured. It also
+     * has to happen before PoolFor(), which asks whether the deployment
+     * has per-scope tokens, and that is not known until the slots resolve. */
+    ss = P11_EnsureSlotSelected();
+    if (ss != ERROR_SUCCESS)
+        return ss;
+
+    p = PoolFor(nScope);
+
     /* Wait for a session to become available (5 s timeout) */
-    dwWait = WaitForSingleObject(g_hSemaphore, 5000);
+    dwWait = WaitForSingleObject(g_ahSemaphore[p], 5000);
     if (dwWait != WAIT_OBJECT_0) {
         LOG_ERROR("P11_AcquireSession - timeout", NTE_NO_MEMORY);
         return NTE_NO_MEMORY;
@@ -260,50 +344,60 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
 
     /* Find a free entry */
     for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (!g_aPool[i].bInUse) {
-            g_aPool[i].bInUse = TRUE;
+        if (!g_aPool[p][i].bInUse) {
+            g_aPool[p][i].bInUse = TRUE;
             LeaveCriticalSection(&g_csPool);
 
             /* Open the session if it does not exist yet, or reopen it if
              * the one we cached has since been closed or logged out. */
-            EnterCriticalSection(&g_aPool[i].cs);
-            if (g_aPool[i].hSession != CK_INVALID_HANDLE &&
-                !SessionIsUsable(&g_aPool[i])) {
-                DiscardSession(&g_aPool[i]);
+            EnterCriticalSection(&g_aPool[p][i].cs);
+            if (g_aPool[p][i].hSession != CK_INVALID_HANDLE &&
+                !SessionIsUsable(&g_aPool[p][i])) {
+                DiscardSession(&g_aPool[p][i]);
             }
-            if (g_aPool[i].hSession == CK_INVALID_HANDLE) {
-                ss = OpenAndLoginSession(&g_aPool[i]);
+            if (g_aPool[p][i].hSession == CK_INVALID_HANDLE) {
+                ss = OpenAndLoginSession(&g_aPool[p][i], nScope);
                 if (ss != ERROR_SUCCESS) {
-                    g_aPool[i].bInUse = FALSE;
-                    LeaveCriticalSection(&g_aPool[i].cs);
-                    ReleaseSemaphore(g_hSemaphore, 1, NULL);
+                    g_aPool[p][i].bInUse = FALSE;
+                    LeaveCriticalSection(&g_aPool[p][i].cs);
+                    ReleaseSemaphore(g_ahSemaphore[p], 1, NULL);
                     return ss;
                 }
             }
-            LeaveCriticalSection(&g_aPool[i].cs);
+            LeaveCriticalSection(&g_aPool[p][i].cs);
 
-            *phSession = g_aPool[i].hSession;
+            *phSession = g_aPool[p][i].hSession;
             return ERROR_SUCCESS;
         }
     }
 
     LeaveCriticalSection(&g_csPool);
     /* Should not happen thanks to the semaphore */
-    ReleaseSemaphore(g_hSemaphore, 1, NULL);
+    ReleaseSemaphore(g_ahSemaphore[p], 1, NULL);
     return NTE_NO_MEMORY;
 }
 
 /* Return the session to the pool */
+/* Return a session to the pool.
+ *
+ * The scope is not a parameter, and deliberately so: a caller that released
+ * under the wrong scope would return the semaphore to the wrong pool, and
+ * the pool it took from would leak a slot while the other over-counted. A
+ * PKCS#11 session handle identifies its session uniquely across the module,
+ * so searching is both correct and cheap at thirty-two entries. */
 void P11_ReleaseSession(CK_SESSION_HANDLE hSession)
 {
-    int i;
+    int i, p;
 
     EnterCriticalSection(&g_csPool);
-    for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (g_aPool[i].hSession == hSession && g_aPool[i].bInUse) {
-            g_aPool[i].bInUse = FALSE;
-            ReleaseSemaphore(g_hSemaphore, 1, NULL);
-            break;
+    for (p = 0; p < P11_SCOPE_COUNT; p++) {
+        for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
+            if (g_aPool[p][i].hSession == hSession && g_aPool[p][i].bInUse) {
+                g_aPool[p][i].bInUse = FALSE;
+                ReleaseSemaphore(g_ahSemaphore[p], 1, NULL);
+                LeaveCriticalSection(&g_csPool);
+                return;
+            }
         }
     }
     LeaveCriticalSection(&g_csPool);

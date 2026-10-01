@@ -247,6 +247,7 @@ typedef struct CK_EDDSA_PARAMS {
  * when MessageBlockLength is set to the block size, so CFB8 is the one a
  * caller gets without asking. Values from the OASIS header vendored in the
  * SoftHSM2 submodule. */
+#define CKM_AES_CFB64             0x00002105UL
 #define CKM_AES_CFB8              0x00002106UL
 #define CKM_AES_CFB128            0x00002107UL
 

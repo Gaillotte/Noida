@@ -23,6 +23,25 @@ typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
 static P11_CONTEXT g_testCtx;
 P11_CONTEXT *P11_GetContext(void) { return &g_testCtx; }
 
+/* The slot is bound lazily now, on the first acquire. This suite supplies
+ * its own context with the slot already set, so there is nothing to bind
+ * and nothing to probe — the stub says "already done". The real function
+ * and its refuse-after-binding rule are exercised in test_p11_context.c
+ * and against the live token with two tokens present. */
+SECURITY_STATUS P11_EnsureSlotSelected(void) { return ERROR_SUCCESS; }
+
+/* Per-scope tokens off. This suite exercises ONE pool, which is what a
+ * single-token deployment has; the two-pool behaviour needs two real tokens
+ * and lives in tests/linux/test_two_tokens.c. Returning FALSE here is also
+ * what makes PoolFor() collapse every scope onto pool 0, so these
+ * assertions cover exactly the configuration they claim to. */
+BOOL       P11_HasPerScopeTokens(void) { return FALSE; }
+CK_SLOT_ID P11_GetScopeSlot(int nScope)
+{
+    (void)nScope;
+    return P11_GetContext()->slotId;
+}
+
 void Log_Debug(const char *f, ...) { (void)f; }
 void Log_Error(const char *f, ...) { (void)f; }
 
@@ -85,7 +104,7 @@ int main(void)
     ASSERT_EQ("No session opened before the first acquire",
         P11Mock_GetCalls()->nOpenSession, 0);
 
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_OK("First acquire → OK", ss);
     ASSERT_NEQ("Returns a session handle", h1, (CK_SESSION_HANDLE)CK_INVALID_HANDLE);
     ASSERT_EQ("Opened exactly one session",
@@ -95,7 +114,7 @@ int main(void)
     P11_ReleaseSession(h1);
 
     /* Releasing does not close: the pool keeps the session for reuse. */
-    ss = P11_AcquireSession(&h2);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
     ASSERT_OK("Second acquire → OK", ss);
     ASSERT_EQ("Reused the pooled session, no second open",
         P11Mock_GetCalls()->nOpenSession, 1);
@@ -107,13 +126,13 @@ int main(void)
 
     reset_pool();
     P11Mock_GetConfig()->rv_Login = CKR_USER_ALREADY_LOGGED_IN;
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_OK("CKR_USER_ALREADY_LOGGED_IN tolerated", ss);
     P11_ReleaseSession(h1);
 
     reset_pool();
     P11Mock_GetConfig()->rv_Login = CKR_PIN_INCORRECT;
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_ERR("A wrong PIN fails the acquire", ss);
     ASSERT_EQ("And the failed session was closed",
         P11Mock_GetCalls()->nCloseSession, 1);
@@ -121,13 +140,13 @@ int main(void)
     /* The semaphore slot must be returned, or a failed login would leak a
      * pool entry and the sixteenth failure would deadlock. */
     P11Mock_GetConfig()->rv_Login = CKR_OK;
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_OK("A later acquire still succeeds (slot not leaked)", ss);
     P11_ReleaseSession(h1);
 
     reset_pool();
     P11Mock_GetConfig()->rv_OpenSession = CKR_DEVICE_ERROR;
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_ERR("C_OpenSession failure propagates", ss);
 
     /* ── Suite 4 : recovery after the token logs out (OPS-09) ───────────── */
@@ -135,7 +154,7 @@ int main(void)
 
     reset_pool();
 
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_OK("Acquire a session", ss);
     P11_ReleaseSession(h1);
     ASSERT_EQ("One open so far", P11Mock_GetCalls()->nOpenSession, 1);
@@ -144,7 +163,7 @@ int main(void)
      * numerically valid, so only C_GetSessionInfo reveals it. */
     P11Mock_GetConfig()->sessionState = CKS_RW_PUBLIC_SESSION;
 
-    ss = P11_AcquireSession(&h2);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
     ASSERT_OK("Acquire after logout → OK", ss);
     ASSERT_EQ("Session state was checked",
         P11Mock_GetCalls()->nGetSessionInfo > 0, 1);
@@ -157,11 +176,11 @@ int main(void)
 
     /* A read-only user session is still logged in and must be kept. */
     reset_pool();
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_OK("Acquire", ss);
     P11_ReleaseSession(h1);
     P11Mock_GetConfig()->sessionState = CKS_RO_USER_FUNCTIONS;
-    ss = P11_AcquireSession(&h2);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
     ASSERT_OK("Acquire again", ss);
     ASSERT_EQ("Read-only user session is not discarded",
         P11Mock_GetCalls()->nOpenSession, 1);
@@ -169,11 +188,11 @@ int main(void)
 
     /* A handle the token no longer recognises must also be replaced. */
     reset_pool();
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     ASSERT_OK("Acquire", ss);
     P11_ReleaseSession(h1);
     P11Mock_GetConfig()->rv_GetSessionInfo = CKR_SESSION_HANDLE_INVALID;
-    ss = P11_AcquireSession(&h2);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
     ASSERT_OK("Acquire after the handle went invalid → OK", ss);
     ASSERT_EQ("Reopened", P11Mock_GetCalls()->nOpenSession, 2);
     P11_ReleaseSession(h2);
@@ -181,9 +200,9 @@ int main(void)
     /* A healthy session must not be reopened — recovery that fires every
      * time would quietly cost a login per operation. */
     reset_pool();
-    ss = P11_AcquireSession(&h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
     P11_ReleaseSession(h1);
-    ss = P11_AcquireSession(&h2);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
     ASSERT_OK("Acquire a healthy session", ss);
     ASSERT_EQ("Healthy session reused, not reopened",
         P11Mock_GetCalls()->nOpenSession, 1);
@@ -195,12 +214,12 @@ int main(void)
 
     reset_pool();
     ASSERT_EQ("phSession=NULL → NTE_INVALID_PARAMETER",
-        P11_AcquireSession(NULL), (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        P11_AcquireSession(P11_SCOPE_USER, NULL), (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
     /* Releasing a handle the pool does not hold must be harmless. */
     P11_ReleaseSession((CK_SESSION_HANDLE)0xDEAD);
     ASSERT_OK("Release of an unknown handle is a no-op",
-        P11_AcquireSession(&h1));
+        P11_AcquireSession(P11_SCOPE_USER, &h1));
     P11_ReleaseSession(h1);
 
     ASSERT_OK("Re-initialising an initialised pool is a no-op",

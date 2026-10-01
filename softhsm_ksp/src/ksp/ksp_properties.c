@@ -504,8 +504,9 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
         }
 
     } else if (_wcsicmp(pszProperty, BCRYPT_MESSAGE_BLOCK_LENGTH) == 0) {
-        /* CFB feedback size in bytes. 1 is 8-bit CFB (CNG's default) and
-         * the block size is full-block CFB; nothing else is wired. */
+        /* CFB feedback size in bytes: 1 (8-bit, CNG's default), 8 (64-bit)
+         * or the block size (full block). Those are the three sizes CNG can
+         * express that PKCS#11 names a mechanism for. */
         if (pKey->dwKeyClass != KSP_KEY_CLASS_SYMMETRIC) {
             ss = NTE_NOT_SUPPORTED;
         } else if (!pbInput || cbInput != sizeof(DWORD)) {
@@ -513,7 +514,7 @@ SECURITY_STATUS WINAPI KSP_SetKeyProperty(
         } else {
             DWORD cbBlock;
             memcpy(&cbBlock, pbInput, sizeof(DWORD));
-            if (cbBlock != 1 && cbBlock != AES_BLOCK_SIZE) {
+            if (cbBlock != 1 && cbBlock != 8 && cbBlock != AES_BLOCK_SIZE) {
                 ss = NTE_NOT_SUPPORTED;
             } else {
                 pKey->cbMessageBlockLen = cbBlock;

@@ -34,8 +34,9 @@ CAPS_SRC = $(SRC)/pkcs11/p11_caps.c
 MOCK_SRC = $(MOCK)/p11_mock.c
 
 PURE_STUBS = p11_pure_stubs.c
-# PIN stub for suites that link ksp_provider.c but not p11_session.c
-PIN_STUB   = p11_pin_stub.c
+# PKCS#11-layer stubs for suites that link ksp_provider.c but not the
+# context or session layers
+PIN_STUB   = p11_prov_stub.c
 
 TESTS = \
     test_p11rv_mapping \

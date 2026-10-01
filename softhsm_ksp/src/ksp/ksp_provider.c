@@ -161,6 +161,50 @@ SECURITY_STATUS WINAPI KSP_GetProviderProperty(
 }
 
 /* Set a provider property */
+/* Copy a counted CNG wide-string property into a bounded buffer, returning
+ * its length in characters or 0 if it cannot be one.
+ *
+ * cbInput is a byte count that MAY OR MAY NOT include the terminator —
+ * CNG callers differ, and Microsoft documents the parameter as the size of
+ * the buffer rather than the length of the string. The consequence is that
+ * the terminator has to be stripped BEFORE the length is bounded, not
+ * after: a value of exactly cchMax characters passed WITH its terminator
+ * occupies cchMax+1 characters, so a bound applied first refuses something
+ * entirely legal. Both this function's callers made that mistake
+ * independently, which is why there is now one function.
+ *
+ * pwszOut must hold cchMax + 2 characters: cchMax of value, one for a
+ * terminator the caller may have counted, and one written here.
+ *
+ * An embedded NUL truncates, which is the correct reading of a C string and
+ * not a silent acceptance: the result is bounded and terminated either way.
+ */
+static DWORD CopyWideProperty(LPWSTR pwszOut, DWORD cchMax,
+                              const BYTE *pbInput, DWORD cbInput)
+{
+    DWORD cch;
+
+    if (!pwszOut || !pbInput)
+        return 0;
+
+    /* A wide string cannot occupy an odd number of bytes. */
+    if (cbInput == 0 || (cbInput % sizeof(WCHAR)) != 0)
+        return 0;
+
+    cch = cbInput / sizeof(WCHAR);
+    if (cch > cchMax + 1)
+        return 0;
+
+    memcpy(pwszOut, pbInput, cch * sizeof(WCHAR));
+    pwszOut[cch] = L'\0';
+
+    cch = (DWORD)wcslen(pwszOut);
+    if (cch == 0 || cch > cchMax)
+        return 0;
+
+    return cch;
+}
+
 SECURITY_STATUS WINAPI KSP_SetProviderProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     LPCWSTR             pszProperty,
@@ -185,22 +229,13 @@ SECURITY_STATUS WINAPI KSP_SetProviderProperty(
      * call is the one used to log in. Both the wide copy and the narrow
      * copy are zeroed before returning. */
     if (_wcsicmp(pszProperty, NCRYPT_PIN_PROPERTY) == 0) {
-        WCHAR  wszPin[P11_MAX_PIN_LEN + 1];
+        WCHAR  wszPin[P11_MAX_PIN_LEN + 2];
         char   szPin[P11_MAX_PIN_LEN + 1];
         DWORD  cchPin;
         int    cb;
         SECURITY_STATUS ss;
 
-        /* cbInput is a byte count and may or may not include the
-         * terminator, so bound it and terminate ourselves. */
-        cchPin = cbInput / sizeof(WCHAR);
-        if (cchPin == 0 || cchPin > P11_MAX_PIN_LEN)
-            return NTE_INVALID_PARAMETER;
-
-        memcpy(wszPin, pbInput, cchPin * sizeof(WCHAR));
-        wszPin[cchPin] = L'\0';
-        /* Tolerate a caller that already included the terminator. */
-        cchPin = (DWORD)wcslen(wszPin);
+        cchPin = CopyWideProperty(wszPin, P11_MAX_PIN_LEN, pbInput, cbInput);
         if (cchPin == 0) {
             SecureZeroMemory(wszPin, sizeof(wszPin));
             return NTE_INVALID_PARAMETER;
@@ -219,21 +254,51 @@ SECURITY_STATUS WINAPI KSP_SetProviderProperty(
         return ss;
     }
 
-    /* Token selection is read-only here, and deliberately so. By the time
-     * a caller holds a provider handle the PKCS#11 context has initialised
-     * and the session pool is bound to a slot; PKCS#11 offers no way to
-     * move a session between tokens. Accepting the value and continuing to
-     * use the old token would be worse than refusing it — the caller would
-     * believe it had switched.
+    /* Token selection, writable until the slot is bound.
      *
-     * Choose the token before the provider opens, with SOFTHSM2_SLOT or
-     * SOFTHSM2_TOKEN_LABEL, and read KSP_SLOT_PROPERTY back to confirm. */
-    if (_wcsicmp(pszProperty, KSP_TOKEN_LABEL_PROPERTY) == 0 ||
-        _wcsicmp(pszProperty, KSP_SLOT_PROPERTY) == 0) {
-        LOG_ERROR("KSP_SetProviderProperty - token selection is read-only; "
-                  "use " SOFTHSM2_TOKEN_LABEL_ENV " or " SOFTHSM2_SLOT_ENV,
-                  NTE_NOT_SUPPORTED);
-        return NTE_NOT_SUPPORTED;
+     * This used to be refused outright, on the reasoning that the session
+     * pool is already bound to a slot by the time a caller holds a provider
+     * handle. That was true of the old code and not a law: the slot is now
+     * chosen on the first operation that needs a token, exactly as the PIN
+     * has always worked, so there is a window between
+     * NCryptOpenStorageProvider and the first call in which the choice can
+     * still be made.
+     *
+     * After that window it is refused with NTE_INVALID_HANDLE rather than
+     * accepted: PKCS#11 cannot move a session between tokens, and a caller
+     * told its selection succeeded would go on using the previous token
+     * believing it had switched. An explicit selection naming no present
+     * token remains an error when the slot is bound — never a fallback. */
+    if (_wcsicmp(pszProperty, KSP_TOKEN_LABEL_PROPERTY) == 0) {
+        WCHAR wszLabel[P11_TOKEN_LABEL_LEN + 2];
+        char  szLabel[P11_TOKEN_LABEL_LEN * 4 + 1];
+        DWORD cchLabel;
+        int   cb;
+
+        cchLabel = CopyWideProperty(wszLabel, P11_TOKEN_LABEL_LEN,
+                                    pbInput, cbInput);
+        if (cchLabel == 0)
+            return NTE_INVALID_PARAMETER;
+
+        cb = WideCharToMultiByte(CP_UTF8, 0, wszLabel, (int)cchLabel,
+                                 szLabel, sizeof(szLabel) - 1, NULL, NULL);
+        if (cb <= 0)
+            return NTE_INVALID_PARAMETER;
+        szLabel[cb] = '\0';
+
+        return P11_SetTokenSelection(szLabel, NULL);
+    }
+
+    if (_wcsicmp(pszProperty, KSP_SLOT_PROPERTY) == 0) {
+        DWORD      dwSlot;
+        CK_SLOT_ID slot;
+
+        if (cbInput != sizeof(DWORD))
+            return NTE_INVALID_PARAMETER;
+        memcpy(&dwSlot, pbInput, sizeof(DWORD));
+        slot = (CK_SLOT_ID)dwSlot;
+
+        return P11_SetTokenSelection(NULL, &slot);
     }
 
     return NTE_NOT_SUPPORTED;
@@ -451,6 +516,15 @@ SECURITY_STATUS WINAPI KSP_IsAlgSupported(
     if (!KSP_IsValidProvider(hProvider))
         return NTE_INVALID_HANDLE;
 
+    /* Bind the slot and probe, if nothing has yet. A capability answer is
+     * about a particular token, so it cannot be given before one is chosen.
+     * A failure here is deliberately NOT propagated: a provider that cannot
+     * reach a token should answer from the mapped list rather than refuse
+     * to describe itself, which is what P11_HasMechanism does when
+     * unprobed. */
+    (void)P11_EnsureSlotSelected();
+
+
     if (!pszAlgId)
         return NTE_INVALID_PARAMETER;
 
@@ -478,6 +552,14 @@ SECURITY_STATUS WINAPI KSP_EnumAlgorithms(
 
     if (!KSP_IsValidProvider(hProvider))
         return NTE_INVALID_HANDLE;
+
+    /* Bind the slot and probe, if nothing has yet. A capability answer is
+     * about a particular token, so it cannot be given before one is chosen.
+     * A failure here is deliberately NOT propagated: a provider that cannot
+     * reach a token should answer from the mapped list rather than refuse
+     * to describe itself, which is what P11_HasMechanism does when
+     * unprobed. */
+    (void)P11_EnsureSlotSelected();
 
     if (!pdwAlgCount || !ppAlgList)
         return NTE_INVALID_PARAMETER;

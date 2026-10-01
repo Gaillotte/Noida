@@ -36,6 +36,87 @@ positions; proposing work for them would be inventing a task.
 
 ---
 
+---
+
+## Status — all four implemented
+
+| ID | Proposal | Status | Where it is tested |
+|---|---|---|---|
+| AES-09, FMT-08 | A — export policy | **Covered** | unit + live token |
+| IFACE-04 | B — deferred slot binding | **Covered** | unit + **two** live tokens |
+| LIFE-08 | C — per-scope tokens | **Covered** | unit + two live tokens with different PINs |
+| AES-08 | D — CFB64 | **Partial by choice** | unit; the live case skips, no token here has `CKM_AES_CFB64` |
+
+`AES-08` stays Partial deliberately: CNG permits any feedback size up to the
+block, PKCS#11 defines mechanisms for four of them, and a size with no
+mechanism is refused rather than rounded to a different cipher.
+
+### What implementing B and C found
+
+Neither proposal's own code was where the interesting defects were.
+
+- **A counted CNG wide-string property was bounded before its terminator was
+  stripped.** `cbInput` is a buffer size and callers differ on whether they
+  count the terminator, so a maximum-length value passed *with* one is
+  `cchMax + 1` characters and was refused — something entirely legal. The
+  **PIN path had the same off-by-one**, written independently and predating
+  this work. Both now go through one helper, which is the point: the bug
+  existed twice because the subtle part was written twice. Found by
+  strengthening a vacuous assertion — the original "terminator stripped"
+  check used a short label, where the terminator is harmless, so it could
+  not have failed.
+- **`make <binary>` from `tests/unit/` silently rebuilt nothing.** The
+  wrapper Makefile had no rule for a single test binary, so GNU make matched
+  its implicit rules against the existing file and reported "up to date".
+  **Four fault injections in a row therefore ran against a stale binary and
+  looked undetected** — the worst possible failure for a tool whose only job
+  is to show that a test can fail. A match-anything pattern rule does not
+  fix it either, because make declines to apply one to a target that already
+  exists; the rule needs a `FORCE` prerequisite.
+- **Ten test stubs for `P11_AcquireSession` were never checked against the
+  real prototype.** None of the suites that stub it included
+  `p11_session.h`, so when the function gained its scope parameter every
+  stub kept its old shape: no diagnostic, because the mismatch is across
+  translation units, and then ten segfaults as the scope argument arrived in
+  the pointer parameter. They include the header now. This is the same class
+  as the function-table slot types in session 14 — a stub that is not
+  checked against the thing it stands in for is a trap waiting for the next
+  signature change.
+- **`mock_GetTokenInfo` returned `CKR_OK` and filled nothing**, exactly as
+  `mock_GetInfo` did before session 8. Selection by token label reads
+  `info.label`, so against an untouched struct a label test would have
+  compared against whatever was on the caller's stack. It now gives each
+  slot a distinct blank-padded `CKA_LABEL`, which is what makes selecting
+  between two tokens a real question under the mock.
+- **A guard that looked load-bearing was not.** On the label path, refusing
+  a half-configured per-scope setup changes the error message and not the
+  outcome: an absent label is the empty string and matches no token, so the
+  lookup fails anyway. No injection could distinguish the two, and the code
+  now says so. The **slot** path's equivalent guard *is* load-bearing — an
+  unset variable leaves the other scope at slot 0, a perfectly valid slot —
+  and that one is injected and caught.
+- **Two redundant guards meant neither could be injected alone.**
+  `P11_EnsureSlotSelected` checks `g_bSlotBound` outside the lock and again
+  inside it. Removing either leaves the other working, so the idempotence
+  assertion only fails when both go. Defence in depth, recorded as such
+  rather than claimed as two tested properties.
+
+### One thing found and deliberately not fixed here
+
+**`NCryptCreatePersistedKey` does not return `NTE_EXISTS` for a name that is
+already taken.** Nothing in the provider checks, so a second create with the
+same name adds a second object with the same `CKA_LABEL`, and `NCryptOpenKey`
+then returns whichever the token's search hands back first. It surfaced while
+making the two-token suite repeatable: two deletes both reported success and
+a key was still openable, because earlier runs had left duplicates.
+
+It is a real conformance gap — Microsoft documents `NTE_EXISTS`, and
+`NCRYPT_OVERWRITE_KEY_FLAG` as the way to ask for replacement — and it is
+**not** part of proposals A to D. Fixing it properly means the flag as well
+as the check, with its own tests in both directions, so it belongs in its own
+change rather than smuggled into this one.
+
+
 ## Proposal A — honour `NCRYPT_EXPORT_POLICY_PROPERTY`
 
 **Closes: AES-09 (wrap) and FMT-08 (symmetric export). Two rows, one change.**

@@ -380,7 +380,7 @@ static void AssertPoolWhole(const char *szAfter)
     char szMsg[160];
 
     for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (P11_AcquireSession(&aSessions[nTaken]) != ERROR_SUCCESS)
+        if (P11_AcquireSession(P11_SCOPE_USER, &aSessions[nTaken]) != ERROR_SUCCESS)
             break;
         nTaken++;
     }

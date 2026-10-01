@@ -24,8 +24,8 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         22 test suites · 1477 assertions · gcov coverage         │
-   │         Lines: 88.9 %    Functions: 100 %                       │
+   │         22 test suites · 1816 assertions · gcov coverage         │
+   │         Lines: 86.2 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,7 +63,7 @@ make
 ./test_aes_keys
 
 # Or simply:
-make run          # builds and runs all 14 suites
+make run          # builds and runs all 22 suites
 make coverage     # plus an HTML coverage report
 make syntax-check # parses the Windows-only integration test
 ```
@@ -76,25 +76,25 @@ make syntax-check # parses the Windows-only integration test
 | PKCS#11 session pool | `test_p11_session.c` | 39 | PIN override and precedence, lazy open, login states, recovery after token logout, pool lifecycle |
 | PKCS#11 error mapping | `test_p11rv_mapping.c` | 26 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
 | Logging | `test_logging.c` | 7 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
-| Mechanism resolution | `test_mechanism_resolve.c` | 64 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
+| Mechanism resolution | `test_mechanism_resolve.c` | 145 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
 | Export blobs | `test_export_blobs.c` | 52 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
-| KSP provider | `test_ksp_provider.c` | 112 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty`, `KSP_FreeBuffer` |
-| KSP key operations | `test_ksp_key_ops.c` | 172 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
-| KSP crypto | `test_ksp_crypto.c` | 120 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
-| KSP key properties | `test_ksp_key_props.c` | 122 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
+| KSP provider | `test_ksp_provider.c` | 150 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty` (PIN, export policy, token selection and the counted-buffer boundary both conventions produce), `KSP_FreeBuffer`, and that a capability query binds a slot before answering |
+| KSP key operations | `test_ksp_key_ops.c` | 186 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
+| KSP crypto | `test_ksp_crypto.c` | 148 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
+| KSP key properties | `test_ksp_key_props.c` | 140 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
 | Memory | `test_memory.c` | 21 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
 | ECDSA DER decode | `test_ecdsa_decode.c` | 47 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
 | OAEP parameters | `test_oaep_params.c` | 49 | `P11_MapHashAlg()` and `P11_BuildOaepParams()` across SHA-1/224/256/384/512, label pass-through, unsupported-hash rejection |
 | ECDH agreement | `test_ecdh.c` | 133 | `KSP_SecretAgreement`, `KSP_DeriveKey`, `KSP_FreeSecret`, `KSP_IsValidSecret`; DER unwrapping of the peer point on all three curves |
 | EdDSA | `test_eddsa.c` | 58 | Ed25519 / Ed448 classifiers, curve OIDs, `CKM_EDDSA` resolution, key generation, signing, public-key export |
-| AES and HMAC | `test_aes_keys.c` | 88 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
-| Capability probe and ML-DSA | `test_mldsa.c` | 102 | `P11_ProbeCapabilities` against tokens that vary by mechanism list and Cryptoki version; `EnumAlgorithms` / `IsAlgSupported` tracking the token; ML-DSA parameter sets, mechanism resolution, gated key generation, refused export; ML-KEM recognised and deliberately not offered |
-| Certificate property | `test_certificate.c` | 41 | `KSP_StoreCertificate` / `KSP_LoadCertificate`, the CKO_CERTIFICATE object's class, type and scoped label, replacement on re-enrolment, and the property dispatch |
-| AES key wrap | `test_keywrap.c` | 40 | `C_WrapKey` / `C_UnwrapKey` through `BCRYPT_AES_WRAP_KEY_BLOB`, both calls of the two-call convention, the non-extractable refusal, and capability gating |
-| PKCS#11 context | `test_p11_context.c` | 26 | Module load failure and recovery without a restart, C_Initialize failure modes, slot selection, and the capability probe running as part of initialisation |
+| AES and HMAC | `test_aes_keys.c` | 176 | AES-128/192/256 generation, chaining mode + IV properties, `KSP_Encrypt`/`KSP_Decrypt` over ECB/CBC/CTR/GCM, HMAC generic secrets |
+| Capability probe and ML-DSA | `test_mldsa.c` | 109 | `P11_ProbeCapabilities` against tokens that vary by mechanism list and Cryptoki version; `EnumAlgorithms` / `IsAlgSupported` tracking the token; ML-DSA parameter sets, mechanism resolution, gated key generation, refused export; ML-KEM recognised and deliberately not offered |
+| Certificate property | `test_certificate.c` | 46 | `KSP_StoreCertificate` / `KSP_LoadCertificate`, the CKO_CERTIFICATE object's class, type and scoped label, replacement on re-enrolment, and the property dispatch |
+| AES key wrap | `test_keywrap.c` | 42 | `C_WrapKey` / `C_UnwrapKey` through `BCRYPT_AES_WRAP_KEY_BLOB`, both calls of the two-call convention, the non-extractable refusal, and capability gating |
+| PKCS#11 context | `test_p11_context.c` | 130 | Module load failure and recovery without a restart, C_Initialize failure modes, the deferred slot binding and the probe that goes with it, token selection through the property and its refusals, and per-scope token resolution including every way a misconfiguration must fail closed |
 | Per-key PIN | `test_key_pin.c` | 25 | `CKU_CONTEXT_SPECIFIC` re-authentication on sign and decrypt, replay per operation, token responses, and refusal to read the credential back |
 | X.509 subject extraction | `test_cert_subject.c` | 19 | `P11_ExtractCertSubject` against a real OpenSSL-generated certificate, with every truncation of it walked under AddressSanitizer |
-| **Total** | | **1477** | |
+| **Total** | | **1816** | |
 
 ## Layer 1b — against a second, real PKCS#11 module
 
@@ -106,7 +106,13 @@ to this project, initialises a token in it, and runs the real `p11_*` and
 
 ```bash
 cd softhsm_ksp/tests/linux
-make            # fetch + build Kryoptic, init a token, run the suite twice
+make            # fetch + build Kryoptic, init tokens, run everything
+make run-twice  # the main suite, twice against the same token
+make concurrent # 32 threads over the 16-session pool
+make tsan       # the same under ThreadSanitizer
+make token-two  # initialise TWO tokens behind the one module
+make two-tokens # token selection — needs both tokens to mean anything
+make scope-tokens # per-scope token isolation (LIFE-08)
 ```
 
 **It runs twice against the same token, and that is not belt and braces.**
@@ -115,7 +121,7 @@ leaves behind. The orphaned-certificate bug was found exactly this way — a
 second run reading back what the first had left — and a single pass passed
 it happily.
 
-156 assertions, covering initialisation against an unfamiliar module, the
+256 assertions, covering initialisation against an unfamiliar module, the
 capability probe reporting *that* token's mechanisms, algorithm
 advertisement narrowing to match, RSA and EC key generation and signing,
 public key export in CNG's blob format, ECDH agreement and the KDFs, AES
@@ -123,6 +129,32 @@ round-trip encryption in four chaining modes, RSA PKCS#1 and OAEP
 decryption, RSA-PSS signing, certificate storage, AES-CMAC and HMAC
 signing, key wrap and unwrap, the per-key PIN, the standard
 curve-name route, machine/user scoping, enumeration and deletion.
+
+### Two tokens, because one cannot answer the question
+
+`make token-two` stands up **two** tokens behind the one module, with
+different labels, different PINs and different keys. Two suites need that:
+
+- **`make two-tokens` — 53 assertions, token selection (IFACE-04).** With a
+  single token every selection "succeeds" by landing on the slot the default
+  would have chosen anyway, so the assertions pass whether the provider
+  reads the caller's choice or discards it. The assertion that does the work
+  is the pair *absent from one token, present on the other*: a key created
+  on one must not be visible from the other, and must be visible from its
+  own. Either half alone proves nothing — a key that was never created is
+  absent too.
+- **`make scope-tokens` — 28 assertions, per-scope isolation (LIFE-08).**
+  The machine and user scopes on separate tokens with separate PINs. One
+  case runs *without* the machine PIN in the environment and requires the
+  machine token to be unreachable; under the one-token label-prefix scheme
+  it would have been readable with the one PIN, so that case is the whole
+  difference between isolation and namespacing. The remaining cases require
+  a half-configured or same-token setup to fail closed rather than
+  half-apply.
+
+Both suites run one process per case, because the PKCS#11 context is a
+per-process singleton and `C_Initialize` is not idempotent — which is also
+the state a real application starts in.
 
 **It exists because a mock cannot test the claim it is asked to test.** The
 unit suites ask whether the provider agrees with itself. This one asks
@@ -141,17 +173,27 @@ work described in `docs/11-market-comparison.md`, and 780 to 903 is Phase 0
 of `docs/13-roadmap.md` — chiefly `test_function_table.c`, which covers
 `ksp_main.c` for the first time, and the algorithm-discovery entry points.
 
-### Coverage (gcov / gcovr — 2026-09-22)
+### Coverage (gcov / gcovr — 2026-10-01)
 
 | Module | Lines | Hit | Line % | Functions | Hit | Func % |
 |--------|------:|----:|:------:|----------:|----:|:------:|
-| **Total** | **2427** | **2158** | **88.9 %** | **92** | **92** | **100 %** |
+| **Total** | **3547** | **3058** | **86.2 %** | **136** | **136** | **100 %** |
 
 > Full HTML report: `tests/unit/coverage_html/index.html`
 
-#### Uncovered lines (10.5 %)
+**The line figure has fallen as the provider grew, and the fall is real
+rather than cosmetic.** 2427 lines became 3547 across phases 4 to 7 and
+proposals A to D, and much of the new code — raw RSA, CCM, CFB64, per-scope
+tokens, key wrap — is only reachable against a live token, so it is covered
+by `tests/linux` instead. The **function** figure is the one held at 100 %,
+and it is checked after every change: three functions added for per-scope
+tokens were initially reachable only from the live suite, which showed up
+here as 97.8 % and was closed by adding unit coverage for the resolution
+logic.
 
-The 168 lines not hit by unit tests fall into four categories:
+#### Uncovered lines
+
+The lines not hit by unit tests fall into four categories:
 
 | Category | Examples | Covered by |
 |----------|---------|------------|

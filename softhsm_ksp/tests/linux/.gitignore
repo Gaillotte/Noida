@@ -3,8 +3,12 @@
 # the build is large.
 .kryoptic/
 
-# Token database and config created by `make token`.
-.token/
+# Token databases and configs created by `make token` and `make token-two`.
+#
+# A pattern, because .token2 was added the moment a suite needed TWO tokens
+# and a named list would have missed it — the same gap the binaries below
+# were switched to a pattern for.
+.token*/
 
 # Binaries.
 #

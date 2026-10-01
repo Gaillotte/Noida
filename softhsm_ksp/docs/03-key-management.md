@@ -428,17 +428,70 @@ tries the scoped name first and falls back to the bare name, so they keep
 working; enumeration shows them in the **user** scope, which is where the
 unflagged open finds them, so the two agree.
 
-### This is namespacing, not isolation
+### Within one token this is namespacing, not isolation
 
 > Anyone who can log into the token can read **either** scope. The prefix
 > keeps distinct keys distinct; it does **not** protect one caller's keys
 > from another.
 
 Real isolation needs an access-control model, and PKCS#11 offers none
-within a slot — a single user PIN grants the whole token. No amount of
-label work supplies one. If separation must be enforced rather than merely
-represented, use **separate tokens** and select between them with
-`SOFTHSM2_TOKEN_LABEL`, which gives each its own PIN.
+*within* a slot — a single user PIN grants the whole token. No amount of
+label work supplies one.
+
+### Per-scope tokens: isolation by the boundary PKCS#11 does have
+
+PKCS#11 has exactly one boundary with a credential on it, and it is the
+**token**. So the provider can give the two scopes a token each:
+
+| Variable | Selects |
+|----------|---------|
+| `KSP_MACHINE_TOKEN_LABEL` | `CKA_LABEL` of the machine scope's token |
+| `KSP_USER_TOKEN_LABEL` | `CKA_LABEL` of the user scope's token |
+| `KSP_MACHINE_SLOT` / `KSP_USER_SLOT` | the same choice by slot ID |
+| `KSP_MACHINE_PIN` / `KSP_USER_PIN` | each scope's own user PIN |
+
+With these set, `NCRYPT_MACHINE_KEY_FLAG` selects **which token** rather
+than which label prefix, and the session pool is per token — a pooled
+session logged in to the user token can never serve a machine-scope
+operation, because handing it over would read the wrong token's keys under
+a successful status.
+
+Isolation is then as strong as the token boundary: a caller holding only the
+user PIN cannot read machine keys, because it cannot log in to read them.
+
+**The PIN ordering is inverted here, deliberately.** Everywhere else in this
+provider a property outranks the environment, because a property is a
+deliberate act by the process and a variable is ambient. For PINs with
+per-scope tokens it is the other way round: `NCRYPT_PIN_PROPERTY` carries
+**one** PIN and cannot distinguish the scopes, so treating it as an override
+would send the user PIN to the machine token — the exact failure per-scope
+tokens exist to prevent. The scope's own variable wins.
+
+**Two tokens sharing one PIN are not isolated.** If no per-scope PIN is set,
+both tokens are logged into with the same credential. That is correct for
+two tokens initialised identically and it is not a security boundary; the
+provider does not pretend otherwise.
+
+**Misconfiguration fails closed.** Setting only one of a pair, or two names
+that resolve to the same token, is **refused** — every operation fails
+rather than half-applying. A deployment that named a machine token and
+forgot the user one would otherwise put user keys on the machine token and
+report success, and isolation that reports success without isolating is
+worse than none, because nobody looks at it again. For the same reason, a
+token chosen through `NCryptSetProperty` cannot be reconciled with per-scope
+tokens — one names a single token, the other names two — and is refused
+rather than silently overridden.
+
+**Unconfigured behaviour is unchanged**: one token, two label prefixes, one
+session pool, exactly as before.
+
+**How this is tested.** Against two real tokens with **different PINs**, in
+`tests/linux/test_two_tokens.c`. The case that matters runs *without* the
+machine PIN in the environment and requires the machine token to be
+unreachable; under the one-token scheme it would have been readable with the
+one PIN, so that case is the difference between isolation and namespacing.
+The refusals are covered at the unit level too, in
+`tests/unit/test_p11_context.c`.
 
 ---
 

@@ -26,6 +26,37 @@
  * initialiser for. */
 static P11_CONTEXT  g_ctx;
 static CRITICAL_SECTION g_initLock;
+
+/* Token selection set by the caller through NCryptSetProperty, and whether
+ * the slot has been bound yet.
+ *
+ * The slot used to be chosen inside TryInitialize, which runs during
+ * KSP_OpenProvider — so by the time a caller could set a property the
+ * choice was already made, and token selection had to be refused. It is
+ * chosen lazily now, on the first operation that needs a session or a
+ * capability answer, which gives the property the same window the PIN has
+ * always had. Once bound it cannot move: PKCS#11 offers no way to migrate a
+ * session between tokens, so a later change would be a lie. */
+static char       g_szSelLabel[P11_TOKEN_LABEL_LEN + 1];
+static BOOL       g_bSelLabelSet;
+static CK_SLOT_ID g_selSlot;
+static BOOL       g_bSelSlotSet;
+static BOOL       g_bSlotBound;
+
+/* ── Per-scope tokens (LIFE-08) ────────────────────────────────────────────
+ *
+ * When the deployment gives the machine and user scopes separate tokens,
+ * there is no longer one slot: there are two, and which one an operation
+ * uses depends on the scope of the key it is operating on.
+ *
+ * g_aScopeSlot[] holds them. When per-scope tokens are NOT configured both
+ * entries are the single bound slot, so every caller can ask for a scope
+ * unconditionally and an unconfigured deployment behaves exactly as before
+ * — the collapse is in the data rather than in each caller's reasoning,
+ * which is what stops it being forgotten at one of twenty-nine call sites.
+ */
+static CK_SLOT_ID g_aScopeSlot[P11_SCOPE_COUNT];
+static BOOL       g_bPerScope;          /* resolved once, with the slots */
 static INIT_ONCE    g_lockOnce = INIT_ONCE_STATIC_INIT;
 static SECURITY_STATUS g_initStatus = NTE_PROVIDER_DLL_FAIL;
 
@@ -110,6 +141,41 @@ static BOOL SelectSlot(P11_CONTEXT *pCtx)
         return FALSE;
     }
 
+    /* 0. Set by the caller through NCryptSetProperty, which outranks the
+     * environment: a property is a deliberate act by this process, an
+     * environment variable is ambient. An explicit choice that matches no
+     * token is still an error and never a fallback. */
+    if (g_bSelLabelSet) {
+        for (i = 0; i < ulCount; i++) {
+            CK_TOKEN_INFO info;
+            memset(&info, 0, sizeof(info));
+            if (pCtx->pFunctionList->C_GetTokenInfo(aSlots[i], &info) != CKR_OK)
+                continue;
+            if (P11_TokenLabelMatches(info.label, g_szSelLabel)) {
+                pCtx->slotId = aSlots[i];
+                LOG_INFO("Selected slot %lu by caller-set token label",
+                         (unsigned long)pCtx->slotId);
+                return TRUE;
+            }
+        }
+        LOG_ERROR("SelectSlot - no token matches the label set through "
+                  "NCryptSetProperty", NTE_NO_KEY);
+        return FALSE;
+    }
+    if (g_bSelSlotSet) {
+        for (i = 0; i < ulCount; i++) {
+            if (aSlots[i] == g_selSlot) {
+                pCtx->slotId = aSlots[i];
+                LOG_INFO("Selected slot %lu (caller-set)",
+                         (unsigned long)pCtx->slotId);
+                return TRUE;
+            }
+        }
+        LOG_ERROR("SelectSlot - the slot set through NCryptSetProperty names "
+                  "no present token", NTE_NO_KEY);
+        return FALSE;
+    }
+
     /* 1. By token label. */
     dwLen = GetEnvironmentVariableA(SOFTHSM2_TOKEN_LABEL_ENV,
                                     szLabel, sizeof(szLabel));
@@ -189,24 +255,324 @@ static void TryInitialize(void)
         return;
     }
 
-    if (!SelectSlot(&g_ctx)) {
-        g_ctx.pFunctionList->C_Finalize(NULL);
-        FreeLibrary(g_ctx.hModule);
-        g_ctx.hModule = NULL;
-        g_initStatus  = NTE_NO_KEY;
-        return;
-    }
-
     g_ctx.bInitialized = TRUE;
 
-    /* Ask the token what it implements, so the provider advertises the
-     * intersection rather than a list describing one particular backend.
-     * A refusal is not fatal — see P11_ProbeCapabilities — so the return
-     * value is deliberately not propagated into g_initStatus. */
-    (void)P11_ProbeCapabilities();
-
+    /* The slot is NOT chosen here, and neither is the capability probe run:
+     * both need a token, and choosing one now would close the window in
+     * which a caller can select it. P11_EnsureSlotSelected does both, on
+     * the first operation that needs an answer. */
     g_initStatus = ERROR_SUCCESS;
-    LOG_INFO("P11_Initialize: success, slot=%lu", (unsigned long)g_ctx.slotId);
+    LOG_INFO("P11_Initialize: module loaded and Cryptoki initialised; "
+             "slot selection deferred");
+}
+
+/* Bind the slot, and probe the token, on first use.
+ *
+ * Idempotent and cheap after the first call. Everything that needs a token
+ * calls it: acquiring a session, and answering a capability question —
+ * because the probe reads the token's mechanism list and cannot run before
+ * there is a token to read. Without the second caller,
+ * NCryptEnumAlgorithms immediately after NCryptOpenStorageProvider would
+ * answer from an unprobed state, which is permissive, and the provider
+ * would advertise algorithms the token may not have. */
+/* Find the slot whose token carries this label. */
+static BOOL FindSlotByLabel(P11_CONTEXT *pCtx, const CK_SLOT_ID *aSlots,
+                            CK_ULONG ulCount, const char *szLabel,
+                            CK_SLOT_ID *pOut)
+{
+    CK_ULONG i;
+
+    for (i = 0; i < ulCount; i++) {
+        CK_TOKEN_INFO info;
+        memset(&info, 0, sizeof(info));
+        if (pCtx->pFunctionList->C_GetTokenInfo(aSlots[i], &info) != CKR_OK)
+            continue;
+        if (P11_TokenLabelMatches(info.label, szLabel)) {
+            *pOut = aSlots[i];
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* Read a slot ID from an environment variable. */
+static BOOL SlotFromEnv(const char *szVar, const CK_SLOT_ID *aSlots,
+                        CK_ULONG ulCount, CK_SLOT_ID *pOut)
+{
+    char      szVal[32] = {0};
+    char     *pszEnd    = NULL;
+    unsigned long ul;
+    CK_ULONG  i;
+    DWORD     dwLen;
+
+    dwLen = GetEnvironmentVariableA(szVar, szVal, sizeof(szVal));
+    if (dwLen == 0 || dwLen >= sizeof(szVal))
+        return FALSE;
+
+    ul = strtoul(szVal, &pszEnd, 10);
+    if (pszEnd == szVal || (pszEnd && *pszEnd != '\0')) {
+        LOG_ERROR("Per-scope slot variable is not a number",
+                  NTE_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    for (i = 0; i < ulCount; i++) {
+        if (aSlots[i] == (CK_SLOT_ID)ul) {
+            *pOut = aSlots[i];
+            return TRUE;
+        }
+    }
+    LOG_ERROR("Per-scope slot variable names no present token", NTE_NO_KEY);
+    return FALSE;
+}
+
+/* Resolve a token for each scope, if the deployment asked for that.
+ *
+ * Returns FALSE only when per-scope tokens WERE asked for and cannot be
+ * satisfied. Returning TRUE with g_bPerScope FALSE is the ordinary
+ * single-token case and not a failure.
+ *
+ * Setting only one of a pair is refused. A deployment that named a machine
+ * token and forgot the user one would put user keys on the machine token
+ * and report success — isolation that does not isolate, which nobody
+ * re-checks because it appeared to work.
+ */
+static BOOL SelectScopeSlots(P11_CONTEXT *pCtx)
+{
+    CK_SLOT_ID aSlots[P11_MAX_SLOTS];
+    CK_ULONG   ulCount = P11_MAX_SLOTS;
+    char       szMachine[P11_TOKEN_LABEL_LEN + 1] = {0};
+    char       szUser[P11_TOKEN_LABEL_LEN + 1]    = {0};
+    DWORD      dwM, dwU;
+    CK_SLOT_ID slotM = 0, slotU = 0;
+
+    /* Default: both scopes on the one bound slot. */
+    g_aScopeSlot[P11_SCOPE_USER]    = pCtx->slotId;
+    g_aScopeSlot[P11_SCOPE_MACHINE] = pCtx->slotId;
+    g_bPerScope                     = FALSE;
+
+    /* A caller selection names ONE token; per-scope tokens name two. The
+     * two cannot both be honoured, so this is refused rather than resolved
+     * by precedence. Silently letting the per-scope configuration win would
+     * leave the caller's NCryptSetProperty accepted and ignored, which is
+     * the failure mode the deferred binding exists to eliminate — and the
+     * caller is the party least able to notice, because it asked and was
+     * told yes. */
+    if ((g_bSelLabelSet || g_bSelSlotSet) &&
+        (GetEnvironmentVariableA(KSP_MACHINE_TOKEN_LABEL_ENV, NULL, 0) ||
+         GetEnvironmentVariableA(KSP_USER_TOKEN_LABEL_ENV, NULL, 0) ||
+         GetEnvironmentVariableA(KSP_MACHINE_SLOT_ENV, NULL, 0) ||
+         GetEnvironmentVariableA(KSP_USER_SLOT_ENV, NULL, 0))) {
+        LOG_ERROR("A token chosen through NCryptSetProperty cannot be "
+                  "reconciled with per-scope tokens: one names a single "
+                  "token, the other names two", NTE_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    dwM = GetEnvironmentVariableA(KSP_MACHINE_TOKEN_LABEL_ENV,
+                                  szMachine, sizeof(szMachine));
+    dwU = GetEnvironmentVariableA(KSP_USER_TOKEN_LABEL_ENV,
+                                  szUser, sizeof(szUser));
+    if (dwM >= sizeof(szMachine) || dwU >= sizeof(szUser)) {
+        LOG_ERROR("A per-scope token label is longer than CKA_LABEL",
+                  NTE_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    if (dwM > 0 || dwU > 0) {
+        /* Belt and braces, and recorded as such: an absent label is the
+         * empty string, which P11_TokenLabelMatches matches against no
+         * token, so the lookup below would fail anyway. Removing this check
+         * does not change the OUTCOME, only the error message — which is
+         * why no test distinguishes the two, and why claiming it as the
+         * thing that refuses a half configuration would be false. The
+         * SLOT path's equivalent check further down IS load-bearing. */
+        if (dwM == 0 || dwU == 0) {
+            LOG_ERROR("Per-scope tokens need BOTH "
+                      KSP_MACHINE_TOKEN_LABEL_ENV " and "
+                      KSP_USER_TOKEN_LABEL_ENV ": one alone would put the "
+                      "other scope's keys on the named token",
+                      NTE_INVALID_PARAMETER);
+            return FALSE;
+        }
+        if (pCtx->pFunctionList->C_GetSlotList(CK_TRUE, aSlots,
+                                               &ulCount) != CKR_OK)
+            return FALSE;
+        if (!FindSlotByLabel(pCtx, aSlots, ulCount, szMachine, &slotM)) {
+            LOG_ERROR("No token carries " KSP_MACHINE_TOKEN_LABEL_ENV,
+                      NTE_NO_KEY);
+            return FALSE;
+        }
+        if (!FindSlotByLabel(pCtx, aSlots, ulCount, szUser, &slotU)) {
+            LOG_ERROR("No token carries " KSP_USER_TOKEN_LABEL_ENV,
+                      NTE_NO_KEY);
+            return FALSE;
+        }
+    } else {
+        CK_ULONG n = P11_MAX_SLOTS;
+        BOOL     bM, bU;
+
+        if (pCtx->pFunctionList->C_GetSlotList(CK_TRUE, aSlots, &n) != CKR_OK)
+            return TRUE;        /* no per-scope request to satisfy */
+        ulCount = n;
+
+        bM = SlotFromEnv(KSP_MACHINE_SLOT_ENV, aSlots, ulCount, &slotM);
+        bU = SlotFromEnv(KSP_USER_SLOT_ENV,    aSlots, ulCount, &slotU);
+        if (!bM && !bU)
+            return TRUE;        /* ordinary single-token deployment */
+        /* Load-bearing, unlike its counterpart on the label path. An
+         * unset slot variable leaves slotU at 0, which is a perfectly
+         * valid slot — so without this check a deployment naming only
+         * KSP_MACHINE_SLOT=1 would silently put every user key on slot 0,
+         * a token it never asked for, and report success. */
+        if (!bM || !bU) {
+            LOG_ERROR("Per-scope tokens need BOTH " KSP_MACHINE_SLOT_ENV
+                      " and " KSP_USER_SLOT_ENV, NTE_INVALID_PARAMETER);
+            return FALSE;
+        }
+    }
+
+    /* Two names resolving to one token is not isolation, and saying so is
+     * the whole point of this feature. Refused rather than accepted: a
+     * deployment believing its scopes are separated when they share a
+     * token and a PIN is in a worse position than one that knows they are
+     * not. */
+    if (slotM == slotU) {
+        LOG_ERROR("The machine and user scopes resolve to the SAME token; "
+                  "that is not isolation", NTE_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    g_aScopeSlot[P11_SCOPE_MACHINE] = slotM;
+    g_aScopeSlot[P11_SCOPE_USER]    = slotU;
+    g_bPerScope                     = TRUE;
+
+    /* The context's own slotId is the USER scope's. It is what
+     * KSP_SLOT_PROPERTY reports and what the capability probe reads, and
+     * the user scope is the one an unscoped caller gets. */
+    pCtx->slotId = slotU;
+
+    LOG_INFO("Per-scope tokens: machine=slot %lu, user=slot %lu",
+             (unsigned long)slotM, (unsigned long)slotU);
+    return TRUE;
+}
+
+SECURITY_STATUS P11_EnsureSlotSelected(void)
+{
+    SECURITY_STATUS ss;
+
+    ss = P11_Initialize();
+    if (ss != ERROR_SUCCESS)
+        return ss;
+
+    if (g_bSlotBound)
+        return ERROR_SUCCESS;
+
+    EnterCriticalSection(&g_initLock);
+    if (!g_bSlotBound) {
+        if (!SelectSlot(&g_ctx)) {
+            LeaveCriticalSection(&g_initLock);
+            return NTE_NO_KEY;
+        }
+        /* Per-scope tokens, if the deployment asked for them. This runs
+         * after SelectSlot because it defaults both scopes to that slot,
+         * and it can override the context's own slotId. */
+        if (!SelectScopeSlots(&g_ctx)) {
+            LeaveCriticalSection(&g_initLock);
+            return NTE_NO_KEY;
+        }
+        /* A refusal is not fatal — see P11_ProbeCapabilities. */
+        (void)P11_ProbeCapabilities();
+        g_bSlotBound = TRUE;
+        LOG_INFO("Slot bound: %lu", (unsigned long)g_ctx.slotId);
+    }
+    LeaveCriticalSection(&g_initLock);
+    return ERROR_SUCCESS;
+}
+
+/* The slot a scope's keys live in. Valid once the slot is bound; before
+ * that both answers are the unbound context's slotId, which is why every
+ * caller goes through P11_EnsureSlotSelected first. */
+CK_SLOT_ID P11_GetScopeSlot(int nScope)
+{
+    if (nScope < 0 || nScope >= P11_SCOPE_COUNT)
+        nScope = P11_SCOPE_USER;
+    return g_aScopeSlot[nScope];
+}
+
+/* TRUE when the two scopes are on different tokens. */
+BOOL P11_HasPerScopeTokens(void)
+{
+    return g_bPerScope;
+}
+
+/* Choose the token, until the slot is bound.
+ *
+ * Refused once bound rather than accepted and ignored: a caller told its
+ * selection succeeded would go on using the previous token believing it had
+ * switched, which is the failure mode KSP_NotifyChangeKey had. */
+SECURITY_STATUS P11_SetTokenSelection(const char *szLabel,
+                                      const CK_SLOT_ID *pSlot)
+{
+    SECURITY_STATUS ss = ERROR_SUCCESS;
+
+    if ((szLabel == NULL) == (pSlot == NULL))
+        return NTE_INVALID_PARAMETER;   /* exactly one of the two */
+
+    InitOnceExecuteOnce(&g_lockOnce, CreateInitLock, NULL, NULL);
+    EnterCriticalSection(&g_initLock);
+
+    if (g_bSlotBound) {
+        LOG_ERROR("Token selection is too late: the slot is already bound "
+                  "and PKCS#11 cannot move a session between tokens",
+                  NTE_INVALID_HANDLE);
+        ss = NTE_INVALID_HANDLE;
+    } else if (szLabel) {
+        size_t cb = strlen(szLabel);
+        if (cb == 0 || cb > P11_TOKEN_LABEL_LEN) {
+            ss = NTE_INVALID_PARAMETER;
+        } else {
+            memcpy(g_szSelLabel, szLabel, cb);
+            g_szSelLabel[cb] = '\0';
+            g_bSelLabelSet = TRUE;
+            g_bSelSlotSet  = FALSE;   /* one selection at a time */
+        }
+    } else {
+        g_selSlot      = *pSlot;
+        g_bSelSlotSet  = TRUE;
+        g_bSelLabelSet = FALSE;
+    }
+
+    LeaveCriticalSection(&g_initLock);
+    return ss;
+}
+
+/* Forget a token selection, reverting to the environment and then the
+ * default. Refused once the slot is bound, like setting one.
+ *
+ * P11_Finalize deliberately KEEPS the selection, so that a re-initialise
+ * honours what the caller asked for; this is how a caller takes it back. */
+SECURITY_STATUS P11_ClearTokenSelection(void)
+{
+    SECURITY_STATUS ss = ERROR_SUCCESS;
+
+    InitOnceExecuteOnce(&g_lockOnce, CreateInitLock, NULL, NULL);
+    EnterCriticalSection(&g_initLock);
+    if (g_bSlotBound) {
+        ss = NTE_INVALID_HANDLE;
+    } else {
+        g_bSelLabelSet   = FALSE;
+        g_bSelSlotSet    = FALSE;
+        g_szSelLabel[0]  = '\0';
+    }
+    LeaveCriticalSection(&g_initLock);
+    return ss;
+}
+
+/* TRUE once the slot can no longer change. */
+BOOL P11_IsSlotBound(void)
+{
+    return g_bSlotBound;
 }
 
 /* Initialise the PKCS#11 context (thread-safe, idempotent on success).
@@ -237,6 +603,16 @@ void P11_Finalize(void)
      * over. Finalising while another thread holds a session is unsafe and
      * always has been — this is called from DllMain on process detach. */
     g_initStatus = NTE_PROVIDER_DLL_FAIL;
+
+    /* The slot binding goes with it. Leaving it set would make a later
+     * P11_EnsureSlotSelected return success without selecting or probing
+     * anything, against a context that no longer has a module loaded —
+     * a stale "already done" for work that has been undone. The caller's
+     * selection is kept, so a re-initialise honours what was asked for. */
+    g_bSlotBound = FALSE;
+    g_bPerScope  = FALSE;
+    g_aScopeSlot[P11_SCOPE_USER]    = 0;
+    g_aScopeSlot[P11_SCOPE_MACHINE] = 0;
 
     if (g_ctx.bInitialized && g_ctx.pFunctionList) {
         g_ctx.pFunctionList->C_Finalize(NULL);

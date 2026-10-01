@@ -210,16 +210,28 @@ static SECURITY_STATUS KspBuildAesMechanism(
     if (_wcsicmp(pKey->szChainingMode, BCRYPT_CHAIN_MODE_CFB) == 0) {
         CK_MECHANISM_TYPE mechCfb;
 
+        /* CNG states the feedback size in BYTES; PKCS#11 names a
+         * mechanism per size in BITS. All three sizes CNG can express map
+         * onto a mechanism:
+         *
+         *    1 byte  ->  8-bit feedback  ->  CKM_AES_CFB8   (CNG's default)
+         *    8 bytes -> 64-bit feedback  ->  CKM_AES_CFB64
+         *   16 bytes -> full block       ->  CKM_AES_CFB128
+         *
+         * CKM_AES_CFB1 stays unreachable, and not for want of wiring: one
+         * bit is not a whole number of bytes, so no MessageBlockLength
+         * value selects it. */
         if (pKey->cbMessageBlockLen == 0 ||
             pKey->cbMessageBlockLen == 1) {
             mechCfb = CKM_AES_CFB8;
+        } else if (pKey->cbMessageBlockLen == 8) {
+            mechCfb = CKM_AES_CFB64;
         } else if (pKey->cbMessageBlockLen == AES_BLOCK_SIZE) {
             mechCfb = CKM_AES_CFB128;
         } else {
-            /* CNG allows any size up to the block; PKCS#11 defines
-             * mechanisms only for 1, 8, 64 and 128 bits, and this provider
-             * wires the two CNG actually reaches. Refusing beats silently
-             * rounding to a different cipher. */
+            /* A size PKCS#11 has no mechanism for — 4 bytes, say. Refusing
+             * beats rounding, which would silently encrypt under a
+             * different cipher than the caller asked for. */
             return NTE_NOT_SUPPORTED;
         }
 
@@ -352,7 +364,7 @@ SECURITY_STATUS WINAPI KSP_VerifySignature(
         mech.ulParameterLen = sizeof(eddsaParams);
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_VerifySignature", ss);
         return ss;
@@ -590,7 +602,7 @@ SECURITY_STATUS WINAPI KSP_SignHash(
         return ERROR_SUCCESS;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_SignHash", ss);
         return ss;
@@ -843,7 +855,7 @@ SECURITY_STATUS WINAPI KSP_Decrypt(
         return ERROR_SUCCESS;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_Decrypt", ss);
         return ss;
@@ -972,7 +984,7 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
             return NTE_NOT_SUPPORTED;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_ExportKey", ss);
             return ss;
@@ -1099,7 +1111,7 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
             return NTE_BAD_KEY;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_ExportKey", ss);
             return ss;
@@ -1153,7 +1165,7 @@ SECURITY_STATUS WINAPI KSP_ExportKey(
         return NTE_BAD_KEY;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_ExportKey", ss);
         return ss;
@@ -1286,7 +1298,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
                 { CKA_DECRYPT,     &bTrue,       sizeof(bTrue)       },
             };
 
-            ss = P11_AcquireSession(&hSession);
+            ss = P11_AcquireSession(P11_SCOPE_OF_FLAGS(dwFlags), &hSession);
             if (ss != ERROR_SUCCESS) {
                 LOG_LEAVE("KSP_ImportKey", ss);
                 return ss;
@@ -1347,7 +1359,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
             { CKA_VERIFY,          &bTrue,        sizeof(bTrue)       },
         };
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(P11_SCOPE_OF_FLAGS(dwFlags), &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_ImportKey", ss);
             return ss;
@@ -1492,7 +1504,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
                                  sizeof(bTrue) },
             };
 
-            ss = P11_AcquireSession(&hSession);
+            ss = P11_AcquireSession(P11_SCOPE_OF_FLAGS(dwFlags), &hSession);
             if (ss != ERROR_SUCCESS) {
                 KSP_Free(pbDer);
                 LOG_LEAVE("KSP_ImportKey", ss);
@@ -1598,7 +1610,7 @@ SECURITY_STATUS WINAPI KSP_ImportKey(
                 { CKA_VALUE,       pbKeyData,    cbKeyData           },
             };
 
-            ss = P11_AcquireSession(&hSession);
+            ss = P11_AcquireSession(P11_SCOPE_OF_FLAGS(dwFlags), &hSession);
             if (ss != ERROR_SUCCESS) {
                 LOG_LEAVE("KSP_ImportKey", ss);
                 return ss;
@@ -1713,7 +1725,7 @@ SECURITY_STATUS WINAPI KSP_Encrypt(
         return ERROR_SUCCESS;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_Encrypt", ss);
         return ss;
@@ -1827,7 +1839,7 @@ SECURITY_STATUS WINAPI KSP_SecretAgreement(
         return NTE_BAD_ALGID;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pPriv), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_SecretAgreement", ss);
         return ss;
@@ -1908,6 +1920,9 @@ SECURITY_STATUS WINAPI KSP_SecretAgreement(
     }
 
     pSecret->dwMagic     = KSP_SECRET_MAGIC;
+    /* The derived object is on the private key's token, so every later
+     * NCryptDeriveKey must go back to that token (LIFE-08). */
+    pSecret->nScope      = P11_SCOPE_OF(pPriv);
     pSecret->hSecretObj  = hDerived;
     pSecret->dwSecretLen = (DWORD)ulSecretLen;
 
@@ -2162,7 +2177,7 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
             return NTE_BUFFER_TOO_SMALL;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(pSecret->nScope, &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_DeriveKey", ss);
             return ss;
@@ -2256,7 +2271,7 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
             return NTE_BUFFER_TOO_SMALL;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(pSecret->nScope, &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_DeriveKey", ss);
             return ss;
@@ -2371,7 +2386,7 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
             return NTE_INVALID_PARAMETER;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(pSecret->nScope, &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_DeriveKey", ss);
             return ss;
@@ -2518,7 +2533,7 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
             cbFullSeed += cbSeed;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(pSecret->nScope, &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_DeriveKey", ss);
             return ss;
@@ -2595,7 +2610,7 @@ SECURITY_STATUS WINAPI KSP_DeriveKey(
         return ERROR_SUCCESS;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(pSecret->nScope, &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_DeriveKey", ss);
         return ss;
@@ -2649,7 +2664,7 @@ SECURITY_STATUS WINAPI KSP_FreeSecret(
 
     if (pSecret->hSecretObj != CK_INVALID_HANDLE &&
         pCtx && pCtx->pFunctionList &&
-        P11_AcquireSession(&hSession) == ERROR_SUCCESS) {
+        P11_AcquireSession(P11_SCOPE_USER, &hSession) == ERROR_SUCCESS) {
         pCtx->pFunctionList->C_DestroyObject(hSession, pSecret->hSecretObj);
         P11_ReleaseSession(hSession);
     }

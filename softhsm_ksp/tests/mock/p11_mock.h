@@ -12,12 +12,17 @@
  * a test can present a token that overflows the provider's own bound. */
 #define P11_MOCK_MAX_MECHS  600
 
+/* Slots the mock can present. Smaller than P11_MAX_SLOTS on purpose: the
+ * per-slot label table is 33 bytes a slot, and no test needs 64 tokens. */
+#define P11_MOCK_MAX_SLOTS  8
+
 /* ── Mock configuration ─────────────────────────────────────────────────── */
 
 /* Injectable error codes (CKR_OK = normal behaviour) */
 typedef struct _P11_MOCK_CONFIG {
     CK_RV rv_Initialize;
     CK_RV rv_GetSlotList;
+    CK_RV rv_GetTokenInfo;
     CK_RV rv_OpenSession;
     CK_RV rv_Login;
     CK_RV rv_GenerateKeyPair;
@@ -79,6 +84,9 @@ typedef struct _P11_MOCK_CONFIG {
 
     /* Number of simulated slots */
     int nSlots;
+    /* Per-slot token label, for tests that select between tokens. Empty
+     * means the default "MockToken<i>". */
+    char szSlotLabels[P11_MOCK_MAX_SLOTS][33];
     /* Number of simulated keys returned by FindObjects */
     int nKeyObjects;
     /* Number of simulated CKO_CERTIFICATE objects. Kept separate from
@@ -206,6 +214,7 @@ typedef struct _P11_MOCK_CALLS {
     int nInitialize;
     int nFinalize;
     int nGetSlotList;
+    int nGetTokenInfo;
     int nOpenSession;
     int nLogin;
     int nCloseSession;

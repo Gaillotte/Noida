@@ -7,7 +7,7 @@
 | `NCRYPT_NAME_PROPERTY` | `L"SoftHSM KSP"` | `WCHAR[]` | ✓ |
 | `NCRYPT_VERSION_PROPERTY` | `1` | `DWORD` | ✓ |
 | `NCRYPT_IMPL_TYPE_PROPERTY` | `NCRYPT_IMPL_SOFTWARE_FLAG` | `DWORD` | ✓ |
-| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ (read-only) |
+| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ read; ✓ write until the slot is bound |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
 
 **`NCRYPT_AUTH_TAG_LENGTH` is read-only, and it never meant AAD.**
@@ -68,31 +68,83 @@ silently selecting a different cipher.
 | Property | Effect |
 |----------|--------|
 | `NCRYPT_PIN_PROPERTY` (`L"SmartCardPin"`) | Sets the user PIN for `C_Login`, replacing `SOFTHSM2_PIN`. Sessions open lazily, so a PIN set between `NCryptOpenStorageProvider` and the first cryptographic call is the one used. Sessions already open keep their login — PKCS#11 cannot change credentials on a live session. |
-| `"SoftHSM Token Label"`, `"SoftHSM Slot"` | `NTE_NOT_SUPPORTED`. Read-only by design: see below. |
+| `"SoftHSM Token Label"` | `CKA_LABEL` of the token to use, until the slot is bound. `NTE_INVALID_HANDLE` after. See below. |
+| `"SoftHSM Slot"` | Slot ID to use, on the same terms. |
 
 The PIN is copied into a fixed buffer, zeroed when the session pool is
 finalised, and never logged — not even its length. A PIN longer than
 `P11_MAX_PIN_LEN` is **rejected rather than truncated**, because a silently
 truncated PIN would fail to log in for no visible reason.
 
-**Token selection is not writable through this call.** By the time a caller
-holds a provider handle the PKCS#11 context has initialised and the session
-pool is bound to a slot, and PKCS#11 has no way to move a session to another
-token. Accepting the value and continuing to use the old token would be
-worse than refusing it: the caller would believe it had switched. Choose the
-token before the provider opens:
+**Token selection is writable, until the first operation.**
+
+It used not to be, on the reasoning that the session pool is already bound
+to a slot by the time a caller holds a provider handle. That was true of the
+old code and it was not a law. The slot is now chosen on the first call that
+needs a token, exactly as the PIN has always been, so there is a window
+between `NCryptOpenStorageProvider` and the first operation in which the
+choice can still be made:
+
+| Property | Type | Selects by |
+|----------|------|-----------|
+| `"SoftHSM Token Label"` | `WCHAR[]` | `CKA_LABEL` of the token |
+| `"SoftHSM Slot"` | `DWORD` | Slot ID |
+
+```c
+NCryptOpenStorageProvider(&hProv, L"SoftHSM KSP", 0);
+NCryptSetProperty(hProv, L"SoftHSM Token Label",
+                  (PBYTE)L"production", 10 * sizeof(WCHAR), 0);
+NCryptSetProperty(hProv, NCRYPT_PIN_PROPERTY, ..., 0);
+/* the first key operation binds that token */
+```
+
+Only one selection is in force: a later call replaces an earlier one rather
+than both being consulted in an order the caller cannot see. `cbInput` is a
+buffer size, so a label counted with or without its terminator both work —
+including at the boundary, where a 32-byte label plus a terminator is 33
+characters and a length checked before the terminator is stripped would
+refuse something entirely legal. The PIN had the same off-by-one and both
+now go through one helper.
+
+**After the window closes it is refused with `NTE_INVALID_HANDLE`, not
+accepted.** PKCS#11 cannot move a session between tokens, so a caller told
+its selection succeeded would go on using the previous token believing it
+had switched — the same shape of defect as `NCryptNotifyChangeKey`
+reporting success without writing the event handle it was asked for.
+
+The environment variables still work and remain the right answer for a
+deployment rather than an application:
 
 | Variable | Selects by |
 |----------|-----------|
 | `SOFTHSM2_TOKEN_LABEL` | `CKA_LABEL` of the token — preferred, because SoftHSM2 slot IDs shift when tokens are added or removed |
 | `SOFTHSM2_SLOT` | Decimal slot ID |
 
-If both are set the label wins. An explicit selection that matches no
-present token is an **error**, not a fallback to slot 0 — falling back would
-sign with the wrong key and look like it worked. With neither set, the first
-slot reporting a token is used, which is the historical behaviour.
+A selection set through the property outranks both: a property is a
+deliberate act by this process, a variable is ambient. If both variables are
+set the label wins.
+
+An explicit selection that matches no present token is an **error**, not a
+fallback to slot 0 — falling back would sign with the wrong key and look
+like it worked. Because a failed selection binds nothing, it can be
+corrected in the same process and the next operation succeeds. With nothing
+set at all, the first slot reporting a token is used, which is the
+historical behaviour.
 
 Read `"SoftHSM Slot"` back to confirm which token was chosen.
+
+**With per-scope tokens configured, a single selection cannot be honoured
+and is refused.** `KSP_MACHINE_TOKEN_LABEL` / `KSP_USER_TOKEN_LABEL` name
+two tokens and let the key's scope choose between them (see
+`03-key-management.md`); a property naming one token contradicts that, so
+the first operation fails rather than quietly letting the configuration win.
+
+**How this is tested.** Against **two real tokens**, in
+`tests/linux/test_two_tokens.c`, with different labels, different PINs and
+different keys on each. One token cannot test selection at all: every
+selection "succeeds" by landing on the slot the default would have chosen
+anyway, so the assertions would pass whether the provider read the caller's
+choice or discarded it.
 
 SoftHSM2 keeps keys in an encrypted SQLite file, so the provider reports
 `NCRYPT_IMPL_SOFTWARE_FLAG` rather than claiming hardware backing.
@@ -126,7 +178,7 @@ Keys remain non-exportable regardless — that is enforced by
 | `NCRYPT_AUTH_TAG_LENGTH` | supported tag range | `BCRYPT_AUTH_TAG_LENGTHS_STRUCT` | ✓ GCM/CCM keys | ✗ read-only — see below |
 | `BCRYPT_MESSAGE_BLOCK_LENGTH` | `pKey->cbMessageBlockLen` | `DWORD` | ✓ | ✓ symmetric only |
 | `NCRYPT_BLOCK_LENGTH_PROPERTY` | `16` (AES block) | `DWORD` | ✓ AES only | ✗ |
-| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ (read-only) |
+| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ read; ✓ write until the slot is bound |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
 
 **`NCRYPT_AUTH_TAG_LENGTH` is read-only, and it never meant AAD.**
@@ -182,36 +234,6 @@ the full block. Only 1 and the AES block size are accepted; PKCS#11
 defines no mechanism for the sizes in between, and refusing beats
 silently selecting a different cipher.
 
-### Provider properties that can be written
-
-| Property | Effect |
-|----------|--------|
-| `NCRYPT_PIN_PROPERTY` (`L"SmartCardPin"`) | Sets the user PIN for `C_Login`, replacing `SOFTHSM2_PIN`. Sessions open lazily, so a PIN set between `NCryptOpenStorageProvider` and the first cryptographic call is the one used. Sessions already open keep their login — PKCS#11 cannot change credentials on a live session. |
-| `"SoftHSM Token Label"`, `"SoftHSM Slot"` | `NTE_NOT_SUPPORTED`. Read-only by design: see below. |
-
-The PIN is copied into a fixed buffer, zeroed when the session pool is
-finalised, and never logged — not even its length. A PIN longer than
-`P11_MAX_PIN_LEN` is **rejected rather than truncated**, because a silently
-truncated PIN would fail to log in for no visible reason.
-
-**Token selection is not writable through this call.** By the time a caller
-holds a provider handle the PKCS#11 context has initialised and the session
-pool is bound to a slot, and PKCS#11 has no way to move a session to another
-token. Accepting the value and continuing to use the old token would be
-worse than refusing it: the caller would believe it had switched. Choose the
-token before the provider opens:
-
-| Variable | Selects by |
-|----------|-----------|
-| `SOFTHSM2_TOKEN_LABEL` | `CKA_LABEL` of the token — preferred, because SoftHSM2 slot IDs shift when tokens are added or removed |
-| `SOFTHSM2_SLOT` | Decimal slot ID |
-
-If both are set the label wins. An explicit selection that matches no
-present token is an **error**, not a fallback to slot 0 — falling back would
-sign with the wrong key and look like it worked. With neither set, the first
-slot reporting a token is used, which is the historical behaviour.
-
-Read `"SoftHSM Slot"` back to confirm which token was chosen. `NTE_NOT_SUPPORTED` |
 
 Reading or writing a cipher property on an asymmetric key returns
 `NTE_NOT_SUPPORTED`, and `NCRYPT_BLOCK_LENGTH_PROPERTY` is rejected on

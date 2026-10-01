@@ -143,6 +143,36 @@ jobs:
         working-directory: softhsm_ksp/tests/linux
         run: make tsan
 
+      # TWO tokens behind the one module.
+      #
+      # Token selection cannot be tested with one token: every selection
+      # "succeeds" by landing on the slot the default would have chosen
+      # anyway, so the assertions pass whether the provider reads the
+      # caller's choice or discards it. With two tokens carrying different
+      # labels, different PINs and different keys, a selection that was
+      # ignored fails — on the slot number, on the login, and on finding a
+      # key that belongs to the other token.
+      - name: Initialise two tokens
+        working-directory: softhsm_ksp/tests/linux
+        run: make token-two
+
+      # IFACE-04: choosing the token through NCryptSetProperty, in the
+      # window between opening the provider and the first operation.
+      - name: Token selection against two real tokens
+        working-directory: softhsm_ksp/tests/linux
+        run: make two-tokens
+
+      # LIFE-08: the machine and user scopes on SEPARATE tokens with
+      # SEPARATE PINs, which is isolation rather than the label prefix that
+      # anyone logged in could read. The case that matters runs WITHOUT the
+      # machine PIN and requires the machine token to be unreachable; under
+      # the old one-token scheme it would have been readable with the one
+      # PIN. The misconfiguration cases require a half-configured or
+      # same-token setup to fail closed rather than half-apply.
+      - name: Per-scope token isolation
+        working-directory: softhsm_ksp/tests/linux
+        run: make scope-tokens
+
   # ── The same provider against a token that can do EdDSA and ML-DSA ──────
   #
   # Separate from the job above because it is a genuinely different token,

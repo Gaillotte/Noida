@@ -4,9 +4,21 @@ Same contract as generate_feature_matrix.py: the CSV is the source of
 truth, this only renders it. Every count in the workbook is a COUNTIF or
 COUNTIFS over the matrix sheet, so the summary cannot drift from the table.
 
-LibreOffice cannot load any xlsx in the build environment, so the values
-are also injected as cached results after being evaluated against the
-workbook's own data - see the note in the repository history.
+LibreOffice cannot load any xlsx in this build environment - it times out
+on files it wrote itself - so nothing here can recalculate the workbook.
+The formulas are therefore evaluated in Python and injected as CACHED
+results, so a reader who opens the file sees numbers rather than blanks
+whether or not their application recalculates.
+
+The formulas are kept as well as the values, not replaced by them. A reader
+can see how every number was derived, and a spreadsheet that does
+recalculate will overwrite the cache with its own answer - which is a
+cross-check on this evaluator rather than a risk, because both read the
+same matrix sheet.
+
+Injecting the cache USED to be a separate manual step, and regenerating the
+workbook silently dropped it: every count read blank. It is part of this
+script now for that reason.
 """
 import csv, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'softhsm_ksp', 'docs'))
@@ -17,7 +29,8 @@ from openpyxl.utils import get_column_letter
 
 SRC = '/home/user/Noida/softhsm_ksp/docs/feature-matrix.csv'
 OUT = '/home/user/Noida/softhsm_ksp/SoftHSM2_KSP_CNG_Feature_Coverage.xlsx'
-ASOF = '2026-09-28'
+import datetime
+ASOF = datetime.date.today().isoformat()
 
 rows = list(csv.DictReader(open(SRC)))
 SUPPORTED = {'Covered': 'Yes', 'Partial': 'Partial', 'Not covered': 'No'}
@@ -263,8 +276,8 @@ LEG = [
  ('(blank)', 'No remedy is planned: the row is a deliberate position or an external blocker.'),
  ('', None),
  ('Test layers behind "Yes"', None),
- ('Layer 1', '22 unit suites, 1623 assertions, Linux/GCC against a controllable PKCS#11 mock. Pins down the provider\'s logic; cannot validate assumptions about real tokens.'),
- ('Layer 1b', 'The same provider sources against Kryoptic, an independent PKCS#11 token in Rust. 230 assertions, run twice against one token so anything left behind is caught. Plus 33 concurrency assertions across 32 threads, and ThreadSanitizer.'),
+ ('Layer 1', '22 unit suites, 1816 assertions, Linux/GCC against a controllable PKCS#11 mock. Pins down the provider\'s logic; cannot validate assumptions about real tokens.'),
+ ('Layer 1b', 'The same provider sources against Kryoptic, an independent PKCS#11 token in Rust. 256 assertions, run twice against one token so anything left behind is caught. Plus 33 concurrency assertions across 32 threads under ThreadSanitizer, and - behind TWO tokens on one module - 53 for token selection and 28 for per-scope isolation, because a single token cannot tell a working selection from an ignored one.'),
  ('Layer 2 / 3', 'Windows integration and HLK-conformant PowerShell suites. Written and syntax-checked; they need a Windows machine with SoftHSM2 to execute.'),
  ('', None),
  ('Scope', None),
@@ -283,3 +296,212 @@ for k, v in LEG:
 
 wb.save(OUT)
 print('wrote', OUT)
+
+# ── Cached formula results ────────────────────────────────────────────────
+#
+# A tiny evaluator for the only formula shapes this workbook uses: COUNTIF,
+# COUNTIFS, same-sheet cell references, + and /. Anything it cannot evaluate
+# is left without a cache rather than guessed, and reported, so a formula
+# added later does not silently lose its value.
+def _col_letters(ref):
+    return ''.join(ch for ch in ref if ch.isalpha())
+
+
+def _sheet_values(ws):
+    """{('B', 7): value} for literal cells, by column letter and row."""
+    out = {}
+    for row in ws.iter_rows():
+        for c in row:
+            if c.value is not None and not (isinstance(c.value, str)
+                                            and c.value.startswith('=')):
+                out[(c.column_letter, c.row)] = c.value
+    return out
+
+
+def _range_cells(wb, spec):
+    """'Sheet!E2:E104' or 'E2:E104' -> list of cell values."""
+    if '!' in spec:
+        name, rng = spec.split('!', 1)
+        name = name.strip("'")
+    else:
+        name, rng = None, spec
+    ws = wb[name] if name else None
+    a, b = rng.split(':')
+    out = []
+    for row in ws[rng] if ws else []:
+        for c in row:
+            out.append(c.value)
+    return out
+
+
+def _match(value, criterion):
+    """Excel COUNTIF matching, for the equality cases this workbook uses."""
+    if value is None:
+        return False
+    return str(value).strip().lower() == str(criterion).strip().lower()
+
+
+def _eval(wb, ws, formula, literals, depth=0):
+    import re
+    f = formula[1:] if formula.startswith('=') else formula
+    if depth > 8:
+        return None
+
+    # A COUNTIF criterion is either a quoted literal or a same-sheet cell
+    # reference. Resolving the reference matters: the blocker counts use
+    # COUNTIF(matrix!H:H, A15), and treating "A15" as the literal text to
+    # match against made every one of them zero. Caught by cross-checking
+    # the cached values against the CSV instead of trusting them.
+    def criterion(arg):
+        arg = arg.strip()
+        if arg.startswith('"'):
+            return arg.strip('"')
+        m = re.fullmatch(r'\$?([A-Z]{1,2})\$?([0-9]{1,5})', arg)
+        if m:
+            v = ws[f'{m.group(1)}{m.group(2)}'].value
+            return '' if v is None else str(v)
+        return arg
+
+    # COUNTIF(range,criterion) and COUNTIFS(r,c,r,c,...)
+    def count(m):
+        fn = m.group(1).upper()
+        args = [a.strip() for a in m.group(2).split(',')]
+        if fn == 'COUNTIF':
+            cells = _range_cells(wb, args[0])
+            crit = criterion(args[1])
+            return str(sum(1 for v in cells if _match(v, crit)))
+        pairs = [(args[i], criterion(args[i + 1]))
+                 for i in range(0, len(args) - 1, 2)]
+        cols = [_range_cells(wb, r) for r, _ in pairs]
+        n = min(len(c) for c in cols)
+        total = 0
+        for i in range(n):
+            if all(_match(cols[j][i], pairs[j][1]) for j in range(len(pairs))):
+                total += 1
+        return str(total)
+
+    f = re.sub(r'(COUNTIFS?)\(([^()]*)\)', count, f, flags=re.I)
+
+    # IFERROR(expr, fallback). The workbook uses it only to turn a
+    # divide-by-zero into 0, which is exactly what evaluating the inner
+    # expression and falling back on failure means. Handled before the
+    # reference substitution so the inner expression is still intact.
+    while True:
+        m = re.search(r'IFERROR\((.*),\s*([^,()]*)\)\s*$', f, flags=re.I)
+        if not m:
+            break
+        v = _eval(wb, ws, m.group(1), literals, depth + 1)
+        if v is None:
+            v = _eval(wb, ws, m.group(2), literals, depth + 1)
+        f = f[:m.start()] + ('None' if v is None else repr(v)) + f[m.end():]
+
+    # COUNTA(range): non-empty cells.
+    def counta(m):
+        return str(sum(1 for v in _range_cells(wb, m.group(1).strip())
+                       if v is not None and str(v) != ''))
+
+    f = re.sub(r'COUNTA\(([^()]*)\)', counta, f, flags=re.I)
+
+    # SUM(range), always same-sheet here. Its cells may themselves hold
+    # formulas, so they go back through _eval rather than being read raw.
+    def sum_range(m):
+        total = 0.0
+        for row in ws[m.group(1).strip().replace('$', '')]:
+            for c in row:
+                v = c.value
+                if isinstance(v, str) and v.startswith('='):
+                    v = _eval(wb, ws, v, literals, depth + 1)
+                if isinstance(v, (int, float)):
+                    total += v
+        return repr(total)
+
+    f = re.sub(r'SUM\(([^()]*)\)', sum_range, f, flags=re.I)
+
+    # same-sheet references, including $-anchored ones
+    def ref(m):
+        col, row = m.group(1), int(m.group(2))
+        key = (col, row)
+        if key in literals:
+            return str(literals[key])
+        other = ws[f'{col}{row}'].value
+        if isinstance(other, str) and other.startswith('='):
+            v = _eval(wb, ws, other, literals, depth + 1)
+            return 'None' if v is None else str(v)
+        return 'None' if other is None else str(other)
+
+    f = re.sub(r'\$?([A-Z]{1,2})\$?([0-9]{1,5})', ref, f)
+
+    if 'None' in f:
+        return None
+    try:
+        return eval(f, {'__builtins__': {}}, {})
+    except Exception:
+        return None
+
+
+def inject_cached_values(path):
+    """Rewrite the saved workbook so each formula carries its result."""
+    import re, zipfile, shutil
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    cached = {}          # (sheetname, 'B7') -> value
+    unresolved = []
+    for ws in wb.worksheets:
+        literals = _sheet_values(ws)
+        for row in ws.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and c.value.startswith('='):
+                    v = _eval(wb, ws, c.value, literals)
+                    if v is None:
+                        unresolved.append(f'{ws.title}!{c.coordinate}')
+                    else:
+                        cached[(ws.title, c.coordinate)] = v
+
+    # Map sheet name -> the archive member openpyxl wrote it to.
+    order = [ws.title for ws in wb.worksheets]
+    member_for = {name: 'xl/worksheets/sheet%d.xml' % (i + 1)
+                  for i, name in enumerate(order)}
+
+    src = path + '.tmp'
+    shutil.move(path, src)
+    zin = zipfile.ZipFile(src)
+    zout = zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED)
+    for item in zin.infolist():
+        data = zin.read(item.filename)
+        sheet = next((n for n, m in member_for.items()
+                      if m == item.filename), None)
+        if sheet:
+            text = data.decode('utf-8')
+
+            def patch(m):
+                coord = m.group(1)
+                key = (sheet, coord)
+                if key not in cached:
+                    return m.group(0)
+                val = cached[key]
+                body = ('%d' % val if isinstance(val, int)
+                        else repr(float(val)))
+                # openpyxl writes <f>..</f> with an EMPTY <v></v>, so the
+                # replacement has to match the empty element too - matching
+                # only </f> leaves the blank <v> in place and the cache is
+                # ignored. That cost a round of head-scratching.
+                return re.sub(r'<v\s*/>|<v></v>', '', m.group(0)) + \
+                    '<v>%s</v>' % body
+
+            text = re.sub(
+                r'<c r="([A-Z]{1,2}[0-9]{1,5})"[^>]*>\s*<f>.*?</f>'
+                r'(?:\s*<v\s*/>|\s*<v></v>)?',
+                patch, text, flags=re.S)
+            data = text.encode('utf-8')
+        zout.writestr(item, data)
+    zout.close(); zin.close()
+    os.remove(src)
+    return len(cached), unresolved
+
+
+n, unresolved = inject_cached_values(OUT)
+print('cached %d formula results' % n)
+if unresolved:
+    print('NOT cached (left as formulas):', ', '.join(unresolved))
+

@@ -10,7 +10,10 @@
 #   make token         initialise a token in it
 #   make run           run the provider against that token
 #   make run-twice     run it twice against the SAME token — see below
-#   make all           all four
+#   make token-two     initialise TWO tokens behind the one module
+#   make two-tokens    run the token-selection suite against both
+#   make scope-tokens  run the per-scope isolation suite (LIFE-08)
+#   make all           all of the above
 #
 # There are two token configurations, and the suite passes against both.
 #
@@ -80,6 +83,21 @@ TOKEN_LABEL ?= ksp-phase7
 SO_PIN      ?= 12345678
 USER_PIN    ?= 1234
 
+# A SECOND token, for the suite that proves selecting a token selects one.
+#
+# Its own database, its own label and — on purpose — its own user PIN. The
+# different PIN is not decoration: a case that asks for token B and is given
+# token A fails to log in, so the wrong selection is caught by a second,
+# independent mechanism as well as by the slot number.
+TOKEN2_DIR   ?= $(LINUX_DIR)/.token2
+TOKEN2_CONF  := $(TOKEN2_DIR)/kryoptic.conf
+TOKEN2_DB_A  := $(TOKEN2_DIR)/token-a.sql
+TOKEN2_DB_B  := $(TOKEN2_DIR)/token-b.sql
+TOKEN2_LAB_A ?= ksp-first
+TOKEN2_LAB_B ?= ksp-second
+TOKEN2_PIN_A ?= 1111
+TOKEN2_PIN_B ?= 2222
+
 PROVIDER_SRC = \
     $(SRC)/pkcs11/p11_context.c \
     $(SRC)/pkcs11/p11_caps.c \
@@ -92,10 +110,11 @@ PROVIDER_SRC = \
     $(SRC)/common/logging.c \
     $(SRC)/common/memory.c
 
-.PHONY: all all-pqc kryoptic kryoptic-pqc openssl token run run-twice \
-        concurrent tsan clean distclean
+.PHONY: all all-pqc kryoptic kryoptic-pqc openssl token token-two run \
+        run-twice two-tokens scope-tokens concurrent tsan clean distclean
 
-all: kryoptic token run-twice concurrent
+all: kryoptic token run-twice concurrent token-two two-tokens \
+     scope-tokens
 
 # The same thing against a token that can do EdDSA and ML-DSA. Slower by
 # the OpenSSL build, which is why it is a separate target.
@@ -158,6 +177,95 @@ token: p11_init_token $(KRYOPTIC_SO)
 	KRYOPTIC_CONF=$(TOKEN_CONF) \
 	    ./p11_init_token $(KRYOPTIC_SO) $(TOKEN_LABEL) $(SO_PIN) $(USER_PIN)
 
+# ── Two tokens on one module ──────────────────────────────────────────────
+#
+# Kryoptic takes one [[slots]] block per token, so two blocks with two
+# databases give two tokens behind a single module — which is the
+# configuration the token-selection code has to be tested against and the
+# single-token setup above cannot provide.
+token-two: p11_init_token $(KRYOPTIC_SO)
+	@echo "══ Initialising two tokens ══"
+	@rm -rf $(TOKEN2_DIR)
+	@mkdir -p $(TOKEN2_DIR)
+	@printf '[[slots]]\nslot = 0\ndbtype = "sqlite"\ndbargs = "%s"\n\n[[slots]]\nslot = 1\ndbtype = "sqlite"\ndbargs = "%s"\n' \
+	    "$(TOKEN2_DB_A)" "$(TOKEN2_DB_B)" > $(TOKEN2_CONF)
+	KRYOPTIC_CONF=$(TOKEN2_CONF) ./p11_init_token \
+	    $(KRYOPTIC_SO) $(TOKEN2_LAB_A) $(SO_PIN) $(TOKEN2_PIN_A) 0
+	KRYOPTIC_CONF=$(TOKEN2_CONF) ./p11_init_token \
+	    $(KRYOPTIC_SO) $(TOKEN2_LAB_B) $(SO_PIN) $(TOKEN2_PIN_B) 1
+
+test_two_tokens: test_two_tokens.c p11_real_loader.c $(PROVIDER_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
+
+# One process per case. The PKCS#11 context is a per-process singleton and
+# C_Initialize is not idempotent, so a case needs a process that has never
+# touched the module — which is also the state a real application starts in.
+#
+# Order matters. 'isolated' reads back what 'default' and 'by-label' left on
+# their respective tokens, so it runs after both, and 'cleanup' checks the
+# same keys from the OTHER token before deleting them — absent from one and
+# present on the other is the pair of facts that distinguishes two tokens
+# from one token addressed twice. 'cleanup' also makes the suite repeatable.
+# Each case is given the PIN of the token it is supposed to reach.
+two-tokens: test_two_tokens
+	@echo "══ Token selection, against two real tokens ══"
+	@set -e; \
+	KRYOPTIC_CONF=$(TOKEN2_CONF) KSP_PKCS11_LIB=$(KRYOPTIC_SO) \
+	  KSP_TOKEN_A=$(TOKEN2_LAB_A) KSP_TOKEN_B=$(TOKEN2_LAB_B); \
+	export KRYOPTIC_CONF KSP_PKCS11_LIB KSP_TOKEN_A KSP_TOKEN_B; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_A) ./test_two_tokens default; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_B) ./test_two_tokens by-label; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_B) ./test_two_tokens by-slot; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_A) ./test_two_tokens isolated; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_B) ./test_two_tokens cleanup; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_A) ./test_two_tokens too-late; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_B) ./test_two_tokens no-such-label; \
+	SOFTHSM2_PIN=$(TOKEN2_PIN_A) ./test_two_tokens no-such-slot
+
+# Per-scope tokens (LIFE-08): the machine and user scopes on SEPARATE
+# tokens with SEPARATE PINs.
+#
+# The machine token is slot 0 and the user token slot 1, which is on purpose
+# the opposite of the obvious assignment: if the code quietly used the
+# default slot for one of the scopes, putting the user scope on slot 0 would
+# hide it. Here that mistake lands on the wrong token and is caught.
+#
+# 'scope-no-machine-pin' runs with KSP_MACHINE_PIN deliberately ABSENT.
+# That is the case separating isolation from namespacing: without the
+# machine credential the machine token cannot be opened at all, where a
+# label prefix in one token would have been readable with the one PIN. The
+# fallback PIN is given as the user PIN, so the machine token is reached
+# with the wrong credential rather than with none — a provider that ignored
+# the per-scope PIN would log in successfully and this case would pass.
+scope-tokens: test_two_tokens
+	@echo "══ Per-scope tokens: isolation by token boundary ══"
+	@set -e; \
+	export KRYOPTIC_CONF=$(TOKEN2_CONF); \
+	export KSP_PKCS11_LIB=$(KRYOPTIC_SO); \
+	export KSP_TOKEN_A=$(TOKEN2_LAB_A) KSP_TOKEN_B=$(TOKEN2_LAB_B); \
+	export KSP_MACHINE_TOKEN_LABEL=$(TOKEN2_LAB_A); \
+	export KSP_USER_TOKEN_LABEL=$(TOKEN2_LAB_B); \
+	export KSP_MACHINE_PIN=$(TOKEN2_PIN_A) KSP_USER_PIN=$(TOKEN2_PIN_B); \
+	./test_two_tokens scope-setup; \
+	./test_two_tokens scope-isolated; \
+	unset KSP_MACHINE_PIN; SOFTHSM2_PIN=$(TOKEN2_PIN_B) \
+	    ./test_two_tokens scope-no-machine-pin; \
+	export KSP_MACHINE_PIN=$(TOKEN2_PIN_A); \
+	./test_two_tokens scope-cleanup
+	@echo ""
+	@echo "══ Misconfiguration must fail closed, not half-apply ══"
+	@set -e; \
+	export KRYOPTIC_CONF=$(TOKEN2_CONF); \
+	export KSP_PKCS11_LIB=$(KRYOPTIC_SO); \
+	export SOFTHSM2_PIN=$(TOKEN2_PIN_A); \
+	KSP_MACHINE_TOKEN_LABEL=$(TOKEN2_LAB_A) \
+	    ./test_two_tokens scope-half-configured; \
+	KSP_MACHINE_SLOT=1 \
+	    ./test_two_tokens scope-half-configured; \
+	KSP_MACHINE_TOKEN_LABEL=$(TOKEN2_LAB_A) \
+	KSP_USER_TOKEN_LABEL=$(TOKEN2_LAB_A) \
+	    ./test_two_tokens scope-same-token
+
 # ── The provider, against that token ──────────────────────────────────────
 test_real_backend: test_real_backend.c p11_real_loader.c real_cert.c $(PROVIDER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
@@ -218,8 +326,9 @@ run-twice: test_real_backend
 	@$(MAKE) --no-print-directory run
 
 clean:
-	rm -f test_real_backend test_concurrent test_concurrent_tsan p11_init_token
-	rm -rf $(TOKEN_DIR)
+	rm -f test_real_backend test_concurrent test_concurrent_tsan \
+	      test_two_tokens p11_init_token
+	rm -rf $(TOKEN_DIR) $(TOKEN2_DIR)
 
 # Leaves the Kryoptic checkout alone by default: re-cloning and rebuilding
 # it is the slow part, and it is what a CI cache holds.

@@ -22,7 +22,18 @@ P11_CONTEXT *P11_GetContext(void) { return &g_testCtx; }
 SECURITY_STATUS P11_Initialize(void)             { return ERROR_SUCCESS; }
 SECURITY_STATUS P11_SessionPool_Initialize(void) { return ERROR_SUCCESS; }
 
-SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
+/* The scope parameter is not used here: these suites run against one mock
+ * token, which is a single-token deployment, and PoolFor() collapses every
+ * scope onto one pool in that configuration.
+ *
+ * p11_session.h is included above so the COMPILER checks this stub against
+ * the real prototype. It was not, and when P11_AcquireSession gained the
+ * scope parameter every one of these stubs kept its old shape: no
+ * diagnostic, because the mismatch is across translation units, and then
+ * ten segfaults as the scope argument arrived in the pointer parameter. A
+ * stub that is not checked against the thing it stands in for is a trap
+ * waiting for the next signature change. */
+SECURITY_STATUS P11_AcquireSession(int nScope, CK_SESSION_HANDLE *ph)
 {
     *ph = (CK_SESSION_HANDLE)1;
     return ERROR_SUCCESS;

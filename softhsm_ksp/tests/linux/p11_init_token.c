@@ -5,7 +5,12 @@
  * C rather than run through pkcs11-tool so CI needs no extra package, and
  * so the setup uses the same Cryptoki calls as everything else here.
  *
- *   p11_init_token <module.so> <label> <so-pin> <user-pin>
+ *   p11_init_token <module.so> <label> <so-pin> <user-pin> [slot-index]
+ *
+ * slot-index is an index into C_GetSlotList, not a slot ID, and defaults to
+ * 0. It exists so a harness can stand up SEVERAL tokens on one module: the
+ * two-token suite needs them to prove that choosing a token actually
+ * chooses one, which a single token cannot show.
  *
  * Deliberately separate from the harness: this runs C_Initialize itself,
  * and the harness must be able to start from a process that has never
@@ -40,11 +45,22 @@ int main(int argc, char **argv)
     CK_ULONG          nSlots = 16;
     CK_SESSION_HANDLE hSession = 0;
     CK_UTF8CHAR       label[32];
+    CK_ULONG          nWanted = 0;    /* index into C_GetSlotList */
 
-    if (argc != 5) {
+    if (argc != 5 && argc != 6) {
         fprintf(stderr,
-                "usage: %s <module.so> <label> <so-pin> <user-pin>\n", argv[0]);
+                "usage: %s <module.so> <label> <so-pin> <user-pin> "
+                "[slot-index]\n", argv[0]);
         return 2;
+    }
+    if (argc == 6) {
+        char *pszEnd = NULL;
+        unsigned long ul = strtoul(argv[5], &pszEnd, 10);
+        if (pszEnd == argv[5] || *pszEnd != '\0') {
+            fprintf(stderr, "slot-index is not a number\n");
+            return 2;
+        }
+        nWanted = (CK_ULONG)ul;
     }
 
     h = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -65,6 +81,11 @@ int main(int argc, char **argv)
     rv = fn->C_GetSlotList(CK_FALSE, slots, &nSlots);
     if (rv != CKR_OK) return fail("C_GetSlotList", rv);
     if (nSlots == 0) { fprintf(stderr, "no slots\n"); return 1; }
+    if (nWanted >= nSlots) {
+        fprintf(stderr, "slot index %lu but the module reports %lu slots\n",
+                (unsigned long)nWanted, (unsigned long)nSlots);
+        return 1;
+    }
 
     /* CK_TOKEN_INFO.label is 32 bytes padded with spaces, not NUL. */
     memset(label, ' ', sizeof(label));
@@ -74,11 +95,11 @@ int main(int argc, char **argv)
         memcpy(label, argv[2], n);
     }
 
-    rv = fn->C_InitToken(slots[0], (CK_UTF8CHAR_PTR)argv[3],
+    rv = fn->C_InitToken(slots[nWanted], (CK_UTF8CHAR_PTR)argv[3],
                          (CK_ULONG)strlen(argv[3]), label);
     if (rv != CKR_OK) return fail("C_InitToken", rv);
 
-    rv = fn->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+    rv = fn->C_OpenSession(slots[nWanted], CKF_SERIAL_SESSION | CKF_RW_SESSION,
                            NULL, NULL, &hSession);
     if (rv != CKR_OK) return fail("C_OpenSession", rv);
 
@@ -95,6 +116,6 @@ int main(int argc, char **argv)
     fn->C_Finalize(NULL);
 
     printf("token '%s' initialised in slot %lu\n",
-           argv[2], (unsigned long)slots[0]);
+           argv[2], (unsigned long)slots[nWanted]);
     return 0;
 }

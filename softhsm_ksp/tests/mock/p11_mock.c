@@ -70,8 +70,50 @@ static CK_RV mock_GetSlotList(CK_BBOOL present, CK_SLOT_ID_PTR pSlots,
 static CK_RV mock_GetSlotInfo(CK_SLOT_ID id, CK_SLOT_INFO CK_PTR p) {
     (void)id; (void)p; return CKR_OK;
 }
+/* A real CK_TOKEN_INFO, per slot.
+ *
+ * This used to return CKR_OK and fill nothing — the same defect
+ * mock_GetInfo had before session 8. Selection by token label reads
+ * info.label, so against an untouched struct a label test would have
+ * compared against whatever was on the caller's stack and could have
+ * "passed" with no selection logic at all.
+ *
+ * Slot i gets the label "MockToken<i>" unless the suite sets one, so two
+ * slots are distinguishable, which is the whole point of selecting between
+ * them. CKA_LABEL is blank-padded to 32 bytes, not NUL-terminated — PKCS#11
+ * v2.40 §3.2 — so a provider comparing it as a C string is wrong, and
+ * padding it here is what makes that testable. */
 static CK_RV mock_GetTokenInfo(CK_SLOT_ID id, CK_TOKEN_INFO CK_PTR p) {
-    (void)id; (void)p; return CKR_OK;
+    char szLabel[33];
+    size_t n;
+
+    g_calls.nGetTokenInfo++;
+    if (g_cfg.rv_GetTokenInfo != CKR_OK) return g_cfg.rv_GetTokenInfo;
+    if (!p) return CKR_ARGUMENTS_BAD;
+    if ((int)id >= g_cfg.nSlots) return CKR_SLOT_ID_INVALID;
+
+    memset(p, 0, sizeof(*p));
+
+    if (g_cfg.szSlotLabels[id][0])
+        snprintf(szLabel, sizeof(szLabel), "%s", g_cfg.szSlotLabels[id]);
+    else
+        snprintf(szLabel, sizeof(szLabel), "MockToken%d", (int)id);
+
+    memset(p->label, ' ', sizeof(p->label));
+    n = strlen(szLabel);
+    if (n > sizeof(p->label)) n = sizeof(p->label);
+    memcpy(p->label, szLabel, n);
+
+    memcpy(p->manufacturerID, "MockP11                         ", 32);
+    memcpy(p->model,          "mock            ", 16);
+    memcpy(p->serialNumber,   "0000000000000001", 16);
+    /* flags stays zero. The provider never reads CK_TOKEN_INFO.flags, and
+     * the token-flag constants are not in this project's pkcs11.h, so
+     * setting them would mean importing constants nothing tests. */
+    p->ulMaxSessionCount = 64;
+    p->ulMaxPinLen      = 32;
+    p->ulMinPinLen      = 4;
+    return CKR_OK;
 }
 /* The mechanism list the token claims. Configured per test so a suite can
  * present a v2.40 SoftHSM2, a v3.2 token with ML-DSA, or a token that

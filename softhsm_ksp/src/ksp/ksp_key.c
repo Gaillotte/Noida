@@ -344,7 +344,7 @@ SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey)
         { CKA_DECRYPT,     &bDecrypt,   sizeof(bDecrypt)   },
     };
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS)
         return ss;
 
@@ -418,7 +418,7 @@ SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey)
         { CKA_DERIVE,      &bDerive,   sizeof(bDerive)   },
     };
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS)
         return ss;
 
@@ -510,7 +510,7 @@ SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey)
         { CKA_DERIVE,      bAgreement ? &bTrue : &bFalse, sizeof(bTrue) },
     };
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS)
         return ss;
 
@@ -600,7 +600,7 @@ SECURITY_STATUS KSP_GenerateMlDsaKeyPair(KSP_KEY *pKey)
             { CKA_SIGN,          &bTrue,      sizeof(bTrue)       },
         };
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
         if (ss != ERROR_SUCCESS)
             return ss;
 
@@ -713,7 +713,7 @@ SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey)
             { CKA_UNWRAP,      &bWrap,       sizeof(bWrap)       },
         };
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
         if (ss != ERROR_SUCCESS)
             return ss;
 
@@ -765,7 +765,7 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
         return ss;
     }
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(bMachine ? P11_SCOPE_MACHINE : P11_SCOPE_USER, &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_OpenKey", ss);
         return ss;
@@ -1082,7 +1082,7 @@ SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
     if (nLabelLen <= 0)
         return NTE_INVALID_PARAMETER;
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS)
         return ss;
 
@@ -1134,7 +1134,7 @@ SECURITY_STATUS KSP_LoadCertificate(KSP_KEY *pKey, PBYTE pbOutput,
     if (!pcbResult)
         return NTE_INVALID_PARAMETER;
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS)
         return ss;
 
@@ -1220,7 +1220,7 @@ SECURITY_STATUS WINAPI KSP_DeleteKey(
 
     pKey = (KSP_KEY *)(ULONG_PTR)hKey;
 
-    ss = P11_AcquireSession(&hSession);
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
     if (ss != ERROR_SUCCESS) {
         LOG_LEAVE("KSP_DeleteKey", ss);
         return ss;
@@ -1304,7 +1304,7 @@ SECURITY_STATUS WINAPI KSP_FreeKey(
         CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
 
         if (pCtx && pCtx->pFunctionList &&
-            P11_AcquireSession(&hSession) == ERROR_SUCCESS) {
+            P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession) == ERROR_SUCCESS) {
             pCtx->pFunctionList->C_DestroyObject(hSession, pKey->hPubKey);
             P11_ReleaseSession(hSession);
         }
@@ -1356,7 +1356,7 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
             return NTE_NO_MEMORY;
         }
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(P11_SCOPE_OF_FLAGS(dwFlags), &hSession);
         if (ss != ERROR_SUCCESS) {
             KSP_Free(pState);
             LOG_LEAVE("KSP_EnumKeys", ss);
@@ -1385,6 +1385,10 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
         }
         memcpy(pState->phObjects, aBuf, ulFound * sizeof(CK_OBJECT_HANDLE));
         pState->dwCount = (DWORD)ulFound;
+        /* NCryptEnumKeys passes its flags on the first call only, so the
+         * scope has to be carried forward or the continuations would
+         * enumerate the user token (LIFE-08). */
+        pState->nScope  = P11_SCOPE_OF_FLAGS(dwFlags);
         pState->dwIndex = 0;
         *ppEnumState    = pState;
     } else {
@@ -1410,7 +1414,7 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
         SIZE_T           cbName;
         CK_RV            rv;
 
-        ss = P11_AcquireSession(&hSession);
+        ss = P11_AcquireSession(pState->nScope, &hSession);
         if (ss != ERROR_SUCCESS) {
             LOG_LEAVE("KSP_EnumKeys", ss);
             return ss;

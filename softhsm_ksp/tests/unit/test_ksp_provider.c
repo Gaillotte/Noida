@@ -18,6 +18,45 @@ P11_CONTEXT *P11_GetContext(void) { return &g_testCtx; }
 static SECURITY_STATUS g_p11InitStatus = ERROR_SUCCESS;
 SECURITY_STATUS P11_Initialize(void)       { return g_p11InitStatus; }
 SECURITY_STATUS P11_SessionPool_Initialize(void) { return ERROR_SUCCESS; }
+
+/* Deferred slot binding (proposal B). The real pair lives in p11_context.c,
+ * which this suite does not link; these record what the provider asked for
+ * so the tests can assert the translation from CNG property to PKCS#11
+ * selection, which is the part that lives in ksp_provider.c. */
+static BOOL       g_bStubBound;
+static char       g_szStubLabel[64];
+static CK_SLOT_ID g_stubSlot;
+static BOOL       g_bStubLabelSet, g_bStubSlotSet;
+static int        g_nStubEnsure;
+
+SECURITY_STATUS P11_EnsureSlotSelected(void)
+{
+    g_nStubEnsure++;
+    g_bStubBound = TRUE;
+    return ERROR_SUCCESS;
+}
+
+SECURITY_STATUS P11_SetTokenSelection(const char *szLabel,
+                                      const CK_SLOT_ID *pSlot)
+{
+    if ((szLabel == NULL) == (pSlot == NULL))
+        return NTE_INVALID_PARAMETER;
+    if (g_bStubBound)
+        return NTE_INVALID_HANDLE;
+    if (szLabel) {
+        size_t cb = strlen(szLabel);
+        if (cb == 0 || cb > 32)
+            return NTE_INVALID_PARAMETER;
+        memcpy(g_szStubLabel, szLabel, cb + 1);
+        g_bStubLabelSet = TRUE; g_bStubSlotSet = FALSE;
+    } else {
+        g_stubSlot = *pSlot;
+        g_bStubSlotSet = TRUE; g_bStubLabelSet = FALSE;
+    }
+    return ERROR_SUCCESS;
+}
+
+BOOL P11_IsSlotBound(void) { return g_bStubBound; }
 void Log_Debug(const char *f, ...) { (void)f; }
 void Log_Error(const char *f, ...) { (void)f; }
 void Log_Initialize(void) {}
@@ -430,15 +469,42 @@ int main(void)
                 (SECURITY_STATUS)NTE_INVALID_PARAMETER);
         }
 
-        /* Token selection is deliberately read-only through this call. */
-        ASSERT_EQ("Set token label → NTE_NOT_SUPPORTED",
-            KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
-                (PBYTE)L"tok", 8, 0),
-            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
-        ASSERT_EQ("Set slot → NTE_NOT_SUPPORTED",
-            KSP_SetProviderProperty(hProv, KSP_SLOT_PROPERTY,
-                (PBYTE)L"1", 4, 0),
-            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+        /* The boundary, both ways round. cbInput is the size of the buffer,
+         * so a caller passing a maximum-length PIN may or may not count its
+         * terminator; the one that does must not be refused. This path had
+         * the same off-by-one the token label did, and for the same reason:
+         * the length was bounded before the terminator was stripped. */
+        {
+            WCHAR wszMax[P11_MAX_PIN_LEN + 2];
+            int   i;
+            for (i = 0; i < P11_MAX_PIN_LEN; i++)
+                wszMax[i] = L'9';
+            wszMax[P11_MAX_PIN_LEN] = L'\0';
+
+            ASSERT_OK("A maximum-length PIN counted WITHOUT its terminator",
+                KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                    (PBYTE)wszMax,
+                    (DWORD)(P11_MAX_PIN_LEN * sizeof(WCHAR)), 0));
+            ASSERT_EQ("reached the session layer whole",
+                (int)strlen(g_szLastPin), P11_MAX_PIN_LEN);
+
+            g_szLastPin[0] = '\0';
+            ASSERT_OK("A maximum-length PIN counted WITH its terminator",
+                KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                    (PBYTE)wszMax,
+                    (DWORD)((P11_MAX_PIN_LEN + 1) * sizeof(WCHAR)), 0));
+            ASSERT_EQ("reached the session layer whole too",
+                (int)strlen(g_szLastPin), P11_MAX_PIN_LEN);
+        }
+
+        /* A wide string cannot occupy an odd number of bytes. Truncating to
+         * the next whole character would hand the token a PIN the caller
+         * never typed. */
+        ASSERT_EQ("Odd byte count → NTE_INVALID_PARAMETER",
+            KSP_SetProviderProperty(hProv, NCRYPT_PIN_PROPERTY,
+                (PBYTE)wszPin, 7, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
         ASSERT_EQ("Unknown property → NTE_NOT_SUPPORTED",
             KSP_SetProviderProperty(hProv, L"No Such Property",
                 (PBYTE)wszPin, 8, 0),
@@ -470,6 +536,144 @@ int main(void)
             ss, (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
 
         g_testCtx.slotId = 0;
+    }
+
+
+    /* ── Suite : choosing the token through NCryptSetProperty (IFACE-04) ──
+     *
+     * The slot is no longer chosen inside P11_Initialize, so there is a
+     * window between NCryptOpenStorageProvider and the first operation in
+     * which a caller can still name the token. These assertions cover the
+     * translation from the CNG property to the PKCS#11 selection; that the
+     * selection then reaches the right token is a fact about a token and is
+     * asserted in tests/linux against TWO real tokens, because a test with
+     * one token cannot tell a working selection from an ignored one. */
+    TEST_SUITE("KSP_SetProviderProperty — token selection");
+    {
+        g_bStubBound = FALSE;      /* an earlier suite bound it */
+        g_bStubLabelSet = g_bStubSlotSet = FALSE;
+        g_szStubLabel[0] = '\0';
+
+        ASSERT_OK("Set token label → OK",
+            KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                (PBYTE)L"MyToken", 7 * sizeof(WCHAR), 0));
+        ASSERT("Label reached the PKCS#11 layer", g_bStubLabelSet);
+        ASSERT_STR("Label converted to UTF-8 narrow", g_szStubLabel, "MyToken");
+
+        /* CNG passes the property as a counted buffer, and callers differ on
+         * whether the count includes the terminator. Both must work.
+         *
+         * For a short label a trailing NUL is harmless — the narrow string
+         * is NUL-terminated anyway, so strlen sees the same label either
+         * way. It stops being harmless at the boundary: CKA_LABEL is 32
+         * bytes, so a full-width label plus a terminator is 33 WCHARs, and
+         * a length check that counts the terminator refuses a label that is
+         * exactly legal. That is the case worth asserting, and the short
+         * one below only documents that the easy path works. */
+        g_szStubLabel[0] = '\0';
+        ASSERT_OK("Label with a terminator → OK",
+            KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                (PBYTE)L"MyToken", 8 * sizeof(WCHAR), 0));
+        ASSERT_STR("Terminator stripped", g_szStubLabel, "MyToken");
+
+        {
+            WCHAR wszFull[P11_TOKEN_LABEL_LEN + 1];
+            char  szExpect[P11_TOKEN_LABEL_LEN + 1];
+            int   i;
+            for (i = 0; i < P11_TOKEN_LABEL_LEN; i++) {
+                wszFull[i]  = L'z';
+                szExpect[i] = 'z';
+            }
+            wszFull[P11_TOKEN_LABEL_LEN]  = L'\0';
+            szExpect[P11_TOKEN_LABEL_LEN] = '\0';
+
+            g_szStubLabel[0] = '\0';
+            ASSERT_OK("A 32-byte label counted WITHOUT its terminator → OK",
+                KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                    (PBYTE)wszFull,
+                    P11_TOKEN_LABEL_LEN * sizeof(WCHAR), 0));
+            ASSERT_STR("and arrives whole", g_szStubLabel, szExpect);
+
+            g_szStubLabel[0] = '\0';
+            ASSERT_OK("A 32-byte label counted WITH its terminator → OK",
+                KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                    (PBYTE)wszFull,
+                    (P11_TOKEN_LABEL_LEN + 1) * sizeof(WCHAR), 0));
+            ASSERT_STR("and arrives whole too", g_szStubLabel, szExpect);
+        }
+
+        ASSERT_EQ("Empty label → NTE_INVALID_PARAMETER",
+            KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                (PBYTE)L"", 0, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        {
+            /* PKCS#11 gives CKA_LABEL 32 bytes. A longer one cannot match
+             * any token, so it is refused rather than truncated — a
+             * truncated label would select a DIFFERENT token. */
+            WCHAR wszLong[40];
+            int   i;
+            for (i = 0; i < 33; i++)
+                wszLong[i] = L'x';
+            ASSERT_EQ("Over-long label → NTE_INVALID_PARAMETER",
+                KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                    (PBYTE)wszLong, 33 * sizeof(WCHAR), 0),
+                (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        }
+
+        {
+            DWORD dwSlot = 3;
+            ASSERT_OK("Set slot → OK",
+                KSP_SetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                    (PBYTE)&dwSlot, sizeof dwSlot, 0));
+            ASSERT("Slot reached the PKCS#11 layer", g_bStubSlotSet);
+            ASSERT_EQ("Slot value passed through",
+                (DWORD)g_stubSlot, 3U);
+            ASSERT("Slot supersedes the label", !g_bStubLabelSet);
+
+            ASSERT_EQ("Slot of the wrong width → NTE_INVALID_PARAMETER",
+                KSP_SetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                    (PBYTE)&dwSlot, 2, 0),
+                (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+            /* Once the slot is bound, both are refused. Accepting them
+             * would tell the caller it had switched token while every
+             * operation continued against the old one. */
+            g_bStubBound = TRUE;
+            ASSERT_EQ("Set label after binding → NTE_INVALID_HANDLE",
+                KSP_SetProviderProperty(hProv, KSP_TOKEN_LABEL_PROPERTY,
+                    (PBYTE)L"Other", 5 * sizeof(WCHAR), 0),
+                (SECURITY_STATUS)NTE_INVALID_HANDLE);
+            ASSERT_EQ("Set slot after binding → NTE_INVALID_HANDLE",
+                KSP_SetProviderProperty(hProv, KSP_SLOT_PROPERTY,
+                    (PBYTE)&dwSlot, sizeof dwSlot, 0),
+                (SECURITY_STATUS)NTE_INVALID_HANDLE);
+            g_bStubBound = FALSE;
+        }
+    }
+
+    /* ── Suite : a capability answer binds the slot first ─────────────────
+     *
+     * P11_HasMechanism answers permissively when the probe has not run, so
+     * an EnumAlgorithms called before anything had bound a slot would
+     * advertise the full mapped list — algorithms the token may not have.
+     * Both entry points therefore bind first. */
+    TEST_SUITE("Capability queries bind the slot");
+    {
+        DWORD   dwCount = 0;
+        void   *pList   = NULL;
+        int     nBefore;
+
+        g_nStubEnsure = 0;
+        (void)KSP_IsAlgSupported(hProv, BCRYPT_RSA_ALGORITHM, 0);
+        ASSERT("IsAlgSupported binds the slot", g_nStubEnsure >= 1);
+
+        nBefore = g_nStubEnsure;
+        if (KSP_EnumAlgorithms(hProv, NCRYPT_SIGNATURE_OPERATION,
+                               &dwCount, (NCryptAlgorithmName **)&pList, 0)
+                == ERROR_SUCCESS && pList)
+            KSP_FreeBuffer(pList);
+        ASSERT("EnumAlgorithms binds the slot",
+            g_nStubEnsure > nBefore);
     }
 
     KSP_FreeProvider(hProv);

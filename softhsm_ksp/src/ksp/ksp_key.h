@@ -80,6 +80,11 @@ typedef struct _KSP_SECRET {
     DWORD            dwMagic;      /* KSP_SECRET_MAGIC */
     CK_OBJECT_HANDLE hSecretObj;   /* CKO_SECRET_KEY produced by C_DeriveKey */
     DWORD            dwSecretLen;  /* Raw secret length in bytes */
+    /* The scope whose token the derived object lives on — the private key's
+     * (LIFE-08). It has to be recorded here rather than recomputed: by the
+     * time NCryptDeriveKey runs, the caller holds only the secret handle,
+     * and a derive on the wrong token would not find the object at all. */
+    int              nScope;
 } KSP_SECRET;
 
 /* Open an existing key from SoftHSM2 */
@@ -195,6 +200,11 @@ typedef struct _KSP_ENUM_STATE {
     CK_OBJECT_HANDLE *phObjects;   /* Array of found handles */
     DWORD             dwCount;     /* Total count */
     DWORD             dwIndex;     /* Current index */
+    /* The scope being enumerated (LIFE-08). NCryptEnumKeys passes its flags
+     * on the FIRST call only; the continuations receive the state and no
+     * flags, so a scope recomputed per call would silently enumerate the
+     * user token from the second key onwards. */
+    int               nScope;
 } KSP_ENUM_STATE;
 
 #endif /* KSP_KEY_H */

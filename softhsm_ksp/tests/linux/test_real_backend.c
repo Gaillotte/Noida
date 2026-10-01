@@ -72,14 +72,22 @@ int main(void)
     TEST_SUITE("Initialisation against a second backend");
 
     /* No mock anywhere in this process. P11_Initialize does what it does on
-     * Windows: read the path, load the module, C_Initialize, pick a slot,
-     * probe the token. */
+     * Windows: read the path, load the module, C_Initialize.
+     *
+     * It no longer picks a slot or probes the token. Those moved into
+     * P11_EnsureSlotSelected when token selection became settable through
+     * NCryptSetProperty (IFACE-04): loading the module does not need a
+     * token, so doing it all at once closed the window in which a caller
+     * could still say which token it wanted. Anything that needs a token
+     * binds one on the way — a session, or a capability question. */
     ss = P11_Initialize();
     ASSERT_OK("P11_Initialize against a real module", ss);
     ASSERT("A function list was obtained",
         P11_GetContext()->pFunctionList != NULL);
     ASSERT("Context reports itself initialised",
         P11_GetContext()->bInitialized);
+    ASSERT("but no slot is bound yet, and nothing is probed",
+        !P11_IsSlotBound() && !P11_CapsProbed());
 
     ss = P11_SessionPool_Initialize();
     ASSERT_OK("Session pool initialised", ss);
@@ -87,7 +95,13 @@ int main(void)
     /* ── Suite 2 : the probe read THIS token ───────────────────────────── */
     TEST_SUITE("Capability probe");
 
+    ss = P11_EnsureSlotSelected();
+    ASSERT_OK("Binding a slot against a real module", ss);
     ASSERT("The token was probed", P11_CapsProbed());
+    ASSERT("One token here, so both scopes are the same slot",
+        !P11_HasPerScopeTokens() &&
+        P11_GetScopeSlot(P11_SCOPE_USER) ==
+        P11_GetScopeSlot(P11_SCOPE_MACHINE));
 
     {
         CK_BYTE bMajor = 0, bMinor = 0;
@@ -651,7 +665,7 @@ int main(void)
             CK_ULONG cbBlob = sizeof(abBlob);
             CK_RV  rv = CKR_OK;
 
-            if (P11_AcquireSession(&hSess) == ERROR_SUCCESS) {
+            if (P11_AcquireSession(P11_SCOPE_USER, &hSess) == ERROR_SUCCESS) {
                 CK_MECHANISM    gen  = { CKM_AES_KEY_GEN, NULL, 0 };
                 CK_MECHANISM    wrap = { CKM_AES_KEY_WRAP, NULL, 0 };
                 CK_OBJECT_CLASS cls  = CKO_SECRET_KEY;
@@ -787,7 +801,7 @@ int main(void)
             CK_ULONG          cbCipher = sizeof(abCipher);
             CK_RV             rv = CKR_GENERAL_ERROR;
 
-            if (P11_AcquireSession(&hSess) == ERROR_SUCCESS) {
+            if (P11_AcquireSession(P11_SCOPE_USER, &hSess) == ERROR_SUCCESS) {
                 rv = pCtx->pFunctionList->C_EncryptInit(hSess, &mech,
                                                         pDec->hPubKey);
                 if (rv == CKR_OK)
@@ -832,7 +846,7 @@ int main(void)
             mech.pParameter     = &oaep;
             mech.ulParameterLen = sizeof(oaep);
 
-            if (P11_AcquireSession(&hSess) == ERROR_SUCCESS) {
+            if (P11_AcquireSession(P11_SCOPE_USER, &hSess) == ERROR_SUCCESS) {
                 rv = pCtx->pFunctionList->C_EncryptInit(hSess, &mech,
                                                         pDec->hPubKey);
                 if (rv == CKR_OK)
@@ -1743,15 +1757,57 @@ int main(void)
                                cbCipher128 != cbCipher ||
                                memcmp(abCipher128, abCipher,
                                       cbCipher128) != 0);
+
+                        /* 64-bit feedback: the third size CNG can express,
+                         * and the one that used to be refused.
+                         *
+                         * Its ciphertext must differ from BOTH the others.
+                         * One comparison would not do: a provider that
+                         * mapped 8 bytes to CFB128 would pass a test that
+                         * only checked it against CFB8, and one that mapped
+                         * it to CFB8 would pass a test that only checked it
+                         * against CFB128. */
+                        if (P11_HasMechanism(CKM_AES_CFB64)) {
+                            BYTE  abCipher64[128];
+                            DWORD cbCipher64 = 0;
+
+                            dwBlock = 8;
+                            ss = KSP_SetKeyProperty(hProv, hAes,
+                                    BCRYPT_MESSAGE_BLOCK_LENGTH,
+                                    (PBYTE)&dwBlock, sizeof(dwBlock), 0);
+                            ASSERT_OK("MessageBlockLength set to 8", ss);
+                            ss = KSP_SetKeyProperty(hProv, hAes,
+                                    NCRYPT_INITIALIZATION_VECTOR,
+                                    abIv, sizeof(abIv), 0);
+                            ASSERT_OK("CFB IV reset", ss);
+
+                            ss = KSP_Encrypt(hProv, hAes, abPlain,
+                                             sizeof(abPlain), NULL,
+                                             abCipher64, sizeof(abCipher64),
+                                             &cbCipher64, 0);
+                            ASSERT_OK("CFB64 encryption", ss);
+                            ASSERT("64-bit feedback differs from 8-bit",
+                                   ss != ERROR_SUCCESS ||
+                                   cbCipher64 != cbCipher ||
+                                   memcmp(abCipher64, abCipher,
+                                          cbCipher64) != 0);
+                            ASSERT("and from full-block",
+                                   ss != ERROR_SUCCESS ||
+                                   cbCipher64 != cbCipher128 ||
+                                   memcmp(abCipher64, abCipher128,
+                                          cbCipher64) != 0);
+                        }
                     }
 
-                    /* A feedback size PKCS#11 has no mechanism for is
-                     * refused rather than rounded to a different cipher. */
-                    dwBlock = 8;
+                    /* 4 bytes: a size CNG permits and PKCS#11 names no
+                     * mechanism for. Refused rather than rounded to a
+                     * different cipher. (1, 8 and 16 are all mapped.) */
+                    dwBlock = 4;
                     ss = KSP_SetKeyProperty(hProv, hAes,
                             BCRYPT_MESSAGE_BLOCK_LENGTH,
                             (PBYTE)&dwBlock, sizeof(dwBlock), 0);
-                    ASSERT_EQ("An unwired feedback size is refused",
+                    ASSERT_EQ("A feedback size with no PKCS#11 mechanism "
+                              "is refused",
                               ss, (SECURITY_STATUS)NTE_NOT_SUPPORTED);
                 }
 

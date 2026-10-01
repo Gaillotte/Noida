@@ -567,7 +567,14 @@ int main(void)
          * provider wires the two CNG reaches. Anything else is refused
          * rather than rounded to a different cipher. */
         dwBlock = 8;
-        ASSERT_EQ("An unwired feedback size is refused",
+        ASSERT_OK("64-bit feedback (8 bytes) is accepted",
+            KSP_SetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
+                               (PBYTE)&dwBlock, sizeof(dwBlock), 0));
+
+        /* 4 bytes is a size CNG permits and PKCS#11 names no mechanism
+         * for, so it is refused rather than rounded. */
+        dwBlock = 4;
+        ASSERT_EQ("A feedback size with no PKCS#11 mechanism is refused",
             KSP_SetKeyProperty(hProv, hAes, BCRYPT_MESSAGE_BLOCK_LENGTH,
                                (PBYTE)&dwBlock, sizeof(dwBlock), 0),
             (SECURITY_STATUS)NTE_NOT_SUPPORTED);

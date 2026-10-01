@@ -403,13 +403,60 @@
  * key named "signing" is stored as "m/signing" and a user key of the same
  * name as "u/signing", so the two no longer collide.
  *
- * This is NAMESPACING, NOT ISOLATION. Anyone who can log into the token can
- * read either namespace — the separation keeps distinct keys distinct, it
- * does not protect one caller's keys from another. Real isolation needs an
- * ACL model the backend does not have. See docs/03-key-management.md. */
+ * Within ONE token this is NAMESPACING, NOT ISOLATION. Anyone who can log
+ * into the token can read either namespace — the separation keeps distinct
+ * keys distinct, it does not protect one caller's keys from another. No
+ * amount of label work supplies an ACL model PKCS#11 does not have.
+ *
+ * For real isolation, configure a token PER SCOPE (below). PKCS#11 does
+ * have a boundary with a credential on it: the token. Then the two scopes
+ * are in different tokens with different PINs, and a caller holding the
+ * user PIN cannot read machine keys because it cannot log in to read them.
+ * See docs/03-key-management.md. */
 #define KSP_SCOPE_PREFIX_MACHINE  "m/"
 #define KSP_SCOPE_PREFIX_USER     "u/"
 #define KSP_SCOPE_PREFIX_LEN      2
+
+/* ── Per-scope tokens (optional) ───────────────────────────────────────────
+ *
+ * Set BOTH of the label variables, or BOTH of the slot variables, to give
+ * the machine and user scopes separate tokens. Set neither and behaviour is
+ * exactly as before: one token, two label prefixes.
+ *
+ * Setting only one is an error rather than a half-measure. A deployment
+ * that names a machine token and forgets the user one would silently put
+ * user keys on the machine token — isolation that reports success and does
+ * not isolate, which is worse than no isolation at all because nobody
+ * looks again.
+ *
+ * Each scope may also carry its own PIN. If it does not, the scope falls
+ * back to the single PIN (the provider property, then SOFTHSM2_PIN), which
+ * is correct for two tokens initialised with the same PIN and useless for
+ * isolation — two tokens sharing one PIN share one credential.
+ */
+#define KSP_MACHINE_TOKEN_LABEL_ENV "KSP_MACHINE_TOKEN_LABEL"
+#define KSP_USER_TOKEN_LABEL_ENV    "KSP_USER_TOKEN_LABEL"
+#define KSP_MACHINE_SLOT_ENV        "KSP_MACHINE_SLOT"
+#define KSP_USER_SLOT_ENV           "KSP_USER_SLOT"
+#define KSP_MACHINE_PIN_ENV         "KSP_MACHINE_PIN"
+#define KSP_USER_PIN_ENV            "KSP_USER_PIN"
+
+/* Scope identifiers. These index the per-scope slot and session pools, so
+ * the values matter: USER is 0 because it is the scope a single-token
+ * deployment collapses onto, which makes "unconfigured behaves as before"
+ * a property of the array indexing rather than something to remember. */
+#define P11_SCOPE_USER     0
+#define P11_SCOPE_MACHINE  1
+#define P11_SCOPE_COUNT    2
+
+/* The scope a key belongs to. */
+#define P11_SCOPE_OF(pKey) \
+    ((pKey)->bMachineKey ? P11_SCOPE_MACHINE : P11_SCOPE_USER)
+
+/* The scope a CNG flag word asks for. */
+#define P11_SCOPE_OF_FLAGS(dwFlags) \
+    (((dwFlags) & NCRYPT_MACHINE_KEY_FLAG) ? P11_SCOPE_MACHINE \
+                                           : P11_SCOPE_USER)
 
 #define KSP_TOKEN_LABEL_PROPERTY  L"SoftHSM Token Label"
 #define KSP_SLOT_PROPERTY         L"SoftHSM Slot"

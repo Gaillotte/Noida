@@ -233,12 +233,25 @@ The table-stakes items every commercial provider has. `LIFE-06` and
 |------|--------|
 | `OPS-04` — multiple slots / tokens | **Covered** — `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; an unmatched selection is an error, never a fallback |
 | `OPS-09` — session recovery | **Covered** — `C_GetSessionInfo` validates a pooled session before reuse |
-| `IFACE-04` — `SetProviderProperty` | Partial — `NCRYPT_PIN_PROPERTY` works; token selection is read-only by design |
-| `FMT-08` — `BCRYPT_KEY_DATA_BLOB` | Partial — import works; export refused because every key is `CKA_EXTRACTABLE=FALSE` |
-| `LIFE-08` — machine vs user scope | Partial — `CKA_LABEL` prefixes give namespacing, **not isolation** |
+| `IFACE-04` — `SetProviderProperty` | **Covered** — `NCRYPT_PIN_PROPERTY`, and token selection until the slot binds |
+| `FMT-08` — `BCRYPT_KEY_DATA_BLOB` | **Covered** — `NCRYPT_EXPORT_POLICY_PROPERTY` relaxes `CKA_SENSITIVE` when the caller asks, and only then |
+| `LIFE-08` — machine vs user scope | **Covered** — per-scope tokens give isolation at the token boundary; label prefixes remain the unconfigured default |
 
-Each Partial is a deliberate stopping point, not unfinished work, and the
-matrix records the reason on the row rather than implying a remedy exists.
+**All five are now Covered, and three of them were recorded as deliberate
+stopping points when this table was written.** That judgement was wrong in
+the same way twice: `IFACE-04` and `LIFE-08` were called deliberate because
+of a property of the *then-current code* — the slot was bound during
+initialisation, and scoping was a label prefix — rather than a property of
+CNG or PKCS#11. Once the slot was bound lazily, selection became possible;
+once the scope chose a token rather than a prefix, isolation became possible.
+`FMT-08` was called deliberate because every key is non-extractable, which
+was true and was a *default* rather than a constraint.
+
+The lesson generalises: **"deliberate position" is a claim about what cannot
+be done, and it has to rest on something outside this repository** — a
+missing CNG identifier, an absent PKCS#11 mechanism, a header nobody has.
+When it rests on how this provider currently happens to work, it is not a
+position, it is a description. See `docs/14-partial-remediation-plan.md`.
 
 `p11_session.c` had no tests at all before this phase — it was in no suite,
 so none of its code appeared in the coverage report, despite holding the
