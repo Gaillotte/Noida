@@ -9,7 +9,6 @@
 # classification describes why a gap is open, so a closed gap has no entry.
 BLOCKER = {
     # The provider chose this, and the reason is recorded in the matrix.
-    'IFACE-06': 'Deliberate position',
     'RSA-02':   'Deliberate position',
     'ECDH-06':  'Deliberate position',
     'DSA-01':   'Deliberate position',
@@ -38,6 +37,13 @@ BLOCKER = {
     # PKCS#11 or the backend offers no mechanism, so a portable provider
     # cannot reach it however much code is written.
     'IFACE-05': 'Blocked: no PKCS#11 mechanism',
+    # IFACE-06 was in the deliberate column until the gap_detail.py pairing
+    # check ran against its own text, which reads "that is a fact about
+    # PKCS#11 rather than about this code". It is: GetOperationProperty
+    # reports on an asynchronous operation and PKCS#11 is synchronous, so
+    # there is no state to report however much code is written. Caught by the
+    # cross-check rather than by review, which is the point of having one.
+    'IFACE-06': 'Blocked: no PKCS#11 mechanism',
     'PROP-11':  'Blocked: no PKCS#11 mechanism',
     'PROP-16':  'Blocked: no PKCS#11 mechanism',
     'OPS-05':   'Blocked: no PKCS#11 mechanism',

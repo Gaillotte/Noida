@@ -24,8 +24,8 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether,
-                               PageTemplate, Paragraph, Spacer, Table,
-                               TableStyle)
+                               PageBreak, PageTemplate, Paragraph, Spacer,
+                               Table, TableStyle)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(HERE, 'softhsm_ksp', 'docs', 'feature-matrix.csv')
@@ -59,6 +59,13 @@ DOC_TITLE = 'CNG KSP Feature Matrix'
 
 
 # ── Styles ──────────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'softhsm_ksp', 'docs'))
+from coverage_blockers import BLOCKER          # noqa: E402
+from gap_detail import (GAP_DETAIL,            # noqa: E402
+                        OUT_OF_SCOPE_GAPS, validate)
+
+
 def build_styles():
     ss = getSampleStyleSheet()
     s = {}
@@ -198,6 +205,7 @@ def build(rows, stats, styles):
     story += summary_block(stats, styles)
     story += legend_block(styles)
     story += matrix_table(rows, styles)
+    story += gap_analysis(rows, styles)
     story += closing_block(stats, styles)
 
     doc.build(story)
@@ -354,6 +362,152 @@ def matrix_table(rows, styles):
     return [t, Spacer(1, 10)]
 
 
+
+def gap_analysis(rows, styles):
+    """The open rows, grouped by what actually blocks each one.
+
+    The matrix table answers "is it supported" row by row. This answers the
+    question a reader asks next and cannot get from a status column: of
+    everything still open, how much is waiting on somebody else, and how
+    much is a decision this project could revisit?
+
+    Two columns here are not in the CSV, because the CSV's schema has no
+    place for them:
+
+    "Works today" exists because a Partial row reads as a hole and usually
+    is not one. Ed25519, Ed448, AES-CTR, HMAC and ML-DSA all work and are
+    verified against an independent token; they are open only because no
+    stock application can name them.
+
+    "Rests on" exists because "deliberate position" is otherwise
+    unfalsifiable. Three rows sat in that column until someone asked what
+    the position rested on, found it was a property of this provider's own
+    code rather than of CNG or PKCS#11, and closed them.
+    """
+    out = [PageBreak(), Paragraph('Gap analysis', styles['h2'])]
+
+    open_rows = [r for r in rows if r['status'].strip() != 'Covered']
+    ours = [r for r in open_rows if GAP_DETAIL[r['id']]['external'] is False]
+
+    out.append(Paragraph(
+        '<b>%d rows are open.</b> %d are blocked outside this repository — a '
+        'CNG identifier Microsoft has not defined, a PKCS#11 mechanism that '
+        'does not exist, a header nobody here has, hardware, or a purchase. '
+        'The remaining <b>%d are decisions this project made</b>, and those '
+        'are the only ones a reader can argue with.'
+        % (len(open_rows), len(open_rows) - len(ours), len(ours)),
+        styles['body']))
+    out.append(Spacer(1, 4))
+    out.append(Paragraph(
+        '<b>Why that split is the one worth printing.</b> Three rows were '
+        'recorded as deliberate positions and have since been closed: '
+        'IFACE-04 (token selection), LIFE-08 (machine/user isolation) and '
+        'FMT-08 (symmetric key export). The error was identical each time — '
+        'the "position" rested on how the provider happened to work at the '
+        'time, not on anything in CNG or PKCS#11. The slot was bound during '
+        'initialisation, so selection looked impossible; scoping was a label '
+        'prefix, so isolation looked impossible; keys were non-extractable '
+        'by default, so export looked refused. A claim that something cannot '
+        'be done has to rest on something outside this code, or it is a '
+        'description masquerading as a constraint.',
+        styles['note']))
+    out.append(Spacer(1, 7))
+
+    order = ['Blocked: needs ncrypt_provider.h / Windows',
+             'Blocked: CNG has no identifier or slot',
+             'Blocked: no PKCS#11 mechanism',
+             'Blocked: hardware / commercial',
+             'Deliberate position']
+    heads = {
+        'Blocked: needs ncrypt_provider.h / Windows':
+            'Waiting on ncrypt_provider.h and a Windows machine',
+        'Blocked: CNG has no identifier or slot':
+            'Waiting on Microsoft — CNG defines no identifier or no slot',
+        'Blocked: no PKCS#11 mechanism':
+            'Waiting on PKCS#11 — no mechanism exists to build on',
+        'Blocked: hardware / commercial':
+            'Waiting on hardware, a certificate purchase, or a validation '
+            'programme',
+        'Deliberate position':
+            'Decisions this project made — revisitable by definition',
+    }
+
+    for blocker in order:
+        group = sorted((r for r in open_rows if BLOCKER[r['id']] == blocker),
+                       key=lambda r: r['id'])
+        if not group:
+            continue
+        out.append(Paragraph('%s <font size="7">(%d)</font>'
+                             % (heads[blocker], len(group)), styles['cat']))
+        out.append(Spacer(1, 2))
+
+        data = [[Paragraph(h, styles['hdr']) for h in
+                 ('ID', 'Feature', 'St', 'What works today',
+                  'What the blocker rests on')]]
+        cmds = [('BACKGROUND', (0, 0), (-1, 0), ACCENT),
+                ('GRID', (0, 0), (-1, -1), 0.4, RULE),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3)]
+        for i, r in enumerate(group, start=1):
+            d = GAP_DETAIL[r['id']]
+            data.append([
+                Paragraph(r['id'], styles['cellmono']),
+                Paragraph(r['feature'], styles['cellb']),
+                Paragraph('P' if r['status'].strip() == 'Partial' else 'No',
+                          styles['cell']),
+                Paragraph(soften(d['works']), styles['cell']),
+                Paragraph(soften(d['rests_on']), styles['cellm']),
+            ])
+            _, bg = STATUS_STYLE.get(r['status'].strip(), (NA, NA_BG))
+            cmds.append(('BACKGROUND', (2, i), (2, i), bg))
+            if i % 2 == 0:
+                cmds.append(('BACKGROUND', (0, i), (1, i), ROW_ALT))
+                cmds.append(('BACKGROUND', (3, i), (-1, i), ROW_ALT))
+        t = Table(data, colWidths=[17 * mm, 44 * mm, 7 * mm,
+                                   102 * mm, 102 * mm], repeatRows=1)
+        t.setStyle(TableStyle(cmds))
+        out.append(t)
+        out.append(Spacer(1, 7))
+
+    # ── Gaps this matrix cannot show ──────────────────────────────────────
+    out.append(Paragraph('Gaps outside this matrix&#39;s scope', styles['h2']))
+    out.append(Paragraph(
+        'Every row above is a capability observed across shipping CNG KSPs. A '
+        'defect in <i>this</i> provider&#39;s own conformance surface is not '
+        'such a capability, so no row here would ever point at one. That '
+        'blind spot has cost three findings — two stubs found by reading the '
+        'function table, and the first below found by making a test '
+        'repeatable — so they are recorded rather than left in a commit '
+        'message.',
+        styles['note']))
+    out.append(Spacer(1, 4))
+    data = [[Paragraph(h, styles['hdr']) for h in
+             ('Gap', 'Detail', 'How it was found', 'Status')]]
+    cmds = [('BACKGROUND', (0, 0), (-1, 0), ACCENT),
+            ('GRID', (0, 0), (-1, -1), 0.4, RULE),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3)]
+    for i, g in enumerate(OUT_OF_SCOPE_GAPS, start=1):
+        data.append([Paragraph(soften(g['what']), styles['cellb']),
+                     Paragraph(soften(g['detail']), styles['cell']),
+                     Paragraph(soften(g['found']), styles['cellm']),
+                     Paragraph(soften(g['status']), styles['cellm'])])
+        if i % 2 == 0:
+            cmds.append(('BACKGROUND', (0, i), (-1, i), ROW_ALT))
+    t = Table(data, colWidths=[52 * mm, 100 * mm, 60 * mm, 60 * mm],
+              repeatRows=1)
+    t.setStyle(TableStyle(cmds))
+    out.append(t)
+    out.append(Spacer(1, 8))
+    return out
+
+
 def closing_block(stats, styles):
     e = stats['effort']
     out = [Paragraph('Maintaining this document', styles['h2'])]
@@ -397,6 +551,7 @@ def closing_block(stats, styles):
 def main():
     styles = build_styles()
     rows = load_rows(CSV_PATH)
+    validate(rows, BLOCKER)      # gap detail must match the matrix
     stats = summarise(rows)
     build(rows, stats, styles)
 

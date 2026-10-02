@@ -122,7 +122,18 @@ noida/
 │   │   ├── 11-market-comparison.md CNG KSP competitive audit (evidence-graded)
 │   │   ├── 12-pkcs11-requirements.md Backend requirements: functions, mechanisms, attributes
 │   │   ├── 13-roadmap.md           Why the Windows build failed, and the phased plan to parity
-│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (101 rows)
+│   │   ├── 14-partial-remediation-plan.md  Proposals A–D and what they found
+│   │   ├── 15-gap-analysis.md      GENERATED — the 30 open rows grouped by
+│   │   │                            what blocks them; 19 outside this repo,
+│   │   │                            11 our own decisions
+│   │   ├── coverage_blockers.py    Which class of thing blocks each open row
+│   │   ├── gap_detail.py           Per-row: what works TODAY, what the
+│   │   │                            blocker rests on, and whether that
+│   │   │                            thing is outside this repository.
+│   │   │                            validate() fails every generator on
+│   │   │                            drift, including a "deliberate
+│   │   │                            position" whose blocker is external
+│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (103 rows)
 │   ├── CMakeLists.txt
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
@@ -1205,6 +1216,8 @@ pip install python-docx reportlab
 python3 generate_guide.py          # → softhsm_ksp/SoftHSM2_KSP_Complete_Developer_Guide.docx
 python3 generate_algo_ref.py       # → softhsm_ksp/SoftHSM2_KSP_Algorithm_Reference.docx
 python3 generate_feature_matrix.py # → softhsm_ksp/SoftHSM2_KSP_Feature_Matrix.pdf
+python3 generate_cng_coverage_xlsx.py # → SoftHSM2_KSP_CNG_Feature_Coverage.xlsx
+python3 generate_gap_analysis.py   # → softhsm_ksp/docs/15-gap-analysis.md
 ```
 
 **The feature matrix is data-driven.** Its source of truth is
@@ -1215,3 +1228,20 @@ To record that a gap has closed, set that row's `status` to `Covered` and clear
 fresh ID. Then regenerate. Every count on page 1 of the PDF is computed from
 the CSV, so the summary cannot drift from the table, and coverage changes show
 up as a one-line diff rather than an opaque binary change.
+
+**Closing a gap means two edits, not one.** Set the row to `Covered` and
+clear its `gap_solution`, *and delete its entry from `docs/gap_detail.py`* —
+a left-behind entry would keep describing a gap that no longer exists, which
+is the same failure mode as a stale coverage figure. All three generators
+call `gap_detail.validate()` before producing anything, so a missing entry, a
+stale one, or a mismatch between the blocker class and the `external` flag
+fails the build rather than emitting an artifact with a blank column.
+
+**That cross-check has already earned its place.** `IFACE-06` sat in the
+"deliberate position" column while its own reason text read *"that is a fact
+about PKCS#11 rather than about this code"*. It is: `GetOperationProperty`
+reports on an asynchronous operation and PKCS#11 is synchronous. The person
+who wrote the reason mislabelled the row, and the pairing check caught it —
+which is the same class of error as `IFACE-04`, `LIFE-08` and `FMT-08`, all
+three of which were called deliberate positions and all three of which have
+since been closed.

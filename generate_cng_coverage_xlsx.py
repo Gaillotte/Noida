@@ -23,6 +23,7 @@ script now for that reason.
 import csv, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'softhsm_ksp', 'docs'))
 from coverage_blockers import BLOCKER
+from gap_detail import GAP_DETAIL, OUT_OF_SCOPE_GAPS, validate
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -33,6 +34,9 @@ import datetime
 ASOF = datetime.date.today().isoformat()
 
 rows = list(csv.DictReader(open(SRC)))
+
+# Fails the build if a row was added or closed without its gap detail.
+validate(rows, BLOCKER)
 SUPPORTED = {'Covered': 'Yes', 'Partial': 'Partial', 'Not covered': 'No'}
 
 FONT = 'Arial'
@@ -228,8 +232,21 @@ bc.freeze_panes = 'A4'
 
 # ══ Gaps ════════════════════════════════════════════════════════════════════
 gp = wb.create_sheet('Open Items', 3)
-GC = ['ID', 'Category', 'CNG feature', 'Supported', 'Why still open', 'Effort',
-      'What would actually close it']
+# "Works today" and "Blocker rests on" are the two columns the matrix's own
+# schema does not carry, and they are the two a reader needs most.
+#
+# Without the first, a Partial row reads as a hole. Most of them are not:
+# Ed25519, Ed448, AES-CTR, HMAC and ML-DSA all work and are verified against
+# a real token, and are open only because no stock application can ask for
+# them. Status alone gets that exactly backwards.
+#
+# Without the second, "deliberate position" is unfalsifiable. Three rows sat
+# in that column until someone asked what the position rested on and found
+# it was a property of our own code rather than of CNG or PKCS#11 —
+# IFACE-04, LIFE-08 and FMT-08, all three since closed.
+GC = ['ID', 'Category', 'CNG feature', 'Supported', 'Why still open',
+      'Outside this repo?', 'Effort', 'What works today',
+      'What the blocker rests on', 'What would actually close it']
 hdr(gp, GC)
 order = {'Blocked: needs ncrypt_provider.h / Windows': 0,
          'Blocked: CNG has no identifier or slot': 1,
@@ -238,23 +255,66 @@ order = {'Blocked: needs ncrypt_provider.h / Windows': 0,
          'Deliberate position': 4}
 gaps = sorted([r for r in rows if r['status'] != 'Covered'],
               key=lambda r: (order[BLOCKER[r['id']]], r['id']))
+WRAPPED = (8, 9, 10)          # the three prose columns
 for n, r in enumerate(gaps, start=2):
     sup = SUPPORTED[r['status']]
+    d = GAP_DETAIL[r['id']]
     vals = [r['id'], r['category'], r['feature'], sup, BLOCKER[r['id']],
-            r['effort'] or '', r['gap_solution']]
+            'Outside' if d['external'] else 'Our choice',
+            r['effort'] or '', d['works'], d['rests_on'], r['gap_solution']]
     for i, v in enumerate(vals, 1):
         c = gp.cell(row=n, column=i, value=v)
         c.font = Font(name=FONT, size=9)
-        c.alignment = Alignment(vertical='top', wrap_text=(i == 7))
+        c.alignment = Alignment(vertical='top', wrap_text=(i in WRAPPED))
         c.border = BORDER
-        if n % 2 == 0 and i != 4: c.fill = BAND
-    s = gp.cell(row=n, column=4)
-    s.font = Font(name=FONT, size=9, bold=True, color={'Partial': AMBERT, 'No': REDT}[sup])
-    s.fill = {'Partial': AMBER, 'No': RED}[sup]
-    s.alignment = Alignment(horizontal='center', vertical='top')
-widths(gp, {'A': 11, 'B': 22, 'C': 34, 'D': 11, 'E': 34, 'F': 7, 'G': 110})
-gp.freeze_panes = 'C2'
-gp.auto_filter.ref = f'A1:G{len(gaps)+1}'
+        if n % 2 == 0 and i not in (4, 6): c.fill = BAND
+    s_ = gp.cell(row=n, column=4)
+    s_.font = Font(name=FONT, size=9, bold=True,
+                   color={'Partial': AMBERT, 'No': REDT}[sup])
+    s_.fill = {'Partial': AMBER, 'No': RED}[sup]
+    s_.alignment = Alignment(horizontal='center', vertical='top')
+    # A row whose blocker is OUR choice is the one to re-read, so it is the
+    # one that is coloured. "Outside" is left plain: nothing to decide.
+    o = gp.cell(row=n, column=6)
+    o.font = Font(name=FONT, size=9, bold=not d['external'],
+                  color=AMBERT if not d['external'] else '595959')
+    if not d['external']:
+        o.fill = BOX
+    o.alignment = Alignment(horizontal='center', vertical='top')
+widths(gp, {'A': 11, 'B': 20, 'C': 32, 'D': 10, 'E': 33, 'F': 12, 'G': 7,
+            'H': 62, 'I': 62, 'J': 78})
+gp.freeze_panes = 'D2'
+gp.auto_filter.ref = f'A1:J{len(gaps)+1}'
+
+# ── Gaps the matrix cannot show ───────────────────────────────────────────
+#
+# The matrix tracks capabilities observed across shipping CNG KSPs. A defect
+# in this provider's own conformance surface is not such a capability, so no
+# row would ever point at one — which is how two stubs and a missing
+# NTE_EXISTS all survived. Recorded here rather than left to a commit
+# message.
+n = len(gaps) + 3
+put(gp, f'A{n}', 'Gaps outside this matrix\u2019s scope',
+    bold=True, size=11, color=NAVY)
+n += 1
+put(gp, f'A{n}',
+    'The matrix tracks capabilities observed across shipping CNG KSPs \u2014 '
+    'the market. A defect in this provider\u2019s OWN conformance surface is '
+    'not one of those, so no row here would ever point at it. That blind '
+    'spot has now cost three findings, so they are listed explicitly.',
+    size=9, italic=True, wrap=True)
+gp.merge_cells(start_row=n, start_column=1, end_row=n, end_column=10)
+gp.row_dimensions[n].height = 30
+n += 2
+for col, title in zip('ABCD', ['Gap', 'Detail', 'How it was found', 'Status']):
+    c = put(gp, f'{col}{n}', title, bold=True, size=9, color='FFFFFF')
+    c.fill = HDRF
+for g in OUT_OF_SCOPE_GAPS:
+    n += 1
+    for col, key in zip('ABCD', ['what', 'detail', 'found', 'status']):
+        c = put(gp, f'{col}{n}', g[key], size=9, wrap=True)
+        c.border = BORDER
+    gp.row_dimensions[n].height = 58
 
 # ══ Legend ══════════════════════════════════════════════════════════════════
 lg = wb.create_sheet('Legend')
