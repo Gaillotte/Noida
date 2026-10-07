@@ -498,7 +498,9 @@ in Phase 0 rather than treated as tooling polish.
 
 *Added after the phase-4 refresh of
 [11 — CNG KSP market comparison](./11-market-comparison.md), from the 30
-actionable gaps in [`feature-matrix.csv`](./feature-matrix.csv).*
+open rows in [`feature-matrix.csv`](./feature-matrix.csv). They were called
+"actionable gaps" here until that word was measured: only ten of them can
+start in this repository. See [15 — Gap analysis](./15-gap-analysis.md).*
 
 Thirty gaps is a misleading headline. Sorted by what actually stands in the
 way rather than by effort, they fall into five groups, and only two of those

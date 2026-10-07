@@ -24,6 +24,7 @@ import csv, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'softhsm_ksp', 'docs'))
 from coverage_blockers import BLOCKER
 from gap_detail import GAP_DETAIL, OUT_OF_SCOPE_GAPS, validate
+from matrix_fingerprint import stamp
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -353,6 +354,20 @@ for k, v in LEG:
         c = put(lg, f'B{r}', v, size=9, wrap=True)
         lg.row_dimensions[r].height = 34
     r += 1
+
+# Provenance, so the checker can tell a stale workbook from a current one.
+r += 1
+put(lg, f'A{r}', 'Provenance', bold=True, size=11, color=NAVY)
+r += 1
+put(lg, f'A{r}', stamp(os.path.abspath(__file__)), size=9, bold=True)
+c = put(lg, f'B{r}',
+        'A digest of feature-matrix.csv, coverage_blockers.py, gap_detail.py '
+        'and this workbook\u2019s generator. tests/check_generated_artifacts.py '
+        'recomputes it: if the matrix was edited and the workbook was not '
+        'regenerated, the two disagree and CI fails. Byte-comparing the file '
+        'itself cannot work \u2014 an xlsx is a zip, and neither member order '
+        'nor timestamps are stable.', size=9, wrap=True)
+lg.row_dimensions[r].height = 46
 
 wb.save(OUT)
 print('wrote', OUT)

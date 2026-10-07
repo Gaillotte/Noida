@@ -245,7 +245,12 @@ token 230 → **256**, plus **53** for token selection and **28** for
 per-scope isolation. Coverage **86.2 % lines at 100 % functions** — the
 function figure was briefly 97.8 %, because three per-scope functions were
 reachable only from the live suite, and unit coverage for the resolution
-logic closed it. Matrix 67 → **73 covered**, 23 → **21 actionable gaps**.
+logic closed it. Matrix 67 → **73 covered**, 30 open rows of which **10 can
+start here**. (That last figure was reported as "21 actionable gaps" at the
+time. It was wrong: the definition predated `gap_detail.py` and counted 11
+rows blocked outside this repository. Corrected in session 16 — effort
+answers "how big", which is not "can it start", and TABLE-01 is S and needs
+a Windows machine.)
 
 **Found and deliberately not fixed:** `NCryptCreatePersistedKey` does not
 return `NTE_EXISTS` for a name already taken, so a second create adds a
@@ -1236,6 +1241,26 @@ is the same failure mode as a stale coverage figure. All three generators
 call `gap_detail.validate()` before producing anything, so a missing entry, a
 stale one, or a mismatch between the blocker class and the `external` flag
 fails the build rather than emitting an artifact with a blank column.
+
+**Regenerating is not optional, and CI enforces it.** Each artifact embeds a
+fingerprint of its inputs (`docs/matrix_fingerprint.py`), and
+`tests/check_generated_artifacts.py` recomputes it in the `linux` job.
+Editing the CSV stales all three artifacts; editing one generator stales
+only its own. **Do not byte-compare a regenerated artifact against the
+committed one** — all three embed a generation date and two are binaries
+with unstable internal ordering, which is why the check compares inputs
+rather than outputs.
+
+**The PDF's headline gap count was wrong until session 16.** It read
+"21 actionable gaps", defined as any open row with a remedy and an effort
+other than N/A — a definition written before `gap_detail.py` existed and
+never reconciled with it. Eleven of the 21 were blocked outside this
+repository, so the most prominent number in the document overstated the
+backlog by more than twice. **Effort answers "how big would it be", which
+is not "can it start"**: `TABLE-01` is S and needs a Windows machine. The
+two are now counted separately — **10 startable here, 11 sized but
+blocked** — and the blocked ones keep their estimates, because what a row
+would take if unblocked is still worth knowing.
 
 **That cross-check has already earned its place.** `IFACE-06` sat in the
 "deliberate position" column while its own reason text read *"that is a fact

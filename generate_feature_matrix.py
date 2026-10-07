@@ -64,6 +64,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from coverage_blockers import BLOCKER          # noqa: E402
 from gap_detail import (GAP_DETAIL,            # noqa: E402
                         OUT_OF_SCOPE_GAPS, validate)
+from matrix_fingerprint import stamp          # noqa: E402
 
 
 def build_styles():
@@ -130,15 +131,39 @@ def summarise(rows):
         st = r['status'].strip()
         counts[st] = counts.get(st, 0) + 1
 
-    # "Actionable" excludes gaps whose effort column is N/A — those are
-    # deliberate positions or external blockers, not backlog items.
-    actionable = [r for r in rows
-                  if r['status'].strip() in ('Partial', 'Not covered')
-                  and r['effort'].strip() not in ('N/A', '')]
+    # "Startable" means work that could begin in this repository today.
+    #
+    # This used to be called "actionable" and was defined as any open row
+    # with a remedy and an effort other than N/A. That counted 21 rows, and
+    # ELEVEN of them were blocked outside this repository — a header nobody
+    # here has, a CNG identifier Microsoft has not defined, a PKCS#11
+    # mechanism that does not exist, hardware, a purchase. The most
+    # prominent number in the document overstated the backlog by more than
+    # twice.
+    #
+    # The cause was a definition written before gap_detail.py existed and
+    # never reconciled with it: effort answers "how big would it be", which
+    # is not the same question as "can it start". A row can be a day's work
+    # and still be unstartable, which is why TABLE-01 is S and needs a
+    # Windows machine.
+    #
+    # Blocked rows are still counted and still carry their effort — they
+    # are reported separately rather than hidden, because what it would
+    # take IF unblocked is the useful thing to know about them.
+    open_rows = [r for r in rows
+                 if r['status'].strip() in ('Partial', 'Not covered')]
+    sized = [r for r in open_rows if r['effort'].strip() not in ('N/A', '')]
+    startable = [r for r in sized if GAP_DETAIL[r['id']]['external'] is False]
+    blocked = [r for r in sized if GAP_DETAIL[r['id']]['external'] is True]
+
     effort = OrderedDict((k, 0) for k in ('S', 'M', 'L'))
-    for r in actionable:
+    for r in startable:
         e = r['effort'].strip()
         effort[e] = effort.get(e, 0) + 1
+    blocked_effort = OrderedDict((k, 0) for k in ('S', 'M', 'L'))
+    for r in blocked:
+        e = r['effort'].strip()
+        blocked_effort[e] = blocked_effort.get(e, 0) + 1
 
     total = len(rows)
     covered = counts.get('Covered', 0)
@@ -146,8 +171,11 @@ def summarise(rows):
         'total': total,
         'counts': counts,
         'pct_covered': (100.0 * covered / total) if total else 0.0,
-        'actionable': len(actionable),
+        'open': len(open_rows),
+        'startable': len(startable),
+        'blocked_sized': len(blocked),
         'effort': effort,
+        'blocked_effort': blocked_effort,
         'categories': len(OrderedDict((r['category'], 1) for r in rows)),
     }
 
@@ -188,6 +216,10 @@ def build(rows, stats, styles):
         title=DOC_TITLE,
         author='SoftHSM2 CNG KSP project',
         subject='Market feature coverage and gap analysis',
+        # Also in the metadata, not only in the visible footer: the checker
+        # reads it from here, and PDF page text is compressed while the
+        # Info dictionary is not.
+        keywords=stamp(os.path.abspath(__file__)),
     )
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height,
                   id='main', showBoundary=0)
@@ -219,7 +251,8 @@ def summary_block(stats, styles):
         ('%d' % c.get('Partial', 0),            'Partial'),
         ('%d' % c.get('Not covered', 0),        'Not covered'),
         ('%.0f%%' % stats['pct_covered'],       'Fully covered'),
-        ('%d' % stats['actionable'],            'Actionable gaps'),
+        ('%d' % stats['startable'],             'Startable here'),
+        ('%d' % stats['blocked_sized'],         'Sized but blocked'),
     ]
     big = ParagraphStyle('big', parent=styles['body'], fontName='Helvetica-Bold',
                          fontSize=15, leading=17, textColor=ACCENT)
@@ -227,7 +260,7 @@ def summary_block(stats, styles):
                          leading=8.5, textColor=MUTED)
     data = [[Paragraph(v, big) for v, _ in cells],
             [Paragraph(l, lbl) for _, l in cells]]
-    t = Table(data, colWidths=[44 * mm] * len(cells))
+    t = Table(data, colWidths=[272.0 / len(cells) * mm] * len(cells))
     t.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), ACCENT_BG),
         ('BOX',        (0, 0), (-1, -1), 0.5, RULE),
@@ -295,9 +328,12 @@ def legend_block(styles):
     out.append(Spacer(1, 5))
     out.append(Paragraph(
         '<b>Effort</b> on gaps: S = a few lines to a day · M = days · '
-        'L = a substantial piece of work.  <b>N/A</b> marks a deliberate '
-        'position or an external blocker rather than a backlog item — those '
-        'are excluded from the actionable-gap count.',
+        'L = a substantial piece of work.  <b>N/A</b> means no remedy is '
+        'planned at all.  <b>Effort is not the same question as whether a '
+        'row can start</b>: TABLE-01 is S and needs a Windows machine. '
+        '&#8220;Startable here&#8221; counts only sized rows whose blocker '
+        'is a decision this project made; sized rows blocked outside this '
+        'repository are counted beside it rather than folded in.',
         styles['note']))
     out.append(Spacer(1, 9))
     return out
@@ -510,6 +546,7 @@ def gap_analysis(rows, styles):
 
 def closing_block(stats, styles):
     e = stats['effort']
+    b = stats['blocked_effort']
     out = [Paragraph('Maintaining this document', styles['h2'])]
     out.append(Paragraph(
         'The source of truth is <font face="Courier">softhsm_ksp/docs/feature-matrix.csv</font>. '
@@ -531,12 +568,31 @@ def closing_block(stats, styles):
     out.append(Spacer(1, 7))
 
     out.append(Paragraph(
-        'Actionable gaps by effort: <b>%d small</b>, <b>%d medium</b>, <b>%d large</b>. '
-        'Rows marked N/A are excluded — they are deliberate positions (private key export '
-        'is refused by design) or external blockers (CNG defines no EdDSA identifier; '
-        'SoftHSM2 is a software token).'
-        % (e.get('S', 0), e.get('M', 0), e.get('L', 0)),
+        '<b>Startable here: %d</b> — %d small, %d medium, %d large. These are '
+        'the rows whose blocker is a decision this project made, so work could '
+        'begin on any of them today.'
+        % (stats['startable'], e.get('S', 0), e.get('M', 0), e.get('L', 0)),
         styles['body']))
+    out.append(Spacer(1, 4))
+    out.append(Paragraph(
+        '<b>Sized but blocked: %d</b> — %d small, %d medium, %d large. Each has a '
+        'remedy and an estimate, and none of them can start here: the blocker is a '
+        'header nobody in this project has, a CNG identifier Microsoft has not '
+        'defined, a PKCS#11 mechanism that does not exist, hardware, or a purchase. '
+        'They are shown because what a row would take <i>if</i> unblocked is worth '
+        'knowing, and hidden from the startable count because reading it as backlog '
+        'is exactly the mistake this document used to invite — the two numbers were '
+        'one number until it was measured, and that number said 21 when 10 was true.'
+        % (stats['blocked_sized'], b.get('S', 0), b.get('M', 0), b.get('L', 0)),
+        styles['note']))
+    out.append(Spacer(1, 7))
+    out.append(Paragraph(
+        '<font face="Courier">%s</font> — of the data this document was built '
+        'from. <font face="Courier">tests/check_generated_artifacts.py</font> '
+        'recomputes it, so a matrix edited without regenerating is a CI '
+        'failure rather than a document that quietly describes the previous '
+        'version of itself.' % stamp(os.path.abspath(__file__)),
+        styles['note']))
     out.append(Spacer(1, 7))
     out.append(Paragraph(
         '<b>A caution on the market columns.</b> An HSM datasheet is not a statement about '
@@ -562,9 +618,13 @@ def main():
     print('  Covered %d · Partial %d · Not covered %d  (%.0f%% fully covered)'
           % (c.get('Covered', 0), c.get('Partial', 0),
              c.get('Not covered', 0), stats['pct_covered']))
-    print('  %d actionable gaps — S:%d M:%d L:%d'
-          % (stats['actionable'], stats['effort'].get('S', 0),
+    print('  %d open rows: %d startable here — S:%d M:%d L:%d'
+          % (stats['open'], stats['startable'], stats['effort'].get('S', 0),
              stats['effort'].get('M', 0), stats['effort'].get('L', 0)))
+    print('  %d sized but blocked outside this repository — S:%d M:%d L:%d'
+          % (stats['blocked_sized'], stats['blocked_effort'].get('S', 0),
+             stats['blocked_effort'].get('M', 0),
+             stats['blocked_effort'].get('L', 0)))
 
 
 if __name__ == '__main__':

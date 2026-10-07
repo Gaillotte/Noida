@@ -27,6 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, 'softhsm_ksp', 'docs'))
 from coverage_blockers import BLOCKER                       # noqa: E402
 from gap_detail import GAP_DETAIL, OUT_OF_SCOPE_GAPS, validate  # noqa: E402
+from matrix_fingerprint import stamp                         # noqa: E402
 
 CSV_PATH = os.path.join(HERE, 'softhsm_ksp', 'docs', 'feature-matrix.csv')
 OUT_PATH = os.path.join(HERE, 'softhsm_ksp', 'docs', '15-gap-analysis.md')
@@ -102,6 +103,11 @@ def main():
     open_rows = [r for r in rows if r['status'].strip() != 'Covered']
     ours = [r for r in open_rows
             if GAP_DETAIL[r['id']]['external'] is False]
+    sized = [r for r in open_rows if r['effort'].strip() not in ('N/A', '')]
+    startable = [r for r in sized
+                 if GAP_DETAIL[r['id']]['external'] is False]
+    blocked_sized = [r for r in sized
+                     if GAP_DETAIL[r['id']]['external'] is True]
     covered = sum(1 for r in rows if r['status'].strip() == 'Covered')
     partial = sum(1 for r in rows if r['status'].strip() == 'Partial')
     nocov = sum(1 for r in rows if r['status'].strip() == 'Not covered')
@@ -114,6 +120,12 @@ def main():
     w('**Generated — do not edit.** `python3 generate_gap_analysis.py`, from')
     w('`docs/feature-matrix.csv`, `docs/coverage_blockers.py` and')
     w('`docs/gap_detail.py`. Last generated %s.' % date.today().isoformat())
+    w('')
+    w('`%s` &mdash; of the data this was built from, so'
+      % stamp(os.path.abspath(__file__)))
+    w('`tests/check_generated_artifacts.py` can tell whether it is still in')
+    w('step with the matrix. Regenerate if that check fails; do not edit the')
+    w('stamp.')
     w('')
     w('The feature matrix answers *is it supported*, row by row. This answers')
     w('the question a reader asks next and cannot get from a status column:')
@@ -132,6 +144,21 @@ def main():
     w('CNG identifier Microsoft has not defined, a PKCS#11 mechanism that does')
     w('not exist, a header nobody here has, hardware, or a purchase. The')
     w('remaining **%d are decisions this project made**.' % len(ours))
+    w('')
+    w('Of those %d, **%d carry an effort estimate and could start today** —'
+      % (len(ours), len(startable)))
+    w('%s. The others have no estimate because no remedy is planned.'
+      % ', '.join('`%s`' % r['id'] for r in startable))
+    w('')
+    w('> **The PDF reported "21 actionable gaps" until this was measured.**')
+    w('> That count was any open row with a remedy and an effort other than')
+    w('> N/A, a definition written before `gap_detail.py` existed. Eleven of')
+    w('> the 21 were blocked outside this repository, so the most prominent')
+    w('> number in the document overstated the backlog by more than twice.')
+    w('> Effort answers *how big would it be*, which is not *can it start*:')
+    w('> `TABLE-01` is S and needs a Windows machine. The two are now')
+    w('> counted separately — **%d startable, %d sized but blocked**.'
+      % (len(startable), len(blocked_sized)))
     w('')
     w('### Partial does not mean broken')
     w('')
@@ -242,6 +269,14 @@ def main():
     w('matrix without its detail, a stale entry, or a mismatch between')
     w('"deliberate position" and `external` fails the build instead of')
     w('producing an artifact with a silently blank column.')
+    w('')
+    w('**Forgetting to regenerate is now a CI failure.** Each artifact')
+    w('embeds a fingerprint of the data it was built from, and')
+    w('`tests/check_generated_artifacts.py` recomputes it. Editing the CSV')
+    w('makes all three stale; editing one generator makes only its own')
+    w('artifact stale. Byte-comparing a regenerated artifact against the')
+    w('committed one cannot work — all three embed a generation date, and')
+    w('two are binaries whose internal ordering is not stable.')
 
     open(OUT_PATH, 'w').write('\n'.join(L) + '\n')
     print('Wrote %s' % OUT_PATH)

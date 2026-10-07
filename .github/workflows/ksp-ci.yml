@@ -51,6 +51,26 @@ jobs:
         working-directory: softhsm_ksp
         run: python3 tests/check_mock_drift.py
 
+      # The feature matrix's three artifacts — the PDF, the coverage
+      # workbook and docs/15-gap-analysis.md — are generated from
+      # feature-matrix.csv, coverage_blockers.py and gap_detail.py. Nothing
+      # checked that the committed copies still matched those inputs, so
+      # editing the CSV and forgetting to regenerate left three documents
+      # describing a matrix that no longer existed, silently. This project
+      # has shipped a coverage figure that was stale for two sessions and a
+      # CLAUDE.md passage that contradicted the code for six, so the failure
+      # mode is not hypothetical.
+      #
+      # Each artifact carries a fingerprint of its own inputs and this
+      # recomputes it; byte-comparing a regenerated artifact cannot work,
+      # because all three embed a generation date and two of them are
+      # binaries with unstable internal ordering. Needs no third-party
+      # module, deliberately: a staleness check should not be the thing
+      # that makes CI install reportlab.
+      - name: Generated artifacts match the feature matrix
+        working-directory: softhsm_ksp
+        run: python3 tests/check_generated_artifacts.py
+
       - name: Cross-compile for Windows
         working-directory: softhsm_ksp
         run: |

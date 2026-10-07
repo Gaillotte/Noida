@@ -2,7 +2,12 @@
 
 **Generated — do not edit.** `python3 generate_gap_analysis.py`, from
 `docs/feature-matrix.csv`, `docs/coverage_blockers.py` and
-`docs/gap_detail.py`. Last generated 2026-10-02.
+`docs/gap_detail.py`. Last generated 2026-10-07.
+
+`Matrix fingerprint: de4278fc8e71` &mdash; of the data this was built from, so
+`tests/check_generated_artifacts.py` can tell whether it is still in
+step with the matrix. Regenerate if that check fails; do not edit the
+stamp.
 
 The feature matrix answers *is it supported*, row by row. This answers
 the question a reader asks next and cannot get from a status column:
@@ -19,6 +24,18 @@ Of the **30 open rows**, **19 are blocked outside this repository** — a
 CNG identifier Microsoft has not defined, a PKCS#11 mechanism that does
 not exist, a header nobody here has, hardware, or a purchase. The
 remaining **11 are decisions this project made**.
+
+Of those 11, **10 carry an effort estimate and could start today** —
+`IFACE-07`, `RSA-02`, `ECDH-06`, `DSA-01`, `AES-08`, `3DES-01`, `FMT-07`, `FMT-09`, `PROP-12`, `PROP-15`. The others have no estimate because no remedy is planned.
+
+> **The PDF reported "21 actionable gaps" until this was measured.**
+> That count was any open row with a remedy and an effort other than
+> N/A, a definition written before `gap_detail.py` existed. Eleven of
+> the 21 were blocked outside this repository, so the most prominent
+> number in the document overstated the backlog by more than twice.
+> Effort answers *how big would it be*, which is not *can it start*:
+> `TABLE-01` is S and needs a Windows machine. The two are now
+> counted separately — **10 startable, 11 sized but blocked**.
 
 ### Partial does not mean broken
 
@@ -171,3 +188,11 @@ All three call `gap_detail.validate()` first, so a row added to the
 matrix without its detail, a stale entry, or a mismatch between
 "deliberate position" and `external` fails the build instead of
 producing an artifact with a silently blank column.
+
+**Forgetting to regenerate is now a CI failure.** Each artifact
+embeds a fingerprint of the data it was built from, and
+`tests/check_generated_artifacts.py` recomputes it. Editing the CSV
+makes all three stale; editing one generator makes only its own
+artifact stale. Byte-comparing a regenerated artifact against the
+committed one cannot work — all three embed a generation date, and
+two are binaries whose internal ordering is not stable.
