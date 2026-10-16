@@ -39,19 +39,42 @@ DATA_INPUTS = (
     'gap_detail.py',
 )
 
-LABEL = 'Matrix fingerprint'
+# This module hashes itself into every digest.
+#
+# Without it there is a hole in the middle of the mechanism: change how the
+# digest is computed and every stored digest becomes meaningless while the
+# checker goes on comparing them. In practice the LABEL rename would have
+# been caught anyway, because the regex stops matching — but "caught by
+# accident through a different check" is not the same as covered, and this
+# is a staleness detector, so a blind spot in it is worse than elsewhere.
+SELF = os.path.join(HERE, os.path.basename(__file__))
+
+# Not "Matrix fingerprint" any more: the ADCS plan is derived from a markdown
+# file, not from the matrix, and a stamp that says Matrix on it would be a
+# small untruth printed on a document — the exact genre of error this
+# repository keeps paying for.
+LABEL = 'Content fingerprint'
 
 
-def fingerprint(generator_path):
-    """Short hex digest of the data inputs plus one generator's source.
+def fingerprint_for(generator_path, inputs):
+    """Short hex digest of an explicit input set plus one generator's source.
 
-    The name of each file is hashed along with its bytes, so renaming an
-    input is a change rather than a silent no-op.
+    `inputs` are absolute paths, hashed in the order given, each with its
+    base name so that renaming an input is a change rather than a silent
+    no-op. The order is the caller's and must stay stable: a set or a dict's
+    iteration order would make the digest depend on something that is not
+    the content.
+
+    Generalised from the matrix-only version when the ADCS plan became the
+    fourth generated artifact. Its input is one markdown file rather than
+    the three matrix data files, and the alternative — a second, nearly
+    identical hashing function — is how two copies of a subtle thing drift
+    apart. That has already happened once in this repository, to a
+    counted-string length check.
     """
     h = hashlib.sha256()
-    for name in DATA_INPUTS:
-        path = os.path.join(HERE, name)
-        h.update(name.encode('utf-8'))
+    for path in (SELF,) + tuple(inputs):
+        h.update(os.path.basename(path).encode('utf-8'))
         with open(path, 'rb') as f:
             h.update(f.read())
     gen = os.path.basename(generator_path)
@@ -61,6 +84,21 @@ def fingerprint(generator_path):
     return h.hexdigest()[:12]
 
 
+def matrix_inputs():
+    """The three files every matrix-derived artifact is built from."""
+    return tuple(os.path.join(HERE, name) for name in DATA_INPUTS)
+
+
+def fingerprint(generator_path):
+    """Digest over the matrix data inputs plus one generator's source."""
+    return fingerprint_for(generator_path, matrix_inputs())
+
+
 def stamp(generator_path):
     """The line an artifact embeds, e.g. 'Matrix fingerprint: a1b2c3d4e5f6'."""
     return '%s: %s' % (LABEL, fingerprint(generator_path))
+
+
+def stamp_for(generator_path, inputs):
+    """As `stamp`, over an explicit input set."""
+    return '%s: %s' % (LABEL, fingerprint_for(generator_path, inputs))

@@ -2,9 +2,9 @@
 
 **Generated — do not edit.** `python3 generate_gap_analysis.py`, from
 `docs/feature-matrix.csv`, `docs/coverage_blockers.py` and
-`docs/gap_detail.py`. Last generated 2026-10-07.
+`docs/gap_detail.py`. Last generated 2026-10-16.
 
-`Matrix fingerprint: de4278fc8e71` &mdash; of the data this was built from, so
+`Content fingerprint: be7181492f55` &mdash; of the data this was built from, so
 `tests/check_generated_artifacts.py` can tell whether it is still in
 step with the matrix. Regenerate if that check fails; do not edit the
 stamp.

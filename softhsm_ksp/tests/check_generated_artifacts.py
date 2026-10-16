@@ -31,7 +31,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # softhsm_k
 REPO = os.path.dirname(ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'docs'))
 
-from matrix_fingerprint import LABEL, fingerprint   # noqa: E402
+from matrix_fingerprint import (LABEL, fingerprint,   # noqa: E402
+                                fingerprint_for, matrix_inputs)
 
 PATTERN = re.compile(re.escape(LABEL) + r'\s*:?\s*([0-9a-f]{12})')
 
@@ -78,20 +79,28 @@ def found_in_xlsx(path):
     return out
 
 
+# (artifact, its generator, how to read the stamp, its data inputs)
+#
+# Three are built from the feature matrix; the ADCS plan is built from one
+# markdown file instead, which is why the input set is per artifact rather
+# than global. Editing the matrix stales the first three and not the fourth;
+# editing the plan stales only the fourth.
 ARTIFACTS = [
-    # (artifact, the generator that produced it, how to read the stamp)
     ('softhsm_ksp/docs/15-gap-analysis.md',
-     'generate_gap_analysis.py', found_in_text),
+     'generate_gap_analysis.py', found_in_text, None),
     ('softhsm_ksp/SoftHSM2_KSP_Feature_Matrix.pdf',
-     'generate_feature_matrix.py', found_in_pdf),
+     'generate_feature_matrix.py', found_in_pdf, None),
     ('softhsm_ksp/SoftHSM2_KSP_CNG_Feature_Coverage.xlsx',
-     'generate_cng_coverage_xlsx.py', found_in_xlsx),
+     'generate_cng_coverage_xlsx.py', found_in_xlsx, None),
+    ('softhsm_ksp/SoftHSM2_KSP_ADCS_Readiness_Plan.pdf',
+     'generate_adcs_plan.py', found_in_pdf,
+     ('softhsm_ksp/docs/16-adcs-readiness.md',)),
 ]
 
 
 def main():
     stale, ok = [], []
-    for rel, generator, reader in ARTIFACTS:
+    for rel, generator, reader, data in ARTIFACTS:
         artifact = os.path.join(REPO, rel)
         gen_path = os.path.join(REPO, generator)
 
@@ -102,7 +111,18 @@ def main():
             stale.append((rel, generator, 'the generator is missing'))
             continue
 
-        want = fingerprint(gen_path)
+        if data is None:
+            want = fingerprint(gen_path)
+        else:
+            inputs = [os.path.join(REPO, d) for d in data]
+            missing = [d for d, p in zip(data, inputs)
+                       if not os.path.exists(p)]
+            if missing:
+                stale.append((rel, generator,
+                              'its input is missing: %s'
+                              % ', '.join(missing)))
+                continue
+            want = fingerprint_for(gen_path, inputs)
         try:
             got = reader(artifact)
         except Exception as exc:                      # unreadable is stale
@@ -131,11 +151,11 @@ def main():
         print('Regenerate them and commit the result:\n')
         for _, generator, _ in stale:
             print('    python3 %s' % generator)
-        print('\nThe fingerprint covers docs/feature-matrix.csv, '
-              'docs/coverage_blockers.py, docs/gap_detail.py and each\n'
-              'artifact\'s own generator — so a change to the matrix makes '
-              'all three stale, while a change to\none generator makes only '
-              'its own artifact stale.')
+        print('\nEach fingerprint covers that artifact\'s own data inputs '
+              'plus its own generator, so a change\nto the matrix stales the '
+              'three matrix artifacts, a change to 16-adcs-readiness.md '
+              'stales\nthe ADCS plan, and a change to one generator stales '
+              'only its own artifact.')
         return 1
 
     print('\nAll %d generated artifacts match the current feature matrix.'

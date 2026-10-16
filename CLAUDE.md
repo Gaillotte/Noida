@@ -138,7 +138,9 @@ noida/
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
 │   ├── SoftHSM2_KSP_Algorithm_Reference.docx        Algorithm reference (Word)
-│   └── SoftHSM2_KSP_Feature_Matrix.pdf              Market coverage + gap analysis (PDF)
+│   ├── SoftHSM2_KSP_Feature_Matrix.pdf              Market coverage + gap analysis (PDF)
+│   └── SoftHSM2_KSP_ADCS_Readiness_Plan.pdf        ADCS assessment + phased plan,
+│                                                    rendered from docs/16-adcs-readiness.md
 ├── generate_guide.py               python-docx script → Complete_Developer_Guide.docx
 ├── generate_algo_ref.py            python-docx script → Algorithm_Reference.docx
 ├── generate_feature_matrix.py      reportlab script  → Feature_Matrix.pdf (reads the CSV)
@@ -1223,6 +1225,7 @@ python3 generate_algo_ref.py       # → softhsm_ksp/SoftHSM2_KSP_Algorithm_Refe
 python3 generate_feature_matrix.py # → softhsm_ksp/SoftHSM2_KSP_Feature_Matrix.pdf
 python3 generate_cng_coverage_xlsx.py # → SoftHSM2_KSP_CNG_Feature_Coverage.xlsx
 python3 generate_gap_analysis.py   # → softhsm_ksp/docs/15-gap-analysis.md
+python3 generate_adcs_plan.py      # → SoftHSM2_KSP_ADCS_Readiness_Plan.pdf
 ```
 
 **The feature matrix is data-driven.** Its source of truth is
@@ -1245,8 +1248,13 @@ fails the build rather than emitting an artifact with a blank column.
 **Regenerating is not optional, and CI enforces it.** Each artifact embeds a
 fingerprint of its inputs (`docs/matrix_fingerprint.py`), and
 `tests/check_generated_artifacts.py` recomputes it in the `linux` job.
-Editing the CSV stales all three artifacts; editing one generator stales
-only its own. **Do not byte-compare a regenerated artifact against the
+**Four artifacts are covered**: three built from the matrix, and the ADCS
+plan PDF built from `docs/16-adcs-readiness.md`. The input set is per
+artifact, so editing the CSV stales the three matrix artifacts, editing the
+ADCS markdown stales only its PDF, and editing one generator stales only its
+own output. The fingerprint module hashes itself into every digest, so a
+change to how the digest is computed invalidates all of them rather than
+leaving a hole in the middle of the mechanism. **Do not byte-compare a regenerated artifact against the
 committed one** — all three embed a generation date and two are binaries
 with unstable internal ordering, which is why the check compares inputs
 rather than outputs.
