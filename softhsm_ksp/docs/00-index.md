@@ -24,6 +24,7 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 | [13 — Roadmap to market parity](./13-roadmap.md) | Why the Windows build has never worked, the six defects behind it, and the phased plan to interface parity |
 | [14 — Closing the Partial rows](./14-partial-remediation-plan.md) | The remediation plan and its outcome: proposals A–D are implemented, which closed `AES-09`, `FMT-08`, `IFACE-04` and `LIFE-08`. Includes what implementing them found, none of it in their own code |
 | [15 — Gap analysis](./15-gap-analysis.md) | **Generated.** All 30 open rows, grouped by what actually blocks each one, with what works today and what the blocker rests on. 19 are outside this repository; 11 are decisions this project made. Also the gaps the matrix cannot show |
+| [16 — ADCS readiness](./16-adcs-readiness.md) | Whether this provider can back an Active Directory Certificate Services CA, and the phased plan to get there. Verdict: the architecture fits, the artifact does not exist yet, and two of the gaps are risk decisions rather than code |
 
 ### Generated deliverables
 
