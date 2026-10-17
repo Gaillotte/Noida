@@ -63,7 +63,7 @@ not either. Settle it in the first hour on Windows (step B1) — if signing is
 required, it is a procurement lead time, not a code change, and it should
 start immediately.
 
-### G3 — `NCRYPT_LENGTHS_PROPERTY` is not implemented. *New finding.*
+### G3 — `NCRYPT_LENGTHS_PROPERTY` was not implemented. *Closed in Phase A.*
 
 Every shipping KSP implements it. It returns `NCRYPT_SUPPORTED_LENGTHS`
 (minimum, maximum, increment, default), and it is what the CA setup wizard
@@ -80,7 +80,26 @@ three sessions.
 Cheap to close: the provider already holds `KSP_RSA_MIN_BITS`,
 `KSP_RSA_MAX_BITS` and the step-64 rule, and the EC sizes are per curve.
 
-### G4 — A reused container name silently duplicates the key. *Correctness.*
+### G4 — A reused container name silently duplicates the key. *Closed.*
+
+**Done in Phase A.** `NCryptCreatePersistedKey` now returns `NTE_EXISTS` for
+a name already in use, and `NCRYPT_OVERWRITE_KEY_FLAG` replaces
+deliberately. The replaced objects — private, public, secret and the
+certificate stored beside them — are destroyed **only after the new key has
+generated**, so a failed generation leaves the key it was replacing intact.
+Destroying first and generating second would lose a CA key outright when
+generation fails, which is unrecoverable; generating first costs a moment in
+which two objects share a label, and that is the better trade. Both
+directions and the ordering are fault-injected.
+
+**Still to confirm on Windows (E4):** which call pattern ADCS actually uses
+on renewal — whether it passes the overwrite flag, derives a fresh name, or
+expects `NTE_EXISTS` and handles it. That decides whether the refusal or the
+overwrite is the path that runs, not whether either is correct.
+
+The original description follows.
+
+#### Original finding
 
 `NCryptCreatePersistedKey` does not check whether the name is taken and does
 not handle `NCRYPT_OVERWRITE_KEY_FLAG`, so two token objects can carry the
@@ -100,7 +119,12 @@ passes `NCRYPT_OVERWRITE_KEY_FLAG`, derives a new name, or expects
 `NTE_EXISTS`. That needs a Windows box (step D4) and it decides whether the
 fix is a refusal, an overwrite, or both.
 
-### G5 — PIN delivery. *A design decision, and the real blocker for production.*
+### G5 — PIN delivery. *Partly closed; the delivery mechanism is still a decision.*
+
+**The silent default is gone** (A5): no PIN configured is now `NTE_PERM` and
+a log line, not an attempt with `"1234"`. What remains is the question below
+— how a headless `certsrv` is given a real credential — and that still needs
+an owner's decision rather than a patch.
 
 `certsrv` is a headless service. It never calls
 `NCryptSetProperty(NCRYPT_PIN_PROPERTY)`, so the PIN comes from
@@ -154,11 +178,11 @@ being spent on things that did not need Windows.
 
 | | Work | Why now |
 |---|---|---|
-| **A1** | Implement `NCRYPT_LENGTHS_PROPERTY` for RSA and each EC curve, as `NCRYPT_SUPPORTED_LENGTHS`. Add the matrix row that should have existed. | G3. The CA wizard reads it; cheap; no Windows needed to get it right |
-| **A2** | `NTE_EXISTS` on a taken container name, plus `NCRYPT_OVERWRITE_KEY_FLAG` to replace deliberately. Tests in **both** directions — a check that never fires is as bad as none. | G4. Must land before any renewal test, or that test cannot be trusted |
+| **A1** | **Done.** `NCRYPT_LENGTHS_PROPERTY` as `NCRYPT_SUPPORTED_LENGTHS`: a range for RSA and AES, one fixed size with `dwIncrement = 0` for curves, EdDSA, HMAC and ML-DSA. Matrix row `PROP-19` added. | G3. The CA wizard reads it; cheap; no Windows needed to get it right |
+| **A2** | **Done.** `NTE_EXISTS` on a taken container name, plus `NCRYPT_OVERWRITE_KEY_FLAG` to replace deliberately, destroying the replaced objects only after the new key generates. Both directions and the ordering fault-injected. | G4. Had to land before any renewal test, or that test could not be trusted |
 | **A3** | An ADCS-shaped lifecycle suite in `tests/linux/`: create a machine-scoped RSA-4096 key, set the certificate property, sign a to-be-signed blob, enumerate, re-create under the same name (must now refuse), overwrite deliberately, delete. Run twice over one token. | De-risks the whole CA flow against a real token before Windows exists. The twice-over pattern is what found the orphaned certificate |
 | **A4** | A regression test that `NCRYPT_SILENT_FLAG` combined with each padding flag still resolves the right mechanism. | The masking is correct today *by construction*; nothing stops a future `==` comparison breaking CA signing |
-| **A5** | Remove the `"1234"` PIN fallback for machine scope — **fail closed**. A CA that silently tries a default PIN is worse than one that refuses to start. | G5, the part that needs no decision |
+| **A5** | **Done**, and for BOTH scopes rather than machine only: a scope-dependent default would mean a developer's user-scope key silently works while the identical machine-scope configuration fails. `NTE_PERM` plus a log line naming all three places a PIN can come from; `-DKSP_ALLOW_DEFAULT_PIN=1` restores it for a lab. | G5, the part that needs no decision |
 
 **Gate:** A1–A5 green, fault-injected, and the live suite passing twice.
 

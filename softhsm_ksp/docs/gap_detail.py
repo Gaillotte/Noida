@@ -319,21 +319,16 @@ GAP_DETAIL = {
 # was found by making a test repeatable. Nothing in the matrix would ever
 # have pointed at any of them, because none is a capability a competitor
 # advertises.
+# CLOSED, and removed from this list rather than marked done: the list is
+# what is still open, and an entry describing a fixed gap is the same stale
+# document this project keeps paying for.
+#
+#   NCryptCreatePersistedKey not returning NTE_EXISTS — fixed in the ADCS
+#   Phase A work. A taken container name is now refused unless the caller
+#   passes NCRYPT_OVERWRITE_KEY_FLAG, and an overwrite destroys the replaced
+#   objects only AFTER the new key generates, so a failed generation leaves
+#   the key it was replacing intact.
 OUT_OF_SCOPE_GAPS = [
-    dict(
-        what='NCryptCreatePersistedKey does not return NTE_EXISTS',
-        detail='Nothing checks whether the name is already taken, so a '
-               'second create adds a second object with the same '
-               'CKA_LABEL and NCryptOpenKey returns whichever the token\'s '
-               'search hands back first. Microsoft documents NTE_EXISTS '
-               'for this case, with NCRYPT_OVERWRITE_KEY_FLAG as the way '
-               'to ask for replacement.',
-        found='While making the two-token suite repeatable: two deletes '
-              'both reported success and a key was still openable, '
-              'because earlier runs had left duplicates behind.',
-        status='Open. Not fixed as part of proposals A to D, because doing '
-               'it properly means the overwrite flag as well as the check, '
-               'with tests in both directions.'),
     dict(
         what='Key-scoped function table slots are unverifiable',
         detail='The mock types every slot as void *, so a wrong parameter '

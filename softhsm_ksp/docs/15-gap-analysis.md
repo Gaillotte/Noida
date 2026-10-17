@@ -4,7 +4,7 @@
 `docs/feature-matrix.csv`, `docs/coverage_blockers.py` and
 `docs/gap_detail.py`. Last generated 2026-10-17.
 
-`Content fingerprint: 698fa60b3c52` &mdash; of the data this was built from, so
+`Content fingerprint: 978ce6780368` &mdash; of the data this was built from, so
 `tests/check_generated_artifacts.py` can tell whether it is still in
 step with the matrix. Regenerate if that check fails; do not edit the
 stamp.
@@ -151,14 +151,6 @@ That blind spot has cost three findings: session 14’s two stubs,
 found by reading the function table rather than the matrix, and the
 first entry below, found by making a test repeatable. They are
 recorded here rather than left in a commit message.
-
-### NCryptCreatePersistedKey does not return NTE_EXISTS
-
-Nothing checks whether the name is already taken, so a second create adds a second object with the same CKA_LABEL and NCryptOpenKey returns whichever the token's search hands back first. Microsoft documents NTE_EXISTS for this case, with NCRYPT_OVERWRITE_KEY_FLAG as the way to ask for replacement.
-
-**How it was found.** While making the two-token suite repeatable: two deletes both reported success and a key was still openable, because earlier runs had left duplicates behind.
-
-**Status.** Open. Not fixed as part of proposals A to D, because doing it properly means the overwrite flag as well as the check, with tests in both directions.
 
 ### Key-scoped function table slots are unverifiable
 

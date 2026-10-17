@@ -72,6 +72,26 @@ typedef struct _KSP_KEY {
      * PKCS#11's own per-key mechanism for a key marked
      * CKA_ALWAYS_AUTHENTICATE. Zeroed in KSP_FreeKey. */
     char             szKeyPin[P11_MAX_PIN_LEN + 1];
+
+    /* NCRYPT_OVERWRITE_KEY_FLAG: the objects the old key of this name owns.
+     *
+     * Recorded when the key is CREATED and destroyed only after the new key
+     * has been generated successfully. The ordering is the whole point. The
+     * obvious implementation — destroy the old key, then generate — loses
+     * the existing key outright if generation then fails, and for a CA key
+     * that is unrecoverable. Generating first costs a moment in which two
+     * objects share a CKA_LABEL, which is the state this feature exists to
+     * prevent; it is still the right trade, because the failure mode is a
+     * duplicate rather than a destroyed key.
+     *
+     * Handles can go stale between create and finalize if another process
+     * deletes the key. C_DestroyObject on a stale handle is logged and
+     * ignored: the object is gone, which is what was wanted. */
+    BOOL             bOverwrite;
+    CK_OBJECT_HANDLE hOldPriv;
+    CK_OBJECT_HANDLE hOldPub;
+    CK_OBJECT_HANDLE hOldSecret;
+    CK_OBJECT_HANDLE hOldCert;
 } KSP_KEY;
 
 /* Agreed-secret handle produced by KSP_SecretAgreement (ECDH).

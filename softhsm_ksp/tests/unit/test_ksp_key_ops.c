@@ -1225,6 +1225,143 @@ int main(void)
             ss, (SECURITY_STATUS)NTE_BAD_KEYSET);
     }
 
+    /* ── A name already in use (ADCS G4) ─────────────────────────────────
+     *
+     * CNG's contract: NCryptCreatePersistedKey on a name already taken is
+     * NTE_EXISTS, unless the caller passes NCRYPT_OVERWRITE_KEY_FLAG. This
+     * provider checked nothing, so a second create added a SECOND object
+     * with the same CKA_LABEL and NCryptOpenKey afterwards returned
+     * whichever the token's search found first.
+     *
+     * For a CA that is a correctness failure with certificate-validity
+     * consequences: renewing a CA certificate is exactly the operation that
+     * reuses a container name, and a CA signing with an indeterminate key
+     * generation issues certificates that may not chain.
+     *
+     * Tested in BOTH directions. A refusal that never fires is as useless
+     * as none, and an overwrite that never replaces anything is worse —
+     * it leaves the duplicate the feature exists to prevent. */
+    TEST_SUITE("Duplicate key names (NTE_EXISTS / OVERWRITE)");
+
+    /* The name is free: unchanged behaviour. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("A free name still creates",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"freename", AT_SIGNATURE, 0));
+        ASSERT_EQ("and the key was generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 1);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* The name is taken, and the caller did not say to replace it. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_EQ("A taken name → NTE_EXISTS",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE, 0),
+            (SECURITY_STATUS)NTE_EXISTS);
+        ASSERT_EQ("and NOTHING was generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 0);
+        ASSERT_EQ("and nothing was destroyed",
+            P11Mock_GetCalls()->nDestroyObject, 0);
+        ASSERT_EQ("and no handle was returned", (int)(h == 0), 1);
+    }
+
+    /* The name is taken and the caller said to replace it. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects  = 1;
+    P11Mock_GetConfig()->nCertObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("OVERWRITE on a taken name succeeds",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE,
+                                   NCRYPT_OVERWRITE_KEY_FLAG));
+        ASSERT_EQ("the new key was generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 1);
+        ASSERT("and the replaced objects were destroyed",
+            P11Mock_GetCalls()->nDestroyObject > 0);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* The assertion that matters most for a CA.
+     *
+     * If generation fails, the key being replaced must survive. The obvious
+     * implementation — destroy first, then generate — loses the existing
+     * key outright when generation fails, and for a CA key that is
+     * unrecoverable. Generating first costs a moment in which two objects
+     * share a label; that is the right trade, because the failure mode is a
+     * duplicate rather than a destroyed key. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects        = 1;
+    P11Mock_GetConfig()->rv_GenerateKeyPair = CKR_DEVICE_ERROR;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_ERR("OVERWRITE with a failing generation fails",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE,
+                                   NCRYPT_OVERWRITE_KEY_FLAG));
+        ASSERT_EQ("and the key it would have replaced is UNTOUCHED",
+            P11Mock_GetCalls()->nDestroyObject, 0);
+    }
+
+    /* An unnamed key is ephemeral and can collide with nothing, so it must
+     * not pay for a token round trip to discover that. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("An unnamed key ignores the existence check",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   NULL, AT_SIGNATURE, 0));
+        ASSERT_EQ("and never searched the token for a name",
+            P11Mock_GetCalls()->nFindObjectsInit, 0);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* The deferred path: with NCRYPT_PERSIST_ONLY_FLAG the key is generated
+     * at FinalizeKey, so the replacement must happen there too — not at
+     * create, where a caller who never finalises would have destroyed the
+     * old key for nothing. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("Deferred create with OVERWRITE",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE,
+                                   NCRYPT_OVERWRITE_KEY_FLAG |
+                                   NCRYPT_PERSIST_ONLY_FLAG));
+        ASSERT_EQ("nothing generated yet",
+            P11Mock_GetCalls()->nGenerateKeyPair, 0);
+        ASSERT_EQ("and nothing destroyed yet — the caller may never finalise",
+            P11Mock_GetCalls()->nDestroyObject, 0);
+
+        ASSERT_OK("FinalizeKey", KSP_FinalizeKey(hProv, h, 0));
+        ASSERT_EQ("now it is generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 1);
+        ASSERT("and only now are the replaced objects destroyed",
+            P11Mock_GetCalls()->nDestroyObject > 0);
+        KSP_FreeKey(hProv, h);
+    }
+
     KSP_FreeProvider(hProv);
 
     TEST_REPORT();

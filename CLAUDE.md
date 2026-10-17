@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 25 test suites, 1867 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 25 test suites, 1886 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -254,13 +254,12 @@ rows blocked outside this repository. Corrected in session 16 — effort
 answers "how big", which is not "can it start", and TABLE-01 is S and needs
 a Windows machine.)
 
-**Found and deliberately not fixed:** `NCryptCreatePersistedKey` does not
-return `NTE_EXISTS` for a name already taken, so a second create adds a
-second object with the same `CKA_LABEL` and `NCryptOpenKey` returns whichever
-the token finds first. Surfaced while making the two-token suite repeatable.
-A real conformance gap, but fixing it properly means
-`NCRYPT_OVERWRITE_KEY_FLAG` as well as the check, with its own tests in both
-directions — its own change, not smuggled into this one.
+**Found and deferred, then fixed in session 17:**
+`NCryptCreatePersistedKey` did not return `NTE_EXISTS` for a name already
+taken, so a second create added a second object with the same `CKA_LABEL`
+and `NCryptOpenKey` returned whichever the token found first. Surfaced while
+making the two-token suite repeatable. Closed by the ADCS Phase A work,
+where the target use case made it a priority: see *Known Limitations*.
 
 ### Session 14 — the two stubs, and what they exposed
 
@@ -1046,6 +1045,21 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   `dwIncrement = 0`. `KSP_RSA_DEFAULT_BITS` is deliberately a separate
   constant from `KSP_RSA_MIN_BITS`: a legacy build lowers the floor to open
   an old key and must not thereby make 1024 the size a wizard preselects
+- **A container name already in use is `NTE_EXISTS`**, unless the caller
+  passes `NCRYPT_OVERWRITE_KEY_FLAG`. Before session 17 nothing checked, so
+  a second create added a second object with the same `CKA_LABEL` and
+  `NCryptOpenKey` returned whichever the token found first — untidy for most
+  callers, and for a CA a correctness failure with certificate-validity
+  consequences, since renewing a CA certificate is exactly the operation
+  that reuses a container name.
+  **The ordering is the load-bearing part and must stay as it is.** An
+  overwrite destroys the replaced private, public, secret and certificate
+  objects **only after the new key has generated successfully**. Destroying
+  first would lose the existing key outright when generation fails, which
+  for a CA key is unrecoverable; generating first costs a moment in which
+  two objects share a label, and a duplicate is recoverable where a
+  destroyed key is not. An unnamed (ephemeral) key skips the check entirely
+  rather than paying for a token round trip to learn it cannot collide
 - No private key import — HSM design
 - Token chosen by `KSP_TOKEN_LABEL_PROPERTY` / `KSP_SLOT_PROPERTY` through
   `NCryptSetProperty`, then `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; with
@@ -1148,7 +1162,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 25 suites, 1867 assertions
+make run           # 25 suites, 1886 assertions
 make coverage      # → coverage_html/index.html (86.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```

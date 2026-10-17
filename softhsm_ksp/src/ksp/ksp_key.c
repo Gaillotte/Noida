@@ -923,6 +923,107 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
 }
 
 /* Create a new persistent key */
+/* Does a key of this scoped name already exist, and what does it own?
+ *
+ * CNG's contract for NCryptCreatePersistedKey is that a name already in use
+ * is NTE_EXISTS unless the caller passes NCRYPT_OVERWRITE_KEY_FLAG. This
+ * provider checked nothing, so a second create added a SECOND object with
+ * the same CKA_LABEL and NCryptOpenKey afterwards returned whichever the
+ * token's search handed back first.
+ *
+ * For most callers that is untidy. For a certification authority it is a
+ * correctness failure with certificate-validity consequences: renewing a CA
+ * certificate is exactly the operation that reuses a container name, and a
+ * CA signing with an indeterminate key generation issues certificates that
+ * may not chain. Found while making the two-token suite repeatable, where
+ * two deletes both reported success and a key was still openable.
+ *
+ * Both key classes are checked: an asymmetric key is a CKO_PRIVATE_KEY and
+ * a symmetric one a CKO_SECRET_KEY, and a name is taken either way.
+ */
+static BOOL FindExistingKeyObjects(CK_SESSION_HANDLE hSession,
+                                   LPCWSTR pszName, BOOL bMachine,
+                                   KSP_KEY *pKey)
+{
+    pKey->hOldPriv   = FindScopedObject(hSession, CKO_PRIVATE_KEY,
+                                        pszName, bMachine);
+    pKey->hOldSecret = FindScopedObject(hSession, CKO_SECRET_KEY,
+                                        pszName, bMachine);
+
+    if (pKey->hOldPriv == CK_INVALID_HANDLE &&
+        pKey->hOldSecret == CK_INVALID_HANDLE)
+        return FALSE;
+
+    /* Only worth collecting once something was found. */
+    pKey->hOldPub  = FindScopedObject(hSession, CKO_PUBLIC_KEY,
+                                      pszName, bMachine);
+    pKey->hOldCert = FindScopedObject(hSession, CKO_CERTIFICATE,
+                                      pszName, bMachine);
+    return TRUE;
+}
+
+/* Destroy what an overwrite replaced, after the new key exists.
+ *
+ * The certificate goes with it: it is found by the key's scoped label, so
+ * leaving it would attach the OLD key's certificate to the new key, whose
+ * public key does not match it. That is the orphaned-certificate defect the
+ * live suite found in session 10, reached by a different route.
+ *
+ * Failures are logged and not propagated. The new key is already on the
+ * token and usable; refusing the whole operation because a stale handle
+ * could not be destroyed would turn a tidiness problem into an outage.
+ */
+static void DestroyOverwrittenObjects(KSP_KEY *pKey)
+{
+    P11_CONTEXT      *pCtx = P11_GetContext();
+    CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
+    SECURITY_STATUS   ss;
+    int               i;
+    CK_OBJECT_HANDLE  aOld[4];
+    const char       *aWhat[4] = { "private", "public", "secret",
+                                   "certificate" };
+
+    if (!pKey->bOverwrite)
+        return;
+
+    aOld[0] = pKey->hOldPriv;
+    aOld[1] = pKey->hOldPub;
+    aOld[2] = pKey->hOldSecret;
+    aOld[3] = pKey->hOldCert;
+
+    ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
+    if (ss != ERROR_SUCCESS) {
+        LOG_ERROR("Overwrite: could not open a session to remove the "
+                  "replaced key's objects", ss);
+        return;
+    }
+
+    for (i = 0; i < 4; i++) {
+        CK_RV rv;
+        if (aOld[i] == CK_INVALID_HANDLE)
+            continue;
+        /* A handle the new key now owns must never be destroyed. The new
+         * objects were created after these were recorded, so the values
+         * cannot collide — this is belt and braces against a token that
+         * recycles handles within a session. */
+        if (aOld[i] == pKey->hPrivKey || aOld[i] == pKey->hPubKey ||
+            aOld[i] == pKey->hSecretKey)
+            continue;
+        rv = pCtx->pFunctionList->C_DestroyObject(hSession, aOld[i]);
+        if (rv != CKR_OK)
+            LOG_ERROR("Overwrite: C_DestroyObject on the replaced object",
+                      P11RvToSecStatus(rv));
+        else
+            LOG_INFO("Overwrite: replaced %s object removed", aWhat[i]);
+    }
+
+    P11_ReleaseSession(hSession);
+
+    pKey->bOverwrite = FALSE;          /* done once, not on every finalize */
+    pKey->hOldPriv = pKey->hOldPub = CK_INVALID_HANDLE;
+    pKey->hOldSecret = pKey->hOldCert = CK_INVALID_HANDLE;
+}
+
 SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE  *phKey,
@@ -991,6 +1092,54 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
     pKey->dwKeyBitLen      = KSP_DefaultKeyBits(pszAlgId);
     pKey->dwPublicExponent = RSA_DEFAULT_PUBEXP;
 
+    pKey->hOldPriv   = CK_INVALID_HANDLE;
+    pKey->hOldPub    = CK_INVALID_HANDLE;
+    pKey->hOldSecret = CK_INVALID_HANDLE;
+    pKey->hOldCert   = CK_INVALID_HANDLE;
+
+    /* Is the name already taken?
+     *
+     * An unnamed key is ephemeral and can collide with nothing, so it skips
+     * the token round trip entirely. A named one costs a session even on
+     * the deferred path, which did not previously touch the token at all —
+     * that is unavoidable: whether a name is in use is a fact about the
+     * token and cannot be answered anywhere else. */
+    if (pszKeyName && pszKeyName[0]) {
+        CK_SESSION_HANDLE hSession = CK_INVALID_HANDLE;
+
+        ss = P11_AcquireSession(P11_SCOPE_OF(pKey), &hSession);
+        if (ss != ERROR_SUCCESS) {
+            SecureZeroMemory(pKey->szKeyPin, sizeof(pKey->szKeyPin));
+            KSP_Free(pKey);
+            LOG_LEAVE("KSP_CreatePersistedKey", ss);
+            return ss;
+        }
+
+        if (FindExistingKeyObjects(hSession, pszKeyName,
+                                   pKey->bMachineKey, pKey)) {
+            P11_ReleaseSession(hSession);
+
+            if ((dwFlags & NCRYPT_OVERWRITE_KEY_FLAG) == 0) {
+                /* Refuse. The caller asked to create a key at a name that
+                 * is in use and did not say it meant to replace it. */
+                LOG_ERROR("KSP_CreatePersistedKey - a key of that name "
+                          "already exists; pass NCRYPT_OVERWRITE_KEY_FLAG "
+                          "to replace it", NTE_EXISTS);
+                SecureZeroMemory(pKey->szKeyPin, sizeof(pKey->szKeyPin));
+                KSP_Free(pKey);
+                LOG_LEAVE("KSP_CreatePersistedKey", NTE_EXISTS);
+                return NTE_EXISTS;
+            }
+
+            /* Replace deliberately — but not yet. See bOverwrite. */
+            pKey->bOverwrite = TRUE;
+            LOG_INFO("KSP_CreatePersistedKey: '%ls' exists and will be "
+                     "replaced once the new key is generated", pszKeyName);
+        } else {
+            P11_ReleaseSession(hSession);
+        }
+    }
+
     bPersistOnly = (dwFlags & NCRYPT_PERSIST_ONLY_FLAG) != 0;
 
     if (!bPersistOnly) {
@@ -1005,6 +1154,7 @@ SECURITY_STATUS WINAPI KSP_CreatePersistedKey(
             return ss;
         }
         pKey->bFinalized = TRUE;
+        DestroyOverwrittenObjects(pKey);
     } else {
         pKey->bPersistOnly = TRUE;
     }
@@ -1190,8 +1340,12 @@ SECURITY_STATUS WINAPI KSP_FinalizeKey(
     if (!pKey->bFinalized) {
         ss = GenerateForAlg(pKey);
 
-        if (ss == ERROR_SUCCESS)
+        if (ss == ERROR_SUCCESS) {
             pKey->bFinalized = TRUE;
+            /* Only now: a failed generation must leave the key it was
+             * replacing intact. */
+            DestroyOverwrittenObjects(pKey);
+        }
     }
 
     LOG_LEAVE("KSP_FinalizeKey", ss);
