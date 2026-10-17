@@ -84,7 +84,7 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 | `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` | `ECDH_X25519` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | PKCS#11 v3.0. **A separate mechanism from the Edwards one** — a token may implement either alone |
 | `CKM_ML_DSA_KEY_PAIR_GEN` | `ML-DSA-44/65/87` | `CKO_PUBLIC_KEY` + `CKO_PRIVATE_KEY` | PKCS#11 v3.2. Parameter set in `CKA_PARAMETER_SET`, which is the key's whole identity |
 | `CKM_AES_KEY_GEN` | `AES` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
-| `CKM_GENERIC_SECRET_KEY_GEN` | `HMAC_SHA1/256/384/512` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
+| `CKM_GENERIC_SECRET_KEY_GEN` | `HMAC_SHA1/224/256/384/512` | `CKO_SECRET_KEY` | Size from `CKA_VALUE_LEN` |
 
 ### 3.2 Signing — `C_SignInit` + `C_Sign`
 
@@ -92,7 +92,7 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 |-----------|-----------|-----------|-------|--------|
 | `CKM_RSA_PKCS` | `NCryptSignHash` + `NCRYPT_PAD_PKCS1_FLAG` | none | DigestInfo | modulus-sized |
 | `CKM_RSA_PKCS_PSS` | `NCryptSignHash` + `NCRYPT_PAD_PSS_FLAG` | `CK_RSA_PKCS_PSS_PARAMS` | raw hash | modulus-sized |
-| `CKM_ECDSA` | `NCryptSignHash`, no padding | none | raw hash | **DER**, converted to r‖s by the KSP |
+| `CKM_ECDSA` | `NCryptSignHash`, no padding | none | raw hash | **raw r‖s**, passed through unchanged |
 | `CKM_EDDSA` | `NCryptSignHash`, no padding | none | message | raw, no conversion |
 | `CKM_SHA_1_HMAC` | `NCryptSignHash` on an HMAC key | none | message | 20 bytes |
 | `CKM_SHA224_HMAC` | " | none | message | 28 bytes |
@@ -100,9 +100,26 @@ All calls go through the `CK_FUNCTION_LIST` obtained from
 | `CKM_SHA384_HMAC` | " | none | message | 48 bytes |
 | `CKM_SHA512_HMAC` | " | none | message | 64 bytes |
 
-> **The token must return ECDSA signatures in DER.** `P11_DecodeDerEcdsaSignature`
-> parses `SEQUENCE { INTEGER r, INTEGER s }` and left-pads each to the
-> coordinate size. A token returning raw r‖s would fail this decode.
+> **The token must return ECDSA signatures as raw r‖s.** PKCS#11 v2.40
+> §2.3.1 mandates it — "the signature is the concatenation of r and s, each
+> padded to the length of the base point order" — and that is already CNG's
+> format, so the KSP passes it through untouched. SoftHSM2's own
+> `OSSLECDSA.cpp` writes `BN_bn2bin(r)` then `BN_bn2bin(s)` into a `2*len`
+> buffer; Kryoptic returns 64 bytes for P-256. Verified against both by
+> `tools/p11_qualify`.
+>
+> `P11_DecodeDerEcdsaSignature` is kept only as a **fallback**, selected by
+> signature length, for a non-conformant token returning the OpenSSL EVP
+> (DER) form. Such a token works, and is the one out of step.
+>
+> **This section said the exact opposite for four sessions**, and so did
+> §9 and §10 — that the token *must* return DER and that raw would fail
+> the decode. The provider decoded DER unconditionally to match, so every
+> ECDSA signature failed against a conformant token until session 10 ran it
+> against Kryoptic. A vendor answering "yes, DER" against the old checklist
+> would have been the one that could not work. It is the single most
+> expensive wrong line this repository has carried, which is why §9 is now
+> a program rather than a list.
 
 ### 3.3 Decryption — `C_DecryptInit` + `C_Decrypt`
 
@@ -167,7 +184,7 @@ recognise them as valid parameter values for those mechanisms.
 | `CKA_DECRYPT` | — | ✓ | `CK_TRUE` for RSA `AT_KEYEXCHANGE` | Enables `C_Decrypt` |
 | `CKA_ENCRYPT` | ✓ | — | `CK_TRUE` for RSA `AT_KEYEXCHANGE` | Public counterpart |
 | `CKA_DERIVE` | ✓ | ✓ | `CK_TRUE` for ECDH, `CK_FALSE` for ECDSA | **The ECDSA/ECDH discriminator** |
-| `CKA_MODULUS_BITS` | ✓ | — | 2048 / 3072 / 4096 | RSA size |
+| `CKA_MODULUS_BITS` | ✓ | — | any multiple of 64 from `KSP_RSA_MIN_BITS` (2048) to 16384 | RSA size. **Public key only** — see §4.4 |
 | `CKA_PUBLIC_EXPONENT` | ✓ | — | `01 00 01` | Defaults to 65537; big-endian, minimal length, from `KSP_EncodePublicExponent` |
 | `CKA_EC_PARAMS` | ✓ | ✓ | DER curve OID | Curve selection — see §6 |
 
@@ -184,6 +201,14 @@ recognise them as valid parameter values for those mechanisms.
 | `CKA_EXTRACTABLE` | `CK_FALSE` | ✓ | ✓ |
 | `CKA_ENCRYPT` / `CKA_DECRYPT` | `CK_TRUE` for AES, `CK_FALSE` for HMAC | ✓ | ✗ |
 | `CKA_SIGN` / `CKA_VERIFY` | `CK_FALSE` for AES, `CK_TRUE` for HMAC | ✗ | ✓ |
+| `CKA_WRAP` / `CKA_UNWRAP` | `CK_TRUE` for AES, absent for HMAC | ✓ | ✗ |
+
+> **AES keys carry `CKA_WRAP` and `CKA_UNWRAP`; MAC keys must not.**
+> PKCS#11 gates `C_WrapKey` and `C_UnwrapKey` on them. A token that does
+> not enforce the gate accepts a wrap with neither attribute set, which is
+> how AES key wrap passed its whole suite while being non-functional on any
+> strict token. Measured: SoftHSM2 2.6.1 does **not** enforce it, Kryoptic
+> answers `CKR_WRAPPING_KEY_HANDLE_INVALID`. See §11.
 
 ### 4.3 Set on the ECDH derived secret
 
@@ -207,8 +232,8 @@ This is the one object created **without** sensitivity protection, because
 | Attribute | Read from | Used for |
 |-----------|-----------|----------|
 | `CKA_KEY_TYPE` | private or secret key | Identify the family on `OpenKey` |
-| `CKA_MODULUS_BITS` | RSA private key | Report `NCRYPT_LENGTH_PROPERTY` |
-| `CKA_MODULUS` | RSA public key | Build `BCRYPT_RSAPUBLIC_BLOB` |
+| `CKA_MODULUS_BITS` | RSA **public** key | Report `NCRYPT_LENGTH_PROPERTY` |
+| `CKA_MODULUS` | RSA public key, or the **private** key as a size fallback | Build `BCRYPT_RSAPUBLIC_BLOB`; its length × 8 recovers the key size |
 | `CKA_PUBLIC_EXPONENT` | RSA public key | Build `BCRYPT_RSAPUBLIC_BLOB` |
 | `CKA_EC_PARAMS` | EC private key | Identify the curve — **compared by bytes** |
 | `CKA_EC_POINT` | EC public key | Build `BCRYPT_ECCPUBLIC_BLOB`, ECDH peer point |
@@ -216,6 +241,15 @@ This is the one object created **without** sensitivity protection, because
 | `CKA_VALUE_LEN` | secret key | Report key length on reopen |
 | `CKA_VALUE` | derived ECDH secret | Return raw Z to the caller |
 | `CKA_LABEL` | any key | `EnumKeys` |
+
+> **`CKA_MODULUS_BITS` lives on the PUBLIC key.** This table said "RSA
+> private key" until session 18, and `KSP_OpenKey` read it from the private
+> key and ignored the return value, so a key opened by name silently got
+> `dwKeyBitLen = 0`. Both SoftHSM2 2.6.1 and Kryoptic answer
+> `CKR_ATTRIBUTE_TYPE_INVALID` for it on a private key — measured, not
+> assumed — so the read never worked on any token, and the KSP now takes
+> the size from the public key and falls back to the length of
+> `CKA_MODULUS`. An open that can recover neither is refused.
 
 > **`CKA_EC_POINT` must be DER-encoded** as an `OCTET STRING` wrapping
 > `04 || X || Y`. The KSP unwraps both the short form (P-256, P-384) and the
@@ -365,10 +399,37 @@ algorithm no caller could reach.
 
 ---
 
-## 9. Backend evaluation checklist
+## 9. Backend evaluation checklist — run it, don't read it
 
-Work down this list against a candidate token's `C_GetMechanismList` output
-and its documentation.
+```bash
+gcc -O2 -o p11_qualify tools/p11_qualify.c -Isrc/pkcs11 -ldl
+P11_QUALIFY_PIN=**** ./p11_qualify /path/to/vendor-pkcs11.so --label TOKEN
+```
+
+`tools/p11_qualify.c` works down the list below by **performing each
+operation** against the candidate token, and exits non-zero on any unmet
+requirement. It links nothing from this repository but `pkcs11.h`, so it
+builds on a machine that has a vendor's library and no copy of the KSP, and
+it destroys every object it creates.
+
+**It exists because this list used to say "work down it against the
+token's `C_GetMechanismList` output and its documentation", and that is how
+the ECDSA line stayed wrong for four sessions.** Two further reasons a
+mechanism list cannot answer these questions:
+
+- **Advertisement is not capability, and the probe is mechanism-granular
+  where the limits are not.** SoftHSM2 reports `CKM_RSA_PKCS_OAEP` as
+  present and then rejects every `hashAlg` but `CKM_SHA_1`, because the
+  restriction lives inside the mechanism *parameters*. Measured: SoftHSM2
+  2.6.1 completes an OAEP round trip with SHA-1 alone, Kryoptic with all
+  five. No capability query distinguishes them.
+- **Strictness is not a capability at all.** Whether a token enforces
+  `CKA_WRAP`, or refuses `C_SignInit` over an unfinished operation, is the
+  token choosing to enforce something, and it is invisible to every query.
+  The tool reports those separately — see §11.
+
+A question asked of a vendor's documentation gets you the vendor's reading
+of the standard. A question asked of the library gets you the answer.
 
 - [ ] `C_GetFunctionList` exported from a loadable library
 - [ ] `C_GetMechanismList` answers — without it the provider cannot verify
@@ -381,8 +442,10 @@ and its documentation.
 - [ ] `CKM_RSA_PKCS` for both sign and decrypt
 - [ ] `CKM_RSA_PKCS_PSS` with `CK_RSA_PKCS_PSS_PARAMS`, SHA-1/224/256/384/512
 - [ ] `CKM_RSA_PKCS_OAEP` with SHA-1/224/256/384/512 and a label
-- [ ] `CKM_EC_KEY_PAIR_GEN` — P-256, P-384, P-521, secp256k1
-- [ ] `CKM_ECDSA` returning **DER-encoded** signatures
+- [ ] `CKM_EC_KEY_PAIR_GEN` — P-256, P-384, P-521 *(tier 1)*; secp256k1 and
+      the Brainpool curves are KSP extensions and their absence
+      disqualifies nothing
+- [ ] `CKM_ECDSA` returning **raw r‖s**, per PKCS#11 v2.40 §2.3.1 — not DER
 - [ ] `CKA_EC_POINT` returned as a DER `OCTET STRING`, long form for P-521
 - [ ] `CKA_TOKEN=TRUE` + `CKA_SENSITIVE=TRUE` + `CKA_EXTRACTABLE=FALSE` accepted together
 - [ ] `CKA_LABEL` searchable via `C_FindObjects`
@@ -402,13 +465,65 @@ they differ.
 
 | Expectation | Where it matters | Symptom if violated |
 |-------------|------------------|---------------------|
-| ECDSA signatures are DER | `P11_DecodeDerEcdsaSignature` | `NTE_INVALID_PARAMETER` on every ECDSA sign |
+| ECDSA signatures are raw r‖s | `KSP_SignHash` passes them through | A DER-returning token takes the length-selected `P11_DecodeDerEcdsaSignature` fallback, so it still works — this row said "are DER" until session 18, which is backwards |
 | `CKA_EC_POINT` is DER-wrapped | `P11_ExportEcPublicKey`, ECDH | `NTE_BAD_KEY` on export, or a wrong shared secret |
 | P-521 point uses long-form DER length | Same | Truncated or malformed 133-byte points |
 | `C_Sign` supports the two-call size pattern | `KSP_SignHash` | Buffer sizing fails |
 | `C_Decrypt` returns `CKR_BUFFER_TOO_SMALL` on a short buffer | `KSP_Decrypt` | Size query returns the wrong length |
 | Derived ECDH secret exposes `CKA_VALUE` | `KSP_DeriveKey` | `NTE_BAD_KEY` on derive |
 | RSA public exponent 65537 accepted | `KSP_GenerateRsaKeyPair` | Key generation fails |
+
+---
+
+## 11. Strictness divergence — developing on one token, deploying on another
+
+Everything above is a *requirement*: the token either meets it or does not.
+This section is about something else, and it is the part that has actually
+cost this project defects.
+
+**Tokens differ in how strictly they enforce rules, and a permissive one
+silently accepts code that a strict one rejects.** That matters whenever
+development and production are different tokens — developing against
+SoftHSM2 and deploying to a certified hardware HSM is exactly that case.
+A permissive development token is not a safer one. It is a token that
+cannot fail your tests, which is not the same thing.
+
+`tools/p11_qualify` reports these separately from conformance, because
+neither answer is a defect in the token. Measured, both columns:
+
+| Behaviour | SoftHSM2 2.6.1 | Kryoptic | What a permissive answer hides |
+|-----------|----------------|----------|-------------------------------|
+| `CKA_WRAP` enforced on `C_WrapKey` | **not enforced** | `CKR_WRAPPING_KEY_HANDLE_INVALID` | AES key wrap with the attribute never set — non-functional on any strict token, and it passed here (session 10) |
+| OAEP hashes actually accepted | **SHA-1 only** | all five | A caller asking for OAEP-SHA256 is refused at run time, and no capability query predicts it |
+| `C_SignInit` over an unfinished operation | `CKR_OPERATION_ACTIVE` | `CKR_OPERATION_ACTIVE` | A size query that starts an operation and returns without finishing it poisons the session pool (session 10) |
+| `CKA_MODULUS_BITS` on the private key | `CKR_ATTRIBUTE_TYPE_INVALID` | `CKR_ATTRIBUTE_TYPE_INVALID` | Nothing — see below |
+| `CKA_SUBJECT` required on a certificate | `CKR_TEMPLATE_INCOMPLETE` | `CKR_TEMPLATE_INCOMPLETE` | Nothing; the KSP parses the subject out of the DER for both |
+
+**Two rows came out differently from what this repository had recorded,
+and both corrections are worth more than the agreement.**
+
+`CKA_MODULUS_BITS` on the private key was written up as the reason session
+17's defect survived: that SoftHSM2 tolerated the misdirected read. It does
+not — it refuses, exactly as Kryoptic does, and the attribute belongs to
+the public key on both. So the read never worked on any token, and the real
+reason the defect survived is that **the return value was ignored and no
+suite had ever performed a size query on a key opened by name** until the
+ADCS lifecycle suite did. A token difference was credited for a gap in test
+coverage.
+
+`C_SignInit` over a live operation was recorded as something SoftHSM2
+tolerates, which is why the size-query defect "went unseen for nine
+sessions". SoftHSM2 2.6.1 answers `CKR_OPERATION_ACTIVE` here too. The
+defect was found when the provider first ran against *any* live token —
+the live suites have only ever run against Kryoptic, never SoftHSM2 — so
+again the explanation was a token difference where the cause was the
+absence of a test.
+
+**The pattern in both is the same**, and it is worth stating because it
+will come up again: *"the permissive token hid it"* is a satisfying
+explanation and it is also unfalsifiable until somebody measures the other
+token. Two of the five divergences this project has blamed on SoftHSM2's
+permissiveness turn out not to be divergences at all.
 
 ---
 

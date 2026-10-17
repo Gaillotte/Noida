@@ -236,6 +236,24 @@ jobs:
         working-directory: softhsm_ksp/tests/linux
         run: make adcs-twice
 
+      # tools/p11_qualify asks the inverse question of everything above: not
+      # "does the provider work against this token" but "does this token
+      # meet the provider's requirements". It is the executable form of
+      # docs/12-pkcs11-requirements.md §9, which used to be a list to read
+      # against a vendor's documentation — and that is how its ECDSA line
+      # stayed wrong for four sessions, telling an evaluator to confirm DER
+      # signatures when PKCS#11 v2.40 §2.3.1 mandates raw r||s.
+      #
+      # Run here so the tool itself is exercised. A probe nobody runs is
+      # the checklist it replaced, and this one shipped with two defects of
+      # its own: it failed a conformant token over an extension curve, and
+      # it sent OAEP source = 0 where the KSP sends CKZ_DATA_SPECIFIED,
+      # which made a working token look like it supported no OAEP hash at
+      # all.
+      - name: Qualify the token against the KSP's requirements
+        working-directory: softhsm_ksp/tests/linux
+        run: make qualify
+
   # ── The same provider against a token that can do EdDSA and ML-DSA ──────
   #
   # Separate from the job above because it is a genuinely different token,

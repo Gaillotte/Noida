@@ -113,10 +113,10 @@ PROVIDER_SRC = \
 
 .PHONY: all all-pqc kryoptic kryoptic-pqc openssl token token-two run \
         run-twice two-tokens scope-tokens adcs adcs-twice concurrent \
-        tsan clean distclean
+        qualify tsan clean distclean
 
 all: kryoptic token run-twice adcs-twice concurrent token-two \
-     two-tokens scope-tokens
+     two-tokens scope-tokens qualify
 
 # The same thing against a token that can do EdDSA and ML-DSA. Slower by
 # the OpenSSL build, which is why it is a separate target.
@@ -304,6 +304,25 @@ adcs-twice: test_adcs_lifecycle
 	@echo ""
 	@echo "══ ADCS pass 2 of 2 — same token, nothing re-initialised ══"
 	@$(MAKE) --no-print-directory adcs
+
+# ── Qualify the token itself ──────────────────────────────────────────────
+#
+# Everything else here tests the PROVIDER against a token. This tests the
+# TOKEN against the provider's requirements, which is the question somebody
+# evaluating an HSM has to answer before any of the above can run.
+#
+# It links nothing from this repository but pkcs11.h, deliberately: the
+# point is to hand it to a vendor's library on a machine with no copy of
+# the KSP. Running it here, against Kryoptic, is how the tool itself is
+# checked — a probe nobody runs is the checklist it replaced.
+p11_qualify: ../../tools/p11_qualify.c
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -o $@ $< \
+	    -I$(SRC)/pkcs11 -ldl
+
+qualify: p11_qualify $(KRYOPTIC_SO)
+	@echo "══ Qualifying the token against the KSP's requirements ══"
+	KRYOPTIC_CONF=$(TOKEN_CONF) P11_QUALIFY_PIN=$(USER_PIN) \
+	    ./p11_qualify $(KRYOPTIC_SO) --label $(TOKEN_LABEL)
 
 # ── Concurrency ───────────────────────────────────────────────────────────
 #

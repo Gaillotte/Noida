@@ -465,7 +465,11 @@ static SECURITY_STATUS KspSignatureLength(const KSP_KEY *pKey,
         return ERROR_SUCCESS;
 
     case CKM_ECDSA:
-        /* The token returns DER; the caller gets raw r||s. */
+        /* Raw r||s, which PKCS#11 v2.40 §2.3.1 mandates and CNG also wants,
+         * so the size is two coordinates whichever form the token returns:
+         * a non-conformant DER signature is decoded to this same length.
+         * This comment said "the token returns DER" until session 18 — the
+         * length was right and the stated reason was the old, wrong model. */
         *pcbSig = P11_EcCoordSize(pKey->szAlgId) * 2;
         return (*pcbSig > 0) ? ERROR_SUCCESS : NTE_BAD_ALGID;
 

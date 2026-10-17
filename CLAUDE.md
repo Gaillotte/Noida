@@ -118,6 +118,12 @@ noida/
 │   │   ├── sign_ksp.ps1            Authenticode sign + timestamp + verify
 │   │   ├── register_ksp.reg        Alternative registry import file
 │   │   ├── test_ksp.ps1            Layer 3a — 9 scenarios / 17 checks (PowerShell)
+│   │   ├── p11_qualify.c          Qualifies a TOKEN against the KSP's
+│   │   │                            requirements by running them: 18
+│   │   │                            conformance checks + 4 strictness
+│   │   │                            probes. Standalone — links only
+│   │   │                            pkcs11.h, so it builds against a
+│   │   │                            vendor's library. `make qualify`
 │   │   ├── test_cng_hlk.ps1        Layer 3b — ~150-test HLK-conformant PowerShell suite
 │   │   └── validate_hlk_script.ps1 Parses + compiles the HLK script's C# (runs anywhere)
 │   ├── docs/
@@ -239,10 +245,78 @@ other four files were untouched. **Restore a fault injection from a copy,
 never from git**, and the copy goes in the scratchpad before the injection
 is made — which is how the later injections in this session were done.
 
-No source changed: this was documentation and checking only. Unit **1886
-assertions / 25 suites**, 0 failures. Matrix **103 rows, 73 covered**, 30
-open of which 10 can start here. All four generated artifacts regenerated
-and in sync.
+No source changed in that part: it was documentation and checking only.
+
+**Then the same question was put to the document an HSM vendor would be
+sent**, `docs/12-pkcs11-requirements.md`, and it was carrying the single
+most expensive wrong line in the repository — **in four places**.
+
+- **§9, §10, §3.2's table and §3.2's blockquote all said the token must
+  return ECDSA signatures in DER.** PKCS#11 v2.40 §2.3.1 mandates raw
+  `r‖s`; session 10 established that, the provider was fixed, CLAUDE.md was
+  fixed, and the backend-requirements document was not. So the checklist
+  told an evaluator to confirm the **wrong** behaviour, and a vendor
+  answering "yes, DER" would have been the one that could not work. For
+  someone qualifying a certified HSM this is the worst possible line to
+  have backwards.
+- Also stale there: `CKA_MODULUS_BITS` sourced from the RSA **private**
+  key (§4.4), RSA sizes still `2048 / 3072 / 4096` (§4.1), HMAC missing
+  SHA-224 (§3.1), and `CKA_WRAP` / `CKA_UNWRAP` absent from the symmetric
+  attribute table (§4.2) although a strict token refuses `C_WrapKey`
+  without them.
+
+**`tools/p11_qualify.c` (new) makes §9 a program.** It performs each
+requirement against a candidate token and exits non-zero on any that is
+unmet — 18 conformance checks plus 4 strictness probes. It links nothing
+from this repository but `pkcs11.h`, so it builds against a vendor's
+library on a machine with no copy of the KSP, and it destroys every object
+it creates. `make qualify` runs it against Kryoptic in CI, because a probe
+nobody runs is the checklist it replaced.
+
+Two things a mechanism list fundamentally cannot answer, and both have cost
+this project defects:
+
+- **Advertisement is not capability, and the probe is mechanism-granular
+  where the limits are not.** SoftHSM2 advertises `CKM_RSA_PKCS_OAEP` and
+  accepts only `CKM_SHA_1` as the `hashAlg`, because the restriction is
+  inside the mechanism *parameters*. The tool runs a full round trip per
+  hash: SoftHSM2 2.6.1 completes SHA-1 alone, Kryoptic all five.
+- **Strictness is not a capability.** Whether a token enforces `CKA_WRAP`
+  is the token choosing to enforce something. New §11 tabulates the four
+  probes against both tokens.
+
+**Measuring the strictness claims overturned two of them, and the
+corrections are worth more than the agreements.** This file said SoftHSM2
+tolerates `CKA_MODULUS_BITS` on a private key, and tolerates `C_SignInit`
+over an unfinished operation, and that each is "why the defect went
+unseen". **SoftHSM2 2.6.1 refuses both**, exactly as Kryoptic does. Both
+defects survived because *no test exercised the path* — no size query on a
+key opened by name; no live token at all before session 10 — and the live
+suites have never run against SoftHSM2, only Kryoptic. *"The permissive
+token hid it"* is a satisfying explanation and an unfalsifiable one until
+somebody measures the other token; two of the five divergences blamed on
+SoftHSM2 turn out not to be divergences.
+
+**The probe shipped with two defects of its own, both found by running it
+against a second token.** It failed a conformant token outright because
+Kryoptic lacks secp256k1 — an extension curve, not a Tier 1 requirement,
+so it would have told an evaluator a good HSM was unfit. And it sent OAEP
+`source = 0` where the KSP sends `CKZ_DATA_SPECIFIED`: Kryoptic accepted
+that and SoftHSM2 answered `CKR_ARGUMENTS_BAD`, so the tool reported that
+SoftHSM2 supports **no** OAEP hash. A qualification tool that fails a
+working token is worse than no tool, and one token could not have caught
+either — the same lesson the two-token suite taught in session 15.
+
+`tests/linux/.gitignore` had the lesson half applied: `test_*` was a
+pattern and the `p11_` binaries were still a one-name list, so the first
+new one was untracked exactly as in sessions 8, 9 and 10. Both are patterns
+now.
+
+Unit **1886 assertions / 25 suites**, 0 failures; live token 256, ADCS 84,
+qualify 18+4 against Kryoptic and against SoftHSM2 2.6.1. Matrix **103
+rows, 73 covered**, 30 open of which 10 can start here. All four generated
+artifacts in sync. The only source change was one stale comment in
+`KspSignatureLength`, which still said the token returns DER.
 
 ### Session 15 — proposals B, C and D: the slot, the scope, and one feedback size
 
@@ -624,9 +698,12 @@ most-used operations, both invisible to 1434 mock assertions.**
   — got `CKR_OPERATION_ACTIVE` from its own `C_SignInit`. PKCS#11 v2.40 §5.2
   says that is correct token behaviour and offers no way to cancel an
   operation, so the fix is not to start one: `KspSignatureLength` and the
-  Decrypt/Encrypt bounds now answer from the key. SoftHSM2 tolerates
-  re-initialising over an active operation, which is why nine sessions never
-  saw it.
+  Decrypt/Encrypt bounds now answer from the key. *(This said SoftHSM2
+  tolerates re-initialising over an active operation, "which is why nine
+  sessions never saw it". Session 18 measured it: SoftHSM2 2.6.1 answers
+  `CKR_OPERATION_ACTIVE` too. It survived because the live suites run
+  against Kryoptic and nothing ran against a live token at all until
+  session 10 — absence of a test, not permissiveness.)*
 - **ECDSA signing had never worked against a conformant token.** The
   provider DER-decoded every ECDSA signature. PKCS#11 v2.40 §2.3.1 mandates
   raw `r‖s`, and SoftHSM2's own `OSSLECDSA.cpp` writes `BN_bn2bin(r)` then
@@ -1160,9 +1237,16 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   surfaced only on the SIZE QUERY, which `KspSignatureLength` refuses for a
   zero-bit key. Since CNG calls every operation twice, length first, **every
   signature with a reopened key failed at the first call**, which for a CA
-  is every operation after setup. SoftHSM2 tolerates the misdirected read,
-  which is why five sessions of live testing never saw it; found by the
-  ADCS lifecycle suite against Kryoptic in session 17. The size now comes
+  is every operation after setup. **Why it survived was recorded wrongly
+  and is corrected here**: this said SoftHSM2 tolerates the misdirected
+  read. It does not — SoftHSM2 2.6.1 and Kryoptic both answer
+  `CKR_ATTRIBUTE_TYPE_INVALID` for `CKA_MODULUS_BITS` on a private key, and
+  both put it on the public one (measured by `tools/p11_qualify`, session
+  18). The read never worked on any token. It survived because the **return
+  value was ignored** and no suite had ever performed a size query on a key
+  opened by name until the ADCS lifecycle suite did — a gap in test
+  coverage, not a token difference. Found by that suite against Kryoptic in
+  session 17. The size now comes
   from the public key, falling back to the length of `CKA_MODULUS` on the
   private key, and an open that can recover neither is **refused** rather
   than returning a key whose size is unknown
@@ -1307,6 +1391,22 @@ pwsh -File softhsm_ksp/tools/validate_hlk_script.ps1
 ```
 
 See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure.
+
+## Qualifying a candidate HSM (no Windows, no KSP build needed)
+
+```bash
+gcc -O2 -o p11_qualify softhsm_ksp/tools/p11_qualify.c \
+    -Isofthsm_ksp/src/pkcs11 -ldl
+P11_QUALIFY_PIN=**** ./p11_qualify /path/to/vendor-pkcs11.so --label TOKEN
+```
+
+Runs every Tier 1 requirement from `docs/12-pkcs11-requirements.md` against
+the token and exits non-zero on any that is unmet, then reports four
+**strictness** probes separately — places where a permissive development
+token accepts what a strict production one refuses. Neither answer there is
+a failure; the point is knowing which side your development token is on
+before the difference is discovered in production. `make qualify` in
+`tests/linux` runs it against Kryoptic.
 
 ---
 
