@@ -38,7 +38,18 @@ jobs:
 
       - name: Unit tests
         working-directory: softhsm_ksp/tests/unit
-        run: make -f ../Makefile.linux run
+        run: |
+          set -o pipefail
+          make -f ../Makefile.linux run | tee "$RUNNER_TEMP/unit-run.log"
+
+      # The suite's own output, not a second run: a count checked against a
+      # different invocation than the one that gated the build is a count
+      # that can disagree with it. docs/09-tests.md's pyramid said 22 suites
+      # and 1816 assertions while the suite ran 25 and reported 1886, with
+      # one whole suite missing from the per-suite table.
+      - name: Test counts in the docs match the suite
+        working-directory: softhsm_ksp
+        run: python3 tests/check_test_counts.py "$RUNNER_TEMP/unit-run.log"
 
       - name: Windows-only integration test parses
         working-directory: softhsm_ksp/tests/unit
@@ -70,6 +81,19 @@ jobs:
       - name: Generated artifacts match the feature matrix
         working-directory: softhsm_ksp
         run: python3 tests/check_generated_artifacts.py
+
+      # docs/05-properties.md's tables against the dispatch chains they
+      # summarise. Proposal A made NCRYPT_EXPORT_POLICY_PROPERTY writable,
+      # updated the prose, and left the table six lines above it saying
+      # "Always 0 (non-exportable), write ✗". Four more properties had been
+      # implemented and never added to the table, and one row in it was
+      # fiction — "SoftHSM Slot" is a provider property, so a key handle
+      # answers NTE_NOT_SUPPORTED. A documented property that does not
+      # exist is worse than an undocumented one: a reader writes code
+      # against it.
+      - name: Property tables match the dispatch code
+        working-directory: softhsm_ksp
+        run: python3 tests/check_property_docs.py
 
       - name: Cross-compile for Windows
         working-directory: softhsm_ksp

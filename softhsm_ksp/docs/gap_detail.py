@@ -344,6 +344,65 @@ OUT_OF_SCOPE_GAPS = [
 ]
 
 
+def check_matrix_structure(rows):
+    """One capability, one row — checked over every row, open or closed.
+
+    This lives here rather than in a generator because validate() is the
+    one function all three generators call before producing anything, so a
+    check placed here cannot be skipped by whichever artifact somebody
+    regenerates. The checks below are about the matrix as a whole and not
+    about GAP_DETAIL, which is the one thing that makes the placement
+    awkward; being unskippable is worth more than being tidy.
+
+    What went wrong, and why a closed row needs checking too:
+    NCRYPT_EXPORT_POLICY_PROPERTY had TWO rows. PROP-05 was written in the
+    first audit and said "Always 0 (non-exportable)". When proposal A made
+    the property writable, a new row — PROP-18 — was appended describing
+    the implemented behaviour, and PROP-05 was left asserting the opposite.
+    Both were marked Covered, so every existing check looked straight past
+    them: validate() only ever examined OPEN rows.
+
+    Two consequences, and the second is the one that matters. The matrix
+    carried a false statement about a security-relevant default. And one
+    capability counted twice, in the total and in the covered figure both,
+    so the headline numbers on page 1 of the PDF were inflated by one —
+    the same class of error as the "21 actionable gaps" count, which
+    overstated the backlog by more than twice.
+
+    Appending a fresh ID is the documented way to record a NEWLY OBSERVED
+    MARKET FEATURE. It is the wrong move for a row whose status changed,
+    and nothing distinguished the two cases until this function existed.
+    """
+    problems = []
+
+    seen = {}
+    for r in rows:
+        if r['id'] in seen:
+            problems.append('duplicate row id %s' % r['id'])
+        seen[r['id']] = r
+
+    # Keyed on (category, feature) rather than feature alone: the same name
+    # legitimately appears in two categories — AES is a key type and also a
+    # set of chaining modes — and only a repeat WITHIN one category is a
+    # capability counted twice.
+    by_feature = {}
+    for r in rows:
+        key = (r['category'].strip(), r['feature'].strip())
+        by_feature.setdefault(key, []).append(r['id'])
+    for (category, feature), ids in sorted(by_feature.items()):
+        if len(ids) > 1:
+            problems.append(
+                '%s / %s has %d rows (%s) — one capability, so the total and '
+                'the covered count are both inflated. Fold the detail into '
+                'the lowest ID and delete the others; a fresh ID is for a '
+                'newly observed market feature, not for a row whose status '
+                'changed' % (category, feature, len(ids), ', '.join(ids)))
+
+    if problems:
+        raise SystemExit('feature-matrix.csv is malformed:\n  - '
+                         + '\n  - '.join(problems))
+
+
 def validate(rows, blocker):
     """Fail loudly if the matrix and this module have drifted apart.
 
@@ -360,6 +419,7 @@ def validate(rows, blocker):
     opposite, which is how IFACE-04, LIFE-08 and FMT-08 sat in the
     deliberate column until somebody looked.
     """
+    check_matrix_structure(rows)
     open_ids = {r['id'] for r in rows if r['status'].strip() != 'Covered'}
     missing = sorted(open_ids - set(GAP_DETAIL))
     stale = sorted(set(GAP_DETAIL) - open_ids)

@@ -10,58 +10,11 @@
 | `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ read; ✓ write until the slot is bound |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
 
-**`NCRYPT_AUTH_TAG_LENGTH` is read-only, and it never meant AAD.**
-Microsoft's definition: *"The authentication tag lengths that are
-supported by the algorithm. This property is a
-`BCRYPT_AUTH_TAG_LENGTHS_STRUCT` structure. This property only applies to
-algorithms."* It reports a range — GCM 12–16 in steps of 1, CCM 4–16 in
-steps of 2 — and setting it is refused.
-
-This provider used to treat a *set* of it as "here is my additional
-authenticated data" and copy the bytes into the key's AAD buffer. An
-application that legitimately wrote a tag length would have had those four
-bytes silently become GCM AAD and fail authentication, and AAD had no
-correct route at all. It belongs in
-`BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO`, passed as `pPaddingInfo` to
-`NCryptEncrypt` / `NCryptDecrypt`, which the provider now reads. No test
-had ever exercised the property, which is why it survived.
-
-**`NCRYPT_EXPORT_POLICY_PROPERTY` decides whether a key can ever leave.**
-Settable only *before* `NCryptFinalizeKey`, because `CKA_SENSITIVE` and
-`CKA_EXTRACTABLE` are fixed on the token when the key is generated and
-PKCS#11 gives no way to relax them afterwards. Accepting it on a finalized
-key would return success and change nothing.
-
-The two flags guard **different** operations and map to **different**
-attributes. Collapsing them would hand a caller who asked only for wrapped
-export the ability to read the key in the clear:
-
-| Policy | `CKA_EXTRACTABLE` | `CKA_SENSITIVE` | Effect |
-|---|---|---|---|
-| *(unset — default)* | `FALSE` | `TRUE` | Nothing leaves the token |
-| `NCRYPT_ALLOW_EXPORT_FLAG` | `TRUE` | `TRUE` | `C_WrapKey` works; plaintext still refused |
-| `NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG` | `TRUE` | `FALSE` | `CKA_VALUE` readable, so `BCRYPT_KEY_DATA_BLOB` export works |
-
-`NCRYPT_ALLOW_ARCHIVING_FLAG` and `NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG`
-are about escrowing a copy with a third party — a different feature with a
-different threat model. They are refused by name rather than silently
-dropped. Unknown bits give `NTE_BAD_FLAGS`.
-
-**The provider does not second-guess the token.** `KSP_ExportKey` asks for
-`CKA_VALUE` and passes the token's answer through, so the two cannot
-disagree. A key created without the policy gets `CKR_ATTRIBUTE_SENSITIVE`
-mapped to its `SECURITY_STATUS`, which tells a caller "sealed key" rather
-than "something went wrong".
-
-Building with `-DKSP_ALLOW_EXPORT_POLICY=0` removes the property entirely
-and every key stays sealed, whatever the caller asks — the same shape as
-`KSP_RSA_MIN_BITS`.
-
-**`BCRYPT_MESSAGE_BLOCK_LENGTH` is the CFB feedback size in bytes.** Unset
-reads back as 1, which is CNG's documented default of 8-bit CFB — *not*
-the full block. Only 1 and the AES block size are accepted; PKCS#11
-defines no mechanism for the sizes in between, and refusing beats
-silently selecting a different cipher.
+`NCRYPT_AUTH_TAG_LENGTH`, `NCRYPT_EXPORT_POLICY_PROPERTY` and
+`BCRYPT_MESSAGE_BLOCK_LENGTH` are **key** properties and are described
+under *Key properties* below. Fifty-two lines describing all three were
+duplicated verbatim into this section by an earlier edit, where they were
+wrong twice over — repeated, and filed under the wrong kind of property.
 
 ### Provider properties that can be written
 
@@ -167,19 +120,34 @@ Keys remain non-exportable regardless — that is enforced by
 |--------------|--------------------------|------|------|-------|
 | `NCRYPT_ALGORITHM_PROPERTY` | `pKey->szAlgId` | `WCHAR[]` | ✓ | ✗ |
 | `NCRYPT_LENGTH_PROPERTY` | `pKey->dwKeyBitLen` | `DWORD` | ✓ | ✓ (before FinalizeKey) |
+| `NCRYPT_LENGTHS_PROPERTY` | computed from `szAlgId` by `KspSupportedLengths` | `NCRYPT_SUPPORTED_LENGTHS` | ✓ | ✗ |
 | `NCRYPT_KEY_TYPE_PROPERTY` | `pKey->dwKeySpec` | `DWORD` | ✓ | ✗ |
 | `NCRYPT_NAME_PROPERTY` | `pKey->szKeyName` | `WCHAR[]` | ✓ | ✗ |
 | `NCRYPT_UNIQUE_NAME_PROPERTY` | `pKey->szKeyName` | `WCHAR[]` | ✓ | ✗ |
-| `NCRYPT_EXPORT_POLICY_PROPERTY` | `0` (non-exportable) | `DWORD` | ✓ | ✗ |
+| `NCRYPT_EXPORT_POLICY_PROPERTY` | `pKey->dwExportPolicy`, `0` by default | `DWORD` | ✓ | ✓ (before FinalizeKey) |
 | `NCRYPT_KEY_USAGE_PROPERTY` | calculated from algorithm and `dwKeySpec` | `DWORD` | ✓ | ✗ |
 | `NCRYPT_ALGORITHM_GROUP_PROPERTY` | calculated from `szAlgId` | `WCHAR[]` | ✓ | ✗ |
+| `"RSA Public Exponent"` | `pKey->dwPublicExponent`, F4 by default | `DWORD` | ✓ RSA only | ✓ RSA only, before FinalizeKey |
+| `BCRYPT_ECC_CURVE_NAME` | resolves to an EC `szAlgId` | `WCHAR[]` | ✗ | ✓ before FinalizeKey |
 | `NCRYPT_CHAINING_MODE_PROPERTY` | `pKey->szChainingMode` | `WCHAR[]` | ✓ symmetric only | ✓ symmetric only |
 | `NCRYPT_INITIALIZATION_VECTOR` | `pKey->pbIV` / `cbIV` | `BYTE[]` | ✓ symmetric only | ✓ symmetric only |
 | `NCRYPT_AUTH_TAG_LENGTH` | supported tag range | `BCRYPT_AUTH_TAG_LENGTHS_STRUCT` | ✓ GCM/CCM keys | ✗ read-only — see below |
-| `BCRYPT_MESSAGE_BLOCK_LENGTH` | `pKey->cbMessageBlockLen` | `DWORD` | ✓ | ✓ symmetric only |
+| `BCRYPT_MESSAGE_BLOCK_LENGTH` | `pKey->cbMessageBlockLen` | `DWORD` | ✓ symmetric only | ✓ symmetric only |
 | `NCRYPT_BLOCK_LENGTH_PROPERTY` | `16` (AES block) | `DWORD` | ✓ AES only | ✗ |
-| `"SoftHSM Slot"` | the slot actually selected | `DWORD` | ✓ read; ✓ write until the slot is bound |
+| `NCRYPT_CERTIFICATE_PROPERTY` | a `CKO_CERTIFICATE` carrying the key's `CKA_LABEL` | `BYTE[]` | ✓ `NTE_NOT_FOUND` before enrolment | ✓ |
+| `NCRYPT_PIN_PROPERTY` | `C_Login(CKU_CONTEXT_SPECIFIC)`, replayed per operation | `WCHAR[]` | ✗ never readable back | ✓ |
 | Any other property | — | — | `NTE_NOT_SUPPORTED` |
+
+`"SoftHSM Slot"` is **not** in this table: it is a provider property, read
+and written on the provider handle, and a key handle answers
+`NTE_NOT_SUPPORTED`. It was listed here until session 18, which is the kind
+of row a reader writes code against.
+
+`tests/check_property_docs.py` compares the first column, the Read column
+and the Write column against the dispatch chains in `ksp_properties.c` and
+`ksp_provider.c`, and CI fails on any disagreement. Five implemented
+properties were missing from this table and one was fiction, so the table
+is checked rather than trusted.
 
 **`NCRYPT_AUTH_TAG_LENGTH` is read-only, and it never meant AAD.**
 Microsoft's definition: *"The authentication tag lengths that are

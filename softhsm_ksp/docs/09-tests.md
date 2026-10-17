@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         22 test suites · 1816 assertions · gcov coverage         │
+   │         25 test suites · 1886 assertions · gcov coverage         │
    │         Lines: 86.2 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -63,7 +63,7 @@ make
 ./test_aes_keys
 
 # Or simply:
-make run          # builds and runs all 22 suites
+make run          # builds and runs all 25 suites
 make coverage     # plus an HTML coverage report
 make syntax-check # parses the Windows-only integration test
 ```
@@ -73,15 +73,15 @@ make syntax-check # parses the Windows-only integration test
 | Suite | File | Assertions | What is tested |
 |-------|------|:----------:|----------------|
 | CNG function table | `test_function_table.c` | 68 | `GetKeyStorageInterface`, every `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` slot, `DllMain` |
-| PKCS#11 session pool | `test_p11_session.c` | 39 | PIN override and precedence, lazy open, login states, recovery after token logout, pool lifecycle |
+| PKCS#11 session pool | `test_p11_session.c` | 45 | PIN override and precedence, lazy open, login states, recovery after token logout, pool lifecycle |
 | PKCS#11 error mapping | `test_p11rv_mapping.c` | 26 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
 | Logging | `test_logging.c` | 7 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
 | Mechanism resolution | `test_mechanism_resolve.c` | 145 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
 | Export blobs | `test_export_blobs.c` | 52 | `P11_ExportRsaPublicKey`, `P11_ExportEcPublicKey`, `P11_FindObjectByLabel`, `P11_GetUlongAttr` |
 | KSP provider | `test_ksp_provider.c` | 150 | `KSP_OpenProvider`, `KSP_FreeProvider`, `KSP_GetProviderProperty`, `KSP_SetProviderProperty` (PIN, export policy, token selection and the counted-buffer boundary both conventions produce), `KSP_FreeBuffer`, and that a capability query binds a slot before answering |
-| KSP key operations | `test_ksp_key_ops.c` | 186 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys` |
+| KSP key operations | `test_ksp_key_ops.c` | 205 | `KSP_OpenKey`, `KSP_CreatePersistedKey`, `KSP_FinalizeKey`, `KSP_DeleteKey`, `KSP_FreeKey`, `KSP_EnumKeys`, and that a taken container name is `NTE_EXISTS` unless the caller passes `NCRYPT_OVERWRITE_KEY_FLAG` — with the replaced objects destroyed only after the new key generates |
 | KSP crypto | `test_ksp_crypto.c` | 148 | `KSP_SignHash` (RSA/ECDSA), `KSP_Decrypt` (PKCS1/OAEP), `KSP_ExportKey`, `KSP_ImportKey` |
-| KSP key properties | `test_ksp_key_props.c` | 140 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types |
+| KSP key properties | `test_ksp_key_props.c` | 160 | `KSP_GetKeyProperty`, `KSP_SetKeyProperty` for all property types, including `NCRYPT_LENGTHS_PROPERTY` as `NCRYPT_SUPPORTED_LENGTHS` |
 | Memory | `test_memory.c` | 21 | `KSP_Alloc`, `KSP_AllocZero`, `KSP_Free`, `KSP_WStrDup` |
 | ECDSA DER decode | `test_ecdsa_decode.c` | 47 | `P11_DecodeDerEcdsaSignature()` DER parsing, `P11_EcCoordSize()` for P-256 / P-384 / P-521 and the ECDH curves |
 | OAEP parameters | `test_oaep_params.c` | 49 | `P11_MapHashAlg()` and `P11_BuildOaepParams()` across SHA-1/224/256/384/512, label pass-through, unsupported-hash rejection |
@@ -94,7 +94,8 @@ make syntax-check # parses the Windows-only integration test
 | PKCS#11 context | `test_p11_context.c` | 130 | Module load failure and recovery without a restart, C_Initialize failure modes, the deferred slot binding and the probe that goes with it, token selection through the property and its refusals, and per-scope token resolution including every way a misconfiguration must fail closed |
 | Per-key PIN | `test_key_pin.c` | 25 | `CKU_CONTEXT_SPECIFIC` re-authentication on sign and decrypt, replay per operation, token responses, and refusal to read the credential back |
 | X.509 subject extraction | `test_cert_subject.c` | 19 | `P11_ExtractCertSubject` against a real OpenSSL-generated certificate, with every truncation of it walked under AddressSanitizer |
-| **Total** | | **1816** | |
+| RSA size range under a moved floor | `test_rsa_lengths.c` | 25 | Built **three times** — default, `-DKSP_RSA_MIN_BITS=1024`, `-DKSP_RSA_MIN_BITS=4096` — because what it checks is how `NCRYPT_LENGTHS_PROPERTY`'s reported default moves when the floor moves, and the floor is a compile-time macro. A legacy build must not make 1024 the size a CA wizard preselects; a 4096 policy must not have the wizard preselect 2048 and be refused at FinalizeKey |
+| **Total** | | **1886** | |
 
 ## Layer 1b — against a second, real PKCS#11 module
 

@@ -4,7 +4,7 @@
 `docs/feature-matrix.csv`, `docs/coverage_blockers.py` and
 `docs/gap_detail.py`. Last generated 2026-10-17.
 
-`Content fingerprint: 978ce6780368` &mdash; of the data this was built from, so
+`Content fingerprint: 086dd79d8779` &mdash; of the data this was built from, so
 `tests/check_generated_artifacts.py` can tell whether it is still in
 step with the matrix. Regenerate if that check fails; do not edit the
 stamp.
@@ -18,7 +18,7 @@ how much is a decision this project could revisit?**
 
 ## Where things stand
 
-104 capabilities assessed: **74 Covered · 10 Partial · 20 Not covered**.
+103 capabilities assessed: **73 Covered · 10 Partial · 20 Not covered**.
 
 Of the **30 open rows**, **19 are blocked outside this repository** — a
 CNG identifier Microsoft has not defined, a PKCS#11 mechanism that does

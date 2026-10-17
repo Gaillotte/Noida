@@ -103,6 +103,15 @@ noida/
 │   │   │   │                        refused duplicate, renewal, delete
 │   │   │   ├── test_concurrent.c    32 threads over the 16-session pool
 │   │   │   └── tsan.supp            why Kryoptic's TSan reports are false
+│   │   ├── check_property_docs.py  docs/05-properties.md's tables against
+│   │   │                            the dispatch chains in
+│   │   │                            ksp_properties.c and ksp_provider.c:
+│   │   │                            the property set BOTH ways, and the
+│   │   │                            Read / Write columns
+│   │   ├── check_test_counts.py    docs/09-tests.md's suite and assertion
+│   │   │                            figures against the suite's own run
+│   │   │                            log, and the per-suite rows against
+│   │   │                            their Total
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
@@ -137,7 +146,9 @@ noida/
 │   │   │                            validate() fails every generator on
 │   │   │                            drift, including a "deliberate
 │   │   │                            position" whose blocker is external
-│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF (103 rows)
+│   │   └── feature-matrix.csv      Source of truth for the Feature Matrix PDF
+│   │                                (103 rows — one capability, one row,
+│   │                                now checked)
 │   ├── CMakeLists.txt
 │   ├── README.md
 │   ├── SoftHSM2_KSP_Complete_Developer_Guide.docx   Full Word developer guide
@@ -154,6 +165,84 @@ noida/
 ---
 
 ## Work Completed in Prior Sessions
+
+### Session 18 — the summaries nobody recomputed, and two checks that pin them
+
+Started from one loose end: `NCRYPT_EXPORT_POLICY_PROPERTY` had **two**
+rows in the feature matrix. It was not one defect, it was a pattern — **a
+summary of a fact, sitting next to the fact, not updated with it** — and
+pulling on it found the same shape in four places. Nothing here was found
+by cleverness; all of it was found by writing a check for the first one and
+pointing it at the rest.
+
+- **One capability had two matrix rows, one of them false.** `PROP-05` was
+  written in the first audit and said *"Always 0 (non-exportable)"*. When
+  proposal A made the property writable before `FinalizeKey`, a **new row**
+  — `PROP-18` — was appended describing the implemented behaviour, and
+  `PROP-05` was left asserting the opposite. Appending a fresh ID is the
+  documented way to record a newly observed *market feature*; it is the
+  wrong move for a row whose *status* changed, and nothing distinguished
+  the two cases. Both were marked Covered, so every existing check looked
+  straight past them — `gap_detail.validate()` only ever examined **open**
+  rows. Merged into `PROP-05`; `gap_detail.check_matrix_structure()` now
+  rejects a duplicate ID and a repeated `(category, feature)` pair over
+  **every** row, open or closed.
+- **The matrix's headline figures were each inflated by one** — 104 rows
+  and 74 covered where the truth was 103 and 73 — because one capability
+  was counted twice in the total and in the covered count both. Same class
+  as the "21 actionable gaps" figure that overstated the backlog by more
+  than twice.
+- **`docs/05-properties.md`'s key-property table disagreed with the prose
+  six lines below it.** It still said export policy was `0`,
+  non-exportable, write `✗`. **Five implemented properties were missing
+  from it altogether** — `NCRYPT_LENGTHS_PROPERTY`, `"RSA Public
+  Exponent"`, `BCRYPT_ECC_CURVE_NAME`, `NCRYPT_CERTIFICATE_PROPERTY`,
+  `NCRYPT_PIN_PROPERTY` — and **one row was fiction**: `"SoftHSM Slot"` is
+  a *provider* property, handled in `ksp_provider.c`, so a key handle
+  answers `NTE_NOT_SUPPORTED`. A documented property that does not exist is
+  worse than an undocumented one, because a reader writes code against it.
+- **Fifty-two lines were duplicated verbatim into the wrong section** of
+  the same file. All three blocks describe **key** properties and all three
+  sat under *Provider properties* as well. Session 15 removed a different
+  duplicate from this file and recorded it as done; this one survived, so
+  "removed the duplicate" was never the same claim as "there is one copy".
+- **`docs/09-tests.md` said 22 suites / 1816 assertions**; the suite ran 25
+  and reported 1886. Three per-suite rows were behind (by 6, 19 and 20) and
+  `test_rsa_lengths.c` — added three sessions earlier, built three times
+  over — was missing from the table. The 70-assertion gap accounted for
+  exactly those four.
+
+**Two new checks, both fault-injected.** `tests/check_property_docs.py`
+compares the document's property tables against the dispatch chains, in
+**both** directions and including the Read and Write columns: a branch whose
+whole body is a refusal counts as *not supported* in that direction, which
+is what keeps `NCRYPT_PIN_PROPERTY` (dispatched by the getter purely to
+refuse to hand a credential back) and `NCRYPT_AUTH_TAG_LENGTH` (dispatched
+by the setter purely to refuse, being read-only) from reading as supported.
+`tests/check_test_counts.py` compares the test figures against **the
+suite's own run log** rather than a second run — a count checked against a
+different invocation than the one that gated the build can disagree with
+it — and checks the per-suite rows sum to their Total, which makes all 23
+rows self-verifying without mapping suite titles onto file names.
+
+Both are in the `linux` job. **The property checker had already proved
+itself before it was committed**: its first run reported all four real
+defects above, so the two injections done afterwards covered the
+directions nothing real had exercised — code gaining a property nobody
+documents, and a Read column ticked for a getter that only refuses.
+
+**`git checkout --` destroyed uncommitted work for the third time in this
+project**, and this time while undoing a fault injection on a file that
+also held the session's real edit, in a one-liner, with the warning already
+written down twice in this file. Nothing was lost beyond a redo because the
+other four files were untouched. **Restore a fault injection from a copy,
+never from git**, and the copy goes in the scratchpad before the injection
+is made — which is how the later injections in this session were done.
+
+No source changed: this was documentation and checking only. Unit **1886
+assertions / 25 suites**, 0 failures. Matrix **103 rows, 73 covered**, 30
+open of which 10 can start here. All four generated artifacts regenerated
+and in sync.
 
 ### Session 15 — proposals B, C and D: the slot, the scope, and one feedback size
 
@@ -1184,6 +1273,18 @@ make coverage      # → coverage_html/index.html (86.4 % lines, 100 % functions
 make syntax-check  # parses the Windows-only integration test
 ```
 
+Four static checks run in the same CI job and need no toolchain. Run them
+before committing anything that touches the matrix, the property dispatch
+chains, or the test suites:
+
+```bash
+cd softhsm_ksp
+python3 tests/check_mock_drift.py          # mock vs the real Windows headers
+python3 tests/check_generated_artifacts.py # the 4 artifacts vs their inputs
+python3 tests/check_property_docs.py       # 05-properties.md vs the dispatch
+python3 tests/check_test_counts.py         # 09-tests.md vs the suite's own run
+```
+
 If `lcov` is unavailable, use gcovr instead:
 
 ```bash
@@ -1292,6 +1393,16 @@ is the same failure mode as a stale coverage figure. All three generators
 call `gap_detail.validate()` before producing anything, so a missing entry, a
 stale one, or a mismatch between the blocker class and the `external` flag
 fails the build rather than emitting an artifact with a blank column.
+
+**A status change is an edit to the existing row, never a new row.**
+Appending a fresh ID is for a newly *observed market feature*. It was
+wrongly used for a row whose status changed, which left
+`NCRYPT_EXPORT_POLICY_PROPERTY` with two rows — the old one still saying
+*"Always 0 (non-exportable)"* — and one capability counted twice in both
+headline figures. `gap_detail.check_matrix_structure()` now fails on a
+duplicate ID or a repeated `(category, feature)` pair, over **every** row
+rather than only the open ones: both of those rows were `Covered`, which is
+precisely why nothing noticed for three sessions.
 
 **Regenerating is not optional, and CI enforces it.** Each artifact embeds a
 fingerprint of its inputs (`docs/matrix_fingerprint.py`), and
