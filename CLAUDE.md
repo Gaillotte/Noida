@@ -97,6 +97,10 @@ noida/
 │   │   │   │                        28 for per-scope isolation (LIFE-08).
 │   │   │   │                        One token cannot tell a working
 │   │   │   │                        selection from an ignored one
+│   │   │   ├── test_adcs_lifecycle.c The CA-shaped sequence, 42 assertions
+│   │   │   │                        run twice: wizard key-size query,
+│   │   │   │                        machine key, sign, certificate,
+│   │   │   │                        refused duplicate, renewal, delete
 │   │   │   ├── test_concurrent.c    32 threads over the 16-session pool
 │   │   │   └── tsan.supp            why Kryoptic's TSan reports are false
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
@@ -1060,6 +1064,19 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   two objects share a label, and a duplicate is recoverable where a
   destroyed key is not. An unnamed (ephemeral) key skips the check entirely
   rather than paying for a token round trip to learn it cannot collide
+- **`CKA_MODULUS_BITS` is on the RSA PUBLIC key, not the private one.**
+  `KSP_OpenKey` read it from the private key and ignored the result, so a
+  key opened **by name** silently got `dwKeyBitLen = 0` on any conformant
+  token. Signing hid it — the token knows its own key size — and it
+  surfaced only on the SIZE QUERY, which `KspSignatureLength` refuses for a
+  zero-bit key. Since CNG calls every operation twice, length first, **every
+  signature with a reopened key failed at the first call**, which for a CA
+  is every operation after setup. SoftHSM2 tolerates the misdirected read,
+  which is why five sessions of live testing never saw it; found by the
+  ADCS lifecycle suite against Kryoptic in session 17. The size now comes
+  from the public key, falling back to the length of `CKA_MODULUS` on the
+  private key, and an open that can recover neither is **refused** rather
+  than returning a key whose size is unknown
 - No private key import — HSM design
 - Token chosen by `KSP_TOKEN_LABEL_PROPERTY` / `KSP_SLOT_PROPERTY` through
   `NCryptSetProperty`, then `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; with

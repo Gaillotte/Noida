@@ -849,7 +849,54 @@ SECURITY_STATUS WINAPI KSP_OpenKey(
 
     if (ulKeyType == CKK_RSA) {
         wcscpy_s(pKey->szAlgId, MAX_ALG_ID_LEN, ALG_RSA);
-        P11_GetUlongAttr(hSession, hPriv, CKA_MODULUS_BITS, &ulModBits);
+
+        /* Recover the modulus size, and NOT from CKA_MODULUS_BITS on the
+         * private key.
+         *
+         * PKCS#11 v2.40 puts CKA_MODULUS_BITS on the RSA PUBLIC key; the
+         * private key carries CKA_MODULUS but not its bit count. Reading it
+         * from hPriv asked for an attribute that is not there, and the
+         * result was ignored, so dwKeyBitLen silently became 0 on any token
+         * that answers correctly.
+         *
+         * Nothing noticed because a zero length is invisible to the
+         * operations that matter most: signing passes a real buffer and the
+         * token knows its own key size. It surfaces on the SIZE QUERY —
+         * KspSignatureLength returns NTE_BAD_KEY for a zero-bit key — and
+         * CNG calls every operation twice, length first. So every signature
+         * with a key opened BY NAME would have failed at the first call,
+         * which for a CA is every operation after setup. Found by the ADCS
+         * lifecycle suite against Kryoptic; SoftHSM2 tolerates the read,
+         * which is why it survived.
+         *
+         * CKA_MODULUS_BITS on the public key is the exact answer. The
+         * fallback derives it from the length of CKA_MODULUS on the private
+         * key, which is correct for RSA because a modulus is always its
+         * full width with the top bit set. */
+        ulModBits = 0;
+        if (hPub != CK_INVALID_HANDLE)
+            P11_GetUlongAttr(hSession, hPub, CKA_MODULUS_BITS, &ulModBits);
+
+        if (ulModBits == 0) {
+            CK_ATTRIBUTE attrMod;
+            attrMod.type       = CKA_MODULUS;
+            attrMod.pValue     = NULL;
+            attrMod.ulValueLen = 0;
+            if (pCtx->pFunctionList->C_GetAttributeValue(
+                    hSession, hPriv, &attrMod, 1) == CKR_OK &&
+                attrMod.ulValueLen != (CK_ULONG)-1)
+                ulModBits = (CK_ULONG)(attrMod.ulValueLen * 8);
+        }
+
+        if (ulModBits == 0) {
+            /* Refuse rather than hand back a key whose size is unknown: a
+             * zero-bit key fails later, further from the cause. */
+            LOG_ERROR("KSP_OpenKey - could not recover the RSA modulus size",
+                      NTE_BAD_KEY);
+            P11_ReleaseSession(hSession);
+            KSP_Free(pKey);
+            return NTE_BAD_KEY;
+        }
         pKey->dwKeyBitLen = (DWORD)ulModBits;
     } else if (ulKeyType == CKK_EC || ulKeyType == CKK_EC_EDWARDS ||
                ulKeyType == CKK_EC_MONTGOMERY) {

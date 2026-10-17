@@ -193,6 +193,25 @@ jobs:
         working-directory: softhsm_ksp/tests/linux
         run: make scope-tokens
 
+      # The CA-shaped sequence, twice over one token.
+      #
+      # The provider is targeted at an ADCS certification authority, and
+      # this runs what a CA actually does in order: the wizard's key-size
+      # query, machine-scoped key creation, signing, certificate storage, a
+      # refused duplicate name, a deliberate renewal, deletion. Twice,
+      # because anything a renewal half-cleans is invisible to one pass.
+      #
+      # It earned its place immediately: it found that a key opened BY NAME
+      # never recovered its RSA modulus size, because CKA_MODULUS_BITS was
+      # read from the private key where PKCS#11 puts it on the public one.
+      # Signing hid it — the token knows its own key size — but CNG calls
+      # every operation twice, length first, so every signature with a
+      # reopened key failed at the first call. For a CA that is every
+      # operation after setup.
+      - name: ADCS lifecycle, twice over one token
+        working-directory: softhsm_ksp/tests/linux
+        run: make adcs-twice
+
   # ── The same provider against a token that can do EdDSA and ML-DSA ──────
   #
   # Separate from the job above because it is a genuinely different token,

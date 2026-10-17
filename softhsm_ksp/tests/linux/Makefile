@@ -13,6 +13,7 @@
 #   make token-two     initialise TWO tokens behind the one module
 #   make two-tokens    run the token-selection suite against both
 #   make scope-tokens  run the per-scope isolation suite (LIFE-08)
+#   make adcs-twice    the CA-shaped lifecycle, twice over one token
 #   make all           all of the above
 #
 # There are two token configurations, and the suite passes against both.
@@ -111,10 +112,11 @@ PROVIDER_SRC = \
     $(SRC)/common/memory.c
 
 .PHONY: all all-pqc kryoptic kryoptic-pqc openssl token token-two run \
-        run-twice two-tokens scope-tokens concurrent tsan clean distclean
+        run-twice two-tokens scope-tokens adcs adcs-twice concurrent \
+        tsan clean distclean
 
-all: kryoptic token run-twice concurrent token-two two-tokens \
-     scope-tokens
+all: kryoptic token run-twice adcs-twice concurrent token-two \
+     two-tokens scope-tokens
 
 # The same thing against a token that can do EdDSA and ML-DSA. Slower by
 # the OpenSSL build, which is why it is a separate target.
@@ -270,6 +272,39 @@ scope-tokens: test_two_tokens
 test_real_backend: test_real_backend.c p11_real_loader.c real_cert.c $(PROVIDER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
 
+# ── The ADCS-shaped lifecycle (docs/16-adcs-readiness.md, Phase A step 3) ─
+#
+# Runs the sequence a certification authority performs — wizard key-size
+# query, machine-scoped key creation, signing, certificate storage, a
+# refused duplicate, a deliberate renewal, deletion — against a real token.
+#
+# One process per case: the PKCS#11 context is a per-process singleton, and
+# the no-pin case needs an environment the others must not see. That case is
+# run with SOFTHSM2_PIN deliberately UNSET, which is the only way to show
+# that the compiled-in "1234" fallback is really gone; a case that inherited
+# a PIN from the shell would pass without testing anything.
+test_adcs_lifecycle: test_adcs_lifecycle.c p11_real_loader.c real_cert.c \
+    $(PROVIDER_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
+
+adcs: test_adcs_lifecycle
+	@echo "══ ADCS lifecycle against the token ══"
+	@set -e; \
+	export KRYOPTIC_CONF=$(TOKEN_CONF); \
+	export KSP_PKCS11_LIB=$(KRYOPTIC_SO); \
+	SOFTHSM2_PIN=$(USER_PIN) ./test_adcs_lifecycle lifecycle; \
+	unset SOFTHSM2_PIN; ./test_adcs_lifecycle no-pin
+
+# Twice over the same token, for the same reason run-twice exists: anything
+# the lifecycle leaves behind is invisible to a single pass, and a renewal
+# that half-cleans is exactly the defect this suite was written for.
+adcs-twice: test_adcs_lifecycle
+	@echo "══ ADCS pass 1 of 2 ══"
+	@$(MAKE) --no-print-directory adcs
+	@echo ""
+	@echo "══ ADCS pass 2 of 2 — same token, nothing re-initialised ══"
+	@$(MAKE) --no-print-directory adcs
+
 # ── Concurrency ───────────────────────────────────────────────────────────
 #
 # Separate binary, not another suite in test_real_backend, because it has
@@ -327,7 +362,7 @@ run-twice: test_real_backend
 
 clean:
 	rm -f test_real_backend test_concurrent test_concurrent_tsan \
-	      test_two_tokens p11_init_token
+	      test_two_tokens test_adcs_lifecycle p11_init_token
 	rm -rf $(TOKEN_DIR) $(TOKEN2_DIR)
 
 # Leaves the Kryoptic checkout alone by default: re-cloning and rebuilding

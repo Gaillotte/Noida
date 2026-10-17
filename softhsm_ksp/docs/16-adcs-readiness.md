@@ -180,11 +180,42 @@ being spent on things that did not need Windows.
 |---|---|---|
 | **A1** | **Done.** `NCRYPT_LENGTHS_PROPERTY` as `NCRYPT_SUPPORTED_LENGTHS`: a range for RSA and AES, one fixed size with `dwIncrement = 0` for curves, EdDSA, HMAC and ML-DSA. Matrix row `PROP-19` added. | G3. The CA wizard reads it; cheap; no Windows needed to get it right |
 | **A2** | **Done.** `NTE_EXISTS` on a taken container name, plus `NCRYPT_OVERWRITE_KEY_FLAG` to replace deliberately, destroying the replaced objects only after the new key generates. Both directions and the ordering fault-injected. | G4. Had to land before any renewal test, or that test could not be trusted |
-| **A3** | An ADCS-shaped lifecycle suite in `tests/linux/`: create a machine-scoped RSA-4096 key, set the certificate property, sign a to-be-signed blob, enumerate, re-create under the same name (must now refuse), overwrite deliberately, delete. Run twice over one token. | De-risks the whole CA flow against a real token before Windows exists. The twice-over pattern is what found the orphaned certificate |
+| **A3** | **Done**, and it found a defect on its first run — see below. `tests/linux/test_adcs_lifecycle.c`, 42 assertions, run twice over one token, plus a no-PIN case in its own process. | De-risked the whole CA flow against a real token before Windows exists |
 | **A4** | A regression test that `NCRYPT_SILENT_FLAG` combined with each padding flag still resolves the right mechanism. | The masking is correct today *by construction*; nothing stops a future `==` comparison breaking CA signing |
 | **A5** | **Done**, and for BOTH scopes rather than machine only: a scope-dependent default would mean a developer's user-scope key silently works while the identical machine-scope configuration fails. `NTE_PERM` plus a log line naming all three places a PIN can come from; `-DKSP_ALLOW_DEFAULT_PIN=1` restores it for a lab. | G5, the part that needs no decision |
 
 **Gate:** A1–A5 green, fault-injected, and the live suite passing twice.
+
+### What A3 found on its first run
+
+**A key opened by name never recovered its RSA modulus size**, so every
+signature with it failed at the first of CNG's two calls.
+
+`KSP_OpenKey` read `CKA_MODULUS_BITS` from the **private** key. PKCS#11
+v2.40 puts that attribute on the **public** key; the private key carries
+`CKA_MODULUS` but not its bit count. The read's return value was ignored,
+so `dwKeyBitLen` silently became 0.
+
+Nothing noticed because a zero length is invisible to the operation that
+looks most important. Signing passes a real buffer and the token knows its
+own key size, so signatures came out correct. It surfaces only on the
+**size query** — `KspSignatureLength` refuses a zero-bit key — and CNG
+calls every operation twice, length first. **So every signature with a key
+opened by name would have failed at the first call, which for a CA is every
+operation after setup.** SoftHSM2 tolerates the misdirected read, which is
+why five sessions of live testing against it never saw this.
+
+Fixed by reading the attribute from the public key where the spec puts it,
+falling back to the length of `CKA_MODULUS` on the private key, and
+refusing the open outright if neither works rather than returning a key
+whose size is unknown. Re-injecting the original read reproduces the
+failure.
+
+This is the fifth time a defect has survived the mock and been found by a
+real token, and the second time the cause was an attribute read from the
+wrong object class. It is also the argument for Phase B being a gate rather
+than a formality: the same class of mistake is waiting in everything
+`ncrypt.dll` does that no suite here has ever exercised.
 
 ### Phase B — Prove the artifact exists *(needs one Windows machine)*
 

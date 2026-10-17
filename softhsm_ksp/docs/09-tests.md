@@ -143,6 +143,14 @@ different labels, different PINs and different keys. Two suites need that:
   on one must not be visible from the other, and must be visible from its
   own. Either half alone proves nothing — a key that was never created is
   absent too.
+- **`make adcs-twice` — 42 assertions, the CA-shaped lifecycle.** The
+  sequence a certification authority actually performs, in order: the setup
+  wizard's key-size query, machine-scoped key creation, signing, certificate
+  storage, a refused duplicate name, a deliberate renewal, deletion. Run
+  twice over one token, with a no-PIN case in its own process. The assertion
+  that carries the weight is a **count** of objects on the token, not a
+  status: "create twice is refused" can pass while the token quietly holds
+  two objects, because a refusal and a clean token are different facts.
 - **`make scope-tokens` — 28 assertions, per-scope isolation (LIFE-08).**
   The machine and user scopes on separate tokens with separate PINs. One
   case runs *without* the machine PIN in the environment and requires the
