@@ -154,6 +154,87 @@ TYPEDEF_WIDTHS = {
 }
 
 
+# Struct layouts the mock declares and the real headers also declare.
+#
+# A wrong layout here is invisible on Linux: every test reads the mock, so
+# a struct missing a field agrees with itself perfectly and fails only on
+# Windows. That is exactly how two invented constants and two mis-valued
+# ones survived before this script existed.
+#
+# NCRYPT_SUPPORTED_LENGTHS is the reason this check exists. It sits next to
+# BCRYPT_KEY_LENGTHS_STRUCT, looks like it, and is NOT it: three ULONGs
+# there, four DWORDs here. Copying the neighbour would be the natural
+# mistake and nothing would have caught it.
+#
+# Compared by FIELD NAME AND ORDER, not by type spelling. mingw writes
+# DWORD as "unsigned long", which is 32 bits on Windows x64 and 64 on
+# Linux, so demanding the spellings match would demand a change that made
+# the mock wrong — the mistake session 14 made and caught by running it.
+# The underlying widths are already checked by check_typedefs above, so
+# names and order are the part left to verify.
+STRUCT_LAYOUTS = {
+    "NCRYPT_SUPPORTED_LENGTHS": "ncrypt.h",
+    "BCRYPT_KEY_LENGTHS_STRUCT": "bcrypt.h",
+}
+
+FIELD_RE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_ *]*?\s+\*?([A-Za-z_][A-Za-z0-9_]*)\s*;")
+
+
+def struct_fields(text, name):
+    """Field names, in order, of `struct ... } name;` in `text`.
+
+    Returns None when the struct is not declared there, which is a
+    different answer from "declared with no fields" and is reported
+    differently.
+    """
+    # [^{}]* , not .*? — a non-greedy body still starts at the FIRST
+    # "typedef struct {" that can reach this closing brace, which swallowed
+    # every declaration in between and reported thirty-odd phantom fields.
+    # Forbidding braces inside the body pins it to the right struct. Both
+    # structs here are flat; a nested one would simply not match, which is
+    # reported as "not declared" rather than guessed at.
+    m = re.search(r"typedef\s+struct\s+\w*\s*\{([^{}]*)\}\s*"
+                  + re.escape(name) + r"\s*;", text, re.S)
+    if not m:
+        return None
+    fields = []
+    for line in m.group(1).split("\n"):
+        line = line.split("/*")[0]
+        fm = FIELD_RE.match(line)
+        if fm:
+            fields.append(fm.group(1))
+    return fields
+
+
+def check_structs(mock_path, include_dir):
+    """Compare each struct's field list between the mock and the real header.
+
+    Returns a list of (name, mock_fields, real_fields) that disagree, or
+    None when a reference header could not be read — skipped rather than
+    guessed, like every other check here.
+    """
+    try:
+        with open(mock_path, encoding="utf-8", errors="replace") as fh:
+            mock_text = fh.read()
+    except OSError:
+        return None
+
+    bad = []
+    for name, header in sorted(STRUCT_LAYOUTS.items()):
+        hpath = os.path.join(include_dir, header)
+        if not os.path.exists(hpath):
+            return None
+        with open(hpath, encoding="utf-8", errors="replace") as fh:
+            real_text = fh.read()
+        real = struct_fields(real_text, name)
+        mine = struct_fields(mock_text, name)
+        if real is None:
+            continue                      # not in this header; nothing to compare
+        if mine != real:
+            bad.append((name, mine, real))
+    return bad
+
+
 def check_typedefs(mock_path):
     """Compile a probe against the mock and compare sizeof to Windows x64.
 
@@ -287,7 +368,26 @@ def main():
             "  platform and not the other."
         )
 
-    if wrong_value or invented or wrong_type:
+    bad_structs = check_structs(
+        os.path.join(here, "mock", "windows_compat.h"), args.headers)
+    if bad_structs is None:
+        print("\n  (struct layouts not checked: reference header missing)")
+        bad_structs = []
+    if bad_structs:
+        print(
+            "\nSTRUCT LAYOUT MISMATCH (%d) — the mock declares different "
+            "fields than Windows:" % len(bad_structs)
+        )
+        for name, mine, real in bad_structs:
+            print("  %s" % name)
+            print("    mock    : %s" % (", ".join(mine) if mine else "(absent)"))
+            print("    windows : %s" % ", ".join(real))
+        print(
+            "\n  Every test reads the mock, so a struct with the wrong fields\n"
+            "  agrees with itself and fails only on Windows."
+        )
+
+    if wrong_value or invented or wrong_type or bad_structs:
         print("\nFAIL: the mock has drifted from the Windows headers.")
         return 1
 

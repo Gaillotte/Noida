@@ -564,6 +564,20 @@ typedef struct __BCRYPT_KEY_LENGTHS_STRUCT {
 } BCRYPT_KEY_LENGTHS_STRUCT;
 typedef BCRYPT_KEY_LENGTHS_STRUCT BCRYPT_AUTH_TAG_LENGTHS_STRUCT;
 
+/* NCRYPT_SUPPORTED_LENGTHS — copied from mingw-w64 <ncrypt.h>, which
+ * declares it as __NCRYPT_SUPPORTED_LENGTHS with these four DWORDs.
+ *
+ * It is NOT the same shape as BCRYPT_KEY_LENGTHS_STRUCT above, and assuming
+ * it was would have been the natural mistake: that one has three ULONGs and
+ * no default. Reading the real header rather than recalling it is what this
+ * project's BCRYPT_SHA224_ALGORITHM failure bought. */
+typedef struct __NCRYPT_SUPPORTED_LENGTHS {
+    DWORD dwMinLength;
+    DWORD dwMaxLength;
+    DWORD dwIncrement;
+    DWORD dwDefaultLength;
+} NCRYPT_SUPPORTED_LENGTHS;
+
 /* ── NCrypt types ────────────────────────────────────────────────────────── */
 typedef ULONG_PTR NCRYPT_PROV_HANDLE;
 typedef ULONG_PTR NCRYPT_KEY_HANDLE;
@@ -579,6 +593,7 @@ typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
 #define NCRYPT_CERTIFICATE_PROPERTY     L"SmartCardKeyCertificate"
 #define NCRYPT_ALGORITHM_PROPERTY       L"Algorithm Name"
 #define NCRYPT_LENGTH_PROPERTY          L"Length"
+#define NCRYPT_LENGTHS_PROPERTY         L"Lengths"
 #define NCRYPT_KEY_TYPE_PROPERTY        L"Key Type"
 #define NCRYPT_UNIQUE_NAME_PROPERTY     L"Unique Name"
 #define NCRYPT_EXPORT_POLICY_PROPERTY   L"Export Policy"

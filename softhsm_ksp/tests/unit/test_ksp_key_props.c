@@ -487,6 +487,99 @@ int main(void)
     }
 
     /* ── Suite : AuthTagLength and MessageBlockLength (phase 6) ────────── */
+    /* ── NCRYPT_LENGTHS_PROPERTY — the plural (ADCS G3) ──────────────────
+     *
+     * NCRYPT_LENGTH_PROPERTY is this key's own size; NCRYPT_LENGTHS_PROPERTY
+     * is the range its ALGORITHM allows. One letter apart, and the feature
+     * matrix tracked only the singular, which is how the plural went
+     * missing entirely until the ADCS assessment looked for it. A CA setup
+     * wizard reads it to populate its key-size list.
+     *
+     * NCRYPT_SUPPORTED_LENGTHS is deliberately asserted field by field:
+     * it sits beside BCRYPT_KEY_LENGTHS_STRUCT, resembles it, and is not
+     * it — three ULONGs there, four DWORDs here. A test that only checked
+     * the size would pass against the wrong struct. */
+    TEST_SUITE("NCRYPT_LENGTHS_PROPERTY");
+    {
+        NCRYPT_SUPPORTED_LENGTHS lens;
+        DWORD cb = 0;
+        /* A fresh key, not the suite's hRsa: that one is freed hundreds of
+         * lines above, and reading it here was reading freed memory. The
+         * assertions failed loudly, but only because the allocator had
+         * reused the block — had it not, they would have passed on stale
+         * contents, which is the worse outcome. */
+        NCRYPT_KEY_HANDLE hLen =
+            make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
+
+        /* RSA: a real range, with an increment. */
+        memset(&lens, 0xAA, sizeof(lens));
+        ASSERT_OK("RSA lengths → OK",
+            KSP_GetKeyProperty(hProv, hLen, NCRYPT_LENGTHS_PROPERTY,
+                               (PBYTE)&lens, sizeof(lens), &cb, 0));
+        ASSERT_EQ("cbResult is the struct size",
+                  cb, (DWORD)sizeof(NCRYPT_SUPPORTED_LENGTHS));
+        ASSERT_EQ("minimum is the configured floor",
+                  lens.dwMinLength, (DWORD)KSP_RSA_MIN_BITS);
+        ASSERT_EQ("maximum is the configured ceiling",
+                  lens.dwMaxLength, (DWORD)KSP_RSA_MAX_BITS);
+        ASSERT_EQ("increment is the modulus step",
+                  lens.dwIncrement, (DWORD)KSP_RSA_BITS_STEP);
+ASSERT_EQ("default is the compiled default",
+                  lens.dwDefaultLength, (DWORD)KSP_RSA_DEFAULT_BITS);
+        ASSERT("the default is inside the range",
+               lens.dwDefaultLength >= lens.dwMinLength &&
+               lens.dwDefaultLength <= lens.dwMaxLength);
+
+        /* The two-call convention: a size query must not need a buffer. */
+        cb = 0;
+        ASSERT_OK("Size query → OK",
+            KSP_GetKeyProperty(hProv, hLen, NCRYPT_LENGTHS_PROPERTY,
+                               NULL, 0, &cb, 0));
+        ASSERT_EQ("and reports the struct size",
+                  cb, (DWORD)sizeof(NCRYPT_SUPPORTED_LENGTHS));
+
+        ASSERT_EQ("Short buffer → NTE_BUFFER_TOO_SMALL",
+            KSP_GetKeyProperty(hProv, hLen, NCRYPT_LENGTHS_PROPERTY,
+                               (PBYTE)&lens, sizeof(lens) - 1, &cb, 0),
+            (SECURITY_STATUS)NTE_BUFFER_TOO_SMALL);
+
+        /* A curve has exactly one length. Increment 0 means "no range",
+         * which is what CNG expects — not 1, which would advertise every
+         * bit size between the minimum and the maximum as legal. */
+        {
+            NCRYPT_KEY_HANDLE hEc =
+                make_test_key(ALG_ECDSA_P384, 384, AT_SIGNATURE, TRUE);
+            memset(&lens, 0xAA, sizeof(lens));
+            ASSERT_OK("P-384 lengths → OK",
+                KSP_GetKeyProperty(hProv, hEc, NCRYPT_LENGTHS_PROPERTY,
+                                   (PBYTE)&lens, sizeof(lens), &cb, 0));
+            ASSERT_EQ("minimum is the curve size", lens.dwMinLength, 384U);
+            ASSERT_EQ("maximum is the same",       lens.dwMaxLength, 384U);
+            ASSERT_EQ("default is the same",   lens.dwDefaultLength, 384U);
+            ASSERT_EQ("increment is 0 — a fixed size, not a range",
+                      lens.dwIncrement, 0U);
+            KSP_Free((void *)(ULONG_PTR)hEc);
+        }
+
+        /* AES has three legal sizes, which an increment of 64 describes
+         * exactly: 128, 192, 256. */
+        {
+            NCRYPT_KEY_HANDLE hAes =
+                make_test_key(ALG_AES, 256, AT_SIGNATURE, TRUE);
+            memset(&lens, 0xAA, sizeof(lens));
+            ASSERT_OK("AES lengths → OK",
+                KSP_GetKeyProperty(hProv, hAes, NCRYPT_LENGTHS_PROPERTY,
+                                   (PBYTE)&lens, sizeof(lens), &cb, 0));
+            ASSERT_EQ("minimum 128", lens.dwMinLength, 128U);
+            ASSERT_EQ("maximum 256", lens.dwMaxLength, 256U);
+            ASSERT_EQ("increment 64", lens.dwIncrement, 64U);
+            ASSERT_EQ("default 256", lens.dwDefaultLength, 256U);
+            KSP_Free((void *)(ULONG_PTR)hAes);
+        }
+
+        KSP_Free((void *)(ULONG_PTR)hLen);
+    }
+
     TEST_SUITE("AuthTagLength and MessageBlockLength");
 
     /* Both arrived in phase 6 and were exercised only against the live

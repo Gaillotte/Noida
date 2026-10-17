@@ -9,6 +9,62 @@
 #include <wchar.h>
 
 /* Return a key property */
+
+/* Fill NCRYPT_SUPPORTED_LENGTHS for a key's algorithm.
+ *
+ * CNG's way of asking "what sizes may this algorithm have". A CA setup
+ * wizard reads it to populate its key-length list, and a provider that does
+ * not answer it offers an empty list or is passed over.
+ *
+ * Note this is NOT BCRYPT_KEY_LENGTHS_STRUCT, which it sits next to and
+ * resembles: that one has three ULONGs, this has four DWORDs. The fourth,
+ * dwDefaultLength, is the one a wizard preselects.
+ *
+ * Most algorithms here are fixed-size: a curve has exactly one key length,
+ * and so does each HMAC hash and each ML-DSA parameter set. For those,
+ * minimum and maximum and default are all that one length, and the
+ * increment is 0 — "no range", which is what CNG expects rather than 1.
+ */
+static void KspSupportedLengths(const KSP_KEY *pKey,
+                                NCRYPT_SUPPORTED_LENGTHS *pOut)
+{
+    DWORD dwDefault;
+
+    memset(pOut, 0, sizeof(*pOut));
+
+    if (_wcsicmp(pKey->szAlgId, ALG_RSA) == 0) {
+        pOut->dwMinLength = KSP_RSA_MIN_BITS;
+        pOut->dwMaxLength = KSP_RSA_MAX_BITS;
+        pOut->dwIncrement = KSP_RSA_BITS_STEP;
+
+        /* Clamp rather than report the compiled default blindly: a build
+         * that lowers the floor for legacy keys must not make that floor
+         * the size offered first, and one that raises it above 2048 must
+         * not report a default below its own minimum. */
+        dwDefault = KSP_RSA_DEFAULT_BITS;
+        if (dwDefault < pOut->dwMinLength)
+            dwDefault = pOut->dwMinLength;
+        if (dwDefault > pOut->dwMaxLength)
+            dwDefault = pOut->dwMaxLength;
+        pOut->dwDefaultLength = dwDefault;
+        return;
+    }
+
+    if (_wcsicmp(pKey->szAlgId, ALG_AES) == 0) {
+        pOut->dwMinLength     = AES_128_KEY_BYTES * 8;
+        pOut->dwMaxLength     = AES_256_KEY_BYTES * 8;
+        pOut->dwIncrement     = 64;      /* 128, 192, 256 */
+        pOut->dwDefaultLength = AES_256_KEY_BYTES * 8;
+        return;
+    }
+
+    /* Everything else is one size: EC curves, EdDSA, HMAC, ML-DSA. */
+    pOut->dwMinLength     = pKey->dwKeyBitLen;
+    pOut->dwMaxLength     = pKey->dwKeyBitLen;
+    pOut->dwIncrement     = 0;
+    pOut->dwDefaultLength = pKey->dwKeyBitLen;
+}
+
 SECURITY_STATUS WINAPI KSP_GetKeyProperty(
     NCRYPT_PROV_HANDLE  hProvider,
     NCRYPT_KEY_HANDLE   hKey,
@@ -50,6 +106,22 @@ SECURITY_STATUS WINAPI KSP_GetKeyProperty(
                 ss = NTE_BUFFER_TOO_SMALL;
             else
                 memcpy(pbOutput, &pKey->dwKeyBitLen, sizeof(DWORD));
+        }
+
+    } else if (_wcsicmp(pszProperty, NCRYPT_LENGTHS_PROPERTY) == 0) {
+        /* The plural property: the sizes this key's ALGORITHM allows.
+         * NCRYPT_LENGTH_PROPERTY above is the singular — this key's own
+         * size. One letter apart, and the matrix tracked only the
+         * singular, which is how the plural went missing entirely. */
+        *pcbResult = sizeof(NCRYPT_SUPPORTED_LENGTHS);
+        if (pbOutput) {
+            if (cbOutput < sizeof(NCRYPT_SUPPORTED_LENGTHS)) {
+                ss = NTE_BUFFER_TOO_SMALL;
+            } else {
+                NCRYPT_SUPPORTED_LENGTHS lens;
+                KspSupportedLengths(pKey, &lens);
+                memcpy(pbOutput, &lens, sizeof(lens));
+            }
         }
 
     } else if (_wcsicmp(pszProperty, NCRYPT_KEY_TYPE_PROPERTY) == 0) {

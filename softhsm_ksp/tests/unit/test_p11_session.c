@@ -16,6 +16,7 @@
 #include "../../src/pkcs11/p11_session.h"
 #include "test_framework.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* ── Context stub ───────────────────────────────────────────────────────── */
 typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
@@ -60,6 +61,14 @@ static void reset_pool(void)
     g_testCtx.bInitialized  = TRUE;
     g_testCtx.slotId        = 0;
     P11_SessionPool_Initialize();
+
+    /* Every acquire test needs a credential, because there is no longer a
+     * compiled-in default: the provider fails closed when nothing is
+     * configured (KSP_ALLOW_DEFAULT_PIN). Before that change these suites
+     * were silently exercising the "1234" fallback, which is precisely the
+     * behaviour that had to go. The suite below asserts the refusal
+     * explicitly rather than relying on it here. */
+    P11_SetPin("1234");
 }
 
 int main(void)
@@ -210,6 +219,48 @@ int main(void)
     P11_ReleaseSession(h2);
 
     /* ── Suite 5 : parameter and lifecycle handling ─────────────────────── */
+    /* ── No credential configured — the provider must fail closed ────────
+     *
+     * There used to be a compiled-in "1234". A provider that silently tries
+     * a default PIN is worse than one that refuses to start: the refusal is
+     * one clear error at deployment, while the silent attempt reaches the
+     * token and comes back as a login failure, with nothing to say that a
+     * PIN was never configured at all. For a CA key that distinction is the
+     * difference between a five-minute fix and an afternoon.
+     *
+     * The environment is cleared explicitly: a developer with SOFTHSM2_PIN
+     * exported would otherwise see this suite pass for the wrong reason. */
+    TEST_SUITE("No PIN configured — fail closed");
+    {
+        char szSaved[128] = {0};
+        DWORD dwHad = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV,
+                                              szSaved, sizeof(szSaved));
+        CK_SESSION_HANDLE hNone = CK_INVALID_HANDLE;
+
+        unsetenv(SOFTHSM2_PIN_ENV);
+        reset_pool();
+        P11_ClearPin();                 /* undo reset_pool's convenience */
+
+        ASSERT_EQ("Acquire with no PIN anywhere → NTE_PERM",
+            P11_AcquireSession(P11_SCOPE_USER, &hNone),
+            (SECURITY_STATUS)NTE_PERM);
+        ASSERT_EQ("and no session was handed out",
+            (int)(hNone == CK_INVALID_HANDLE), 1);
+        ASSERT_EQ("the session opened for the attempt was closed again",
+            P11Mock_GetCalls()->nCloseSession, 1);
+
+        /* The pool must not be poisoned by the refusal: a PIN set now has
+         * to work. A failed login that leaked its slot would make the next
+         * acquire fail for an unrelated reason. */
+        ASSERT_OK("Setting a PIN afterwards", P11_SetPin("1234"));
+        ASSERT_OK("and the next acquire succeeds",
+            P11_AcquireSession(P11_SCOPE_USER, &hNone));
+        ASSERT_EQ("with a real session", (int)(hNone != CK_INVALID_HANDLE), 1);
+
+        if (dwHad > 0 && dwHad < sizeof(szSaved))
+            setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
+    }
+
     TEST_SUITE("Pool lifecycle");
 
     reset_pool();

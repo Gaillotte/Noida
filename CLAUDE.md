@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 22 test suites, 1816 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 25 test suites, 1867 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -1029,6 +1029,23 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   decryption. No padding means no structure to check — that is the point
   of the flag and also why it is dangerous, and the provider passes it
   through rather than deciding for the caller
+- **There is no default PIN.** A provider that silently tries `1234` when
+  nothing is configured is worse than one that refuses to start: the refusal
+  is one clear error at deployment, while the silent attempt reaches the
+  token and returns a login failure that says nothing about a PIN never
+  having been set. `NTE_PERM` plus a log line naming all three places a PIN
+  can come from. `-DKSP_ALLOW_DEFAULT_PIN=1` restores the old behaviour for
+  a lab, the same shape as `KSP_RSA_MIN_BITS`
+- **`NCRYPT_LENGTHS_PROPERTY` is the plural**, reporting the sizes a key's
+  ALGORITHM allows as `NCRYPT_SUPPORTED_LENGTHS`; `NCRYPT_LENGTH_PROPERTY`
+  is the singular, that key's own size. One letter apart, and the matrix
+  tracked only the singular — which is how the plural went missing until the
+  ADCS assessment looked for it. A CA setup wizard reads it to populate its
+  key-size list. RSA reports a real range; a curve, an EdDSA key, an HMAC
+  hash and an ML-DSA parameter set each report one fixed size with
+  `dwIncrement = 0`. `KSP_RSA_DEFAULT_BITS` is deliberately a separate
+  constant from `KSP_RSA_MIN_BITS`: a legacy build lowers the floor to open
+  an old key and must not thereby make 1024 the size a wizard preselects
 - No private key import — HSM design
 - Token chosen by `KSP_TOKEN_LABEL_PROPERTY` / `KSP_SLOT_PROPERTY` through
   `NCryptSetProperty`, then `SOFTHSM2_TOKEN_LABEL` or `SOFTHSM2_SLOT`; with
@@ -1131,8 +1148,8 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 22 suites, 1816 assertions
-make coverage      # → coverage_html/index.html (86.2 % lines, 100 % functions)
+make run           # 25 suites, 1867 assertions
+make coverage      # → coverage_html/index.html (86.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 
@@ -1167,7 +1184,7 @@ See `softhsm_ksp/docs/10-hlk-execution.md` for the official HLK Studio procedure
 |---|---|---|
 | `KSP_PKCS11_LIB` | — | Path to the PKCS#11 module. Any v2.40+ module; read before `SOFTHSM2_LIB` |
 | `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | The older name for the same setting |
-| `SOFTHSM2_PIN` | `1234` | Token user PIN (or set `NCRYPT_PIN_PROPERTY` on the provider) |
+| `SOFTHSM2_PIN` | **none — fails closed** | Token user PIN (or set `NCRYPT_PIN_PROPERTY`, or a per-scope PIN). There is no longer a compiled-in `1234`: build `-DKSP_ALLOW_DEFAULT_PIN=1` to restore it for a lab |
 | `SOFTHSM2_SLOT` | — | Slot ID to use; error if no such token is present |
 | `SOFTHSM2_TOKEN_LABEL` | — | Token `CKA_LABEL` to use; wins over `SOFTHSM2_SLOT` |
 | `KSP_MACHINE_TOKEN_LABEL` | — | Machine scope's token. **Must be set with `KSP_USER_TOKEN_LABEL`** or every operation fails |

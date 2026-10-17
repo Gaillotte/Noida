@@ -112,7 +112,7 @@ void P11_ClearPin(void)
  * initialised identically and is NOT isolation: two tokens sharing one PIN
  * share one credential. The documentation says so rather than the code
  * guessing. */
-static void GetEffectivePin(int nScope, char *pszOut, size_t cbOut)
+static BOOL GetEffectivePin(int nScope, char *pszOut, size_t cbOut)
 {
     DWORD       dwLen;
     const char *szVar;
@@ -124,20 +124,29 @@ static void GetEffectivePin(int nScope, char *pszOut, size_t cbOut)
                                               : KSP_USER_PIN_ENV;
         dwLen = GetEnvironmentVariableA(szVar, pszOut, (DWORD)cbOut);
         if (dwLen > 0 && dwLen < cbOut)
-            return;
+            return TRUE;
     }
 
     EnterCriticalSection(&g_csPin);
     if (g_bPinSet) {
         strcpy_s(pszOut, cbOut, g_szPin);
         LeaveCriticalSection(&g_csPin);
-        return;
+        return TRUE;
     }
     LeaveCriticalSection(&g_csPin);
 
     dwLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, pszOut, (DWORD)cbOut);
-    if (dwLen == 0 || dwLen >= cbOut)
-        strcpy_s(pszOut, cbOut, SOFTHSM2_PIN_DEFAULT);
+    if (dwLen > 0 && dwLen < cbOut)
+        return TRUE;
+
+#if KSP_ALLOW_DEFAULT_PIN
+    strcpy_s(pszOut, cbOut, SOFTHSM2_PIN_DEFAULT);
+    return TRUE;
+#else
+    /* Fail closed. See KSP_ALLOW_DEFAULT_PIN in config.h. */
+    pszOut[0] = '\0';
+    return FALSE;
+#endif
 }
 
 /* Initialise the session pool */
@@ -231,7 +240,17 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry,
         return P11RvToSecStatus(rv);
     }
 
-    GetEffectivePin(nScope, szPin, sizeof(szPin));
+    if (!GetEffectivePin(nScope, szPin, sizeof(szPin))) {
+        /* No credential at all. Said plainly, because the administrator is
+         * about to search for why a service will not start, and "wrong PIN"
+         * would send them looking in the wrong place. */
+        LOG_ERROR("No token PIN configured: set " SOFTHSM2_PIN_ENV ", or "
+                  "NCRYPT_PIN_PROPERTY on the provider, or the per-scope PIN "
+                  "variable. There is no default", NTE_PERM);
+        pCtx->pFunctionList->C_CloseSession(pEntry->hSession);
+        pEntry->hSession = CK_INVALID_HANDLE;
+        return NTE_PERM;
+    }
 
     rv = pCtx->pFunctionList->C_Login(
         pEntry->hSession,

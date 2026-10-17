@@ -82,6 +82,7 @@ PROP-14,Key properties,NCRYPT_CERTIFICATE_PROPERTY,Certificate stored alongside 
 PROP-15,Key properties,NCRYPT_WINDOW_HANDLE_PROPERTY,Parent HWND for dialogs,Smart card KSPs,B,Not covered,Only meaningful with PromptUser (IFACE-07).,L
 PROP-16,Key properties,NCRYPT_USE_COUNT_PROPERTY,Key usage counter,Some HSMs,C,Not covered,Would need a counter object on the token incremented per operation. SoftHSM2 has no atomic counter primitive.,L
 PROP-18,Key properties,NCRYPT_EXPORT_POLICY_PROPERTY,Caller declares at creation whether a key may leave the token,MS Software KSP; every provider that supports key backup,A,Covered,,
+PROP-19,Key properties,NCRYPT_LENGTHS_PROPERTY,Supported key sizes for the algorithm (NCRYPT_SUPPORTED_LENGTHS),All providers,A,Covered,,
 LIFE-01,Key lifecycle,CreatePersistedKey,Immediate and deferred generation,All providers,A,Covered,,
 LIFE-02,Key lifecycle,FinalizeKey,Deferred generation trigger,All providers,A,Covered,,
 LIFE-03,Key lifecycle,OpenKey by name,Asymmetric and symmetric,All providers,A,Covered,,

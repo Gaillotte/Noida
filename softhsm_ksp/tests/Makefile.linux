@@ -49,6 +49,9 @@ TESTS = \
     test_export_blobs \
     test_ksp_provider \
     test_ksp_key_props \
+    test_rsa_lengths \
+    test_rsa_lengths_legacy \
+    test_rsa_lengths_strict \
     test_ksp_key_ops \
     test_ksp_crypto \
     test_oaep_params \
@@ -133,6 +136,26 @@ test_ksp_provider: test_ksp_provider.c \
 
 # ── test_ksp_key_props : KSP_GetKeyProperty, KSP_SetKeyProperty ───────────
 # ksp_key_stub.c provides KSP_IsValidKey without linking the full ksp_key.c
+# ── test_rsa_lengths : the RSA default under a moved floor ────────────────
+#
+# Built three times from one source, because the thing under test IS the
+# build configuration. The clamp in NCRYPT_LENGTHS_PROPERTY is a no-op in
+# the default build — the floor and the default are both 2048 — so only the
+# moved-floor builds can fail when it is removed.
+RSA_LEN_SRC = test_rsa_lengths.c $(PROV_SRC) $(PROP_SRC) $(CAPS_SRC) \
+              $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB) ksp_key_stub.c
+
+test_rsa_lengths: $(RSA_LEN_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+# The legacy escape hatch must not lower the size a wizard preselects.
+test_rsa_lengths_legacy: $(RSA_LEN_SRC)
+	$(CC) $(CFLAGS) -DKSP_RSA_MIN_BITS=1024 -o $@ $(filter %.c,$^)
+
+# A policy floor above the default must raise it, not be contradicted.
+test_rsa_lengths_strict: $(RSA_LEN_SRC)
+	$(CC) $(CFLAGS) -DKSP_RSA_MIN_BITS=4096 -o $@ $(filter %.c,$^)
+
 test_ksp_key_props: test_ksp_key_props.c ksp_key_stub.c \
     $(PROV_SRC) $(PROP_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)

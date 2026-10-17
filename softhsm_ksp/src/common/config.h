@@ -33,6 +33,27 @@
 #define SOFTHSM2_LIB_ENV       "SOFTHSM2_LIB"
 
 /* Default user PIN */
+/* The compiled-in fallback PIN, and whether it is used at all.
+ *
+ * OFF by default since the ADCS work. A provider that silently tries
+ * "1234" when nothing is configured is worse than one that refuses to
+ * start: the refusal is one clear error at deployment time, while the
+ * silent attempt is a login failure from the token with no indication that
+ * the administrator never set a PIN at all. For a CA, whose key is the
+ * whole asset, failing closed is the only defensible default.
+ *
+ * Build with -DKSP_ALLOW_DEFAULT_PIN=1 to restore it for a lab. That is the
+ * same shape as KSP_RSA_MIN_BITS and KSP_ALLOW_EXPORT_POLICY: the unsafe
+ * convenience stays available and nobody gets it without asking.
+ *
+ * The remediation plan proposed removing the fallback for MACHINE scope
+ * only. One rule for both scopes is better: a scope-dependent default
+ * would mean a developer's user-scope key silently works while the
+ * identical machine-scope configuration fails, which is confusing in
+ * exactly the situation someone is already debugging. */
+#ifndef KSP_ALLOW_DEFAULT_PIN
+# define KSP_ALLOW_DEFAULT_PIN 0
+#endif
 #define SOFTHSM2_PIN_DEFAULT   "1234"
 
 /* Environment variable to override the PIN */
@@ -96,6 +117,17 @@
 #endif
 #define KSP_RSA_MAX_BITS       16384
 #define KSP_RSA_BITS_STEP      64      /* modulus must be a multiple of this */
+
+/* The RSA size NCRYPT_LENGTHS_PROPERTY reports as the default.
+ *
+ * Deliberately a separate constant from KSP_RSA_MIN_BITS. A legacy build
+ * lowers the floor to 1024 so an old key can be opened; it must not thereby
+ * make 1024 the size a CA setup wizard offers first. The reported value is
+ * clamped into [min, max] so a build that raises the floor above 2048 still
+ * reports something legal. */
+#ifndef KSP_RSA_DEFAULT_BITS
+# define KSP_RSA_DEFAULT_BITS  2048
+#endif
 
 /* Default RSA public exponent (65537). Overridable per key through
  * KSP_PUBLIC_EXPONENT_PROPERTY — see below. */
