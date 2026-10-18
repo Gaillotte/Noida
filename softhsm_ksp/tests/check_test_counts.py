@@ -54,8 +54,17 @@ DOC = os.path.join(ROOT, 'docs', '09-tests.md')
 UNIT = os.path.join(HERE, 'unit')
 
 
-def read(path):
-    with open(path, encoding='utf-8') as fh:
+def read(path, strict=True):
+    """Read a file. Documents are strict UTF-8; a run LOG is not.
+
+    The log is program output and can carry whatever a suite printed —
+    including bytes that are not valid UTF-8. Decoding it strictly made
+    this checker crash with a UnicodeDecodeError instead of reporting on
+    the counts, which is a checker failing for a reason that has nothing
+    to do with what it checks.
+    """
+    with open(path, encoding='utf-8',
+              errors='strict' if strict else 'replace') as fh:
         return fh.read()
 
 
@@ -151,7 +160,7 @@ def from_claude_md(text):
 
 
 def main():
-    log = read(sys.argv[1]) if len(sys.argv) > 1 else run_suite()
+    log = read(sys.argv[1], strict=False) if len(sys.argv) > 1 else run_suite()
     suites, assertions = from_log(log)
     doc_suites, doc_assertions, doc_total, row_sum, rows = from_doc(read(DOC))
 

@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 26 test suites, 2001 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 26 test suites, 2013 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -1295,7 +1295,24 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   decryption. No padding means no structure to check — that is the point
   of the flag and also why it is dangerous, and the provider passes it
   through rather than deciding for the caller
-- **There is no default PIN.** A provider that silently tries `1234` when
+- **The token decides how it is authenticated, not the provider.**
+  `OpenAndLoginSession` reads `CK_TOKEN_INFO.flags` for the scope's slot and
+  honours all three PKCS#11 models: no `CKF_LOGIN_REQUIRED` → no `C_Login`
+  at all; `CKF_PROTECTED_AUTHENTICATION_PATH` → `C_Login(CKU_USER, NULL, 0)`
+  as v2.40 §11.6 requires, and **no configured PIN is needed**; otherwise a
+  PIN. Before session 19 the provider demanded a PIN of every token and,
+  with the fail-closed rule below, **refused to start without one** — so a
+  hardware HSM with a PIN pad, the certified-HSM case this project targets,
+  was rejected outright with `NTE_PERM`. Neither flag was even defined in
+  `src/pkcs11/pkcs11.h`. A configured PIN is **not sent** to a protected-path
+  token (the standard says NULL and a token may refuse one) but its presence
+  is logged, so an administrator knows it is unused. **A `C_GetTokenInfo`
+  that fails falls through to the strict PIN model** — an unreadable answer
+  must not be the reason a credential stops being required; that direction
+  is fault-injected. `tools/p11_qualify` reports which model a candidate
+  token uses
+- **There is no default PIN** *(and this rule now applies only to a token
+  that actually asked for one — see above)*. A provider that silently tries `1234` when
   nothing is configured is worse than one that refuses to start: the refusal
   is one clear error at deployment, while the silent attempt reaches the
   token and returns a login failure that says nothing about a PIN never
@@ -1456,7 +1473,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 26 suites, 2001 assertions
+make run           # 26 suites, 2013 assertions
 make coverage      # → coverage_html/index.html (86.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```

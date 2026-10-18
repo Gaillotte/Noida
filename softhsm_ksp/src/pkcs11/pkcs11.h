@@ -422,6 +422,34 @@ typedef struct CK_SLOT_INFO {
     CK_VERSION  firmwareVersion;
 } CK_SLOT_INFO;
 
+/* CK_TOKEN_INFO.flags — the bits this provider reads.
+ *
+ * Copied verbatim from the OASIS PKCS#11 header, not recalled. None of
+ * these existed here before, which is why the provider could never ask a
+ * token HOW it expects to be authenticated and simply demanded a PIN of
+ * everything.
+ *
+ * The two that matter are not cosmetic:
+ *
+ *   CKF_LOGIN_REQUIRED               clear means the token does not want a
+ *                                    C_Login at all.
+ *   CKF_PROTECTED_AUTHENTICATION_PATH  the user authenticates to the token
+ *                                    by some means of its own — a PIN pad,
+ *                                    a smart card reader, a biometric — and
+ *                                    PKCS#11 v2.40 §11.6 says pPin must
+ *                                    then be NULL_PTR.
+ *
+ * A provider that sends a PIN regardless is non-conformant against both,
+ * and since this one also refuses to start without a PIN, a hardware HSM
+ * with a PIN pad was rejected outright.
+ */
+#define CKF_RNG                           0x00000001UL
+#define CKF_WRITE_PROTECTED               0x00000002UL
+#define CKF_LOGIN_REQUIRED                0x00000004UL
+#define CKF_USER_PIN_INITIALIZED          0x00000008UL
+#define CKF_PROTECTED_AUTHENTICATION_PATH 0x00000100UL
+#define CKF_TOKEN_INITIALIZED             0x00000400UL
+
 typedef struct CK_TOKEN_INFO {
     CK_UTF8CHAR label[32];
     CK_UTF8CHAR manufacturerID[32];

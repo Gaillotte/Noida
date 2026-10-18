@@ -391,7 +391,8 @@ algorithm no caller could reach.
 | Slot selection | First slot from `C_GetSlotList(CK_TRUE, …)` | Multi-slot tokens: only the first with a token present is used |
 | Session flags | `CKF_SERIAL_SESSION \| CKF_RW_SESSION` | R/W is required — keys are created and destroyed |
 | Concurrent sessions | Up to **16** | A token with a lower session limit will block under load |
-| Login | `C_Login(CKU_USER, pin)` per session | SO login is never used |
+| Login | **Whichever of the three models the token declares**, read from `CK_TOKEN_INFO.flags`: no `CKF_LOGIN_REQUIRED` → no `C_Login`; `CKF_PROTECTED_AUTHENTICATION_PATH` → `C_Login(CKU_USER, NULL, 0)` per v2.40 §11.6; otherwise `C_Login(CKU_USER, pin)`. SO login is never used | A token needing no PIN is no longer refused for having none configured. Until session 19 the provider demanded a PIN of everything, so a protected-path HSM was rejected outright |
+| `C_GetTokenInfo` | Must answer, or the token is treated as PIN-requiring | A failure falls through to the **strict** model deliberately: an unreadable answer must not be why a credential stops being required |
 | `CKR_USER_ALREADY_LOGGED_IN` | Tolerated | Login state is often per-token, not per-session |
 | PIN source | `SOFTHSM2_PIN` environment variable | Zeroed with `SecureZeroMemory` after login |
 | Module path | `KSP_PKCS11_LIB`, falling back to `SOFTHSM2_LIB` | Any v2.40+ module; nothing in the provider is SoftHSM2-specific |

@@ -320,6 +320,28 @@ static int pick_slot(const char *label, long want_slot)
         snprintf(buf, sizeof(buf), "slot %lu, label \"%.32s\"",
                  (unsigned long)g_slot, ti.label);
         ok("a slot reports a token present", buf);
+
+        /* How this token expects to be authenticated. Reported, never
+         * failed — all three are legitimate, and which one you get decides
+         * Phase C of the AD CS plan. This is the question worth putting to
+         * an HSM vendor, and answering it by measurement beats answering
+         * it from a datasheet.
+         *
+         * The provider implements all three as of session 19; before that
+         * it demanded a PIN of everything, so a token in either of the
+         * first two rows was refused outright. */
+        if ((ti.flags & CKF_LOGIN_REQUIRED) == 0)
+            printf("  %-6s  %-46s %s\n", "auth", "token authentication model",
+                   "no CKF_LOGIN_REQUIRED — no C_Login needed (plan option "
+                   "C-d)");
+        else if (ti.flags & CKF_PROTECTED_AUTHENTICATION_PATH)
+            printf("  %-6s  %-46s %s\n", "auth", "token authentication model",
+                   "PROTECTED AUTHENTICATION PATH — no PIN travels through "
+                   "Windows (plan option C-c, the one to prefer)");
+        else
+            printf("  %-6s  %-46s %s\n", "auth", "token authentication model",
+                   "a PIN is required — Windows must hold a credential "
+                   "(plan option C-a or C-b)");
         return 1;
     }
     fail("a slot reports a token present",

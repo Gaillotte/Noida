@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         26 test suites · 2001 assertions · gcov coverage         │
+   │         26 test suites · 2013 assertions · gcov coverage         │
    │         Lines: 86.2 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -73,7 +73,7 @@ make syntax-check # parses the Windows-only integration test
 | Suite | File | Assertions | What is tested |
 |-------|------|:----------:|----------------|
 | CNG function table | `test_function_table.c` | 68 | `GetKeyStorageInterface`, every `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` slot, `DllMain` |
-| PKCS#11 session pool | `test_p11_session.c` | 45 | PIN override and precedence, lazy open, login states, recovery after token logout, pool lifecycle |
+| PKCS#11 session pool | `test_p11_session.c` | 57 | PIN override and precedence, lazy open, login states, recovery after token logout, pool lifecycle, and the **three token authentication models** — a PIN, a protected authentication path (`C_Login` with `pPin = NULL`), and a token wanting no login at all. The load-bearing assertions are what `C_Login` *received*, since "a login happened" is satisfied by a provider that sends a PIN to a token which asked for NULL |
 | PKCS#11 error mapping | `test_p11rv_mapping.c` | 26 | `P11RvToSecStatus()` — all CK_RV codes → SECURITY_STATUS |
 | Logging | `test_logging.c` | 7 | `Log_Initialize`, `Log_Debug`, `Log_Error`, `KSP_DEBUG` toggle |
 | Mechanism resolution | `test_mechanism_resolve.c` | 145 | `P11_ResolveMechanism()` for all algorithm/flag combinations |
@@ -96,7 +96,7 @@ make syntax-check # parses the Windows-only integration test
 | X.509 subject extraction | `test_cert_subject.c` | 19 | `P11_ExtractCertSubject` against a real OpenSSL-generated certificate, with every truncation of it walked under AddressSanitizer |
 | Function-table entry contracts | `test_entry_contracts.c` | 115 | Every one of the 26 function-table slots, **called**: each of the 24 that takes a handle is given a NULL and a wrong-magic provider handle, and the 14 taking a key or secret handle are given a wrong-magic one with a VALID provider. Completeness is enforced by comparing each adapter against the table slot by pointer, so a new slot with no probe fails. Other arguments are plausible, so the handle is the only thing wrong — otherwise argument-first validation would masquerade as a handle check |
 | RSA size range under a moved floor | `test_rsa_lengths.c` | 25 | Built **three times** — default, `-DKSP_RSA_MIN_BITS=1024`, `-DKSP_RSA_MIN_BITS=4096` — because what it checks is how `NCRYPT_LENGTHS_PROPERTY`'s reported default moves when the floor moves, and the floor is a compile-time macro. A legacy build must not make 1024 the size a CA wizard preselects; a 4096 policy must not have the wizard preselect 2048 and be refused at FinalizeKey |
-| **Total** | | **2001** | |
+| **Total** | | **2013** | |
 
 ## Layer 1b — against a second, real PKCS#11 module
 

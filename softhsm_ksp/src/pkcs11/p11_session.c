@@ -240,10 +240,77 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry,
         return P11RvToSecStatus(rv);
     }
 
+    /* Ask the token how it wants to be authenticated before assuming.
+     *
+     * Three models, and this provider used to implement only the third:
+     *
+     *   no CKF_LOGIN_REQUIRED      the token wants no C_Login at all. The
+     *                              control lives in its own policy.
+     *   CKF_PROTECTED_AUTHENTICATION_PATH
+     *                              the user authenticates by the token's
+     *                              own means — a PIN pad, a reader, a
+     *                              biometric — and PKCS#11 v2.40 §11.6
+     *                              says pPin must be NULL_PTR.
+     *   otherwise                  a PIN, which is where the fail-closed
+     *                              rule belongs and only there.
+     *
+     * A token info call that FAILS falls through to the PIN model rather
+     * than guessing something laxer: an unreadable answer must not be the
+     * reason a credential stops being required.
+     */
+    {
+        CK_TOKEN_INFO ti;
+        CK_FLAGS      fl = CKF_LOGIN_REQUIRED;   /* the strict assumption */
+
+        memset(&ti, 0, sizeof(ti));
+        if (pCtx->pFunctionList->C_GetTokenInfo(
+                P11_GetScopeSlot(nScope), &ti) == CKR_OK)
+            fl = ti.flags;
+
+        if ((fl & CKF_LOGIN_REQUIRED) == 0) {
+            /* C-d: the token does not want a login. Calling C_Login anyway
+             * is not harmless — a token entitled to refuse it would fail a
+             * session that was already usable. */
+            LOG_INFO("Token on slot %lu does not set CKF_LOGIN_REQUIRED; "
+                     "no C_Login is performed",
+                     (unsigned long)P11_GetScopeSlot(nScope));
+            SecureZeroMemory(szPin, sizeof(szPin));
+            pEntry->bLoggedIn = TRUE;
+            LOG_INFO("Session opened: handle=0x%lX on slot %lu (scope %d)",
+                     (unsigned long)pEntry->hSession,
+                     (unsigned long)P11_GetScopeSlot(nScope), nScope);
+            return ERROR_SUCCESS;
+        }
+
+        if (fl & CKF_PROTECTED_AUTHENTICATION_PATH) {
+            /* C-c: the credential never travels through Windows at all,
+             * which is why this is the option worth asking an HSM vendor
+             * for. A configured PIN is deliberately NOT sent — the standard
+             * says NULL, and a token that received one might well refuse —
+             * but it is reported, because an administrator who set a PIN
+             * should know it is unused rather than wonder which one is in
+             * force. */
+            if (GetEffectivePin(nScope, szPin, sizeof(szPin))) {
+                LOG_INFO("Token on slot %lu has a protected authentication "
+                         "path; the configured PIN is NOT sent and is not "
+                         "needed", (unsigned long)P11_GetScopeSlot(nScope));
+                SecureZeroMemory(szPin, sizeof(szPin));
+            }
+            rv = pCtx->pFunctionList->C_Login(pEntry->hSession, CKU_USER,
+                                              NULL, 0);
+            goto login_done;
+        }
+    }
+
     if (!GetEffectivePin(nScope, szPin, sizeof(szPin))) {
         /* No credential at all. Said plainly, because the administrator is
          * about to search for why a service will not start, and "wrong PIN"
-         * would send them looking in the wrong place. */
+         * would send them looking in the wrong place.
+         *
+         * Reached only when the token actually asked for a PIN: a token
+         * with a protected authentication path returned above, so a
+         * hardware HSM with a PIN pad is no longer refused for having no
+         * PIN configured. That is what this branch used to do to it. */
         LOG_ERROR("No token PIN configured: set " SOFTHSM2_PIN_ENV ", or "
                   "NCRYPT_PIN_PROPERTY on the provider, or the per-scope PIN "
                   "variable. There is no default", NTE_PERM);
@@ -259,6 +326,8 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry,
         (CK_ULONG)strlen(szPin));
 
     SecureZeroMemory(szPin, sizeof(szPin));
+
+login_done:
 
     /* Ignore if already logged in (can happen with shared sessions) */
     if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN) {

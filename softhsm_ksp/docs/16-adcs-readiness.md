@@ -128,16 +128,23 @@ an owner's decision rather than a patch.
 
 `certsrv` is a headless service. It never calls
 `NCryptSetProperty(NCRYPT_PIN_PROPERTY)`, so the PIN comes from
-`GetEffectivePin` (`p11_session.c:115`), which reads an environment variable.
-For a service that means a **machine-wide** variable, readable by any process
-on the host. And `config.h:36` defines a fallback of `"1234"` when nothing is
-set.
+`GetEffectivePin`, which reads an environment variable. For a service that
+means a **machine-wide** variable, readable by any process on the host.
 
-This inverts the security model a CA is bought for. The key cannot be
-extracted from the token — good — but anyone on that host can ask the token
-to sign, and for a CA, signing *is* the asset.
+*(This paragraph used to end "and `config.h:36` defines a fallback of
+`1234` when nothing is set" — contradicting the paragraph above it in the
+same section, which records A5 removing exactly that. Corrected in
+session 19.)*
 
-Options in Phase C. This one needs an owner's decision, not a patch.
+A machine-wide variable inverts the security model a CA is bought for. The
+key cannot be extracted from the token — good — but anyone on that host can
+ask the token to sign, and for a CA, signing *is* the asset.
+
+**Two of the four options are now implemented, and they are the two that
+remove the problem rather than relocating it.** The provider used to demand
+a PIN of every token; it now asks the token how it wants to be
+authenticated and honours all three PKCS#11 models — see Phase C. That
+leaves a decision only if your token turns out to need a PIN.
 
 ### G6 — No ACL on the key. *A design decision.*
 
@@ -229,21 +236,39 @@ than a formality: the same class of mistake is waiting in everything
 **Gate:** the provider loads, enumerates, and signs through the real
 `ncrypt.dll`. Until this gate passes, every ADCS statement is a projection.
 
-### Phase C — Decide how the CA authenticates to the token
+### Phase C — How the CA authenticates to the token
 
-Options, with what each costs. **This needs a decision; I would not pick it
-silently.**
+**C-c and C-d are implemented** (session 19). The provider no longer assumes
+a PIN: it reads `CK_TOKEN_INFO.flags` for the scope's slot and honours all
+three models PKCS#11 describes.
 
-| Option | How | Trade-off |
+| Option | How | Status |
 |---|---|---|
-| **C-a** Machine-wide env var | Status quo | Any process on the host reads the PIN. Unacceptable for production; fine for a lab |
-| **C-b** DPAPI machine-scope blob *(recommended)* | PIN encrypted with `CryptProtectData` at machine scope, stored in a registry value ACL'd to the CA service account; provider decrypts at initialisation | Binds the credential to the host and to one account. Adds a Windows-only code path, so the Linux suites cannot cover it — needs its own Windows test |
-| **C-c** Protected authentication path | Token asserts `CKF_PROTECTED_AUTHENTICATION_PATH`; no PIN travels through Windows | Cleanest, and only some HSMs offer it. Depends entirely on your token |
-| **C-d** Token policy: no login for signing | Token configured so the signing key needs no `C_Login` | Moves the control into the HSM, where it arguably belongs. Not possible on SoftHSM2 |
+| **C-a** Machine-wide env var | Status quo | Works. Any process on the host reads the PIN — fine for a lab, **not for production** |
+| **C-b** DPAPI machine-scope blob | PIN encrypted with `CryptProtectData` at machine scope, in a registry value ACL'd to the CA service account; provider decrypts at initialisation | **Not implemented.** Windows-only, so the Linux suites cannot cover it — it needs its own Windows test, which means it needs Phase B first |
+| **C-c** Protected authentication path | Token sets `CKF_PROTECTED_AUTHENTICATION_PATH`; provider calls `C_Login` with `pPin = NULL` per v2.40 §11.6, and **requires no configured PIN** | **Implemented and tested.** Both directions fault-injected |
+| **C-d** Token wants no login | Token leaves `CKF_LOGIN_REQUIRED` clear; provider performs no `C_Login` at all | **Implemented and tested** |
 
-C-b is the recommendation if the token is SoftHSM2 or any module without
-C-c. If you are buying an HSM anyway, ask the vendor about C-c first — it
-removes the problem rather than relocating it.
+**This was not only a missing feature — it was a defect.** Before this, the
+provider demanded a PIN of every token *and* refused to start without one
+(A5's fail-closed rule). A hardware HSM with a PIN pad — exactly the
+certified-HSM case this project targets — was therefore **rejected
+outright**, with `NTE_PERM`, for not having a PIN configured that it did not
+need. `CKF_PROTECTED_AUTHENTICATION_PATH` and `CKF_LOGIN_REQUIRED` were not
+even defined in this project's `pkcs11.h`.
+
+The fail-closed rule now applies **only** where it belongs: a token that
+actually asked for a PIN. A `C_GetTokenInfo` that fails falls through to the
+strict PIN model rather than guessing something laxer — an unreadable answer
+must not be the reason a credential stops being required, and that direction
+is fault-injected too.
+
+**What is left to decide:** only if your token requires a PIN. Run
+`tools/p11_qualify` against it — it reports which of the three models the
+token uses, so this is answered by measurement rather than by a datasheet.
+If it does need a PIN, C-b is the recommendation and it needs Phase B first.
+If you are buying an HSM, **ask the vendor for C-c**: it is now supported
+here, and it removes the credential from Windows entirely.
 
 ### Phase D — Protect the key without a Windows ACL
 
@@ -303,8 +328,11 @@ looking for it in parallel with Phase A.
 
 ## What needs a decision from you
 
-1. **Phase C option** — how the CA authenticates. I recommend **C-b (DPAPI)**
-   unless your token supports C-c, in which case take C-c.
+1. **Phase C option** — now only a decision *if your token requires a PIN*.
+   C-c (protected authentication path) and C-d (no login) are implemented
+   and tested; run `tools/p11_qualify` against the token to see which model
+   it uses. If it does need a PIN, I recommend **C-b (DPAPI)**, which needs
+   Phase B first because it is Windows-only code.
 2. **Phase D3** — is a CA key with no Windows DACL, protected only by the
    token boundary and its PIN, acceptable for this deployment?
 3. **Target token** — SoftHSM2 (lab only) or a specific HSM? It changes C and

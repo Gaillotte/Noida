@@ -87,6 +87,17 @@ typedef struct _P11_MOCK_CONFIG {
     /* Per-slot token label, for tests that select between tokens. Empty
      * means the default "MockToken<i>". */
     char szSlotLabels[P11_MOCK_MAX_SLOTS][33];
+
+    /* CK_TOKEN_INFO.flags the mock reports.
+     *
+     * P11Mock_Reset sets CKF_LOGIN_REQUIRED, because that is what a real
+     * token that wants a PIN does and every token this project has run
+     * against — SoftHSM2 and Kryoptic — sets it. The mock previously
+     * returned flags of zero, which is a token asking for NO login; the
+     * provider never read the field, so nothing noticed until it did.
+     * Clear the bit, or set CKF_PROTECTED_AUTHENTICATION_PATH, to model
+     * the other two authentication models. */
+    CK_FLAGS flagsToken;
     /* Number of simulated keys returned by FindObjects */
     int nKeyObjects;
     /* Number of simulated CKO_CERTIFICATE objects. Kept separate from
@@ -217,6 +228,9 @@ typedef struct _P11_MOCK_CALLS {
     int nGetTokenInfo;
     int nOpenSession;
     int nLogin;
+    /* What the last ordinary C_Login actually received. */
+    int bLastLoginSentPin;
+    int cbLastLoginPin;
     int nCloseSession;
     int nGenerateKeyPair;
     int nFindObjectsInit;

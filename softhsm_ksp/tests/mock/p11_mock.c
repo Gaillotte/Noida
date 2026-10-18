@@ -93,6 +93,7 @@ static CK_RV mock_GetTokenInfo(CK_SLOT_ID id, CK_TOKEN_INFO CK_PTR p) {
     if ((int)id >= g_cfg.nSlots) return CKR_SLOT_ID_INVALID;
 
     memset(p, 0, sizeof(*p));
+    p->flags = g_cfg.flagsToken;
 
     if (g_cfg.szSlotLabels[id][0])
         snprintf(szLabel, sizeof(szLabel), "%s", g_cfg.szSlotLabels[id]);
@@ -218,6 +219,12 @@ static CK_RV mock_Login(CK_SESSION_HANDLE h, CK_USER_TYPE t,
         return g_cfg.rv_ContextLogin;
     }
     g_calls.nLogin++;
+    /* Record whether a PIN was sent at all, not just that a login
+     * happened. The protected-authentication-path model turns entirely on
+     * pPin being NULL_PTR, and a test that only counted logins would pass
+     * against a provider that sent the PIN anyway. */
+    g_calls.bLastLoginSentPin = (pin != NULL);
+    g_calls.cbLastLoginPin    = (pin != NULL) ? (int)n : 0;
     return g_cfg.rv_Login;
 }
 
@@ -896,6 +903,8 @@ void P11Mock_Reset(void)
 {
     memset(&g_cfg, 0, sizeof g_cfg);
     memset(&g_calls, 0, sizeof g_calls);
+    g_cfg.flagsToken         = CKF_LOGIN_REQUIRED | CKF_TOKEN_INITIALIZED |
+                               CKF_USER_PIN_INITIALIZED;
     g_cfg.rv_Initialize      = CKR_OK;
     g_cfg.rv_GetSlotList     = CKR_OK;
     g_cfg.rv_OpenSession     = CKR_OK;

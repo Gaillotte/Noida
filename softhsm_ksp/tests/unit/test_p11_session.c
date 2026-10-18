@@ -261,6 +261,98 @@ int main(void)
             setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
     }
 
+    /* ── How the token says it wants to be authenticated ────────────────
+     *
+     * The provider used to implement one model — always demand a PIN,
+     * always send it — and with the fail-closed rule that meant a hardware
+     * HSM with a PIN pad was REFUSED for having no PIN configured. These
+     * three cases are the three models PKCS#11 describes.
+     *
+     * The load-bearing assertions are about what C_Login RECEIVED, not
+     * that it was called. "A login happened" is satisfied by a provider
+     * that sends the PIN to a token which asked for NULL. */
+    TEST_SUITE("Token authentication models");
+
+    /* 1. CKF_LOGIN_REQUIRED, no protected path — the ordinary case, and
+     *    the only one that existed before. */
+    reset_pool();
+    ASSERT_OK("PIN token: acquire succeeds",
+              P11_AcquireSession(P11_SCOPE_USER, &h1));
+    ASSERT_EQ("PIN token: logged in", P11Mock_GetCalls()->nLogin, 1);
+    ASSERT_EQ("PIN token: the PIN was sent",
+              P11Mock_GetCalls()->bLastLoginSentPin, 1);
+    ASSERT("PIN token: and it was not empty",
+           P11Mock_GetCalls()->cbLastLoginPin > 0);
+    P11_ReleaseSession(h1);
+
+    /* 2. Protected authentication path — the option worth asking an HSM
+     *    vendor for, because the credential never travels through Windows.
+     *    C_Login must still happen, with NULL. */
+    reset_pool();
+    P11Mock_GetConfig()->flagsToken =
+        CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;
+    ASSERT_OK("Protected path: acquire succeeds",
+              P11_AcquireSession(P11_SCOPE_USER, &h1));
+    ASSERT_EQ("Protected path: C_Login was still called",
+              P11Mock_GetCalls()->nLogin, 1);
+    ASSERT_EQ("Protected path: pPin was NULL, per v2.40 §11.6",
+              P11Mock_GetCalls()->bLastLoginSentPin, 0);
+    P11_ReleaseSession(h1);
+
+    /* 2b. The case that was outright broken: a protected-path token and NO
+     *     PIN configured anywhere. This returned NTE_PERM and refused to
+     *     start, which is the provider rejecting a perfectly good HSM. */
+    {
+        char  szSaved[P11_MAX_PIN_LEN + 1] = {0};
+        DWORD dwHad = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szSaved,
+                                              sizeof(szSaved));
+        reset_pool();
+        P11Mock_GetConfig()->flagsToken =
+            CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;
+        P11_ClearPin();
+        unsetenv(SOFTHSM2_PIN_ENV);
+
+        ASSERT_OK("Protected path with NO PIN configured: still works",
+                  P11_AcquireSession(P11_SCOPE_USER, &h1));
+        ASSERT_EQ("Protected path with no PIN: pPin was NULL",
+                  P11Mock_GetCalls()->bLastLoginSentPin, 0);
+        P11_ReleaseSession(h1);
+
+        if (dwHad > 0 && dwHad < sizeof(szSaved))
+            setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
+    }
+
+    /* 3. The token does not want a login at all. Calling C_Login anyway is
+     *    not harmless: a token entitled to refuse it would fail a session
+     *    that was already usable. */
+    reset_pool();
+    P11Mock_GetConfig()->flagsToken = CKF_TOKEN_INITIALIZED;  /* no LOGIN_REQUIRED */
+    ASSERT_OK("No CKF_LOGIN_REQUIRED: acquire succeeds",
+              P11_AcquireSession(P11_SCOPE_USER, &h1));
+    ASSERT_EQ("No CKF_LOGIN_REQUIRED: C_Login was NOT called",
+              P11Mock_GetCalls()->nLogin, 0);
+    P11_ReleaseSession(h1);
+
+    /* 4. An unreadable C_GetTokenInfo must fall through to the STRICT
+     *    model. A failure to read the token's wishes must not be the
+     *    reason a credential stops being required. */
+    {
+        char  szSaved[P11_MAX_PIN_LEN + 1] = {0};
+        DWORD dwHad = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szSaved,
+                                              sizeof(szSaved));
+        reset_pool();
+        P11Mock_GetConfig()->rv_GetTokenInfo = CKR_FUNCTION_FAILED;
+        P11_ClearPin();
+        unsetenv(SOFTHSM2_PIN_ENV);
+
+        ASSERT_EQ("Unreadable token info + no PIN → NTE_PERM, not a free pass",
+                  P11_AcquireSession(P11_SCOPE_USER, &h1),
+                  (SECURITY_STATUS)NTE_PERM);
+
+        if (dwHad > 0 && dwHad < sizeof(szSaved))
+            setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
+    }
+
     TEST_SUITE("Pool lifecycle");
 
     reset_pool();
