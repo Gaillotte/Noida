@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 25 test suites, 1886 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 26 test suites, 2001 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -113,10 +113,16 @@ noida/
 │   │   │                            ksp_properties.c and ksp_provider.c:
 │   │   │                            the property set BOTH ways, and the
 │   │   │                            Read / Write columns
-│   │   ├── check_test_counts.py    docs/09-tests.md's suite and assertion
-│   │   │                            figures against the suite's own run
-│   │   │                            log, and the per-suite rows against
-│   │   │                            their Total
+│   │   ├── check_test_counts.py    docs/09-tests.md's AND CLAUDE.md's suite
+│   │   │                            and assertion figures against the
+│   │   │                            suite's own run log, and the per-suite
+│   │   │                            rows against their Total. The session
+│   │   │                            log is skipped: it is history
+│   │   ├── check_registration.py   tools/register_ksp.ps1's algorithm lists
+│   │   │                            against g_KspAlgorithms, both
+│   │   │                            directions, plus the CNG interface
+│   │   │                            constants against the real mingw
+│   │   │                            headers
 │   │   └── test_ksp_integration.c  Layer 2 — 40 integration tests (Windows, needs SoftHSM2)
 │   ├── tools/
 │   │   ├── register_ksp.ps1        Register/unregister the KSP via the CNG APIs
@@ -363,6 +369,42 @@ ten as INCLUDED: the pattern matched the comment text claiming the include.
 **A grep for a fix can match the sentence describing the fix** — the
 check has to look for the `#include` directive, and the decisive evidence
 was the injected wrong signature, not any grep.
+
+**Fourth, the registration script was compared with what the provider
+advertises** — the first thing that has to work in the AD CS pilot, and a
+script that has never been run on Windows. `tools/register_ksp.ps1`'s
+algorithm arrays and `g_KspAlgorithms` are two accounts of one fact, and
+nothing had compared them. `tests/check_registration.py` does, in both
+directions, and found two:
+
+- **`AES-CMAC` was advertised and never registered.** The source comment
+  beside it says it "is published rather than left reachable by name only"
+  — half true: `NCryptEnumAlgorithms` lists it, and
+  `BCryptAddContextFunctionProvider` never did, so nothing enumerating
+  signature providers could find this one for it.
+- **RSA was never published under `BCRYPT_ASYMMETRIC_ENCRYPTION_INTERFACE`.**
+  The provider declares `NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION` for RSA,
+  the script registered RSA under the signature interface only, and the
+  constant `0x00000003` was not even declared. A CA signs, so AD CS would
+  not have noticed; **RSA decryption and TLS key exchange were implemented
+  and undiscoverable**. Both now registered, and unregistration was
+  extended to match so nothing is left behind.
+
+The interface constants are checked against the **real mingw-w64 headers**,
+not recalled and not read from the mock — the mock is where two invented
+constants and two wrong values came from. Verified with a real PowerShell
+7.4.6 here: the script parses and its embedded C# compiles, and
+`BCRYPT_ASYMMETRIC_ENCRYPTION_INTERFACE` reads back `3` against the
+header's `0x00000003`. **It still has not been RUN on Windows** — parsing
+and compiling are not the same claim.
+
+`check_test_counts.py` was also extended to **CLAUDE.md**, which quotes the
+figures twice and was not covered: both lines went stale in the very
+session that added the checker — 26/2001 everywhere else, 25/1886 there.
+The session log is skipped, because it is a historical record and session 4
+really did end at 14 suites; a first version without that exclusion
+reported three history entries as drift, which would have pressured the
+next reader into falsifying the record to get a green build.
 
 Unit **2001 assertions / 26 suites**, 0 failures; live token 256, ADCS 84,
 qualify 18+4 against Kryoptic and against SoftHSM2 2.6.1. Matrix **103
@@ -1414,12 +1456,12 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 25 suites, 1886 assertions
+make run           # 26 suites, 2001 assertions
 make coverage      # → coverage_html/index.html (86.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
 
-Four static checks run in the same CI job and need no toolchain. Run them
+Five static checks run in the same CI job and need no toolchain. Run them
 before committing anything that touches the matrix, the property dispatch
 chains, or the test suites:
 
@@ -1428,7 +1470,8 @@ cd softhsm_ksp
 python3 tests/check_mock_drift.py          # mock vs the real Windows headers
 python3 tests/check_generated_artifacts.py # the 4 artifacts vs their inputs
 python3 tests/check_property_docs.py       # 05-properties.md vs the dispatch
-python3 tests/check_test_counts.py         # 09-tests.md vs the suite's own run
+python3 tests/check_test_counts.py         # 09-tests.md AND CLAUDE.md vs the run
+python3 tests/check_registration.py        # register_ksp.ps1 vs g_KspAlgorithms
 ```
 
 If `lcov` is unavailable, use gcovr instead:

@@ -108,12 +108,68 @@ def from_doc(doc):
             int(total.group(1)), sum(rows), len(rows))
 
 
+def from_claude_md(text):
+    """Every (suites, assertions) pair CLAUDE.md states about the unit suite.
+
+    CLAUDE.md quotes the figures twice — the repository-layout tree and the
+    `make run` comment — and neither was covered when this script was
+    written. Both then went stale in the very session that added the
+    checker: 26 suites and 2001 assertions everywhere else, 25 and 1886 in
+    those two lines.
+
+    That is the failure mode this file exists to stop, one file to the left
+    of where it was looking. A checker that covers the document somebody
+    thinks of as "the test doc" and not the one everybody actually reads is
+    a checker with a hole in it.
+
+    Matched loosely on purpose — "N test suites ... N assertions" and
+    "N suites, N assertions" are different phrasings of the same claim, and
+    requiring one spelling would just move the hole.
+
+    THE SESSION LOG IS SKIPPED, and that exclusion is the whole subtlety.
+    "Work Completed in Prior Sessions" is a historical record: session 4
+    really did end at 14 suites and 676 assertions, and session 18's entry
+    quotes the 22/1816 figures it found stale. Those sentences are true
+    about the past and rewriting them to match today would destroy the
+    record — the same reason the "22 functions" quotations were left alone.
+    The first version of this function had no such exclusion and reported
+    three historical entries as drift, which would have pressured the next
+    reader into falsifying history to get a green build.
+    """
+    start = text.find('## Work Completed in Prior Sessions')
+    if start != -1:
+        end = text.find('\n## ', start + 1)
+        if end == -1:
+            end = len(text)
+        text = text[:start] + text[end:]
+
+    pairs = []
+    for m in re.finditer(r'(\d+)\s+(?:test\s+)?suites?[^.\n]{0,40}?(\d+)\s+'
+                         r'assertions', text):
+        pairs.append((int(m.group(1)), int(m.group(2)), m.group(0).strip()))
+    return pairs
+
+
 def main():
     log = read(sys.argv[1]) if len(sys.argv) > 1 else run_suite()
     suites, assertions = from_log(log)
     doc_suites, doc_assertions, doc_total, row_sum, rows = from_doc(read(DOC))
 
     problems = []
+
+    # CLAUDE.md is read at the start of every session, so a stale figure
+    # there is read more often than one in docs/.
+    claude = os.path.join(os.path.dirname(ROOT), 'CLAUDE.md')
+    if os.path.exists(claude):
+        pairs = from_claude_md(read(claude))
+        if not pairs:
+            problems.append('CLAUDE.md no longer states the suite counts in '
+                            'a recognised form -- this check has gone blind')
+        for s, a, where in pairs:
+            if (s, a) != (suites, assertions):
+                problems.append('CLAUDE.md says "%s"; the suite ran %d suites '
+                                'with %d assertions' % (where, suites,
+                                                        assertions))
     if doc_suites != suites:
         problems.append('the pyramid says %d test suites; the runner ran %d'
                         % (doc_suites, suites))
@@ -129,13 +185,14 @@ def main():
                         % (rows, row_sum, doc_total))
 
     if problems:
-        print('docs/09-tests.md has drifted from the unit suite:')
+        print('the documented test counts have drifted from the unit suite:')
         for p in problems:
             print('  - %s' % p)
         return 1
 
-    print('docs/09-tests.md matches the unit suite: %d suites, %d assertions '
-          'across %d source files.' % (suites, assertions, rows))
+    print('docs/09-tests.md and CLAUDE.md match the unit suite: %d suites, '
+          '%d assertions across %d source files.'
+          % (suites, assertions, rows))
     return 0
 
 

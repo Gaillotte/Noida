@@ -55,9 +55,24 @@ $ProviderName = "SoftHSM KSP"
 # supports EdDSA and HMAC, but CNG has no algorithm identifier for those, so
 # they cannot be published to the enumeration APIs and are reachable only
 # from an application coded against this provider directly.
-$SignatureAlgorithms = @("RSA", "ECDSA_P256", "ECDSA_P384", "ECDSA_P521")
+# These lists and g_KspAlgorithms in src/ksp/ksp_provider.c are two accounts
+# of one fact, and tests/check_registration.py now compares them in both
+# directions. An algorithm here that the provider does not advertise sends
+# Windows callers to a provider that then refuses them; an algorithm the
+# provider advertises and that is missing here is implemented and
+# unfindable. Both had happened: AES-CMAC was advertised and unregistered,
+# and RSA was never published under the asymmetric-encryption interface.
+$SignatureAlgorithms = @("RSA", "ECDSA_P256", "ECDSA_P384", "ECDSA_P521",
+                         "AES-CMAC")
 $SecretAgreementAlgorithms = @("ECDH_P256", "ECDH_P384", "ECDH_P521")
 $CipherAlgorithms = @("AES")
+
+# RSA appears twice on purpose. A CA signs, so AD CS needs the signature
+# interface; TLS key exchange and any NCryptDecrypt caller need the
+# asymmetric-encryption one, and the provider declares
+# NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION for RSA. Registering only the
+# signature interface left RSA decryption implemented and undiscoverable.
+$AsymmetricEncryptionAlgorithms = @("RSA")
 
 Add-Type -TypeDefinition @"
 using System;
@@ -100,6 +115,7 @@ public static class CngRegistration
 
     public const uint BCRYPT_CIPHER_INTERFACE           = 0x00000001;
     public const uint BCRYPT_SIGNATURE_INTERFACE        = 0x00000005;
+    public const uint BCRYPT_ASYMMETRIC_ENCRYPTION_INTERFACE = 0x00000003;
     public const uint BCRYPT_SECRET_AGREEMENT_INTERFACE = 0x00000004;
 
     [DllImport("bcrypt.dll", CharSet = CharSet.Unicode)]
@@ -191,6 +207,8 @@ if ($Unregister) {
            Algorithms = $SecretAgreementAlgorithms }
         @{ Interface = [CngRegistration]::BCRYPT_CIPHER_INTERFACE
            Algorithms = $CipherAlgorithms }
+        @{ Interface = [CngRegistration]::BCRYPT_ASYMMETRIC_ENCRYPTION_INTERFACE
+           Algorithms = $AsymmetricEncryptionAlgorithms }
     )
 
     foreach ($g in $groups) {
@@ -239,6 +257,9 @@ $groups = @(
     @{ Name = "cipher"
        Interface = [CngRegistration]::BCRYPT_CIPHER_INTERFACE
        Algorithms = $CipherAlgorithms }
+    @{ Name = "asymmetric encryption"
+       Interface = [CngRegistration]::BCRYPT_ASYMMETRIC_ENCRYPTION_INTERFACE
+       Algorithms = $AsymmetricEncryptionAlgorithms }
 )
 
 foreach ($g in $groups) {

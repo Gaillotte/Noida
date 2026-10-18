@@ -95,6 +95,20 @@ jobs:
         working-directory: softhsm_ksp
         run: python3 tests/check_property_docs.py
 
+      # The registration script and g_KspAlgorithms are two accounts of one
+      # fact. An algorithm the script publishes and the provider does not
+      # advertise sends Windows callers to a provider that refuses them; one
+      # the provider advertises and the script omits is implemented and
+      # unfindable. Both had happened: AES-CMAC was advertised and never
+      # registered, and RSA was never published under the
+      # asymmetric-encryption interface, so RSA decryption was
+      # undiscoverable. On the AD CS critical path, because registration is
+      # the first thing that has to work and a wrong list fails later, in
+      # the CA wizard, as an absence.
+      - name: Registration publishes what the provider advertises
+        working-directory: softhsm_ksp
+        run: python3 tests/check_registration.py
+
       - name: Cross-compile for Windows
         working-directory: softhsm_ksp
         run: |
