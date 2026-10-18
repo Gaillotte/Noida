@@ -24,6 +24,7 @@
 #include "../../src/ksp/ksp_crypto.h"
 #include "../../src/ksp/ksp_properties.h"
 #include "test_framework.h"
+#include "../../src/pkcs11/p11_session.h"
 #include <string.h>
 
 /* ── Signature checks against the public NCrypt API ─────────────────────── */

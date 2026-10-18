@@ -30,6 +30,7 @@
 #include "../../src/common/config.h"
 #include "../../src/common/memory.h"
 #include "test_framework.h"
+#include "../../src/pkcs11/p11_session.h"
 #include <wchar.h>
 #include <string.h>
 

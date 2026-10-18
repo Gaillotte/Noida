@@ -41,6 +41,7 @@ PIN_STUB   = p11_prov_stub.c
 TESTS = \
     test_p11rv_mapping \
     test_function_table \
+    test_entry_contracts \
     test_p11_session \
     test_ecdsa_decode \
     test_mechanism_resolve \
@@ -96,6 +97,19 @@ test_p11rv_mapping: test_p11rv_mapping.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_function_table : ksp_main.c CNG function table ───────────────────
+# ── test_entry_contracts : every function-table slot, called ─────────────
+#
+# The inventory the feature matrix cannot hold. It tracks capabilities
+# observed across shipping CNG KSPs, so it has never pointed at this
+# provider's own entry points — the blind spot that let KSP_VerifySignature
+# sit unimplemented and KSP_NotifyChangeKey return success while never
+# writing the caller's HANDLE. Those were found by READING the table in
+# session 14; this calls it.
+test_entry_contracts: test_entry_contracts.c $(SRC)/ksp/ksp_main.c \
+                     $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
+                     $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
 test_function_table: test_function_table.c $(SRC)/ksp/ksp_main.c \
                      $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
                      $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)

@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         25 test suites · 1886 assertions · gcov coverage         │
+   │         26 test suites · 2001 assertions · gcov coverage         │
    │         Lines: 86.2 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -63,7 +63,7 @@ make
 ./test_aes_keys
 
 # Or simply:
-make run          # builds and runs all 25 suites
+make run          # builds and runs all 26 suites
 make coverage     # plus an HTML coverage report
 make syntax-check # parses the Windows-only integration test
 ```
@@ -94,8 +94,9 @@ make syntax-check # parses the Windows-only integration test
 | PKCS#11 context | `test_p11_context.c` | 130 | Module load failure and recovery without a restart, C_Initialize failure modes, the deferred slot binding and the probe that goes with it, token selection through the property and its refusals, and per-scope token resolution including every way a misconfiguration must fail closed |
 | Per-key PIN | `test_key_pin.c` | 25 | `CKU_CONTEXT_SPECIFIC` re-authentication on sign and decrypt, replay per operation, token responses, and refusal to read the credential back |
 | X.509 subject extraction | `test_cert_subject.c` | 19 | `P11_ExtractCertSubject` against a real OpenSSL-generated certificate, with every truncation of it walked under AddressSanitizer |
+| Function-table entry contracts | `test_entry_contracts.c` | 115 | Every one of the 26 function-table slots, **called**: each of the 24 that takes a handle is given a NULL and a wrong-magic provider handle, and the 14 taking a key or secret handle are given a wrong-magic one with a VALID provider. Completeness is enforced by comparing each adapter against the table slot by pointer, so a new slot with no probe fails. Other arguments are plausible, so the handle is the only thing wrong — otherwise argument-first validation would masquerade as a handle check |
 | RSA size range under a moved floor | `test_rsa_lengths.c` | 25 | Built **three times** — default, `-DKSP_RSA_MIN_BITS=1024`, `-DKSP_RSA_MIN_BITS=4096` — because what it checks is how `NCRYPT_LENGTHS_PROPERTY`'s reported default moves when the floor moves, and the floor is a compile-time macro. A legacy build must not make 1024 the size a CA wizard preselects; a 4096 policy must not have the wizard preselect 2048 and be refused at FinalizeKey |
-| **Total** | | **1886** | |
+| **Total** | | **2001** | |
 
 ## Layer 1b — against a second, real PKCS#11 module
 

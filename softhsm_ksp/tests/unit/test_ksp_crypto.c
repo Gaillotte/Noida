@@ -53,6 +53,7 @@ void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
 #include "../../src/ksp/ksp_provider.h"
 #include "../../src/ksp/ksp_crypto.h"
+#include "../../src/pkcs11/p11_session.h"
 
 /* ── Test key constructor ────────────────────────────────────────────────── */
 static NCRYPT_KEY_HANDLE make_test_key(

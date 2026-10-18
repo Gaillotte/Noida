@@ -235,6 +235,7 @@ SECURITY_STATUS P11RvToSecStatus(CK_RV rv)
 
 #include "../../src/ksp/ksp_key.h"
 #include "../../src/ksp/ksp_provider.h"
+#include "../../src/pkcs11/p11_session.h"
 
 int main(void)
 {

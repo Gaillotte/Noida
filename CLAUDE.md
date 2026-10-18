@@ -52,7 +52,7 @@ noida/
 │   │   │   ├── p11_context.h / .c  LoadLibrary + C_Initialize singleton
 │   │   │   ├── p11_session.h / .c  Pool of 16 sessions (semaphore)
 │   │   │   └── p11_utils.h / .c    Mechanisms, DER decode, key export
-│   │   └── ksp/                    CNG KSP layer (22 NCrypt functions)
+│   │   └── ksp/                    CNG KSP layer (26 NCrypt functions)
 │   │       ├── ksp_provider.h / .c OpenProvider / CloseProvider / FreeBuffer
 │   │       ├── ksp_key_ops.h / .c  CreateKey / OpenKey / DeleteKey / EnumKeys / FinalizeKey
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
@@ -80,6 +80,11 @@ noida/
 │   │   │   ├── test_p11_context.c  Module load, init retry, slot selection (OPS-08)
 │   │   │   ├── test_key_pin.c      Per-key PIN via CKU_CONTEXT_SPECIFIC (PROP-13)
 │   │   │   ├── test_cert_subject.c X.509 subject extraction for CKA_SUBJECT
+│   │   │   ├── test_entry_contracts.c Every one of the 26 function-table
+│   │   │   │                        slots, CALLED with a handle it must
+│   │   │   │                        refuse. Completeness enforced by
+│   │   │   │                        pointer against the table, so a new
+│   │   │   │                        slot with no probe fails
 │   │   │   ├── p11_prov_stub.c     PKCS#11-layer stubs for suites that link
 │   │   │   │                        ksp_provider.c without the real context
 │   │   │   │                        or session layers
@@ -312,11 +317,61 @@ pattern and the `p11_` binaries were still a one-name list, so the first
 new one was untracked exactly as in sessions 8, 9 and 10. Both are patterns
 now.
 
-Unit **1886 assertions / 25 suites**, 0 failures; live token 256, ADCS 84,
+**Third, the provider's own 26 entry points were enumerated and called.**
+`tests/unit/test_entry_contracts.c` (new, **115 assertions**) is the
+inventory the feature matrix structurally cannot hold — it tracks
+capabilities observed across the market, so it has never pointed at this
+provider's own surface, the blind spot `gap_detail.py` records as having
+cost three defects. Session 14 found two of them by *reading* the table;
+this calls every slot. Completeness is enforced by comparing each probe
+against the table slot **by pointer**, so a new slot with no probe fails and
+names itself, and the two slots with no handle to validate (`OpenProvider`
+produces one, `FreeBuffer` takes none) are declared rather than silently
+omitted.
+
+- **A bad handle gets two different answers.** 7 slots return
+  `NTE_INVALID_HANDLE`, 16 return `NTE_INVALID_PARAMETER`, for the identical
+  condition. The inconsistency is the finding; **the 16 call sites were
+  deliberately not changed**, because which code is correct depends on
+  Microsoft's documented mapping and Microsoft Learn is blocked by this
+  workspace's network policy. Changing 16 sites on a recalled contract is
+  the `BCRYPT_SHA224_ALGORITHM` mistake. Every slot does refuse, and none
+  returns success.
+- **Arguments are plausible, not NULL**, so the handle is the only thing
+  wrong. All-NULL arguments would let a slot that validates arguments first
+  answer `NTE_INVALID_PARAMETER` and look as though it had checked the
+  handle.
+- **`"22 functions"` was wrong in four places.** The table has 26, and has
+  since `VerifySignature`, `SecretAgreement`, `DeriveKey` and `FreeSecret`
+  were wired. Corrected where it is a live claim; left alone where a session
+  entry quotes the old wording.
+
+**And session 15's ten-stub fix had never been applied.** CLAUDE.md records
+that `P11_AcquireSession` stubs were "fixed by including `p11_session.h` in
+all ten" after the signature change cost ten segfaults. **Not one of the ten
+includes it.** What was pasted into each file was the *comment* saying it
+had been — including the words "p11_session.h is included above so the
+COMPILER checks this stub", sitting in a file that does not include it.
+Confirmed rather than assumed: the preprocessor never reaches the header,
+and giving a stub the wrong signature **compiles clean**. The include is now
+in all ten, and the new suite includes `p11_context.h` too rather than
+re-declaring `P11_CONTEXT` locally the way the older suites still do — a
+locally invented struct is the same trap one layer down.
+
+A first attempt to audit this by grepping for `p11_session.h` reported all
+ten as INCLUDED: the pattern matched the comment text claiming the include.
+**A grep for a fix can match the sentence describing the fix** — the
+check has to look for the `#include` directive, and the decisive evidence
+was the injected wrong signature, not any grep.
+
+Unit **2001 assertions / 26 suites**, 0 failures; live token 256, ADCS 84,
 qualify 18+4 against Kryoptic and against SoftHSM2 2.6.1. Matrix **103
 rows, 73 covered**, 30 open of which 10 can start here. All four generated
 artifacts in sync. The only source change was one stale comment in
-`KspSignatureLength`, which still said the token returns DER.
+`KspSignatureLength`, which still said the token returns DER —
+`ncrypt_provider.h` was also confirmed absent from mingw-w64 11.0.1, a
+third independent source: mingw ships the CONSUMER headers (`bcrypt.h`,
+`ncrypt.h`) and no provider-side header at all.
 
 ### Session 15 — proposals B, C and D: the slot, the scope, and one feedback size
 
@@ -1051,9 +1106,9 @@ the CNG key-storage contract.
 Windows Application
     ↓ NCrypt*() API
 ncrypt.dll ──── registry: HKLM\...\CNG\KeyStorageProviders\SoftHSM KSP
-    ↓ NCRYPT_KEY_STORAGE_FUNCTION_TABLE (22 functions)
+    ↓ NCRYPT_KEY_STORAGE_FUNCTION_TABLE (26 functions + Version)
 softhsm_ksp.dll
-    ├── ksp_*()           22 CNG functions
+    ├── ksp_*()           26 CNG functions
     ├── p11_context.c     PKCS#11 singleton (LoadLibrary + C_Initialize)
     ├── p11_session.c     Pool of 16 sessions (Windows semaphore)
     └── p11_utils.c       Mechanisms, DER decode, key export
@@ -1322,6 +1377,13 @@ across both drives found exactly one copy — this repository's own test mock
 It is not in the Windows SDK either. Where it *does* come from is still
 unestablished; it is associated with the Cryptographic Provider Development
 Kit, but that is unconfirmed and two guesses at its location were wrong.
+**Not in mingw-w64 either** (11.0.1, checked session 18), and that result
+is informative rather than another dead end: mingw ships the CONSUMER
+headers, `bcrypt.h` and `ncrypt.h`, and **no provider-side header at all** —
+no `bcrypt_provider.h`, no `ncrypt_provider.h`. The open-source toolchain
+implements the side of CNG that calls a provider, not the side that is one.
+Three independent sources checked now: a `windows-latest` runner after a WDK
+install, the Windows SDK, and mingw-w64.
 Pass `-DCPDK_INCLUDE_DIR=<dir>` if you have it.
 
 Without it, CMake **skips** the `softhsm_ksp` and `test_ksp_integration`
@@ -1444,7 +1506,23 @@ token, the other names two, and the conflict is refused rather than resolved.
 - **Memory**: `HeapAlloc` / `HeapFree` on `GetProcessHeap()` only
 - **Naming**: `KSP_` prefix for KSP layer, `P11_` prefix for PKCS#11 layer
 - **Handles**: direct cast `(KSP_PROVIDER *)hProvider`, validated by `dwMagic`
-- **Thread-safety**: all 22 KSP functions are re-entrant. **Tested since
+- **Entry points: 26**, plus the `Version` field. This said 22 in four
+  places until session 18, which is the count from before `VerifySignature`,
+  `SecretAgreement`, `DeriveKey` and `FreeSecret` were wired. The historical
+  session entries below quote the old wording and are left as written — they
+  record what the line said at the time. Do not confuse this with the **22
+  Cryptoki functions** of `docs/12-pkcs11-requirements.md`, which is the
+  PKCS#11 side and is correct
+- **A bad handle gets two different answers**, measured by
+  `tests/unit/test_entry_contracts.c`: 7 slots return `NTE_INVALID_HANDLE`
+  and 16 return `NTE_INVALID_PARAMETER` for the identical condition
+  (`PromptUser` refuses everything, so it never reaches the question). The
+  internal inconsistency is the hard finding; *which* code to standardise on
+  depends on Microsoft's documented mapping, which is not reachable from
+  this workspace, so the 16 call sites are **deliberately left alone**
+  rather than changed on a recalled contract. Every slot does refuse, and
+  none returns success
+- **Thread-safety**: all 26 KSP functions are re-entrant. **Tested since
   session 12**, not merely asserted — `tests/linux/test_concurrent.c` runs
   32 threads over the 16-session pool against a live token and compares
   signature *bytes* against a single-threaded reference, because a crossed
