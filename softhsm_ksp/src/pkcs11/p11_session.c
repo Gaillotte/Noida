@@ -1,6 +1,7 @@
 /* p11_session.c — PKCS#11 session pool implementation */
 #include "p11_session.h"
 #include "p11_context.h"
+#include "p11_credential.h"
 #include "p11_utils.h"
 #include "../common/config.h"
 #include "../common/logging.h"
@@ -134,6 +135,27 @@ static BOOL GetEffectivePin(int nScope, char *pszOut, size_t cbOut)
         return TRUE;
     }
     LeaveCriticalSection(&g_csPin);
+
+    /* A DPAPI-protected blob outranks the ambient environment variable,
+     * and the direction matters.
+     *
+     * If an administrator has gone to the trouble of provisioning a
+     * protected credential, a machine-wide variable left over from a lab
+     * must not silently take precedence — that would downgrade the
+     * deployment to the very thing C-b exists to replace, while appearing
+     * to work. The provider prefers the more protected source and says
+     * which one it used.
+     *
+     * Below the property, though: NCRYPT_PIN_PROPERTY is a deliberate act
+     * by the calling process, and a caller that sets it is asking for that
+     * PIN specifically.
+     *
+     * On Linux this returns FALSE unconditionally, so every suite here
+     * exercises the remaining sources exactly as before. */
+    if (P11_ReadProtectedPin(nScope, pszOut, cbOut)) {
+        LOG_INFO("PIN source: DPAPI-protected blob (scope %d)", nScope);
+        return TRUE;
+    }
 
     dwLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, pszOut, (DWORD)cbOut);
     if (dwLen > 0 && dwLen < cbOut)

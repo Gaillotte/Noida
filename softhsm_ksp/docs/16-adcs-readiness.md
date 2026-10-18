@@ -245,7 +245,7 @@ three models PKCS#11 describes.
 | Option | How | Status |
 |---|---|---|
 | **C-a** Machine-wide env var | Status quo | Works. Any process on the host reads the PIN — fine for a lab, **not for production** |
-| **C-b** DPAPI machine-scope blob | PIN encrypted with `CryptProtectData` at machine scope, in a registry value ACL'd to the CA service account; provider decrypts at initialisation | **Not implemented.** Windows-only, so the Linux suites cannot cover it — it needs its own Windows test, which means it needs Phase B first |
+| **C-b** DPAPI machine-scope blob | PIN encrypted with `CryptProtectData` at `CRYPTPROTECT_LOCAL_MACHINE` scope, in a REG_BINARY value under `HKLM\SOFTWARE\SoftHSM KSP` ACL'd to the CA service account; provider unprotects it in `GetEffectivePin` | **Written, partly tested.** `KspAcceptPinBytes` — the validation — is pure and covered by 38 assertions. The registry read and `CryptUnprotectData` are Windows-only: compile-checked against the real mingw `dpapi.h`, **not run**. `tools/set_ksp_pin.ps1` provisions the blob and sets the ACL. Unproven until Phase B |
 | **C-c** Protected authentication path | Token sets `CKF_PROTECTED_AUTHENTICATION_PATH`; provider calls `C_Login` with `pPin = NULL` per v2.40 §11.6, and **requires no configured PIN** | **Implemented and tested.** Both directions fault-injected |
 | **C-d** Token wants no login | Token leaves `CKF_LOGIN_REQUIRED` clear; provider performs no `C_Login` at all | **Implemented and tested** |
 
@@ -262,6 +262,20 @@ actually asked for a PIN. A `C_GetTokenInfo` that fails falls through to the
 strict PIN model rather than guessing something laxer — an unreadable answer
 must not be the reason a credential stops being required, and that direction
 is fault-injected too.
+
+**The ACL is the protection, not the encryption.** Machine-scope DPAPI can
+be unprotected by anything running on the host; what stops that is being
+unable to *read* the registry value. `set_ksp_pin.ps1 -ServiceAccount` breaks
+inheritance and grants only that account and Administrators, and warns
+loudly when run without it — provisioned without an ACL, the blob is no
+better than the environment variable it replaces.
+
+**Precedence:** per-scope env var, then `NCRYPT_PIN_PROPERTY`, then the
+DPAPI blob, then `SOFTHSM2_PIN`. The blob deliberately outranks the ambient
+variable: if an administrator has provisioned a protected credential, a
+leftover lab variable must not silently take precedence and downgrade the
+deployment to the thing C-b exists to replace — while appearing to work.
+The provider logs which source it used, never the value.
 
 **What is left to decide:** only if your token requires a PIN. Run
 `tools/p11_qualify` against it — it reports which of the three models the

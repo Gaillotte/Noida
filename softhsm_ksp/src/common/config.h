@@ -470,6 +470,20 @@
 #define KSP_USER_TOKEN_LABEL_ENV    "KSP_USER_TOKEN_LABEL"
 #define KSP_MACHINE_SLOT_ENV        "KSP_MACHINE_SLOT"
 #define KSP_USER_SLOT_ENV           "KSP_USER_SLOT"
+/* Where a DPAPI-protected PIN lives (ADCS plan option C-b).
+ *
+ * HKLM, and a value per scope so the two tokens can carry different
+ * credentials exactly as the per-scope environment variables allow.
+ *
+ * The DPAPI scope is CRYPTPROTECT_LOCAL_MACHINE, so anything running on
+ * the host could unprotect the blob if it could READ it. The ACL on this
+ * registry key is therefore the whole of the protection, not a detail of
+ * the deployment: provision it readable by the CA service account and
+ * nothing else. tools/set_ksp_pin.ps1 does that. */
+#define KSP_PIN_BLOB_KEY            "SOFTWARE\\SoftHSM KSP"
+#define KSP_PIN_BLOB_VALUE_MACHINE  "MachinePinBlob"
+#define KSP_PIN_BLOB_VALUE_USER     "UserPinBlob"
+
 #define KSP_MACHINE_PIN_ENV         "KSP_MACHINE_PIN"
 #define KSP_USER_PIN_ENV            "KSP_USER_PIN"
 

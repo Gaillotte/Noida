@@ -58,7 +58,7 @@ noida/
 │   │       ├── ksp_crypto.h / .c   SignHash / Decrypt / ExportKey / ImportKey
 │   │       └── ksp_properties.h / .c GetKeyProperty / SetKeyProperty / GetProviderProperty
 │   ├── tests/
-│   │   ├── unit/                   Layer 1 — 26 test suites, 2013 assertions, Linux/GCC, no SoftHSM2
+│   │   ├── unit/                   Layer 1 — 27 test suites, 2051 assertions, Linux/GCC, no SoftHSM2
 │   │   │   ├── Makefile
 │   │   │   ├── test_p11rv_mapping.c
 │   │   │   ├── test_logging.c
@@ -1311,6 +1311,23 @@ AT_SIGNATURE: `CKA_SIGN=TRUE` | AT_KEYEXCHANGE: `CKA_DECRYPT=TRUE`
   must not be the reason a credential stops being required; that direction
   is fault-injected. `tools/p11_qualify` reports which model a candidate
   token uses
+- **The PIN can be a DPAPI-protected blob** (ADCS plan C-b, session 19).
+  `CryptProtectData` at `CRYPTPROTECT_LOCAL_MACHINE` scope, REG_BINARY under
+  `HKLM\SOFTWARE\SoftHSM KSP`, provisioned by `tools/set_ksp_pin.ps1`.
+  Precedence: per-scope env var, `NCRYPT_PIN_PROPERTY`, **the blob**, then
+  `SOFTHSM2_PIN`. The blob outranks the ambient variable deliberately — a
+  leftover lab variable must not silently downgrade a deployment that was
+  provisioned properly, while appearing to work. **The ACL is the
+  protection, not the encryption**: machine-scope DPAPI can be unprotected
+  by anything on the host, so the registry ACL is the whole control and the
+  script warns loudly when run without `-ServiceAccount`.
+  **`KspAcceptPinBytes` is pure and tested** (38 assertions) because a
+  counted buffer whose terminator is mishandled is this project's recurring
+  defect — the same off-by-one shipped twice in session 15; the bound is
+  `cb >= cbOut`, injected and caught. **The registry read and
+  `CryptUnprotectData` are Windows-only and HAVE NOT BEEN RUN** —
+  compile-checked against the real mingw `dpapi.h`, which is more than
+  blind and less than tested. Unproven until Phase B
 - **There is no default PIN** *(and this rule now applies only to a token
   that actually asked for one — see above)*. A provider that silently tries `1234` when
   nothing is configured is worse than one that refuses to start: the refusal
@@ -1473,7 +1490,7 @@ cmake --build . --config Release
 
 ```bash
 cd softhsm_ksp/tests/unit
-make run           # 26 suites, 2013 assertions
+make run           # 27 suites, 2051 assertions
 make coverage      # → coverage_html/index.html (86.4 % lines, 100 % functions)
 make syntax-check  # parses the Windows-only integration test
 ```
@@ -1557,7 +1574,15 @@ token, the other names two, and the conflict is refused rather than resolved.
 ## Code Conventions
 
 - **Language**: all comments and identifiers in **English**
-- **Warnings**: zero at `/W3` MSVC
+- **Warnings**: zero at `/W3` MSVC. The mingw cross-compile also promotes
+  `implicit-function-declaration` and `int-to-pointer-cast` to errors.
+  **That gate is the only check that compiles Windows-only code, and until
+  session 19 it was the weakest of the three**: the unit build errors on an
+  implicit declaration and this did not. `p11_credential.c` called
+  `KSP_AllocZero` without including `memory.h`, so with no prototype it was
+  assumed to return `int` and the cast truncated a Win64 heap pointer to 32
+  bits — a guaranteed crash on the first provisioned PIN read. The step
+  printed the warning and **exited 0**
 - **Never commit certificate material.** `*.pfx`, `*.p12` and `*.snk` are
   gitignored; a certificate committed by accident must be revoked
 - **Windows target**: `NTDDI_WIN10_RS4` / `_WIN32_WINNT_WIN10`, set in

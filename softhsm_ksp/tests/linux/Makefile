@@ -103,6 +103,7 @@ PROVIDER_SRC = \
     $(SRC)/pkcs11/p11_context.c \
     $(SRC)/pkcs11/p11_caps.c \
     $(SRC)/pkcs11/p11_session.c \
+    $(SRC)/pkcs11/p11_credential.c \
     $(SRC)/pkcs11/p11_utils.c \
     $(SRC)/ksp/ksp_provider.c \
     $(SRC)/ksp/ksp_key.c \

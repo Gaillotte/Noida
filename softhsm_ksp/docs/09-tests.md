@@ -24,7 +24,7 @@
                                 │
    ┌────────────────────────────┴───────────────────────────────────┐
    │         Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)   │
-   │         26 test suites · 2013 assertions · gcov coverage         │
+   │         27 test suites · 2051 assertions · gcov coverage         │
    │         Lines: 86.2 %    Functions: 100 %                       │
    └────────────────────────────────────────────────────────────────┘
 ```
@@ -63,7 +63,7 @@ make
 ./test_aes_keys
 
 # Or simply:
-make run          # builds and runs all 26 suites
+make run          # builds and runs all 27 suites
 make coverage     # plus an HTML coverage report
 make syntax-check # parses the Windows-only integration test
 ```
@@ -95,8 +95,9 @@ make syntax-check # parses the Windows-only integration test
 | Per-key PIN | `test_key_pin.c` | 25 | `CKU_CONTEXT_SPECIFIC` re-authentication on sign and decrypt, replay per operation, token responses, and refusal to read the credential back |
 | X.509 subject extraction | `test_cert_subject.c` | 19 | `P11_ExtractCertSubject` against a real OpenSSL-generated certificate, with every truncation of it walked under AddressSanitizer |
 | Function-table entry contracts | `test_entry_contracts.c` | 115 | Every one of the 26 function-table slots, **called**: each of the 24 that takes a handle is given a NULL and a wrong-magic provider handle, and the 14 taking a key or secret handle are given a wrong-magic one with a VALID provider. Completeness is enforced by comparing each adapter against the table slot by pointer, so a new slot with no probe fails. Other arguments are plausible, so the handle is the only thing wrong — otherwise argument-first validation would masquerade as a handle check |
+| DPAPI PIN blob validation | `test_credential.c` | 38 | `KspAcceptPinBytes`, the testable half of ADCS plan option C-b: the length boundary walked across every value into a small buffer, a stored terminator stripped exactly once, an embedded NUL refused, and an over-long value **refused rather than truncated**. Split into its own function because a counted buffer whose terminator is mishandled is this project's recurring defect — the same off-by-one shipped twice in session 15. The registry read and `CryptUnprotectData` are Windows-only, compile-checked by the cross-compile job and **not run** |
 | RSA size range under a moved floor | `test_rsa_lengths.c` | 25 | Built **three times** — default, `-DKSP_RSA_MIN_BITS=1024`, `-DKSP_RSA_MIN_BITS=4096` — because what it checks is how `NCRYPT_LENGTHS_PROPERTY`'s reported default moves when the floor moves, and the floor is a compile-time macro. A legacy build must not make 1024 the size a CA wizard preselects; a 4096 policy must not have the wizard preselect 2048 and be refused at FinalizeKey |
-| **Total** | | **2013** | |
+| **Total** | | **2051** | |
 
 ## Layer 1b — against a second, real PKCS#11 module
 
