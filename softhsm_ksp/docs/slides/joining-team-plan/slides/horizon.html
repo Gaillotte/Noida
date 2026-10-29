@@ -1,0 +1,50 @@
+<section id="horizon" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">The first ninety days, and what “finalized” has to mean</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#AFC3D4">Phrased against the header's arrival rather than a calendar, because the one thing that sets the schedule is the one thing nobody here controls.</p>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:34px;border-radius:16px;border-left:6px solid #6FA8C9">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">First 30 days</p>
+<h3 style="font-size:30px;font-weight:600">Nothing depends on the DLL</h3>
+<ul style="font-size:24px;line-height:1.5;color:#AFC3D4;padding:0 0 0 28px">
+<li>Header escalation open; fallback decided</li>
+<li>Certificate purchase under way</li>
+<li>HSM qualified by p11_qualify; the authentication model known by measurement</li>
+<li>DACL risk accepted or rejected, in writing</li>
+<li>A4 closed; the Microsoft-documentation backlog retired</li>
+<li>Pilot runbook written and reviewed by the CA operator</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:34px;border-radius:16px;border-left:6px solid #E08A4A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Days 30–60, from the machine's arrival</p>
+<h3 style="font-size:30px;font-weight:600">Gates B and C</h3>
+<ul style="font-size:24px;line-height:1.5;color:#AFC3D4;padding:0 0 0 28px">
+<li>The DLL builds; the signing question answered in the first hour</li>
+<li>Registered; certutil lists it; the table layout confirmed</li>
+<li>190 tests executed and every failure classified</li>
+<li>The DPAPI credential path proven, if the token needs a PIN</li>
+<li>The CI Windows job compiles and links the real DLL</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:34px;border-radius:16px;border-left:6px solid #E08A4A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Days 60–90</p>
+<h3 style="font-size:30px;font-weight:600">Gate E, then the decision</h3>
+<ul style="font-size:24px;line-height:1.5;color:#AFC3D4;padding:0 0 0 28px">
+<li>E1–E7 twice on a throwaway CA, renewal included</li>
+<li>Restart and reboot survived</li>
+<li>Chains verified end to end, not merely API success</li>
+<li>Test CA destroyed</li>
+<li>A go or no-go recommendation with the evidence attached</li>
+</ul>
+</div>
+</div>
+<div style="display:flex;gap:24px;align-items:center;background:#2A1A14;padding:34px 40px;border-radius:16px;border-left:6px solid #B3561A">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px">
+<h3 style="font-size:34px;font-weight:600;color:#E08A4A">Finalized means one sentence</h3>
+<p style="font-size:28px;line-height:1.45">A signed provider, on a certified HSM, running a certification authority that has issued, revoked and <b>renewed</b> — with the DACL limitation accepted in writing and the test CA destroyed. Anything short of renewal is not a finished CA; anything short of the signature is not a shippable provider.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Read every duration as relative: this project's effort estimates were wrong on 4 of the 4 rows it has ever closed · 10 / 10</p>
+<aside>Close on the one-sentence definition and leave it on screen. The three things most likely to be quietly dropped from a declaration of done are the signature, the renewal and the written risk acceptance — each is someone else's responsibility, which is exactly why each gets forgotten. Ask for the go or no-go recommendation as a deliverable, not as an opinion: a no-go with evidence at day 90 is a successful outcome for this plan.</aside>
+</section>

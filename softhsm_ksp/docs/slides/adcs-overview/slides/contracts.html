@@ -1,0 +1,25 @@
+<section id="contracts" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Four contracts that shaped the code</p>
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1540px">Each of these was learned by breaking it</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:28px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #E08A4A">
+<h3 style="font-size:34px;font-weight:600">CNG calls everything twice</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">NULL buffer for the length, then again for the work. The first implementation answered the length by starting a token operation and returning without finishing it — the session went back into the pool live, and the next caller got CKR_OPERATION_ACTIVE. <b style="color:#F7F7F4">Lengths now come from the key.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #E08A4A">
+<h3 style="font-size:34px;font-weight:600">The table is assigned by name</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">Designated initialisers against the SDK header, so a wrong slot name is a build error rather than a displaced function. Positional initialisation is permanently out — it once put a key handle where a HANDLE* belonged and returned success.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:34px;font-weight:600">Every handle is a magic number</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">Handles are direct casts validated by <span style="color:#E08A4A">dwMagic</span>. All 26 slots are called with a bad handle in the suite, and completeness is enforced by comparing each probe against the real table slot <b style="color:#F7F7F4">by pointer</b> — a new slot with no probe fails and names itself.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:34px;font-weight:600">Misconfiguration fails closed</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">No PIN where one is required is NTE_PERM and a log line, never a silent attempt at <span style="font-family:'JetBrains Mono', 'Courier New', monospace">1234</span>. Half-configured per-scope tokens, two labels resolving to one token, or a caller selection alongside them are all refused. Isolation that reports success without isolating is worse than none.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Memory is HeapAlloc on GetProcessHeap only; all 26 functions are re-entrant and tested as such · 5 / 15</p>
+</section>

@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SoftHSM KSP — Design, Tests, ADCS</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap">
+<style>
+*{box-sizing:border-box}
+html{background:#20272E}
+body{margin:0;padding:48px 0 96px;font-family:'IBM Plex Sans',Arial,sans-serif;color:#F7F7F4}
+.wrap{width:1280px;margin:0 auto}
+header.doc{padding:0 0 40px}
+header.doc h1{font-size:34px;font-weight:600;margin:0 0 10px;line-height:1.2}
+header.doc p{font-size:17px;line-height:1.5;color:#AFC3D4;margin:0 0 6px}
+header.doc .fp{font-family:'JetBrains Mono',monospace;font-size:13px;color:#7E95A8}
+nav.outline{border-top:1px solid #39454F;border-bottom:1px solid #39454F;padding:20px 0;margin:0 0 40px}
+nav.outline ol{margin:0;padding:0 0 0 22px;font-size:15px;line-height:1.7;color:#AFC3D4}
+nav.outline a{color:#AFC3D4;text-decoration:none}
+nav.outline a:hover{text-decoration:underline}
+article.slide{margin:0 0 44px}
+article.slide .num{font-family:'JetBrains Mono',monospace;font-size:13px;color:#7E95A8;padding:0 0 8px}
+.frame{width:1280px;height:720px;overflow:hidden;position:relative;
+       border:1px solid #39454F;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+.frame>section{width:1920px;height:1080px;position:relative;
+       transform:scale(0.666667);transform-origin:top left}
+.frame>section aside{display:none}
+.notes{background:#283038;border-left:4px solid #E08A4A;padding:18px 22px;margin:14px 0 0}
+.notes h2{font-size:12px;font-weight:600;letter-spacing:2px;text-transform:uppercase;
+       color:#E08A4A;margin:0 0 8px}
+.notes p{font-size:15px;line-height:1.6;color:#CFDEE8;margin:0}
+@media print{
+  @page{size:1920px 1080px;margin:0}
+  html,body{background:#FFF}
+  body{padding:0}
+  .wrap{width:auto;margin:0}
+  header.doc,nav.outline,article.slide .num,.notes{display:none}
+  article.slide{margin:0;break-after:page;page-break-after:always}
+  .frame{width:1920px;height:1080px;border:0;box-shadow:none}
+  .frame>section{transform:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="doc">
+<h1>SoftHSM KSP — Design, Tests, ADCS</h1>
+<p>Design of the solution, the test strategy, installation under Microsoft ADCS, and what remains</p>
+<p>15 slides. Speaker notes are printed under each slide on screen and
+omitted when printing. Built from <code>softhsm_ksp/docs/slides/adcs-overview</code> — edit the slide
+there, never this file.</p>
+<p class="fp">Content fingerprint: 45468a7ecb7f</p>
+</header>
+<nav class="outline"><ol>
+<li><b><a href="#cover">A CNG Key Storage Provider over PKCS#11</a></b> &mdash; What the provider is and whether it can back a certification authority</li>
+<li><a href="#verdict">Can this provider hold a CA&#x27;s private key? The architecture says yes. Nothing has ever loaded it.</a></li>
+<li><b><a href="#arch">Four processes deep, one DLL wide</a></b> &mdash; How the provider is designed, layer by layer and contract by contract</li>
+<li><a href="#layers">Two layers, one translation each way</a></li>
+<li><a href="#contracts">Each of these was learned by breaking it</a></li>
+<li><a href="#auth">The token decides how it is authenticated, not the provider</a></li>
+<li><a href="#probe">Backend-agnostic by probe, not by porting</a></li>
+<li><b><a href="#pyramid">Five layers, and only two of them have ever run</a></b> &mdash; How the code is proven, and the discipline that proved it wrong five times</li>
+<li><a href="#ran">What actually ran, and what each suite is for</a></li>
+<li><a href="#injection">A green test proves nothing until you have watched it go red</a></li>
+<li><a href="#checks">Five static checks, because prose does not stay true</a></li>
+<li><b><a href="#install1">Build the DLL — and find the header first</a></b> &mdash; Standing the provider up under Microsoft ADCS, step by step</li>
+<li><a href="#install2">Register the provider, then give it a token and a credential</a></li>
+<li><a href="#install3">Stand up a throwaway CA, in the order that finds problems soonest</a></li>
+<li><b><a href="#remaining">The backlog is no longer about code</a></b> &mdash; What is still missing, what blocks it, and who has to decide</li>
+</ol></nav>
+<article class="slide" id="cover">
+<div class="num">1 / 15</div>
+<div class="frame"><section id="cover" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;justify-content:space-between;gap:40px">
+<div style="display:flex;flex-direction:column;gap:28px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Windows CNG · PKCS#11 · Microsoft ADCS</p>
+<h1 style="font-size:104px;font-weight:600;line-height:1.05;width:1500px">A CNG Key Storage Provider over PKCS#11</h1>
+<p style="font-size:38px;line-height:1.35;width:1340px;color:#AFC3D4">Design of the solution, the test strategy that keeps proving it wrong, how it installs under a certification authority, and the four things still standing between it and production.</p>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:32px;border-radius:14px;border-left:6px solid #E08A4A">
+<p style="font-size:52px;font-weight:700;line-height:1.1">26</p>
+<p style="font-size:26px;color:#AFC3D4">CNG function slots implemented</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:32px;border-radius:14px;border-left:6px solid #E08A4A">
+<p style="font-size:52px;font-weight:700;line-height:1.1">2 051</p>
+<p style="font-size:26px;color:#AFC3D4">unit assertions, 27 suites</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:32px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="font-size:52px;font-weight:700;line-height:1.1">0</p>
+<p style="font-size:26px;color:#AFC3D4">times loaded by Windows</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">gaillotte/noida · branch claude/cng-softhsm2-ksp-ol45af · 29 October 2026</p>
+</section></div>
+</article>
+<article class="slide" id="verdict">
+<div class="num">2 / 15</div>
+<div class="frame"><section id="verdict" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;justify-content:space-between;gap:44px">
+<div style="display:flex;flex-direction:column;gap:20px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">The question, and the honest answer</p>
+<h2 style="font-size:66px;font-weight:600;line-height:1.1;width:1540px">Can this provider hold a CA's private key? The architecture says yes. Nothing has ever loaded it.</h2>
+</div>
+<div style="display:flex;gap:28px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:40px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<h3 style="font-size:32px;font-weight:600">What is proven</h3>
+<p style="font-size:27px;line-height:1.4;color:#44525E">The PKCS#11 layer and every CNG entry point run against two real, independent tokens. RSA and ECDSA signing, key opening by name, certificate storage, 32-thread concurrency.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:40px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">What is unproven</h3>
+<p style="font-size:27px;line-height:1.4;color:#44525E">The DLL. It has never been compiled: <span style="color:#B3561A">ncrypt_provider.h</span> declares the function table and is absent from the SDK, the WDK and mingw-w64 alike.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:40px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #44525E">
+<h3 style="font-size:32px;font-weight:600">What is a decision</h3>
+<p style="font-size:27px;line-height:1.4;color:#44525E">PKCS#11 has no ACL model, so a CA key cannot carry a Windows DACL. The token boundary is the whole control. That is a risk acceptance, not a patch.</p>
+</div>
+</div>
+<p style="font-size:30px;line-height:1.4;width:1600px;color:#44525E">The value of this provider is an HSM <b>without</b> a Windows KSP of its own — a token like Kryoptic, or a lab. An HSM that ships its own provider does not need this one.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Source: docs/16-adcs-readiness.md · 2 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="arch">
+<div class="num">3 / 15</div>
+<div class="frame"><section id="arch" data-section="How the provider is designed, layer by layer and contract by contract" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<h2 style="font-size:64px;font-weight:600;line-height:1.1">Four processes deep, one DLL wide</h2>
+<div style="display:flex;flex-direction:column;gap:14px;width:1664px">
+<div style="display:flex;flex-direction:column;gap:6px;background:#FFFFFF;padding:28px 36px;border:1px solid #D9DCD6;border-radius:14px">
+<h3 style="font-size:30px;font-weight:600">Windows application</h3>
+<p style="font-size:26px;color:#6E7B86;font-family:'JetBrains Mono', 'Courier New', monospace">certsrv · certutil · certreq · any NCrypt* caller</p>
+</div>
+<p style="font-size:30px;color:#B3561A;font-family:'JetBrains Mono', 'Courier New', monospace">&#8595;&#8195;NCrypt*() public API</p>
+<div style="display:flex;flex-direction:column;gap:6px;background:#FFFFFF;padding:28px 36px;border:1px solid #D9DCD6;border-radius:14px">
+<h3 style="font-size:30px;font-weight:600">ncrypt.dll</h3>
+<p style="font-size:26px;color:#6E7B86;font-family:'JetBrains Mono', 'Courier New', monospace">HKLM\…\Cryptography\Providers\SoftHSM KSP</p>
+</div>
+<p style="font-size:30px;color:#B3561A;font-family:'JetBrains Mono', 'Courier New', monospace">&#8595;&#8195;NCRYPT_KEY_STORAGE_FUNCTION_TABLE — 26 slots + Version</p>
+<div style="display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:32px 36px;border-radius:14px">
+<h3 style="font-size:32px;font-weight:600;color:#E08A4A">softhsm_ksp.dll&#8195;·&#8195;this project</h3>
+<div style="display:flex;gap:16px">
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">ksp_*() — the 26 CNG functions, handle validation, blob formats</p>
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">p11_caps — capability probe at startup</p>
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">p11_session — pool of 16, semaphore + critical section</p>
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">p11_context — LoadLibrary + C_Initialize, retryable</p>
+</div>
+</div>
+<p style="font-size:30px;color:#B3561A;font-family:'JetBrains Mono', 'Courier New', monospace">&#8595;&#8195;C_*() through CK_FUNCTION_LIST — PKCS#11 v2.40</p>
+<div style="display:flex;flex-direction:column;gap:6px;background:#FFFFFF;padding:28px 36px;border:1px solid #D9DCD6;border-radius:14px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:30px;font-weight:600">Any v2.40+ PKCS#11 module</h3>
+<p style="font-size:26px;color:#6E7B86;font-family:'JetBrains Mono', 'Courier New', monospace">SoftHSM2 (lab) · Kryoptic (CI) · a certified hardware HSM (production)</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">The module path is a run-time setting, not a compile-time one · 3 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="layers">
+<div class="num">4 / 15</div>
+<div class="frame"><section id="layers" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:64px;font-weight:600;line-height:1.1">Two layers, one translation each way</h2>
+<p style="font-size:30px;line-height:1.4;width:1600px;color:#44525E">The <span style="color:#B3561A">KSP_</span> layer speaks CNG and knows nothing about Cryptoki. The <span style="color:#2F6F8F">P11_</span> layer speaks PKCS#11 and knows nothing about handles or blobs. Everything hard lives on the boundary.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:27px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:21%;color:#F7F7F4;font-size:27px;text-align:left;padding:18px 20px">Module</th>
+<th style="width:26%;color:#F7F7F4;font-size:27px;text-align:left">Owns</th>
+<th style="width:53%;color:#F7F7F4;font-size:27px;text-align:left">The design decision inside it</th>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_provider.c</td>
+<td>Open, Close, FreeBuffer, algorithm advertisement</td>
+<td>Advertises the <b>intersection</b> of what the KSP maps and what the token has — never a list compiled into the DLL</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_key_ops.c</td>
+<td>Create, Open, Finalize, Enum, Delete</td>
+<td>A taken container name is <b>NTE_EXISTS</b>; an overwrite destroys the old objects only <i>after</i> the new key generates</td>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_crypto.c</td>
+<td>SignHash, Verify, Encrypt, Decrypt, Export, Import, ECDH</td>
+<td>Size queries answer <b>from the key</b>, never by starting a token operation that would be left unfinished</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_properties.c</td>
+<td>Get and Set, key and provider scope</td>
+<td>Export policy is writable only before FinalizeKey — the token fixes CKA_SENSITIVE at generation</td>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">p11_context.c</td>
+<td>Module load, C_Initialize, slot choice</td>
+<td>A failed initialisation is <b>retried</b>; one bad module path must not poison the provider until the host restarts</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">p11_session.c</td>
+<td>16 sessions, login, per-scope pools</td>
+<td>Scope is a <b>mandatory</b> parameter on acquire — a defaulted one would let a forgotten call site hit the wrong token and report success</td>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">p11_utils.c</td>
+<td>Mechanisms, DER, key export</td>
+<td>ECDSA signatures pass through raw r&#8214;s as v2.40 §2.3.1 mandates; the DER decoder is a fallback only</td>
+</tr>
+</table>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Nine of ten source files compile clean under MSVC at /W3 /WX today · 4 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="contracts">
+<div class="num">5 / 15</div>
+<div class="frame"><section id="contracts" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Four contracts that shaped the code</p>
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1540px">Each of these was learned by breaking it</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:28px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #E08A4A">
+<h3 style="font-size:34px;font-weight:600">CNG calls everything twice</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">NULL buffer for the length, then again for the work. The first implementation answered the length by starting a token operation and returning without finishing it — the session went back into the pool live, and the next caller got CKR_OPERATION_ACTIVE. <b style="color:#F7F7F4">Lengths now come from the key.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #E08A4A">
+<h3 style="font-size:34px;font-weight:600">The table is assigned by name</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">Designated initialisers against the SDK header, so a wrong slot name is a build error rather than a displaced function. Positional initialisation is permanently out — it once put a key handle where a HANDLE* belonged and returned success.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:34px;font-weight:600">Every handle is a magic number</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">Handles are direct casts validated by <span style="color:#E08A4A">dwMagic</span>. All 26 slots are called with a bad handle in the suite, and completeness is enforced by comparing each probe against the real table slot <b style="color:#F7F7F4">by pointer</b> — a new slot with no probe fails and names itself.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:36px;border-radius:16px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:34px;font-weight:600">Misconfiguration fails closed</h3>
+<p style="font-size:26px;line-height:1.4;color:#AFC3D4">No PIN where one is required is NTE_PERM and a log line, never a silent attempt at <span style="font-family:'JetBrains Mono', 'Courier New', monospace">1234</span>. Half-configured per-scope tokens, two labels resolving to one token, or a caller selection alongside them are all refused. Isolation that reports success without isolating is worse than none.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Memory is HeapAlloc on GetProcessHeap only; all 26 functions are re-entrant and tested as such · 5 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="auth">
+<div class="num">6 / 15</div>
+<div class="frame"><section id="auth" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1620px">The token decides how it is authenticated, not the provider</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">The provider reads <span style="font-family:'JetBrains Mono', 'Courier New', monospace">CK_TOKEN_INFO.flags</span> for the scope's slot and honours all three models PKCS#11 describes. Until recently it demanded a PIN of every token — so a hardware HSM with a PIN pad, the case this project targets, was rejected outright.</p>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#2F6F8F">No login required</p>
+<h3 style="font-size:30px;font-weight:600">CKF_LOGIN_REQUIRED clear</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">No C_Login at all. No credential to store anywhere.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#2F6F8F">Protected path</p>
+<h3 style="font-size:30px;font-weight:600">PIN pad on the device</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">C_Login with pPin = NULL, per v2.40 §11.6. A configured PIN is deliberately <b>not sent</b>, only logged as unused. <b>Ask your HSM vendor for this one.</b></p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#B3561A">PIN required</p>
+<h3 style="font-size:30px;font-weight:600">A credential must reach a headless service</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">certsrv never calls NCryptSetProperty, so the PIN has to be waiting for it. Four sources, in order.</p>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#111E2B;color:#F7F7F4;padding:30px 36px;border-radius:16px">
+<p style="font-size:25px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A;width:200px">Precedence</p>
+<p style="flex:1;font-size:26px;line-height:1.45;font-family:'JetBrains Mono', 'Courier New', monospace">KSP_MACHINE_PIN / KSP_USER_PIN&#8195;&#8594;&#8195;NCRYPT_PIN_PROPERTY&#8195;&#8594;&#8195;<b style="color:#E08A4A">DPAPI blob</b>&#8195;&#8594;&#8195;SOFTHSM2_PIN</p>
+</div>
+<p style="font-size:28px;line-height:1.4;width:1664px;color:#44525E">The blob outranks the ambient variable on purpose: a leftover lab variable must not silently downgrade a deployment that was provisioned properly, while appearing to work. <b>And the registry ACL is the protection, not the encryption</b> — machine-scope DPAPI can be unprotected by anything on the host.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">A C_GetTokenInfo that fails falls through to the strict PIN model, and that direction is fault-injected · 6 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="probe">
+<div class="num">7 / 15</div>
+<div class="frame"><section id="probe" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:38px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1600px">Backend-agnostic by probe, not by porting</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">The provider always loaded whatever module a path pointed at — and then advertised a fixed list compiled into the DLL, describing one token. That was never a porting job; it was a correctness bug.</p>
+</div>
+<div style="display:flex;gap:28px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px">
+<h3 style="font-size:32px;font-weight:600">What the probe does</h3>
+<ul style="font-size:26px;line-height:1.5;color:#44525E;padding:0 0 0 32px">
+<li>C_GetMechanismList once at initialisation</li>
+<li>EnumAlgorithms answers the <b>intersection</b> of mapped and present</li>
+<li>Generation and use are checked separately</li>
+<li>A refused probe costs nothing — behaviour reverts to permissive</li>
+<li>An implausible mechanism count <b>abandons</b> the probe rather than truncating it</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">What a probe cannot answer</h3>
+<p style="font-size:26px;line-height:1.45;color:#44525E"><b>Advertisement is not capability.</b> SoftHSM2 advertises CKM_RSA_PKCS_OAEP and accepts only SHA-1, because the restriction lives inside the mechanism <i>parameters</i>. The probe is mechanism-granular; some limits are finer.</p>
+<p style="font-size:26px;line-height:1.45;color:#44525E"><b>Strictness is not capability.</b> Whether a token enforces CKA_WRAP is invisible to every query. So <span style="font-family:'JetBrains Mono', 'Courier New', monospace">p11_qualify</span> runs the requirements instead of reading them.</p>
+</div>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#111E2B;color:#F7F7F4;padding:28px 32px;border-radius:14px">
+<p style="font-size:44px;font-weight:700">18 + 4</p>
+<p style="font-size:25px;color:#AFC3D4">conformance checks plus strictness probes, run against a candidate token</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#111E2B;color:#F7F7F4;padding:28px 32px;border-radius:14px">
+<p style="font-size:44px;font-weight:700">1 header</p>
+<p style="font-size:25px;color:#AFC3D4">is all p11_qualify links, so it builds against a vendor's library with no copy of the KSP</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#111E2B;color:#F7F7F4;padding:28px 32px;border-radius:14px">
+<p style="font-size:44px;font-weight:700">2 of 5</p>
+<p style="font-size:25px;color:#AFC3D4">claimed token divergences turned out not to be divergences once both tokens were measured</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">ML-DSA at all three parameter sets works on a v3.2 token and stays dark on SoftHSM2 — same mechanism, no code change · 7 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="pyramid">
+<div class="num">8 / 15</div>
+<div class="frame"><section id="pyramid" data-section="How the code is proven, and the discipline that proved it wrong five times" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Test strategy</p>
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">Five layers, and only two of them have ever run</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px;width:1664px">
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;padding:26px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="width:150px;font-size:26px;font-weight:700;color:#E08A4A">Layer 4</p>
+<p style="width:420px;font-size:28px;font-weight:600">Microsoft HLK, in HLK Studio</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Controller plus a separate test client. Never executed.</p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;padding:26px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="width:150px;font-size:26px;font-weight:700;color:#E08A4A">Layer 3</p>
+<p style="width:420px;font-size:28px;font-weight:600">PowerShell, 9 scenarios + ~150 HLK checks</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">NCrypt by P/Invoke, verified against BCrypt. Syntax-checked on Linux; never executed.</p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;padding:26px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="width:150px;font-size:26px;font-weight:700;color:#E08A4A">Layer 2</p>
+<p style="width:420px;font-size:28px;font-weight:600">40 integration tests, Windows + live token</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Written and parse-checked. Never executed — a suite that has never run is a hypothesis about the suite.</p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#15303A;padding:26px 32px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="width:150px;font-size:26px;font-weight:700;color:#6FA8C9">Layer 1b</p>
+<p style="width:420px;font-size:28px;font-weight:600">The real sources against a real second token</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Kryoptic, unrelated to this repository. Only the loader is substituted. <b style="color:#F7F7F4">Runs in CI.</b></p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#15303A;padding:26px 32px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="width:150px;font-size:26px;font-weight:700;color:#6FA8C9">Layer 1</p>
+<p style="width:420px;font-size:28px;font-weight:600">27 unit suites, 2 051 assertions</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Linux/GCC against a PKCS#11 mock. 86.2 % lines, 100 % functions. <b style="color:#F7F7F4">Runs in CI.</b></p>
+</div>
+</div>
+<p style="font-size:29px;line-height:1.4;width:1664px;color:#AFC3D4">The pyramid is upside down where it matters: <b style="color:#F7F7F4">everything that needs Windows is unexecuted</b>, so layer 1b was built to move as much risk as possible below that line.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">docs/09-tests.md · 8 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="ran">
+<div class="num">9 / 15</div>
+<div class="frame"><section id="ran" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">What actually ran, and what each suite is for</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">Every figure below comes from the run log the build gates on, and a static check compares the documented counts against it. A count checked against a different invocation can disagree with the one that gated the build.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:27px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:30%;color:#F7F7F4;font-size:27px;text-align:left;padding:18px 20px">Suite</th>
+<th style="width:14%;color:#F7F7F4;font-size:27px;text-align:left">Assertions</th>
+<th style="width:56%;color:#F7F7F4;font-size:27px;text-align:left">The question only this suite can answer</th>
+</tr>
+<tr>
+<td>Unit, 27 suites</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">2 051</td>
+<td>Both sides of every capability gate, including the closed one a live token cannot show</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>Real backend, run twice</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">256</td>
+<td>What the provider <b>leaves behind</b> — an orphaned certificate is invisible to a single pass</td>
+</tr>
+<tr>
+<td>ADCS lifecycle, run twice</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">84</td>
+<td>The CA-shaped sequence: wizard size query, machine key, sign, certificate, refused duplicate, renewal, delete</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>Two tokens</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">53 + 28</td>
+<td>Whether selection <b>works</b> or is merely ignored — one token lands on the default slot either way</td>
+</tr>
+<tr>
+<td>Concurrency, 32 threads</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">33</td>
+<td>Crossed sessions, by comparing signature <b>bytes</b> to a single-threaded reference — a crossed key returns ERROR_SUCCESS</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>p11_qualify</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">18 + 4</td>
+<td>Whether a candidate HSM meets the backend contract, by running it rather than reading a datasheet</td>
+</tr>
+<tr>
+<td>Integration + HLK</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;color:#B3561A">0 run</td>
+<td style="color:#B3561A">Everything ncrypt.dll does. The largest single pocket of untested behaviour in the project</td>
+</tr>
+</table>
+<p style="font-size:28px;line-height:1.4;width:1664px;color:#44525E">Two tokens, not one, and two passes, not one. Both choices were made after a single token and a single pass each hid a defect that the second one found immediately.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Concurrency also runs under ThreadSanitizer, with each suppression's reasoning recorded · 9 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="injection">
+<div class="num">10 / 15</div>
+<div class="frame"><section id="injection" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">The discipline</p>
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1620px">A green test proves nothing until you have watched it go red</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">Every claim in this project is established by breaking the code and confirming the suite catches it. The habit exists because vacuous tests kept passing: one asserted a defect <i>as</i> the expected behaviour, another compared two handles that could be swapped freely.</p>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">Five defects the mock could not see</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li>ECDSA signing had <b>never</b> worked against a conformant token — the provider decoded DER where v2.40 mandates raw r&#8214;s, and the mock returned whatever DER the test had just built</li>
+<li>A size query poisoned the session pool</li>
+<li>A deleted key left its certificate on the token</li>
+<li>HMAC and CMAC signing had never worked</li>
+<li>A key opened by name lost its modulus size, so every signature failed at CNG's first call</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:36px;border-radius:16px">
+<h3 style="font-size:32px;font-weight:600;color:#E08A4A">And three traps in the harness itself</h3>
+<ul style="font-size:25px;line-height:1.5;color:#AFC3D4;padding:0 0 0 30px">
+<li>Building one test binary <b>silently rebuilt nothing</b>, so four consecutive fault injections ran against a stale binary and looked undetected — the worst possible failure for the one tool whose job is to show a test can fail</li>
+<li>Ten stubs were never checked against the real prototype, so a signature change produced ten segfaults and no diagnostic</li>
+<li>A grep for a fix matched the comment <i>describing</i> the fix, and reported ten files as correct when none was</li>
+</ul>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Restore an injection from a copy, never from git — that mistake has cost uncommitted work three times · 10 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="checks">
+<div class="num">11 / 15</div>
+<div class="frame"><section id="checks" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1620px">Five static checks, because prose does not stay true</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#AFC3D4">The project's most persistent defect is not a bug. It is <b style="color:#F7F7F4">a summary of a fact, sitting next to the fact, not updated with it</b> — found in the feature matrix, the property tables, the test counts, the registration script and the vendor-facing requirements document. Each one became a machine-checked invariant instead.</p>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:22px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_mock_drift.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The test mock against the real Windows headers — values <b style="color:#F7F7F4">and typedef widths</b>. The mock once invented two constants and mis-valued two more, and every test passed because the tests read the same wrong numbers.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_registration.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The registration script against what the provider advertises, both ways. Found AES-CMAC advertised and never registered, and <b style="color:#F7F7F4">RSA decryption implemented and undiscoverable</b> — never published under the asymmetric-encryption interface.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_property_docs.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The property tables against the dispatch chains, in both directions and including the read and write columns. Its first run reported four real defects — one documented property did not exist at all.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_test_counts.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Every documented suite and assertion figure against the suite's own run log. The historical session entries are deliberately excluded — a check that flags the record as drift pressures the next reader into falsifying history.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_generated_artifacts.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Four generated documents against their inputs, by fingerprint. It compares inputs rather than outputs, because every artifact embeds a date and two are binaries with unstable internal ordering.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#2A1A14;padding:30px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">The weakest gate was the one nobody could run</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The mingw cross-compile is the only check that compiles Windows-only code, and it did not promote an implicit declaration to an error where the unit build did. It let a truncated Win64 heap pointer through with <b style="color:#F7F7F4">exit 0</b>.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">All five run in the Linux CI job and need no toolchain · 11 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="install1">
+<div class="num">12 / 15</div>
+<div class="frame"><section id="install1" data-section="Standing the provider up under Microsoft ADCS, step by step" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Installation · step 1 of 3</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Build the DLL — and find the header first</h2>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:30px;font-weight:600">Prerequisites</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li>Windows 10/11 x64, elevated prompt</li>
+<li>Visual Studio with the x64 toolset, and CMake</li>
+<li><b style="color:#B3561A">ncrypt_provider.h</b> — associated with the Cryptographic Provider Development Kit; absent from the SDK, a WDK install and mingw-w64</li>
+<li>A PKCS#11 module: SoftHSM2 for the lab, the vendor's library for production</li>
+<li>An OV or EV code-signing certificate, bought by a verified legal entity</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:34px;border-radius:16px">
+<h3 style="font-size:30px;font-weight:600;color:#E08A4A">Commands</h3>
+<p style="font-size:24px;line-height:1.65;font-family:'JetBrains Mono', 'Courier New', monospace;color:#CFDEE8">git submodule update --init --recursive<br>
+.\softhsm_ksp\tools\build_softhsm_windows.ps1<br><br>
+cd softhsm_ksp; mkdir build; cd build<br>
+cmake .. -A x64 `<br>
+&#8195;-DSOFTHSM2_DIR=..\..\softhsm2-install `<br>
+&#8195;-DCPDK_INCLUDE_DIR=C:\cpdk\include<br>
+cmake --build . --config Release<br><br>
+..\tools\sign_ksp.ps1</p>
+</div>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFF6EE;padding:28px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">Omit the header and CMake <i>skips</i> the DLL</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Deliberately — a provider with no entry point is worse than no provider. The build warns instead, and the other nine files still compile.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFF6EE;padding:28px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">Settle signing in the first hour</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Whether ncrypt.dll refuses to load an unsigned user-mode KSP is <b>unconfirmed</b>. If it does, that is a procurement lead time, not a code change.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Don't pin a Visual Studio generator: runners move past it. Let CMake pick · 12 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="install2">
+<div class="num">13 / 15</div>
+<div class="frame"><section id="install2" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Installation · step 2 of 3</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Register the provider, then give it a token and a credential</h2>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:34px;border-radius:16px">
+<h3 style="font-size:30px;font-weight:600;color:#E08A4A">Commands, elevated</h3>
+<p style="font-size:24px;line-height:1.65;font-family:'JetBrains Mono', 'Courier New', monospace;color:#CFDEE8">.\register_ksp.ps1 -DllPath C:\KSP\softhsm_ksp.dll<br>
+certutil -csplist<br><br>
+setx /M KSP_PKCS11_LIB "C:\hsm\vendor-p11.dll"<br>
+setx /M KSP_MACHINE_TOKEN_LABEL "CA-MACHINE"<br>
+setx /M KSP_USER_TOKEN_LABEL&#8195;&#8195;"CA-USER"<br><br>
+.\set_ksp_pin.ps1 -Scope Machine `<br>
+&#8195;-ServiceAccount 'NT Service\CertSvc'<br><br>
+setx /M KSP_DEBUG 1&#8195;&#8195;# DebugView, pilot only</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFFFF;padding:30px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:29px;font-weight:600">Registration is two things, not one</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">The binary goes in with <b>BCryptRegisterProvider</b>; the algorithm list goes in with <b>BCryptAddContextFunctionProvider</b>. Writing the registry values by hand does only the first: the provider loads, reports no algorithms, and anything discovering providers by algorithm skips it.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFFFF;padding:30px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:29px;font-weight:600">Two tokens, not two label prefixes</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Set the pair and NCRYPT_MACHINE_KEY_FLAG selects <b>which token</b> — own PIN, own session pool. Without them the scopes are a label prefix inside one token, which is namespacing, not isolation. Half-configured is refused.</p>
+</div>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#FFF6EE;padding:28px 34px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="flex:1;font-size:27px;line-height:1.45;color:#44525E">Then <b>restart anything already running.</b> CNG reads the provider list at process start, so certsrv will not see a newly registered provider until it restarts. And remove SOFTHSM2_PIN once the blob is provisioned, or you cannot tell which credential a successful login used.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">set_ksp_pin.ps1 reads the PIN with Read-Host -AsSecureString, so it never reaches the process list or the shell history · 13 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="install3">
+<div class="num">14 / 15</div>
+<div class="frame"><section id="install3" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:30px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Installation · step 3 of 3</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Stand up a throwaway CA, in the order that finds problems soonest</h2>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:32px;border-radius:16px">
+<h3 style="font-size:29px;font-weight:600;color:#E08A4A">Commands</h3>
+<p style="font-size:24px;line-height:1.6;font-family:'JetBrains Mono', 'Courier New', monospace;color:#CFDEE8">Install-WindowsFeature ADCS-Cert-Authority `<br>
+&#8195;-IncludeManagementTools<br><br>
+Install-AdcsCertificationAuthority `<br>
+&#8195;-CAType StandaloneRootCA `<br>
+&#8195;-CACommonName "KSP Pilot Root" `<br>
+&#8195;-CryptoProviderName "RSA#SoftHSM KSP" `<br>
+&#8195;-KeyLength 4096 -HashAlgorithmName SHA256 `<br>
+&#8195;-ValidityPeriod Years -ValidityPeriodUnits 5<br><br>
+certutil -crl&#8195;&#8195;&#8195;&#8195;# publish a CRL<br>
+certutil -verify cert.cer</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:29px;font-weight:600">The pilot order, and what each step is watching for</h3>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:24px;color:#111E2B">
+<tr style="background:#111E2B">
+<th style="width:12%;color:#F7F7F4;font-size:24px;text-align:left;padding:12px 14px">#</th>
+<th style="width:38%;color:#F7F7F4;font-size:24px;text-align:left">Step</th>
+<th style="width:50%;color:#F7F7F4;font-size:24px;text-align:left">Watching for</th>
+</tr>
+<tr><td>E1</td><td>Wizard offers the provider</td><td>The key-size list, read from NCRYPT_LENGTHS_PROPERTY</td></tr>
+<tr style="background:#EDEFEA"><td>E2</td><td>Install a standalone test CA</td><td>Key creation as the service account; the PIN reaching a headless process</td></tr>
+<tr><td>E3</td><td>Issue a certificate, publish a CRL</td><td>The main signing path through ncrypt.dll</td></tr>
+<tr style="background:#FFF0E2"><td style="color:#B3561A"><b>E4</b></td><td style="color:#B3561A"><b>Renew the CA cert, new key</b></td><td style="color:#B3561A"><b>The test most likely to fail — which call pattern ADCS really uses</b></td></tr>
+<tr style="background:#EDEFEA"><td>E5</td><td>Restart the service, then reboot</td><td>Lazy initialisation; PIN availability at boot before any logon</td></tr>
+<tr><td>E6</td><td>Revoke, then certutil -verify</td><td>End-to-end correctness, not merely API success</td></tr>
+<tr style="background:#EDEFEA"><td>E7</td><td>Two CAs, or a second KSP consumer</td><td>The session pool and per-process singleton under contention</td></tr>
+</table>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;color:#F7F7F4;padding:26px 34px;border-radius:14px">
+<p style="flex:1;font-size:27px;line-height:1.45">Throw the test CA away afterwards. <b style="color:#E08A4A">Never pilot against a CA whose certificates anything trusts.</b> Some of what is written above about the wizard and about renewal is inference from the CNG contract, not observation — no version of this provider has been loaded by ncrypt.dll.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">The CA MMC's private-key permissions dialog will not work — there is no DACL to read · 14 / 15</p>
+</section></div>
+</article>
+<article class="slide" id="remaining">
+<div class="num">15 / 15</div>
+<div class="frame"><section id="remaining" data-section="What is still missing, what blocks it, and who has to decide" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">The backlog is no longer about code</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#AFC3D4">One header, one Windows machine, three decisions and your HSM. Of the open capability rows in the feature matrix, <b style="color:#F7F7F4">10 of 30 can start here</b>; the rest are blocked outside this repository.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:26px;color:#F7F7F4;width:1664px">
+<tr style="background:#1A2C3D">
+<th style="width:9%;color:#E08A4A;font-size:26px;text-align:left;padding:16px 18px">Phase</th>
+<th style="width:40%;color:#E08A4A;font-size:26px;text-align:left">What is left</th>
+<th style="width:51%;color:#E08A4A;font-size:26px;text-align:left">What it is blocked on</th>
+</tr>
+<tr><td><b>B</b></td><td>Build the DLL; register it; run the 40 integration tests and ~150 conformance checks for the first time; confirm the table layout</td><td><b>ncrypt_provider.h</b> and a Windows machine. <b style="color:#E08A4A">This is the critical path, and it has no engineering content</b></td></tr>
+<tr style="background:#19293A"><td><b>C</b></td><td>Nothing, unless your token requires a PIN. The DPAPI registry read is written and compile-checked but has never been executed</td><td>Phase B. Run <span style="font-family:'JetBrains Mono', 'Courier New', monospace">p11_qualify</span> against the HSM to learn which of the three authentication models it uses</td></tr>
+<tr><td><b>D3</b></td><td>Accept — or reject — a CA key with no Windows DACL, protected only by the token boundary</td><td><b>You.</b> This is a risk acceptance, not an engineering task</td></tr>
+<tr style="background:#19293A"><td><b>E</b></td><td>The seven-step ADCS pilot, E4 the most likely to fail</td><td>Phases A and B. Everything stated about ADCS today is a projection</td></tr>
+<tr><td><b>F</b></td><td>Code-signing certificate, a real HSM instead of SoftHSM2, FIPS posture if required</td><td>Procurement. <b style="color:#E08A4A">The certificate has the longest lead time of anything here — start it now</b></td></tr>
+<tr style="background:#19293A"><td><b>&#8212;</b></td><td>16 entry points answer NTE_INVALID_PARAMETER for a bad handle where 7 answer NTE_INVALID_HANDLE</td><td>Microsoft's documented mapping, unreachable from this workspace. Deliberately unchanged rather than altered on a recalled contract</td></tr>
+</table>
+<div style="display:flex;gap:22px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px;border-left:6px solid #E08A4A">
+<h3 style="font-size:27px;font-weight:600">Decide: target token</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">If the HSM ships its own KSP, this project may not be the right tool at all.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px;border-left:6px solid #E08A4A">
+<h3 style="font-size:27px;font-weight:600">Ask the vendor for C-c</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">A protected authentication path removes the credential from Windows entirely, and is already supported.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:27px;font-weight:600">Read the sizes as relative</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">This project's effort estimates were wrong on 4 of the 4 rows it has ever closed. Two were marked "no remedy planned" and closed in a day.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Either the vendor's PKCS#11 library or a Windows machine with the CPDK unblocks more than anything else · 15 / 15</p>
+</section></div>
+</article>
+</div>
+</body>
+</html>

@@ -30,9 +30,25 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 
 | Artefact | Source of truth | Regenerate with |
 |----------|-----------------|-----------------|
-| [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf) — 99 market capabilities, our coverage, and the gap remedy for each | [`feature-matrix.csv`](./feature-matrix.csv) | `python3 generate_feature_matrix.py` |
+| [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf) — 103 market capabilities, our coverage, and the gap remedy for each | [`feature-matrix.csv`](./feature-matrix.csv) | `python3 generate_feature_matrix.py` |
 | `SoftHSM2_KSP_Algorithm_Reference.docx` | `generate_algo_ref.py` | `python3 generate_algo_ref.py` |
 | `SoftHSM2_KSP_Complete_Developer_Guide.docx` | `generate_guide.py` | `python3 generate_guide.py` |
+| [`SoftHSM2_KSP_ADCS_Readiness_Plan.pdf`](../SoftHSM2_KSP_ADCS_Readiness_Plan.pdf) | [`16-adcs-readiness.md`](./16-adcs-readiness.md) | `python3 generate_adcs_plan.py` |
+| [`SoftHSM2_KSP_Design_Tests_ADCS_Slides.html`](../SoftHSM2_KSP_Design_Tests_ADCS_Slides.html) — 15 slides: the design, the test strategy, installing under ADCS, what remains | [`docs/slides/adcs-overview/`](./slides/adcs-overview/) | `python3 generate_slide_decks.py` |
+| [`SoftHSM2_KSP_Team_Plan_Slides.html`](../SoftHSM2_KSP_Team_Plan_Slides.html) — 10 slides: the plan for a team joining to finalise the work | [`docs/slides/joining-team-plan/`](./slides/joining-team-plan/) | `python3 generate_slide_decks.py` |
+
+Every row above is checked by `python3 tests/check_generated_artifacts.py`,
+which recomputes a fingerprint of each artefact's own inputs. Edit a slide
+and forget to rebuild, and CI names the deck to regenerate. **Edit the
+source under `docs/slides/`, never the built `.html`** — a hand edit to the
+output is overwritten on the next build and reported as stale before that.
+
+A slide deck's source is one `deck.json` (the title, the slide order and
+the outline) plus one HTML fragment per slide: a single `<section>` on a
+fixed 1920×1080 canvas with every style inline. One slide, one file, so a
+one-slide change reads as a one-slide diff. Speaker notes are the `<aside>`
+at the end of a slide; the build lifts them out below the canvas on screen
+and omits them from print.
 
 ---
 
@@ -80,7 +96,7 @@ softhsm2-x64.dll       PKCS#11 v2.40 — encrypted SQLite storage
 |-------------|-------------------|-------|
 | `SignHash` RSA PKCS1 | `CKM_RSA_PKCS` | Hash passed as-is |
 | `SignHash` RSA PSS | `CKM_RSA_PKCS_PSS` | `CK_RSA_PKCS_PSS_PARAMS` mapped from `BCRYPT_PSS_PADDING_INFO` |
-| `SignHash` ECDSA | `CKM_ECDSA` | DER result converted to r‖s |
+| `SignHash` ECDSA | `CKM_ECDSA` | Raw r‖s passed through — PKCS#11 v2.40 §2.3.1 mandates that form and it is already CNG's. The DER decoder is a fallback for a non-conformant token only |
 | `Decrypt` PKCS1 | `CKM_RSA_PKCS` | — |
 | `Decrypt` OAEP | `CKM_RSA_PKCS_OAEP` | `CK_RSA_PKCS_OAEP_PARAMS` mapped from `BCRYPT_OAEP_PADDING_INFO` |
 | `SignHash` EdDSA | `CKM_EDDSA` | Raw signature, no DER conversion |

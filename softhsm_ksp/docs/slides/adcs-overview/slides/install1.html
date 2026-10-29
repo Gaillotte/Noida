@@ -1,0 +1,40 @@
+<section id="install1" data-section="Standing the provider up under Microsoft ADCS, step by step" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Installation · step 1 of 3</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Build the DLL — and find the header first</h2>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:30px;font-weight:600">Prerequisites</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li>Windows 10/11 x64, elevated prompt</li>
+<li>Visual Studio with the x64 toolset, and CMake</li>
+<li><b style="color:#B3561A">ncrypt_provider.h</b> — associated with the Cryptographic Provider Development Kit; absent from the SDK, a WDK install and mingw-w64</li>
+<li>A PKCS#11 module: SoftHSM2 for the lab, the vendor's library for production</li>
+<li>An OV or EV code-signing certificate, bought by a verified legal entity</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:34px;border-radius:16px">
+<h3 style="font-size:30px;font-weight:600;color:#E08A4A">Commands</h3>
+<p style="font-size:24px;line-height:1.65;font-family:'JetBrains Mono', 'Courier New', monospace;color:#CFDEE8">git submodule update --init --recursive<br>
+.\softhsm_ksp\tools\build_softhsm_windows.ps1<br><br>
+cd softhsm_ksp; mkdir build; cd build<br>
+cmake .. -A x64 `<br>
+&#8195;-DSOFTHSM2_DIR=..\..\softhsm2-install `<br>
+&#8195;-DCPDK_INCLUDE_DIR=C:\cpdk\include<br>
+cmake --build . --config Release<br><br>
+..\tools\sign_ksp.ps1</p>
+</div>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFF6EE;padding:28px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">Omit the header and CMake <i>skips</i> the DLL</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Deliberately — a provider with no entry point is worse than no provider. The build warns instead, and the other nine files still compile.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFF6EE;padding:28px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">Settle signing in the first hour</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Whether ncrypt.dll refuses to load an unsigned user-mode KSP is <b>unconfirmed</b>. If it does, that is a procurement lead time, not a code change.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Don't pin a Visual Studio generator: runners move past it. Let CMake pick · 12 / 15</p>
+</section>

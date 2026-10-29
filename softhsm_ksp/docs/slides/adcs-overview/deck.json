@@ -1,0 +1,41 @@
+{
+  "v": 4,
+  "createdOnFiles": { "v": 1, "at": "2026-10-29T00:00:00Z" },
+  "lists": "css",
+  "title": "SoftHSM KSP — Design, Tests, ADCS",
+  "order": [
+    "cover",
+    "verdict",
+    "arch",
+    "layers",
+    "contracts",
+    "auth",
+    "probe",
+    "pyramid",
+    "ran",
+    "injection",
+    "checks",
+    "install1",
+    "install2",
+    "install3",
+    "remaining"
+  ],
+  "sections": {
+    "s1": { "description": "What the provider is and whether it can back a certification authority", "start": "cover" },
+    "s2": { "description": "How the provider is designed, layer by layer and contract by contract", "start": "arch" },
+    "s3": { "description": "How the code is proven, and the discipline that proved it wrong five times", "start": "pyramid" },
+    "s4": { "description": "Standing the provider up under Microsoft ADCS, step by step", "start": "install1" },
+    "s5": { "description": "What is still missing, what blocks it, and who has to decide", "start": "remaining" }
+  },
+  "faces": {
+    "ibm-plex-sans": {
+      "family": "IBM Plex Sans",
+      "href": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    },
+    "jetbrains-mono": {
+      "family": "JetBrains Mono",
+      "href": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
+    }
+  },
+  "designSystems": []
+}

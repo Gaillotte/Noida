@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finishing the KSP — Plan for the Joining Team</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap">
+<style>
+*{box-sizing:border-box}
+html{background:#20272E}
+body{margin:0;padding:48px 0 96px;font-family:'IBM Plex Sans',Arial,sans-serif;color:#F7F7F4}
+.wrap{width:1280px;margin:0 auto}
+header.doc{padding:0 0 40px}
+header.doc h1{font-size:34px;font-weight:600;margin:0 0 10px;line-height:1.2}
+header.doc p{font-size:17px;line-height:1.5;color:#AFC3D4;margin:0 0 6px}
+header.doc .fp{font-family:'JetBrains Mono',monospace;font-size:13px;color:#7E95A8}
+nav.outline{border-top:1px solid #39454F;border-bottom:1px solid #39454F;padding:20px 0;margin:0 0 40px}
+nav.outline ol{margin:0;padding:0 0 0 22px;font-size:15px;line-height:1.7;color:#AFC3D4}
+nav.outline a{color:#AFC3D4;text-decoration:none}
+nav.outline a:hover{text-decoration:underline}
+article.slide{margin:0 0 44px}
+article.slide .num{font-family:'JetBrains Mono',monospace;font-size:13px;color:#7E95A8;padding:0 0 8px}
+.frame{width:1280px;height:720px;overflow:hidden;position:relative;
+       border:1px solid #39454F;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+.frame>section{width:1920px;height:1080px;position:relative;
+       transform:scale(0.666667);transform-origin:top left}
+.frame>section aside{display:none}
+.notes{background:#283038;border-left:4px solid #E08A4A;padding:18px 22px;margin:14px 0 0}
+.notes h2{font-size:12px;font-weight:600;letter-spacing:2px;text-transform:uppercase;
+       color:#E08A4A;margin:0 0 8px}
+.notes p{font-size:15px;line-height:1.6;color:#CFDEE8;margin:0}
+@media print{
+  @page{size:1920px 1080px;margin:0}
+  html,body{background:#FFF}
+  body{padding:0}
+  .wrap{width:auto;margin:0}
+  header.doc,nav.outline,article.slide .num,.notes{display:none}
+  article.slide{margin:0;break-after:page;page-break-after:always}
+  .frame{width:1920px;height:1080px;border:0;box-shadow:none}
+  .frame>section{transform:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="doc">
+<h1>Finishing the KSP — Plan for the Joining Team</h1>
+<p>The plan for a team joining with the mission to finalise</p>
+<p>10 slides. Speaker notes are printed under each slide on screen and
+omitted when printing. Built from <code>softhsm_ksp/docs/slides/joining-team-plan</code> — edit the slide
+there, never this file.</p>
+<p class="fp">Content fingerprint: 832c83a4e0d9</p>
+</header>
+<nav class="outline"><ol>
+<li><b><a href="#cover">Finishing this is not mostly a coding job</a></b> &mdash; Where the project stands and what finishing it would mean</li>
+<li><a href="#standing">Inherit this honestly: what is proven and what is merely written</a></li>
+<li><b><a href="#critpath">One serial chain, three lanes that must run beside it</a></b> &mdash; The critical path, and the work that must not wait behind it</li>
+<li><a href="#dayone">Four things to start before anyone writes a line of code</a></li>
+<li><a href="#unblocked">Part of the backlog is blocked only by where it was built</a></li>
+<li><b><a href="#tracks">Four tracks, and the skill each one actually needs</a></b> &mdash; Who does what, the gate each track must pass, and how to work in this codebase</li>
+<li><a href="#gates">Four gates, each one a claim somebody can check</a></li>
+<li><a href="#howto">How to work in this codebase without re-learning its lessons</a></li>
+<li><b><a href="#risks">Six risks, ranked by what they cost rather than how likely they are</a></b> &mdash; Risks ranked by what they would cost, and the first ninety days</li>
+<li><a href="#horizon">The first ninety days, and what “finalized” has to mean</a></li>
+</ol></nav>
+<article class="slide" id="cover">
+<div class="num">1 / 10</div>
+<div class="frame"><section id="cover" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;justify-content:space-between;gap:40px">
+<div style="display:flex;flex-direction:column;gap:26px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Onboarding plan · SoftHSM KSP for Microsoft ADCS</p>
+<h1 style="font-size:100px;font-weight:600;line-height:1.05;width:1540px">Finishing this is not mostly a coding job</h1>
+<p style="font-size:38px;line-height:1.35;width:1400px;color:#AFC3D4">The provider is written and, where it can be, tested. What stands between it and a working certification authority is one header, one Windows machine, three decisions and a purchase order — and a backlog that is blocked only by the network policy of the environment it was built in.</p>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="font-size:46px;font-weight:700;line-height:1.1">4 tracks</p>
+<p style="font-size:25px;color:#AFC3D4">three of them can start before the DLL exists</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:30px;border-radius:14px;border-left:6px solid #E08A4A">
+<p style="font-size:46px;font-weight:700;line-height:1.1">1 gate</p>
+<p style="font-size:25px;color:#AFC3D4">until the provider loads, every ADCS statement is a projection</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:30px;border-radius:14px;border-left:6px solid #E08A4A">
+<p style="font-size:46px;font-weight:700;line-height:1.1">190</p>
+<p style="font-size:25px;color:#AFC3D4">written tests that have never been executed once</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="font-size:46px;font-weight:700;line-height:1.1">3 asks</p>
+<p style="font-size:25px;color:#AFC3D4">decisions only the CA's owner can make</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Prepared for [joining team] · 29 October 2026 · gaillotte/noida</p>
+<aside>Opening frame: the hardest problems left in this project have no code in them. Say this early, because an engineering team's instinct will be to start reading source, and the two things with the longest lead times — the CPDK header and a code-signing certificate — both need someone to start making phone calls on day one.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>Opening frame: the hardest problems left in this project have no code in them. Say this early, because an engineering team&#x27;s instinct will be to start reading source, and the two things with the longest lead times — the CPDK header and a code-signing certificate — both need someone to start making phone calls on day one.</p></div></article>
+<article class="slide" id="standing">
+<div class="num">2 / 10</div>
+<div class="frame"><section id="standing" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">Inherit this honestly: what is proven and what is merely written</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">Read the second column as the real backlog. The provider has never been compiled for Windows, so everything that depends on <span style="font-family:'JetBrains Mono', 'Courier New', monospace">ncrypt.dll</span> is a hypothesis about the code <i>and</i> about the suite that would test it.</p>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<h3 style="font-size:32px;font-weight:600">Proven by execution</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li>2 051 unit assertions, 27 suites, 86.2 % lines at 100 % functions</li>
+<li>The real sources against two independent live tokens, each suite run twice</li>
+<li>RSA and ECDSA signing, key reopen by name, certificate storage, deletion</li>
+<li>32 threads over the 16-session pool, compared by signature bytes, under ThreadSanitizer</li>
+<li>Per-scope token isolation, verified with two tokens and two PINs</li>
+<li>Five static checks and a mingw cross-compile on every commit</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFF6EE;padding:36px;border:1px solid #E8CDB4;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">Written, never executed</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li><b>The DLL itself.</b> One of ten source files cannot compile without the CPDK header</li>
+<li>40 integration tests and ~150 HLK-conformant checks</li>
+<li><span style="font-family:'JetBrains Mono', 'Courier New', monospace">register_ksp.ps1</span> — parses and its C# compiles; never run</li>
+<li><span style="font-family:'JetBrains Mono', 'Courier New', monospace">set_ksp_pin.ps1</span> and the DPAPI registry read behind it</li>
+<li>Every statement about how ADCS calls a provider on renewal</li>
+<li>Whether Windows loads an unsigned user-mode KSP at all</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:36px;border-radius:16px">
+<h3 style="font-size:32px;font-weight:600;color:#E08A4A">Not an engineering question</h3>
+<ul style="font-size:25px;line-height:1.5;color:#AFC3D4;padding:0 0 0 30px">
+<li>A CA key cannot carry a Windows DACL — PKCS#11 has no ACL model. The token boundary is the whole control</li>
+<li>Which HSM. If it ships its own KSP, this project may be the wrong tool</li>
+<li>An OV or EV code-signing certificate, bought by a verified legal entity</li>
+<li>FIPS posture, which needs certified hardware rather than code</li>
+</ul>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Feature matrix: 103 capability rows, 73 covered · of the 30 open, 10 could start today and 20 are blocked outside the repository · 2 / 10</p>
+<aside>Spend the most time on the middle column. The temptation on joining will be to read the proven column and conclude the project is nearly done; it is roughly half done, and the unexecuted half is the half that decides whether it works. Five defects have already survived the mock and been caught the first time a real token ran — expect the same ratio when Windows enters the picture.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>Spend the most time on the middle column. The temptation on joining will be to read the proven column and conclude the project is nearly done; it is roughly half done, and the unexecuted half is the half that decides whether it works. Five defects have already survived the mock and been caught the first time a real token ran — expect the same ratio when Windows enters the picture.</p></div></article>
+<article class="slide" id="critpath">
+<div class="num">3 / 10</div>
+<div class="frame"><section id="critpath" data-section="The critical path, and the work that must not wait behind it" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:38px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">The shape of the plan</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">One serial chain, three lanes that must run beside it</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Critical path — strictly serial</p>
+<div style="display:flex;gap:16px;align-items:center">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#2A1A14;padding:26px 28px;border-radius:14px;border:2px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600;color:#E08A4A">The header</h3>
+<p style="font-size:24px;line-height:1.35;color:#CFDEE8">ncrypt_provider.h, plus a Windows machine. <b style="color:#F7F7F4">No engineering content at all.</b></p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">The DLL builds</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">Register it; confirm certutil lists it; close the function-table question</p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">190 tests run</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">Integration and HLK, for the first time. Expect failures — that is the point</p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">The ADCS pilot</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">E1&#8211;E7 on a throwaway CA, renewal first among the risky ones</p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">Production</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">Signed binary, real HSM, FIPS posture if required</p>
+</div>
+</div>
+</div>
+<hr style="border-top:1px solid #33475A;width:1664px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">Parallel lanes — start all three in week one</p>
+<div style="display:flex;gap:22px">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#15303A;padding:28px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">Procurement</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The code-signing certificate has the <b style="color:#F7F7F4">longest lead time of anything here</b>, and if Windows refuses unsigned providers it gates all testing, not just release.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#15303A;padding:28px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">Qualify the token</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4"><span style="font-family:'JetBrains Mono', 'Courier New', monospace">p11_qualify</span> needs no Windows and no KSP build. It settles the authentication question by measurement and may close Phase C outright.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#15303A;padding:28px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">The DACL decision</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Whether a CA key with no Windows ACL is acceptable. If the answer is no, <b style="color:#F7F7F4">everything above is wasted</b> — so ask it before the machine arrives.</p>
+</div>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Three independent sources have already been checked for the header: a WDK-installed runner, the Windows SDK, and mingw-w64 · 3 / 10</p>
+<aside>The single most important message of the deck. The serial chain cannot be compressed by adding engineers — it is gated on an artefact nobody here has been able to obtain. What adding people does buy is the three parallel lanes, and two of those can retire risk before the machine is even procured. If the DACL answer comes back no, the project stops, so put that question in front of the CA's owner in week one rather than after the pilot.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>The single most important message of the deck. The serial chain cannot be compressed by adding engineers — it is gated on an artefact nobody here has been able to obtain. What adding people does buy is the three parallel lanes, and two of those can retire risk before the machine is even procured. If the DACL answer comes back no, the project stops, so put that question in front of the CA&#x27;s owner in week one rather than after the pilot.</p></div></article>
+<article class="slide" id="dayone">
+<div class="num">4 / 10</div>
+<div class="frame"><section id="dayone" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Week one</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">Four things to start before anyone writes a line of code</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:26px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">1 · Find the header, and decide the fallback</h3>
+<p style="font-size:25px;line-height:1.45;color:#44525E">It is associated with the Cryptographic Provider Development Kit, but that is <b>unconfirmed</b> and two guesses at its location were already wrong. Give someone an MSDN or partner account and a week. <b>Decide now what happens if it cannot be had</b> — reconstructing the function table from observed behaviour is possible and is the riskiest thing anyone could do to this project.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">2 · Open the certificate purchase</h3>
+<p style="font-size:25px;line-height:1.45;color:#44525E">An OV or EV code-signing certificate needs a verified legal entity, which is weeks of paperwork, not an afternoon. Signing, timestamping and verification are already scripted and CI signs automatically once the secret exists — <b>so the only missing part is the one that cannot be hurried.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:32px;font-weight:600">3 · Run p11_qualify against the real HSM</h3>
+<p style="font-size:25px;line-height:1.45;color:#44525E">One C file, one header, no Windows and no KSP build. It runs all 18 Tier 1 requirements and four strictness probes, and reports which of the three PKCS#11 authentication models the token uses. <b>If the token has a PIN pad, Phase C closes with no work at all.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#111E2B;color:#F7F7F4;padding:36px;border-radius:16px;border-left:6px solid #E08A4A">
+<h3 style="font-size:32px;font-weight:600">4 · Get the DACL question answered</h3>
+<p style="font-size:25px;line-height:1.45;color:#AFC3D4">Put it to whoever owns the CA's threat model, in writing: <i>is a CA key protected only by the token boundary and its credential acceptable here?</i> The CA MMC's private-key permissions dialog will not work, and an operator must not discover that during an incident.</p>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#FFF6EE;padding:26px 34px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="flex:1;font-size:27px;line-height:1.45;color:#44525E">Also in week one, and it costs a morning: <b>A4 is the one Phase A item still open</b> — a regression test that <span style="font-family:'JetBrains Mono', 'Courier New', monospace">NCRYPT_SILENT_FLAG</span> combined with each padding flag still resolves the right mechanism. The masking is correct today <i>by construction</i>; nothing stops a future equality comparison breaking CA signing silently.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Items 1, 2 and 4 are not engineering work and should not be assigned to engineers · 4 / 10</p>
+<aside>If only one slide survives this deck, make it this one. None of these four is hard; all four have long tails; and three of them need authority rather than skill. Item 1's fallback decision matters more than it sounds — reconstructing a function table layout from behaviour is exactly the class of guess that cost this project the SHA-224 identifier and a post-quantum blob format.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>If only one slide survives this deck, make it this one. None of these four is hard; all four have long tails; and three of them need authority rather than skill. Item 1&#x27;s fallback decision matters more than it sounds — reconstructing a function table layout from behaviour is exactly the class of guess that cost this project the SHA-224 identifier and a post-quantum blob format.</p></div></article>
+<article class="slide" id="unblocked">
+<div class="num">5 / 10</div>
+<div class="frame"><section id="unblocked" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">The free win</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">Part of the backlog is blocked only by where it was built</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">This project was written in a sandbox whose network policy blocks Microsoft Learn. Several findings were therefore recorded as open <b>rather than guessed at</b> — the right call, and one a team with a browser and a partner account retires in an afternoon.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:26px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:34%;color:#F7F7F4;font-size:26px;text-align:left;padding:16px 18px">Open item</th>
+<th style="width:30%;color:#F7F7F4;font-size:26px;text-align:left">What it is waiting on</th>
+<th style="width:36%;color:#F7F7F4;font-size:26px;text-align:left">What it costs if left alone</th>
+</tr>
+<tr>
+<td>16 entry points answer NTE_INVALID_PARAMETER for a bad handle; 7 answer NTE_INVALID_HANDLE</td>
+<td>Microsoft's documented error mapping</td>
+<td>An inconsistency a conformance reviewer will find. Deliberately unchanged — altering 16 call sites on a recalled contract is how the SHA-224 mistake happened</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>No CNG post-quantum algorithm identifier is declared</td>
+<td>The documented spellings, currently grade-B evidence from search summaries</td>
+<td>ML-DSA stays a provider extension, reachable only from an application coded against this KSP</td>
+</tr>
+<tr>
+<td>ML-DSA public key export is refused on purpose</td>
+<td>The PQC blob layout, in a Windows SDK header</td>
+<td>One matrix row stays Partial. A guessed blob would pass every test here and fail only on Windows</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>ML-KEM is recognised and not offered</td>
+<td>Nothing — there is no slot for encapsulation in the key-storage function table</td>
+<td>Nothing. Record it as a deliberate position and stop revisiting it</td>
+</tr>
+<tr>
+<td>Where ncrypt_provider.h actually comes from</td>
+<td>A definitive answer from Microsoft or a partner channel</td>
+<td><b style="color:#B3561A">The project. This is the critical path</b></td>
+</tr>
+</table>
+<div style="display:flex;gap:20px;align-items:center;background:#111E2B;color:#F7F7F4;padding:28px 34px;border-radius:14px">
+<p style="flex:1;font-size:27px;line-height:1.45">Keep the habit that produced this list. <b style="color:#E08A4A">Every one of these was left open rather than filled in from memory</b>, and the two times this project did guess at a Microsoft constant, both guesses were wrong and both passed the whole test suite.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">5 / 10</p>
+<aside>Worth dwelling on, because it is the cheapest value in the plan and it is invisible unless somebody points at it. The pattern to preserve: when the authoritative source is unreachable, record the gap instead of filling it with recall. The temptation on arriving will be to close these from memory, which is precisely the failure mode that put a non-existent SHA-224 identifier and two invented mock constants into this codebase.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>Worth dwelling on, because it is the cheapest value in the plan and it is invisible unless somebody points at it. The pattern to preserve: when the authoritative source is unreachable, record the gap instead of filling it with recall. The temptation on arriving will be to close these from memory, which is precisely the failure mode that put a non-existent SHA-224 identifier and two invented mock constants into this codebase.</p></div></article>
+<article class="slide" id="tracks">
+<div class="num">6 / 10</div>
+<div class="frame"><section id="tracks" data-section="Who does what, the gate each track must pass, and how to work in this codebase" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Four tracks, and the skill each one actually needs</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#AFC3D4">Tracks 2, 3 and 4 do not wait for the DLL. Track 1 is the only one that does, and it is also the only one that cannot be accelerated by adding people to it.</p>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#2A1A14;padding:34px;border-radius:16px;border-left:6px solid #B3561A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Track 1 · blocked until the header arrives</p>
+<h3 style="font-size:32px;font-weight:600">Windows and CNG</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Build the DLL, confirm the function-table layout against the real header, register it, then run the 40 integration tests and ~150 HLK checks and triage the first execution of either.</p>
+<p style="font-size:24px;line-height:1.4;color:#CFDEE8"><b>Needs:</b> MSVC and CNG provider experience, and an HLK controller plus a separate test client. <b>One engineer, [W__] weeks.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#15303A;padding:34px;border-radius:16px;border-left:6px solid #6FA8C9">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">Track 2 · starts immediately</p>
+<h3 style="font-size:32px;font-weight:600">Token and PKCS#11</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Qualify the candidate HSM, stand up per-scope machine and user tokens, close A4, and prove the DPAPI credential path once a machine exists.</p>
+<p style="font-size:24px;line-height:1.4;color:#CFDEE8"><b>Needs:</b> Cryptoki fluency and the vendor's library. <b>One engineer, [W__] weeks</b>, mostly before the machine arrives.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#15303A;padding:34px;border-radius:16px;border-left:6px solid #6FA8C9">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">Track 3 · prepares now, runs after gate B</p>
+<h3 style="font-size:32px;font-weight:600">PKI and ADCS operations</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Write the pilot runbook for E1&#8211;E7, provision the throwaway CA, and document plainly that the private-key permissions dialog will not work.</p>
+<p style="font-size:24px;line-height:1.4;color:#CFDEE8"><b>Needs:</b> a PKI operator, not a developer — someone who has renewed a CA certificate before. <b>Part-time, then full-time at the pilot.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#15303A;padding:34px;border-radius:16px;border-left:6px solid #6FA8C9">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">Track 4 · starts immediately</p>
+<h3 style="font-size:32px;font-weight:600">Procurement and governance</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The code-signing certificate, the Windows machine, the HSM decision, the DACL risk acceptance, and FIPS posture if it is required.</p>
+<p style="font-size:24px;line-height:1.4;color:#CFDEE8"><b>Needs:</b> budget authority and the CA's threat-model owner. <b>Not an engineer</b>, and the lane most likely to be left unassigned.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Fill the bracketed figures once the header's lead time is known — until then any schedule is a guess · 6 / 10</p>
+<aside>Make the staffing asymmetry explicit: two engineers, one operator and one person with signing authority. The common failure here would be to staff three developers and nobody for track 4, which is the lane holding both long-lead items. Note also that this project's own effort estimates were wrong on four of the four rows it has ever closed — two marked "no remedy planned" were closed in a day — so present durations as relative, never as a schedule.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>Make the staffing asymmetry explicit: two engineers, one operator and one person with signing authority. The common failure here would be to staff three developers and nobody for track 4, which is the lane holding both long-lead items. Note also that this project&#x27;s own effort estimates were wrong on four of the four rows it has ever closed — two marked &quot;no remedy planned&quot; were closed in a day — so present durations as relative, never as a schedule.</p></div></article>
+<article class="slide" id="gates">
+<div class="num">7 / 10</div>
+<div class="frame"><section id="gates" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Four gates, each one a claim somebody can check</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">A gate is not a milestone with a date on it. It is a sentence that is either true or false, and no phase starts until the one before it is true.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:18px;width:1664px">
+<div style="display:flex;gap:26px;align-items:stretch;background:#FFFFFF;padding:30px 34px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<p style="width:140px;font-size:34px;font-weight:700;color:#B3561A">B</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">The provider loads, enumerates and signs through the real ncrypt.dll</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Not "it compiles". Not "certutil lists it". A signature produced by a key on the token, through the public NCrypt API, verified against BCrypt. <b>Until this is true, every statement in the ADCS plan is a projection</b> — including the ones on these slides.</p>
+</div>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch;background:#FFFFFF;padding:30px 34px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<p style="width:140px;font-size:34px;font-weight:700;color:#B3561A">C</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">190 written tests have executed, and every failure is triaged</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Triaged, not necessarily passing — a first run that finds nothing means the run was wrong. Each failure is classified as a provider defect, a test defect or a documented limitation, and the suite's own counts are reconciled with the docs by the existing checker.</p>
+</div>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch;background:#FFFFFF;padding:30px 34px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<p style="width:140px;font-size:34px;font-weight:700;color:#2F6F8F">E</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">E1&#8211;E7 pass on a throwaway CA, twice, including renewal with a new key</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Twice, because a single pass cannot see what the provider leaves behind — that is how the orphaned-certificate defect was found. Then a service restart <i>and</i> a host reboot, since the credential has to be available before any logon.</p>
+</div>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch;background:#111E2B;color:#F7F7F4;padding:30px 34px;border-radius:16px;border-left:6px solid #E08A4A">
+<p style="width:140px;font-size:34px;font-weight:700;color:#E08A4A">F</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">Signed binary, real HSM, DACL risk accepted in writing</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Plus FIPS posture if required, which needs certified hardware rather than a code change. <b style="color:#F7F7F4">This is what "finalized" means</b> — and the test CA from gate E is destroyed, never promoted.</p>
+</div>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Standing gate throughout: five static checks, both live-token suites and the mingw cross-compile green on every commit · 7 / 10</p>
+<aside>The gates exist to stop the project reporting progress it has not made, which is a risk here because so much is written and so little has run. Gate C's wording is deliberate: a first execution of 190 never-run tests that comes back clean is evidence the harness is broken, not that the code is perfect. Four consecutive fault injections once ran against a stale binary in this project and looked undetected.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>The gates exist to stop the project reporting progress it has not made, which is a risk here because so much is written and so little has run. Gate C&#x27;s wording is deliberate: a first execution of 190 never-run tests that comes back clean is evidence the harness is broken, not that the code is perfect. Four consecutive fault injections once ran against a stale binary in this project and looked undetected.</p></div></article>
+<article class="slide" id="howto">
+<div class="num">8 / 10</div>
+<div class="frame"><section id="howto" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Seven rules, each one paid for</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">How to work in this codebase without re-learning its lessons</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:20px">
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">1 · Break it before you believe it</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">No claim lands without a fault injection that the suite catches. And restore the injection <b style="color:#F7F7F4">from a copy made beforehand, never from git</b> — that has destroyed uncommitted work three times.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">2 · Two tokens, two passes</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">One token cannot tell a working selection from an ignored one; one pass cannot see what the provider leaves behind. Each shortcut hid a real defect until the second was added.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">3 · Never hand-edit the mock</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">It once invented two constants and mis-valued two more, and every test passed because the tests read the same wrong numbers. A checker now compares it to the real headers, values and typedef widths both.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">4 · The function table is assigned by name</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">Designated initialisers, permanently. Positional initialisation put a key handle where a <span style="font-family:'JetBrains Mono', 'Courier New', monospace">HANDLE *</span> belonged and returned success to a caller that then waited forever.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">5 · A grep for a fix can match the fix's comment</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">An audit once reported ten files as correct when none was: the pattern matched the sentence <i>describing</i> the include. Verify with the compiler, not with a search.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">6 · The five static checks are the contract</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">Docs, counts, property tables and the registration script are all machine-compared to the code. They exist because <b style="color:#F7F7F4">a summary sitting next to a fact does not stay true</b> — the most persistent defect here.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#2A1A14;padding:26px 30px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">7 · Closing a capability row is two edits</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">Set the row Covered <i>and</i> delete its gap entry, then regenerate. A status change edits the existing row — appending a new ID left one capability with two rows, one of them asserting the opposite of the other, for three sessions.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#15303A;padding:26px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">And one habit to keep</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">When the authoritative source is out of reach, <b style="color:#F7F7F4">record the gap; do not fill it from memory.</b> Both times this project guessed at a Microsoft constant, the guess was wrong and passed every test.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">All of this is in CLAUDE.md, which is the onboarding document — read it before the source · 8 / 10</p>
+<aside>Hand this slide out rather than presenting it. Every rule here is the residue of a specific incident, and the incidents are written up in CLAUDE.md with enough detail to be convincing. Rule 1's second sentence is the one people skip and the one that has cost the most.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>Hand this slide out rather than presenting it. Every rule here is the residue of a specific incident, and the incidents are written up in CLAUDE.md with enough detail to be convincing. Rule 1&#x27;s second sentence is the one people skip and the one that has cost the most.</p></div></article>
+<article class="slide" id="risks">
+<div class="num">9 / 10</div>
+<div class="frame"><section id="risks" data-section="Risks ranked by what they would cost, and the first ninety days" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Six risks, ranked by what they cost rather than how likely they are</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">The top two can each stop the project outright, and both are answered by a phone call rather than by engineering. Answer them first.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:25px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:7%;color:#F7F7F4;font-size:25px;text-align:left;padding:15px 16px">#</th>
+<th style="width:31%;color:#F7F7F4;font-size:25px;text-align:left">Risk</th>
+<th style="width:27%;color:#F7F7F4;font-size:25px;text-align:left">If it happens</th>
+<th style="width:35%;color:#F7F7F4;font-size:25px;text-align:left">What to do about it now</th>
+</tr>
+<tr style="background:#FFF0E2">
+<td style="color:#B3561A"><b>R1</b></td>
+<td><b>The CPDK header cannot be obtained</b></td>
+<td style="color:#B3561A"><b>Fatal. There is no DLL and no path to one</b></td>
+<td>Escalate through a Microsoft partner channel in week one. Decide the fallback position explicitly — and treat reconstructing the table from behaviour as a last resort, not a plan</td>
+</tr>
+<tr style="background:#FFF0E2">
+<td style="color:#B3561A"><b>R2</b></td>
+<td><b>Windows refuses to load an unsigned KSP</b></td>
+<td style="color:#B3561A">All testing blocks behind procurement, not just release</td>
+<td>Settle it in the first hour on the machine. Open the certificate purchase before you know the answer — it is the cheapest insurance in the plan</td>
+</tr>
+<tr>
+<td>R3</td>
+<td>Renewal with a new key fails (gate E, step E4)</td>
+<td>A CA that cannot be renewed is not a CA. Possible redesign</td>
+<td>Nothing more can be done blind: the refusal and the overwrite paths are both implemented and fault-injected. Which one ADCS exercises is an observation, so run E4 early</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>R4</td>
+<td>The chosen HSM ships its own CNG provider</td>
+<td>This project may be the wrong tool for the job</td>
+<td>Ask the vendor before buying. An HSM with its own KSP does not need this one, and saying so now is cheaper than discovering it at the pilot</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>The DACL risk is rejected</td>
+<td>The approach is ruled out, however well it works</td>
+<td>Get it in writing in week one. It is a governance question, and no amount of engineering changes the answer</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>R6</td>
+<td>The first HLK run fails broadly</td>
+<td>Schedule, not architecture</td>
+<td>Expect it and budget for it. A suite's first execution tests the suite as much as the code — and a clean first run would be the more worrying result</td>
+</tr>
+</table>
+<div style="display:flex;gap:20px;align-items:center;background:#FFF6EE;padding:26px 34px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="flex:1;font-size:27px;line-height:1.45;color:#44525E">Note what is <b>not</b> on this list: the cryptography, the threading, the PKCS#11 layer. Those have been run against two independent tokens, and five of the defects ever found there were caught the first time real hardware-like behaviour was involved. <b>The residual risk is almost entirely in the layer Windows owns.</b></p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">9 / 10</p>
+<aside>R1 and R2 are the ones to raise with whoever sponsors this. Both are procurement questions with engineering consequences, and both get worse the longer they go unasked. If R1 comes back negative the honest recommendation is to stop and buy an HSM that ships its own KSP — which is also R4, approached from the other side.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>R1 and R2 are the ones to raise with whoever sponsors this. Both are procurement questions with engineering consequences, and both get worse the longer they go unasked. If R1 comes back negative the honest recommendation is to stop and buy an HSM that ships its own KSP — which is also R4, approached from the other side.</p></div></article>
+<article class="slide" id="horizon">
+<div class="num">10 / 10</div>
+<div class="frame"><section id="horizon" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">The first ninety days, and what “finalized” has to mean</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#AFC3D4">Phrased against the header's arrival rather than a calendar, because the one thing that sets the schedule is the one thing nobody here controls.</p>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:34px;border-radius:16px;border-left:6px solid #6FA8C9">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">First 30 days</p>
+<h3 style="font-size:30px;font-weight:600">Nothing depends on the DLL</h3>
+<ul style="font-size:24px;line-height:1.5;color:#AFC3D4;padding:0 0 0 28px">
+<li>Header escalation open; fallback decided</li>
+<li>Certificate purchase under way</li>
+<li>HSM qualified by p11_qualify; the authentication model known by measurement</li>
+<li>DACL risk accepted or rejected, in writing</li>
+<li>A4 closed; the Microsoft-documentation backlog retired</li>
+<li>Pilot runbook written and reviewed by the CA operator</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:34px;border-radius:16px;border-left:6px solid #E08A4A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Days 30–60, from the machine's arrival</p>
+<h3 style="font-size:30px;font-weight:600">Gates B and C</h3>
+<ul style="font-size:24px;line-height:1.5;color:#AFC3D4;padding:0 0 0 28px">
+<li>The DLL builds; the signing question answered in the first hour</li>
+<li>Registered; certutil lists it; the table layout confirmed</li>
+<li>190 tests executed and every failure classified</li>
+<li>The DPAPI credential path proven, if the token needs a PIN</li>
+<li>The CI Windows job compiles and links the real DLL</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#1A2C3D;padding:34px;border-radius:16px;border-left:6px solid #E08A4A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Days 60–90</p>
+<h3 style="font-size:30px;font-weight:600">Gate E, then the decision</h3>
+<ul style="font-size:24px;line-height:1.5;color:#AFC3D4;padding:0 0 0 28px">
+<li>E1–E7 twice on a throwaway CA, renewal included</li>
+<li>Restart and reboot survived</li>
+<li>Chains verified end to end, not merely API success</li>
+<li>Test CA destroyed</li>
+<li>A go or no-go recommendation with the evidence attached</li>
+</ul>
+</div>
+</div>
+<div style="display:flex;gap:24px;align-items:center;background:#2A1A14;padding:34px 40px;border-radius:16px;border-left:6px solid #B3561A">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px">
+<h3 style="font-size:34px;font-weight:600;color:#E08A4A">Finalized means one sentence</h3>
+<p style="font-size:28px;line-height:1.45">A signed provider, on a certified HSM, running a certification authority that has issued, revoked and <b>renewed</b> — with the DACL limitation accepted in writing and the test CA destroyed. Anything short of renewal is not a finished CA; anything short of the signature is not a shippable provider.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Read every duration as relative: this project's effort estimates were wrong on 4 of the 4 rows it has ever closed · 10 / 10</p>
+<aside>Close on the one-sentence definition and leave it on screen. The three things most likely to be quietly dropped from a declaration of done are the signature, the renewal and the written risk acceptance — each is someone else's responsibility, which is exactly why each gets forgotten. Ask for the go or no-go recommendation as a deliverable, not as an opinion: a no-go with evidence at day 90 is a successful outcome for this plan.</aside>
+</section></div>
+<div class="notes"><h2>Speaker notes</h2><p>Close on the one-sentence definition and leave it on screen. The three things most likely to be quietly dropped from a declaration of done are the signature, the renewal and the written risk acceptance — each is someone else&#x27;s responsibility, which is exactly why each gets forgotten. Ask for the go or no-go recommendation as a deliverable, not as an opinion: a no-go with evidence at day 90 is a successful outcome for this plan.</p></div></article>
+</div>
+</body>
+</html>

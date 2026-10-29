@@ -1,0 +1,55 @@
+<section id="critpath" data-section="The critical path, and the work that must not wait behind it" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:38px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">The shape of the plan</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">One serial chain, three lanes that must run beside it</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A">Critical path — strictly serial</p>
+<div style="display:flex;gap:16px;align-items:center">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#2A1A14;padding:26px 28px;border-radius:14px;border:2px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600;color:#E08A4A">The header</h3>
+<p style="font-size:24px;line-height:1.35;color:#CFDEE8">ncrypt_provider.h, plus a Windows machine. <b style="color:#F7F7F4">No engineering content at all.</b></p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">The DLL builds</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">Register it; confirm certutil lists it; close the function-table question</p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">190 tests run</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">Integration and HLK, for the first time. Expect failures — that is the point</p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">The ADCS pilot</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">E1&#8211;E7 on a throwaway CA, renewal first among the risky ones</p>
+</div>
+<p style="font-size:34px;color:#E08A4A">&#8594;</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 28px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">Production</h3>
+<p style="font-size:24px;line-height:1.35;color:#AFC3D4">Signed binary, real HSM, FIPS posture if required</p>
+</div>
+</div>
+</div>
+<hr style="border-top:1px solid #33475A;width:1664px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#6FA8C9">Parallel lanes — start all three in week one</p>
+<div style="display:flex;gap:22px">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#15303A;padding:28px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">Procurement</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The code-signing certificate has the <b style="color:#F7F7F4">longest lead time of anything here</b>, and if Windows refuses unsigned providers it gates all testing, not just release.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#15303A;padding:28px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">Qualify the token</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4"><span style="font-family:'JetBrains Mono', 'Courier New', monospace">p11_qualify</span> needs no Windows and no KSP build. It settles the authentication question by measurement and may close Phase C outright.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#15303A;padding:28px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">The DACL decision</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Whether a CA key with no Windows ACL is acceptable. If the answer is no, <b style="color:#F7F7F4">everything above is wasted</b> — so ask it before the machine arrives.</p>
+</div>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">Three independent sources have already been checked for the header: a WDK-installed runner, the Windows SDK, and mingw-w64 · 3 / 10</p>
+<aside>The single most important message of the deck. The serial chain cannot be compressed by adding engineers — it is gated on an artefact nobody here has been able to obtain. What adding people does buy is the three parallel lanes, and two of those can retire risk before the machine is even procured. If the DACL answer comes back no, the project stops, so put that question in front of the CA's owner in week one rather than after the pilot.</aside>
+</section>

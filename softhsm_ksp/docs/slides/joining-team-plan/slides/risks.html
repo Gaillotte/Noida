@@ -1,0 +1,55 @@
+<section id="risks" data-section="Risks ranked by what they would cost, and the first ninety days" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Six risks, ranked by what they cost rather than how likely they are</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">The top two can each stop the project outright, and both are answered by a phone call rather than by engineering. Answer them first.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:25px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:7%;color:#F7F7F4;font-size:25px;text-align:left;padding:15px 16px">#</th>
+<th style="width:31%;color:#F7F7F4;font-size:25px;text-align:left">Risk</th>
+<th style="width:27%;color:#F7F7F4;font-size:25px;text-align:left">If it happens</th>
+<th style="width:35%;color:#F7F7F4;font-size:25px;text-align:left">What to do about it now</th>
+</tr>
+<tr style="background:#FFF0E2">
+<td style="color:#B3561A"><b>R1</b></td>
+<td><b>The CPDK header cannot be obtained</b></td>
+<td style="color:#B3561A"><b>Fatal. There is no DLL and no path to one</b></td>
+<td>Escalate through a Microsoft partner channel in week one. Decide the fallback position explicitly — and treat reconstructing the table from behaviour as a last resort, not a plan</td>
+</tr>
+<tr style="background:#FFF0E2">
+<td style="color:#B3561A"><b>R2</b></td>
+<td><b>Windows refuses to load an unsigned KSP</b></td>
+<td style="color:#B3561A">All testing blocks behind procurement, not just release</td>
+<td>Settle it in the first hour on the machine. Open the certificate purchase before you know the answer — it is the cheapest insurance in the plan</td>
+</tr>
+<tr>
+<td>R3</td>
+<td>Renewal with a new key fails (gate E, step E4)</td>
+<td>A CA that cannot be renewed is not a CA. Possible redesign</td>
+<td>Nothing more can be done blind: the refusal and the overwrite paths are both implemented and fault-injected. Which one ADCS exercises is an observation, so run E4 early</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>R4</td>
+<td>The chosen HSM ships its own CNG provider</td>
+<td>This project may be the wrong tool for the job</td>
+<td>Ask the vendor before buying. An HSM with its own KSP does not need this one, and saying so now is cheaper than discovering it at the pilot</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>The DACL risk is rejected</td>
+<td>The approach is ruled out, however well it works</td>
+<td>Get it in writing in week one. It is a governance question, and no amount of engineering changes the answer</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>R6</td>
+<td>The first HLK run fails broadly</td>
+<td>Schedule, not architecture</td>
+<td>Expect it and budget for it. A suite's first execution tests the suite as much as the code — and a clean first run would be the more worrying result</td>
+</tr>
+</table>
+<div style="display:flex;gap:20px;align-items:center;background:#FFF6EE;padding:26px 34px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="flex:1;font-size:27px;line-height:1.45;color:#44525E">Note what is <b>not</b> on this list: the cryptography, the threading, the PKCS#11 layer. Those have been run against two independent tokens, and five of the defects ever found there were caught the first time real hardware-like behaviour was involved. <b>The residual risk is almost entirely in the layer Windows owns.</b></p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">9 / 10</p>
+<aside>R1 and R2 are the ones to raise with whoever sponsors this. Both are procurement questions with engineering consequences, and both get worse the longer they go unasked. If R1 comes back negative the honest recommendation is to stop and buy an HSM that ships its own KSP — which is also R4, approached from the other side.</aside>
+</section>

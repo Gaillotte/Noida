@@ -1,0 +1,50 @@
+<section id="ran" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">What actually ran, and what each suite is for</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">Every figure below comes from the run log the build gates on, and a static check compares the documented counts against it. A count checked against a different invocation can disagree with the one that gated the build.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:27px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:30%;color:#F7F7F4;font-size:27px;text-align:left;padding:18px 20px">Suite</th>
+<th style="width:14%;color:#F7F7F4;font-size:27px;text-align:left">Assertions</th>
+<th style="width:56%;color:#F7F7F4;font-size:27px;text-align:left">The question only this suite can answer</th>
+</tr>
+<tr>
+<td>Unit, 27 suites</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">2 051</td>
+<td>Both sides of every capability gate, including the closed one a live token cannot show</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>Real backend, run twice</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">256</td>
+<td>What the provider <b>leaves behind</b> — an orphaned certificate is invisible to a single pass</td>
+</tr>
+<tr>
+<td>ADCS lifecycle, run twice</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">84</td>
+<td>The CA-shaped sequence: wizard size query, machine key, sign, certificate, refused duplicate, renewal, delete</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>Two tokens</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">53 + 28</td>
+<td>Whether selection <b>works</b> or is merely ignored — one token lands on the default slot either way</td>
+</tr>
+<tr>
+<td>Concurrency, 32 threads</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">33</td>
+<td>Crossed sessions, by comparing signature <b>bytes</b> to a single-threaded reference — a crossed key returns ERROR_SUCCESS</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>p11_qualify</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace">18 + 4</td>
+<td>Whether a candidate HSM meets the backend contract, by running it rather than reading a datasheet</td>
+</tr>
+<tr>
+<td>Integration + HLK</td>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;color:#B3561A">0 run</td>
+<td style="color:#B3561A">Everything ncrypt.dll does. The largest single pocket of untested behaviour in the project</td>
+</tr>
+</table>
+<p style="font-size:28px;line-height:1.4;width:1664px;color:#44525E">Two tokens, not one, and two passes, not one. Both choices were made after a single token and a single pass each hid a defect that the second one found immediately.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Concurrency also runs under ThreadSanitizer, with each suppression's reasoning recorded · 9 / 15</p>
+</section>

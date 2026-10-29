@@ -79,12 +79,33 @@ def found_in_xlsx(path):
     return out
 
 
+def deck_inputs(folder):
+    """One slide deck's inputs, resolved by the generator that builds it.
+
+    A callable rather than a literal tuple because a deck's input set is
+    deck.json plus one file per slide in `order`: writing that list out
+    here would be a second copy of the slide order, free to disagree with
+    the first. Imported from the generator so there is exactly one
+    definition of what a deck is built from.
+    """
+    def inputs():
+        sys.path.insert(0, REPO)
+        from generate_slide_decks import deck_inputs as resolve
+        return resolve(folder)
+    return inputs
+
+
 # (artifact, its generator, how to read the stamp, its data inputs)
 #
 # Three are built from the feature matrix; the ADCS plan is built from one
-# markdown file instead, which is why the input set is per artifact rather
-# than global. Editing the matrix stales the first three and not the fourth;
-# editing the plan stales only the fourth.
+# markdown file, and each slide deck from its own folder of slides. That is
+# why the input set is per artifact rather than global. Editing the matrix
+# stales the first three and nothing else; editing the plan stales only the
+# plan; editing one slide stales only that deck.
+#
+# `data` is None for a matrix artifact, a tuple of repo-relative paths, or
+# a callable returning such a tuple when the input set has to be read out
+# of the source itself.
 ARTIFACTS = [
     ('softhsm_ksp/docs/15-gap-analysis.md',
      'generate_gap_analysis.py', found_in_text, None),
@@ -95,6 +116,12 @@ ARTIFACTS = [
     ('softhsm_ksp/SoftHSM2_KSP_ADCS_Readiness_Plan.pdf',
      'generate_adcs_plan.py', found_in_pdf,
      ('softhsm_ksp/docs/16-adcs-readiness.md',)),
+    ('softhsm_ksp/SoftHSM2_KSP_Design_Tests_ADCS_Slides.html',
+     'generate_slide_decks.py', found_in_text,
+     deck_inputs('adcs-overview')),
+    ('softhsm_ksp/SoftHSM2_KSP_Team_Plan_Slides.html',
+     'generate_slide_decks.py', found_in_text,
+     deck_inputs('joining-team-plan')),
 ]
 
 
@@ -114,6 +141,8 @@ def main():
         if data is None:
             want = fingerprint(gen_path)
         else:
+            if callable(data):
+                data = tuple(data())
             inputs = [os.path.join(REPO, d) for d in data]
             missing = [d for d, p in zip(data, inputs)
                        if not os.path.exists(p)]

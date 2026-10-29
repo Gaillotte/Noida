@@ -1638,7 +1638,19 @@ python3 generate_feature_matrix.py # → softhsm_ksp/SoftHSM2_KSP_Feature_Matrix
 python3 generate_cng_coverage_xlsx.py # → SoftHSM2_KSP_CNG_Feature_Coverage.xlsx
 python3 generate_gap_analysis.py   # → softhsm_ksp/docs/15-gap-analysis.md
 python3 generate_adcs_plan.py      # → SoftHSM2_KSP_ADCS_Readiness_Plan.pdf
+python3 generate_slide_decks.py    # → the two slide decks, from docs/slides/
 ```
+
+**The slide decks are source plus a build, not committed binaries.** Each
+deck is `docs/slides/<name>/deck.json` (title, slide order, outline) plus
+one HTML fragment per slide — a single `<section>` on a fixed 1920×1080
+canvas, every style inline — so a one-slide change is a one-slide diff.
+`generate_slide_decks.py` adds what a fragment cannot have: the document
+wrapper, the typeface links, a scale that fits a screen, print rules for
+one slide per page, and the speaker notes lifted out of the canvas to
+below it. **Edit the source, never the built `.html`.** The digest covers
+the slide order as well as the slide contents, so reordering a deck stales
+it too.
 
 **The feature matrix is data-driven.** Its source of truth is
 `softhsm_ksp/docs/feature-matrix.csv` — one row per capability, with columns
@@ -1670,11 +1682,15 @@ precisely why nothing noticed for three sessions.
 **Regenerating is not optional, and CI enforces it.** Each artifact embeds a
 fingerprint of its inputs (`docs/matrix_fingerprint.py`), and
 `tests/check_generated_artifacts.py` recomputes it in the `linux` job.
-**Four artifacts are covered**: three built from the matrix, and the ADCS
-plan PDF built from `docs/16-adcs-readiness.md`. The input set is per
-artifact, so editing the CSV stales the three matrix artifacts, editing the
-ADCS markdown stales only its PDF, and editing one generator stales only its
-own output. The fingerprint module hashes itself into every digest, so a
+**Six artifacts are covered**: three built from the matrix, the ADCS plan
+PDF built from `docs/16-adcs-readiness.md`, and the two slide decks built
+from `docs/slides/`. The input set is per artifact, so editing the CSV
+stales the three matrix artifacts, editing the ADCS markdown stales only its
+PDF, editing one slide stales only that deck, and editing one generator
+stales only its own output. A deck's input set is a **callable** rather than
+a literal list, because it is `deck.json` plus one file per slide in
+`order`: writing that list into the checker would be a second copy of the
+slide order, free to disagree with the first. The fingerprint module hashes itself into every digest, so a
 change to how the digest is computed invalidates all of them rather than
 leaving a hole in the middle of the mechanism. **Do not byte-compare a regenerated artifact against the
 committed one** — all three embed a generation date and two are binaries

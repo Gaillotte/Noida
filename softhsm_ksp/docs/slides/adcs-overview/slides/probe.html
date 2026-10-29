@@ -1,0 +1,38 @@
+<section id="probe" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:38px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1600px">Backend-agnostic by probe, not by porting</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">The provider always loaded whatever module a path pointed at — and then advertised a fixed list compiled into the DLL, describing one token. That was never a porting job; it was a correctness bug.</p>
+</div>
+<div style="display:flex;gap:28px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px">
+<h3 style="font-size:32px;font-weight:600">What the probe does</h3>
+<ul style="font-size:26px;line-height:1.5;color:#44525E;padding:0 0 0 32px">
+<li>C_GetMechanismList once at initialisation</li>
+<li>EnumAlgorithms answers the <b>intersection</b> of mapped and present</li>
+<li>Generation and use are checked separately</li>
+<li>A refused probe costs nothing — behaviour reverts to permissive</li>
+<li>An implausible mechanism count <b>abandons</b> the probe rather than truncating it</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">What a probe cannot answer</h3>
+<p style="font-size:26px;line-height:1.45;color:#44525E"><b>Advertisement is not capability.</b> SoftHSM2 advertises CKM_RSA_PKCS_OAEP and accepts only SHA-1, because the restriction lives inside the mechanism <i>parameters</i>. The probe is mechanism-granular; some limits are finer.</p>
+<p style="font-size:26px;line-height:1.45;color:#44525E"><b>Strictness is not capability.</b> Whether a token enforces CKA_WRAP is invisible to every query. So <span style="font-family:'JetBrains Mono', 'Courier New', monospace">p11_qualify</span> runs the requirements instead of reading them.</p>
+</div>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#111E2B;color:#F7F7F4;padding:28px 32px;border-radius:14px">
+<p style="font-size:44px;font-weight:700">18 + 4</p>
+<p style="font-size:25px;color:#AFC3D4">conformance checks plus strictness probes, run against a candidate token</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#111E2B;color:#F7F7F4;padding:28px 32px;border-radius:14px">
+<p style="font-size:44px;font-weight:700">1 header</p>
+<p style="font-size:25px;color:#AFC3D4">is all p11_qualify links, so it builds against a vendor's library with no copy of the KSP</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#111E2B;color:#F7F7F4;padding:28px 32px;border-radius:14px">
+<p style="font-size:44px;font-weight:700">2 of 5</p>
+<p style="font-size:25px;color:#AFC3D4">claimed token divergences turned out not to be divergences once both tokens were measured</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">ML-DSA at all three parameter sets works on a v3.2 token and stays dark on SoftHSM2 — same mechanism, no code change · 7 / 15</p>
+</section>

@@ -1,0 +1,30 @@
+<section id="arch" data-section="How the provider is designed, layer by layer and contract by contract" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<h2 style="font-size:64px;font-weight:600;line-height:1.1">Four processes deep, one DLL wide</h2>
+<div style="display:flex;flex-direction:column;gap:14px;width:1664px">
+<div style="display:flex;flex-direction:column;gap:6px;background:#FFFFFF;padding:28px 36px;border:1px solid #D9DCD6;border-radius:14px">
+<h3 style="font-size:30px;font-weight:600">Windows application</h3>
+<p style="font-size:26px;color:#6E7B86;font-family:'JetBrains Mono', 'Courier New', monospace">certsrv · certutil · certreq · any NCrypt* caller</p>
+</div>
+<p style="font-size:30px;color:#B3561A;font-family:'JetBrains Mono', 'Courier New', monospace">&#8595;&#8195;NCrypt*() public API</p>
+<div style="display:flex;flex-direction:column;gap:6px;background:#FFFFFF;padding:28px 36px;border:1px solid #D9DCD6;border-radius:14px">
+<h3 style="font-size:30px;font-weight:600">ncrypt.dll</h3>
+<p style="font-size:26px;color:#6E7B86;font-family:'JetBrains Mono', 'Courier New', monospace">HKLM\…\Cryptography\Providers\SoftHSM KSP</p>
+</div>
+<p style="font-size:30px;color:#B3561A;font-family:'JetBrains Mono', 'Courier New', monospace">&#8595;&#8195;NCRYPT_KEY_STORAGE_FUNCTION_TABLE — 26 slots + Version</p>
+<div style="display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:32px 36px;border-radius:14px">
+<h3 style="font-size:32px;font-weight:600;color:#E08A4A">softhsm_ksp.dll&#8195;·&#8195;this project</h3>
+<div style="display:flex;gap:16px">
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">ksp_*() — the 26 CNG functions, handle validation, blob formats</p>
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">p11_caps — capability probe at startup</p>
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">p11_session — pool of 16, semaphore + critical section</p>
+<p style="flex:1;font-size:25px;line-height:1.35;background:#1A2C3D;padding:20px;border-radius:10px">p11_context — LoadLibrary + C_Initialize, retryable</p>
+</div>
+</div>
+<p style="font-size:30px;color:#B3561A;font-family:'JetBrains Mono', 'Courier New', monospace">&#8595;&#8195;C_*() through CK_FUNCTION_LIST — PKCS#11 v2.40</p>
+<div style="display:flex;flex-direction:column;gap:6px;background:#FFFFFF;padding:28px 36px;border:1px solid #D9DCD6;border-radius:14px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:30px;font-weight:600">Any v2.40+ PKCS#11 module</h3>
+<p style="font-size:26px;color:#6E7B86;font-family:'JetBrains Mono', 'Courier New', monospace">SoftHSM2 (lab) · Kryoptic (CI) · a certified hardware HSM (production)</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">The module path is a run-time setting, not a compile-time one · 3 / 15</p>
+</section>
