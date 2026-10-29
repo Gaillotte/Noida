@@ -174,3 +174,6 @@ vcpkg/
 
 # SoftHSM2 test token created by the live suite when run against SoftHSM2
 softhsm_ksp/tests/linux/.shsm-token/
+
+# Skill eval workspaces: run artifacts, rebuilt on demand
+.claude/skills/*-workspace/
