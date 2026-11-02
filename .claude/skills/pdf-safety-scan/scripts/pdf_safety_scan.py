@@ -727,6 +727,11 @@ def main(argv=None):
     print('PDF SAFETY SCAN  v%s  -  %d file(s), fidelity via %s'
           % (VERSION, len(files),
              ', '.join(sorted({r['info']['fidelity'] for r in results}))))
+    # The interpreter is part of the result, not trivia. A parser installed
+    # for one Python is invisible to another, so `pip install pypdf` followed
+    # by a `python3` that is a different version silently yields raw-only -
+    # and a saved report with no interpreter in it cannot be diagnosed later.
+    print('python: %s' % sys.version.split()[0])
     if cfg.get('_path'):
         print('config: %s' % cfg['_path'])
     print('=' * 74)

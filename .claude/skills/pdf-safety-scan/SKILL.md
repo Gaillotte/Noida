@@ -233,6 +233,16 @@ assurance. In order of value per minute:
 
 - `scripts/pdf_safety_scan.py` — the scanner. Self-contained; copy it alone
   into another project if that is easier than copying the skill.
+- `references/manual.md` — the complete reference: every option, every
+  check, exit codes, recipes, troubleshooting. Read it when you need a
+  detail this page does not cover, or when the user asks what the tool can
+  do rather than asking you to run it.
+- `references/setup.md` — installing it, installing `pypdf`, verifying the
+  install, and wiring it into CI. Read it when the user is setting the tool
+  up rather than using it, or when a run reports `raw-only` fidelity.
 - `references/config.md` — every config key, with worked examples and the
-  tuning discipline in more detail.
+  tuning discipline in more detail. Read it before writing a `pdfscan.json`.
 - `assets/pdfscan.example.json` — a commented starting config.
+- `evals/make_fixtures.py` — builds the test PDFs, including the one that
+  hides JavaScript from `grep`. Useful for proving a rule still fires after
+  you tune it.
