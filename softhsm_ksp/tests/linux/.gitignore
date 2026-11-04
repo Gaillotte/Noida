@@ -1,0 +1,33 @@
+# Fetched and built by `make kryoptic` — a second PKCS#11 module to test
+# the provider against. Never committed: it is someone else's project, and
+# the build is large.
+.kryoptic/
+
+# Token databases and configs created by `make token` and `make token-two`.
+#
+# A pattern, because .token2 was added the moment a suite needed TWO tokens
+# and a named list would have missed it — the same gap the binaries below
+# were switched to a pattern for.
+.token*/
+
+# Binaries.
+#
+# A pattern, not a list of names. The list form was forgotten in sessions
+# 8, 9 and 10 — every time a suite was added, its binary showed up
+# untracked — so the names are matched and the sources exempted instead.
+#
+# The lesson was only half applied: test_* became a pattern and the p11_
+# binaries stayed a one-name list, so the first new one (p11_qualify,
+# session 18) was untracked exactly as before. Both are patterns now.
+test_*
+!test_*.c
+!test_*.h
+p11_*
+!p11_*.c
+!p11_*.h
+
+# Built by `make openssl` — OpenSSL 3.5, needed because Kryoptic gates
+# eddsa on 3.2 and the post-quantum mechanisms on 3.5, and the distribution
+# ships 3.0.
+.openssl/
+.openssl-src/

@@ -1,0 +1,29 @@
+<section id="auth" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1620px">The token decides how it is authenticated, not the provider</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">The provider reads <span style="font-family:'JetBrains Mono', 'Courier New', monospace">CK_TOKEN_INFO.flags</span> for the scope's slot and honours all three models PKCS#11 describes. Until recently it demanded a PIN of every token — so a hardware HSM with a PIN pad, the case this project targets, was rejected outright.</p>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#2F6F8F">No login required</p>
+<h3 style="font-size:30px;font-weight:600">CKF_LOGIN_REQUIRED clear</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">No C_Login at all. No credential to store anywhere.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#2F6F8F">Protected path</p>
+<h3 style="font-size:30px;font-weight:600">PIN pad on the device</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">C_Login with pPin = NULL, per v2.40 §11.6. A configured PIN is deliberately <b>not sent</b>, only logged as unused. <b>Ask your HSM vendor for this one.</b></p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:34px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#B3561A">PIN required</p>
+<h3 style="font-size:30px;font-weight:600">A credential must reach a headless service</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">certsrv never calls NCryptSetProperty, so the PIN has to be waiting for it. Four sources, in order.</p>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#111E2B;color:#F7F7F4;padding:30px 36px;border-radius:16px">
+<p style="font-size:25px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#E08A4A;width:200px">Precedence</p>
+<p style="flex:1;font-size:26px;line-height:1.45;font-family:'JetBrains Mono', 'Courier New', monospace">KSP_MACHINE_PIN / KSP_USER_PIN&#8195;&#8594;&#8195;NCRYPT_PIN_PROPERTY&#8195;&#8594;&#8195;<b style="color:#E08A4A">DPAPI blob</b>&#8195;&#8594;&#8195;SOFTHSM2_PIN</p>
+</div>
+<p style="font-size:28px;line-height:1.4;width:1664px;color:#44525E">The blob outranks the ambient variable on purpose: a leftover lab variable must not silently downgrade a deployment that was provisioned properly, while appearing to work. <b>And the registry ACL is the protection, not the encryption</b> — machine-scope DPAPI can be unprotected by anything on the host.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">A C_GetTokenInfo that fails falls through to the strict PIN model, and that direction is fault-injected · 6 / 15</p>
+</section>

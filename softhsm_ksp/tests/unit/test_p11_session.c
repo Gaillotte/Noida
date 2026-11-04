@@ -1,0 +1,378 @@
+/* test_p11_session.c — Coverage of p11_session.c
+ *
+ * The session pool had no tests at all: it was not compiled into any suite,
+ * so none of its code appeared in the coverage report. That is the module
+ * holding the token credential and every PKCS#11 session the provider uses.
+ *
+ * These cover the parts that can be exercised without a real token: the
+ * PIN override and its precedence over the environment, lazy opening,
+ * pool exhaustion, and the recovery path that reopens a session the token
+ * has logged out or closed underneath us.
+ */
+#include "../mock/windows_compat.h"
+#include "../mock/p11_mock.h"
+#include "../../src/pkcs11/pkcs11.h"
+#include "../../src/common/config.h"
+#include "../../src/pkcs11/p11_session.h"
+#include "test_framework.h"
+#include <string.h>
+#include <stdlib.h>
+
+/* ── Context stub ───────────────────────────────────────────────────────── */
+typedef struct { void *hModule; CK_FUNCTION_LIST_PTR pFunctionList;
+                 CK_SLOT_ID slotId; BOOL bInitialized; } P11_CONTEXT;
+static P11_CONTEXT g_testCtx;
+P11_CONTEXT *P11_GetContext(void) { return &g_testCtx; }
+
+/* The slot is bound lazily now, on the first acquire. This suite supplies
+ * its own context with the slot already set, so there is nothing to bind
+ * and nothing to probe — the stub says "already done". The real function
+ * and its refuse-after-binding rule are exercised in test_p11_context.c
+ * and against the live token with two tokens present. */
+SECURITY_STATUS P11_EnsureSlotSelected(void) { return ERROR_SUCCESS; }
+
+/* Per-scope tokens off. This suite exercises ONE pool, which is what a
+ * single-token deployment has; the two-pool behaviour needs two real tokens
+ * and lives in tests/linux/test_two_tokens.c. Returning FALSE here is also
+ * what makes PoolFor() collapse every scope onto pool 0, so these
+ * assertions cover exactly the configuration they claim to. */
+BOOL       P11_HasPerScopeTokens(void) { return FALSE; }
+CK_SLOT_ID P11_GetScopeSlot(int nScope)
+{
+    (void)nScope;
+    return P11_GetContext()->slotId;
+}
+
+void Log_Debug(const char *f, ...) { (void)f; }
+void Log_Error(const char *f, ...) { (void)f; }
+
+/* p11_session.c reaches P11RvToSecStatus in p11_utils.c, which drags in the
+ * whole utility module. Only the mapping is needed here. */
+SECURITY_STATUS P11RvToSecStatus(CK_RV rv)
+{
+    return (rv == CKR_OK) ? ERROR_SUCCESS : (SECURITY_STATUS)NTE_FAIL;
+}
+
+static void reset_pool(void)
+{
+    P11_SessionPool_Finalize();
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_testCtx.bInitialized  = TRUE;
+    g_testCtx.slotId        = 0;
+    P11_SessionPool_Initialize();
+
+    /* Every acquire test needs a credential, because there is no longer a
+     * compiled-in default: the provider fails closed when nothing is
+     * configured (KSP_ALLOW_DEFAULT_PIN). Before that change these suites
+     * were silently exercising the "1234" fallback, which is precisely the
+     * behaviour that had to go. The suite below asserts the refusal
+     * explicitly rather than relying on it here. */
+    P11_SetPin("1234");
+}
+
+int main(void)
+{
+    SECURITY_STATUS   ss;
+    CK_SESSION_HANDLE h1 = CK_INVALID_HANDLE;
+    CK_SESSION_HANDLE h2 = CK_INVALID_HANDLE;
+
+    /* ── Suite 1 : the PIN override ─────────────────────────────────────── */
+    TEST_SUITE("P11_SetPin / P11_ClearPin");
+
+    reset_pool();
+
+    ASSERT_OK("Set a PIN → OK", P11_SetPin("1234"));
+    ASSERT_OK("Replace it → OK", P11_SetPin("5678"));
+    ASSERT_OK("Clear with NULL → OK", P11_SetPin(NULL));
+
+    {
+        /* Exactly at the limit is accepted; one past it is refused. A PIN
+         * that is silently truncated fails to log in for no visible
+         * reason, which is far harder to diagnose than an error here. */
+        char szMax[P11_MAX_PIN_LEN + 2];
+        memset(szMax, 'p', P11_MAX_PIN_LEN);
+        szMax[P11_MAX_PIN_LEN] = '\0';
+        ASSERT_OK("PIN of exactly P11_MAX_PIN_LEN → OK", P11_SetPin(szMax));
+
+        szMax[P11_MAX_PIN_LEN]     = 'p';
+        szMax[P11_MAX_PIN_LEN + 1] = '\0';
+        ASSERT_EQ("One character longer → NTE_INVALID_PARAMETER",
+            P11_SetPin(szMax), (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
+
+    ASSERT_OK("Empty PIN is accepted (a token may have none)",
+        P11_SetPin(""));
+    P11_ClearPin();
+
+    /* ── Suite 2 : sessions open lazily ─────────────────────────────────── */
+    TEST_SUITE("P11_AcquireSession — lazy open");
+
+    reset_pool();
+
+    ASSERT_EQ("No session opened before the first acquire",
+        P11Mock_GetCalls()->nOpenSession, 0);
+
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_OK("First acquire → OK", ss);
+    ASSERT_NEQ("Returns a session handle", h1, (CK_SESSION_HANDLE)CK_INVALID_HANDLE);
+    ASSERT_EQ("Opened exactly one session",
+        P11Mock_GetCalls()->nOpenSession, 1);
+    ASSERT_EQ("And logged it in", P11Mock_GetCalls()->nLogin, 1);
+
+    P11_ReleaseSession(h1);
+
+    /* Releasing does not close: the pool keeps the session for reuse. */
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
+    ASSERT_OK("Second acquire → OK", ss);
+    ASSERT_EQ("Reused the pooled session, no second open",
+        P11Mock_GetCalls()->nOpenSession, 1);
+    ASSERT_EQ("And did not log in again", P11Mock_GetCalls()->nLogin, 1);
+    P11_ReleaseSession(h2);
+
+    /* ── Suite 3 : login already done is not an error ───────────────────── */
+    TEST_SUITE("P11_AcquireSession — login states");
+
+    reset_pool();
+    P11Mock_GetConfig()->rv_Login = CKR_USER_ALREADY_LOGGED_IN;
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_OK("CKR_USER_ALREADY_LOGGED_IN tolerated", ss);
+    P11_ReleaseSession(h1);
+
+    reset_pool();
+    P11Mock_GetConfig()->rv_Login = CKR_PIN_INCORRECT;
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_ERR("A wrong PIN fails the acquire", ss);
+    ASSERT_EQ("And the failed session was closed",
+        P11Mock_GetCalls()->nCloseSession, 1);
+
+    /* The semaphore slot must be returned, or a failed login would leak a
+     * pool entry and the sixteenth failure would deadlock. */
+    P11Mock_GetConfig()->rv_Login = CKR_OK;
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_OK("A later acquire still succeeds (slot not leaked)", ss);
+    P11_ReleaseSession(h1);
+
+    reset_pool();
+    P11Mock_GetConfig()->rv_OpenSession = CKR_DEVICE_ERROR;
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_ERR("C_OpenSession failure propagates", ss);
+
+    /* ── Suite 4 : recovery after the token logs out (OPS-09) ───────────── */
+    TEST_SUITE("P11_AcquireSession — session recovery");
+
+    reset_pool();
+
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_OK("Acquire a session", ss);
+    P11_ReleaseSession(h1);
+    ASSERT_EQ("One open so far", P11Mock_GetCalls()->nOpenSession, 1);
+
+    /* The token logged out underneath the pool. The handle is still
+     * numerically valid, so only C_GetSessionInfo reveals it. */
+    P11Mock_GetConfig()->sessionState = CKS_RW_PUBLIC_SESSION;
+
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
+    ASSERT_OK("Acquire after logout → OK", ss);
+    ASSERT_EQ("Session state was checked",
+        P11Mock_GetCalls()->nGetSessionInfo > 0, 1);
+    ASSERT_EQ("Stale session was closed",
+        P11Mock_GetCalls()->nCloseSession, 1);
+    ASSERT_EQ("A fresh session was opened",
+        P11Mock_GetCalls()->nOpenSession, 2);
+    ASSERT_EQ("And logged in again", P11Mock_GetCalls()->nLogin, 2);
+    P11_ReleaseSession(h2);
+
+    /* A read-only user session is still logged in and must be kept. */
+    reset_pool();
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_OK("Acquire", ss);
+    P11_ReleaseSession(h1);
+    P11Mock_GetConfig()->sessionState = CKS_RO_USER_FUNCTIONS;
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
+    ASSERT_OK("Acquire again", ss);
+    ASSERT_EQ("Read-only user session is not discarded",
+        P11Mock_GetCalls()->nOpenSession, 1);
+    P11_ReleaseSession(h2);
+
+    /* A handle the token no longer recognises must also be replaced. */
+    reset_pool();
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    ASSERT_OK("Acquire", ss);
+    P11_ReleaseSession(h1);
+    P11Mock_GetConfig()->rv_GetSessionInfo = CKR_SESSION_HANDLE_INVALID;
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
+    ASSERT_OK("Acquire after the handle went invalid → OK", ss);
+    ASSERT_EQ("Reopened", P11Mock_GetCalls()->nOpenSession, 2);
+    P11_ReleaseSession(h2);
+
+    /* A healthy session must not be reopened — recovery that fires every
+     * time would quietly cost a login per operation. */
+    reset_pool();
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h1);
+    P11_ReleaseSession(h1);
+    ss = P11_AcquireSession(P11_SCOPE_USER, &h2);
+    ASSERT_OK("Acquire a healthy session", ss);
+    ASSERT_EQ("Healthy session reused, not reopened",
+        P11Mock_GetCalls()->nOpenSession, 1);
+    ASSERT_EQ("No redundant login", P11Mock_GetCalls()->nLogin, 1);
+    P11_ReleaseSession(h2);
+
+    /* ── Suite 5 : parameter and lifecycle handling ─────────────────────── */
+    /* ── No credential configured — the provider must fail closed ────────
+     *
+     * There used to be a compiled-in "1234". A provider that silently tries
+     * a default PIN is worse than one that refuses to start: the refusal is
+     * one clear error at deployment, while the silent attempt reaches the
+     * token and comes back as a login failure, with nothing to say that a
+     * PIN was never configured at all. For a CA key that distinction is the
+     * difference between a five-minute fix and an afternoon.
+     *
+     * The environment is cleared explicitly: a developer with SOFTHSM2_PIN
+     * exported would otherwise see this suite pass for the wrong reason. */
+    TEST_SUITE("No PIN configured — fail closed");
+    {
+        char szSaved[128] = {0};
+        DWORD dwHad = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV,
+                                              szSaved, sizeof(szSaved));
+        CK_SESSION_HANDLE hNone = CK_INVALID_HANDLE;
+
+        unsetenv(SOFTHSM2_PIN_ENV);
+        reset_pool();
+        P11_ClearPin();                 /* undo reset_pool's convenience */
+
+        ASSERT_EQ("Acquire with no PIN anywhere → NTE_PERM",
+            P11_AcquireSession(P11_SCOPE_USER, &hNone),
+            (SECURITY_STATUS)NTE_PERM);
+        ASSERT_EQ("and no session was handed out",
+            (int)(hNone == CK_INVALID_HANDLE), 1);
+        ASSERT_EQ("the session opened for the attempt was closed again",
+            P11Mock_GetCalls()->nCloseSession, 1);
+
+        /* The pool must not be poisoned by the refusal: a PIN set now has
+         * to work. A failed login that leaked its slot would make the next
+         * acquire fail for an unrelated reason. */
+        ASSERT_OK("Setting a PIN afterwards", P11_SetPin("1234"));
+        ASSERT_OK("and the next acquire succeeds",
+            P11_AcquireSession(P11_SCOPE_USER, &hNone));
+        ASSERT_EQ("with a real session", (int)(hNone != CK_INVALID_HANDLE), 1);
+
+        if (dwHad > 0 && dwHad < sizeof(szSaved))
+            setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
+    }
+
+    /* ── How the token says it wants to be authenticated ────────────────
+     *
+     * The provider used to implement one model — always demand a PIN,
+     * always send it — and with the fail-closed rule that meant a hardware
+     * HSM with a PIN pad was REFUSED for having no PIN configured. These
+     * three cases are the three models PKCS#11 describes.
+     *
+     * The load-bearing assertions are about what C_Login RECEIVED, not
+     * that it was called. "A login happened" is satisfied by a provider
+     * that sends the PIN to a token which asked for NULL. */
+    TEST_SUITE("Token authentication models");
+
+    /* 1. CKF_LOGIN_REQUIRED, no protected path — the ordinary case, and
+     *    the only one that existed before. */
+    reset_pool();
+    ASSERT_OK("PIN token: acquire succeeds",
+              P11_AcquireSession(P11_SCOPE_USER, &h1));
+    ASSERT_EQ("PIN token: logged in", P11Mock_GetCalls()->nLogin, 1);
+    ASSERT_EQ("PIN token: the PIN was sent",
+              P11Mock_GetCalls()->bLastLoginSentPin, 1);
+    ASSERT("PIN token: and it was not empty",
+           P11Mock_GetCalls()->cbLastLoginPin > 0);
+    P11_ReleaseSession(h1);
+
+    /* 2. Protected authentication path — the option worth asking an HSM
+     *    vendor for, because the credential never travels through Windows.
+     *    C_Login must still happen, with NULL. */
+    reset_pool();
+    P11Mock_GetConfig()->flagsToken =
+        CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;
+    ASSERT_OK("Protected path: acquire succeeds",
+              P11_AcquireSession(P11_SCOPE_USER, &h1));
+    ASSERT_EQ("Protected path: C_Login was still called",
+              P11Mock_GetCalls()->nLogin, 1);
+    ASSERT_EQ("Protected path: pPin was NULL, per v2.40 §11.6",
+              P11Mock_GetCalls()->bLastLoginSentPin, 0);
+    P11_ReleaseSession(h1);
+
+    /* 2b. The case that was outright broken: a protected-path token and NO
+     *     PIN configured anywhere. This returned NTE_PERM and refused to
+     *     start, which is the provider rejecting a perfectly good HSM. */
+    {
+        char  szSaved[P11_MAX_PIN_LEN + 1] = {0};
+        DWORD dwHad = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szSaved,
+                                              sizeof(szSaved));
+        reset_pool();
+        P11Mock_GetConfig()->flagsToken =
+            CKF_LOGIN_REQUIRED | CKF_PROTECTED_AUTHENTICATION_PATH;
+        P11_ClearPin();
+        unsetenv(SOFTHSM2_PIN_ENV);
+
+        ASSERT_OK("Protected path with NO PIN configured: still works",
+                  P11_AcquireSession(P11_SCOPE_USER, &h1));
+        ASSERT_EQ("Protected path with no PIN: pPin was NULL",
+                  P11Mock_GetCalls()->bLastLoginSentPin, 0);
+        P11_ReleaseSession(h1);
+
+        if (dwHad > 0 && dwHad < sizeof(szSaved))
+            setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
+    }
+
+    /* 3. The token does not want a login at all. Calling C_Login anyway is
+     *    not harmless: a token entitled to refuse it would fail a session
+     *    that was already usable. */
+    reset_pool();
+    P11Mock_GetConfig()->flagsToken = CKF_TOKEN_INITIALIZED;  /* no LOGIN_REQUIRED */
+    ASSERT_OK("No CKF_LOGIN_REQUIRED: acquire succeeds",
+              P11_AcquireSession(P11_SCOPE_USER, &h1));
+    ASSERT_EQ("No CKF_LOGIN_REQUIRED: C_Login was NOT called",
+              P11Mock_GetCalls()->nLogin, 0);
+    P11_ReleaseSession(h1);
+
+    /* 4. An unreadable C_GetTokenInfo must fall through to the STRICT
+     *    model. A failure to read the token's wishes must not be the
+     *    reason a credential stops being required. */
+    {
+        char  szSaved[P11_MAX_PIN_LEN + 1] = {0};
+        DWORD dwHad = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szSaved,
+                                              sizeof(szSaved));
+        reset_pool();
+        P11Mock_GetConfig()->rv_GetTokenInfo = CKR_FUNCTION_FAILED;
+        P11_ClearPin();
+        unsetenv(SOFTHSM2_PIN_ENV);
+
+        ASSERT_EQ("Unreadable token info + no PIN → NTE_PERM, not a free pass",
+                  P11_AcquireSession(P11_SCOPE_USER, &h1),
+                  (SECURITY_STATUS)NTE_PERM);
+
+        if (dwHad > 0 && dwHad < sizeof(szSaved))
+            setenv(SOFTHSM2_PIN_ENV, szSaved, 1);
+    }
+
+    TEST_SUITE("Pool lifecycle");
+
+    reset_pool();
+    ASSERT_EQ("phSession=NULL → NTE_INVALID_PARAMETER",
+        P11_AcquireSession(P11_SCOPE_USER, NULL), (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+    /* Releasing a handle the pool does not hold must be harmless. */
+    P11_ReleaseSession((CK_SESSION_HANDLE)0xDEAD);
+    ASSERT_OK("Release of an unknown handle is a no-op",
+        P11_AcquireSession(P11_SCOPE_USER, &h1));
+    P11_ReleaseSession(h1);
+
+    ASSERT_OK("Re-initialising an initialised pool is a no-op",
+        P11_SessionPool_Initialize());
+
+    P11_SessionPool_Finalize();
+    /* Finalise twice: the second must not fault on freed locks. */
+    P11_SessionPool_Finalize();
+    ASSERT("Double finalise survived", 1);
+
+    TEST_REPORT();
+    TEST_EXIT();
+}

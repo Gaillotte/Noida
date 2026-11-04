@@ -1,0 +1,35 @@
+<section id="pyramid" data-section="How the code is proven, and the discipline that proved it wrong five times" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Test strategy</p>
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">Five layers, and only two of them have ever run</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px;width:1664px">
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;padding:26px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="width:150px;font-size:26px;font-weight:700;color:#E08A4A">Layer 4</p>
+<p style="width:420px;font-size:28px;font-weight:600">Microsoft HLK, in HLK Studio</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Controller plus a separate test client. Never executed.</p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;padding:26px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="width:150px;font-size:26px;font-weight:700;color:#E08A4A">Layer 3</p>
+<p style="width:420px;font-size:28px;font-weight:600">PowerShell, 9 scenarios + ~150 HLK checks</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">NCrypt by P/Invoke, verified against BCrypt. Syntax-checked on Linux; never executed.</p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#2A1A14;padding:26px 32px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="width:150px;font-size:26px;font-weight:700;color:#E08A4A">Layer 2</p>
+<p style="width:420px;font-size:28px;font-weight:600">40 integration tests, Windows + live token</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Written and parse-checked. Never executed — a suite that has never run is a hypothesis about the suite.</p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#15303A;padding:26px 32px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="width:150px;font-size:26px;font-weight:700;color:#6FA8C9">Layer 1b</p>
+<p style="width:420px;font-size:28px;font-weight:600">The real sources against a real second token</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Kryoptic, unrelated to this repository. Only the loader is substituted. <b style="color:#F7F7F4">Runs in CI.</b></p>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#15303A;padding:26px 32px;border-radius:14px;border-left:6px solid #6FA8C9">
+<p style="width:150px;font-size:26px;font-weight:700;color:#6FA8C9">Layer 1</p>
+<p style="width:420px;font-size:28px;font-weight:600">27 unit suites, 2 051 assertions</p>
+<p style="flex:1;font-size:25px;color:#AFC3D4">Linux/GCC against a PKCS#11 mock. 86.2 % lines, 100 % functions. <b style="color:#F7F7F4">Runs in CI.</b></p>
+</div>
+</div>
+<p style="font-size:29px;line-height:1.4;width:1664px;color:#AFC3D4">The pyramid is upside down where it matters: <b style="color:#F7F7F4">everything that needs Windows is unexecuted</b>, so layer 1b was built to move as much risk as possible below that line.</p>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">docs/09-tests.md · 8 / 15</p>
+</section>

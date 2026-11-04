@@ -2,7 +2,18 @@
 # Usage : make -f Makefile.linux [all | clean | run | coverage]
 
 CC      = gcc
-CFLAGS  = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+# -Werror=implicit-function-declaration is not a style preference. A call
+# with no prototype in scope is assumed to return int, so a function
+# returning a pointer has its result truncated to 32 bits — a segfault at
+# the call site and nothing at the definition. That cost a debugging
+# session here. MSVC at /W3 /WX rejects it; this makes Linux agree.
+# -Werror=incompatible-pointer-types makes the signature checks in
+# test_function_table.c bite. Assigning a function to a pointer of the
+# wrong shape is only a warning in C, and the one slot whose parameter type
+# was wrong went unnoticed for thirteen sessions because nothing objected.
+CFLAGS  = -Wall -Wextra -Werror=implicit-function-declaration \
+          -Werror=incompatible-pointer-types \
+          -Wno-unused-parameter -Wno-unused-function \
           -g --coverage \
           -I../mock \
           -I../../src \
@@ -19,12 +30,20 @@ PROP_SRC = $(SRC)/ksp/ksp_properties.c
 KEY_SRC  = $(SRC)/ksp/ksp_key.c
 CRYPT_SRC= $(SRC)/ksp/ksp_crypto.c
 P11U_SRC = $(SRC)/pkcs11/p11_utils.c
+CAPS_SRC = $(SRC)/pkcs11/p11_caps.c
 MOCK_SRC = $(MOCK)/p11_mock.c
 
 PURE_STUBS = p11_pure_stubs.c
+# PKCS#11-layer stubs for suites that link ksp_provider.c but not the
+# context or session layers
+PIN_STUB   = p11_prov_stub.c
 
 TESTS = \
     test_p11rv_mapping \
+    test_function_table \
+    test_entry_contracts \
+    test_credential \
+    test_p11_session \
     test_ecdsa_decode \
     test_mechanism_resolve \
     test_memory \
@@ -32,58 +51,213 @@ TESTS = \
     test_export_blobs \
     test_ksp_provider \
     test_ksp_key_props \
+    test_rsa_lengths \
+    test_rsa_lengths_legacy \
+    test_rsa_lengths_strict \
     test_ksp_key_ops \
-    test_ksp_crypto
+    test_ksp_crypto \
+    test_oaep_params \
+    test_ecdh \
+    test_eddsa \
+    test_aes_keys \
+    test_mldsa \
+    test_certificate \
+    test_keywrap \
+    test_p11_context \
+    test_key_pin \
+    test_cert_subject
 
-.PHONY: all clean run coverage
+.PHONY: all clean run coverage syntax-check
 
 all: $(TESTS)
 
+# Every suite depends on every header.
+#
+# Without this, editing a header rebuilds nothing: the recipes list only .c
+# files as prerequisites, so make reports success and leaves a stale binary
+# in place. That was found the hard way — a mock buffer was enlarged, the
+# suite was re-run, and it failed identically against a binary that had not
+# been recompiled. A test build that can silently verify the wrong code is
+# worse than one that is slow.
+# The recipes therefore compile $(filter %.c,$^), not $^ — adding headers as
+# prerequisites otherwise hands them to gcc as translation units.
+HEADERS = $(wildcard $(SRC)/*/*.h) $(wildcard $(MOCK)/*.h) test_framework.h
+$(TESTS): $(HEADERS) ../Makefile.linux
+
+# ── syntax-check ──────────────────────────────────────────────────────────
+# The integration test only *runs* on Windows, but parsing it here catches
+# typos before anyone starts a Windows build.
+syntax-check:
+	@echo "Syntax-checking test_ksp_integration.c (Windows-only test)..."
+	@$(CC) -fsyntax-only -I../mock -I../../src -I../../src/ksp \
+	    -I../../src/common -I../../src/pkcs11 ../test_ksp_integration.c \
+	    && echo "  OK — no syntax errors"
+
 # ── test_p11rv_mapping : P11RvToSecStatus ──────────────────────────────────
 test_p11rv_mapping: test_p11rv_mapping.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+# ── test_function_table : ksp_main.c CNG function table ───────────────────
+# ── test_credential : the testable half of the DPAPI PIN blob ────────────
+#
+# KspAcceptPinBytes only. The registry read and CryptUnprotectData are
+# Windows-only and are compile-checked by the cross-compile job, not run.
+# The pure function is split out precisely because it is where this
+# project's recurring counted-buffer off-by-one lives.
+test_credential: test_credential.c $(SRC)/pkcs11/p11_credential.c $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+# ── test_entry_contracts : every function-table slot, called ─────────────
+#
+# The inventory the feature matrix cannot hold. It tracks capabilities
+# observed across shipping CNG KSPs, so it has never pointed at this
+# provider's own entry points — the blind spot that let KSP_VerifySignature
+# sit unimplemented and KSP_NotifyChangeKey return success while never
+# writing the caller's HANDLE. Those were found by READING the table in
+# session 14; this calls it.
+test_entry_contracts: test_entry_contracts.c $(SRC)/ksp/ksp_main.c \
+                     $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
+                     $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+test_function_table: test_function_table.c $(SRC)/ksp/ksp_main.c \
+                     $(PROV_SRC) $(PROP_SRC) $(KEY_SRC) $(CRYPT_SRC) \
+                     $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+# ── test_p11_session : the PKCS#11 session pool and PIN storage ───────────
+# p11_credential.c comes along because GetEffectivePin now consults the
+# DPAPI-protected blob. On Linux that source compiles to a stub returning
+# FALSE, so this suite exercises the remaining credential sources exactly
+# as it did before.
+test_p11_session: test_p11_session.c $(SRC)/pkcs11/p11_session.c                   $(SRC)/pkcs11/p11_credential.c $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
 
 # ── test_ecdsa_decode : P11_DecodeDerEcdsaSignature, P11_EcCoordSize ───────
 test_ecdsa_decode: test_ecdsa_decode.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_mechanism_resolve : P11_ResolveMechanism ──────────────────────────
 test_mechanism_resolve: test_mechanism_resolve.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_memory : KSP_Alloc, KSP_AllocZero, KSP_Free, KSP_WStrDup ──────
 test_memory: test_memory.c $(MEM_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_logging : Log_Initialize, Log_Debug, Log_Error ─────────────────
 test_logging: test_logging.c $(LOG_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_export_blobs : P11_ExportRsaPublicKey, P11_ExportEcPublicKey ────
-test_export_blobs: test_export_blobs.c $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+# CAPS_SRC because p11_utils.c asks the probe whether the token can do raw
+# RSA, the same way it is asked about ML-DSA. The real probe answers
+# permissively until one has run, so linking it changes nothing here.
+test_export_blobs: test_export_blobs.c $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_ksp_provider: KSP_OpenProvider, KSP_FreeProvider, properties ───
 # ksp_properties.c is not needed here (provider-only test)
 test_ksp_provider: test_ksp_provider.c \
-    $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+    $(PROV_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_ksp_key_props : KSP_GetKeyProperty, KSP_SetKeyProperty ───────────
 # ksp_key_stub.c provides KSP_IsValidKey without linking the full ksp_key.c
+# ── test_rsa_lengths : the RSA default under a moved floor ────────────────
+#
+# Built three times from one source, because the thing under test IS the
+# build configuration. The clamp in NCRYPT_LENGTHS_PROPERTY is a no-op in
+# the default build — the floor and the default are both 2048 — so only the
+# moved-floor builds can fail when it is removed.
+RSA_LEN_SRC = test_rsa_lengths.c $(PROV_SRC) $(PROP_SRC) $(CAPS_SRC) \
+              $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB) ksp_key_stub.c
+
+test_rsa_lengths: $(RSA_LEN_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+# The legacy escape hatch must not lower the size a wizard preselects.
+test_rsa_lengths_legacy: $(RSA_LEN_SRC)
+	$(CC) $(CFLAGS) -DKSP_RSA_MIN_BITS=1024 -o $@ $(filter %.c,$^)
+
+# A policy floor above the default must raise it, not be contradicted.
+test_rsa_lengths_strict: $(RSA_LEN_SRC)
+	$(CC) $(CFLAGS) -DKSP_RSA_MIN_BITS=4096 -o $@ $(filter %.c,$^)
+
 test_ksp_key_props: test_ksp_key_props.c ksp_key_stub.c \
-    $(PROV_SRC) $(PROP_SRC) $(MEM_SRC) $(MOCK_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+    $(PROV_SRC) $(PROP_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_ksp_key_ops : OpenKey, CreatePersistedKey, FinalizeKey, … ────────
 test_ksp_key_ops: test_ksp_key_ops.c \
-    $(KEY_SRC) $(PROV_SRC) $(MEM_SRC) $(MOCK_SRC)
-	$(CC) $(CFLAGS) -o $@ $^
+    $(KEY_SRC) $(PROV_SRC) $(CAPS_SRC) $(MEM_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 # ── test_ksp_crypto : SignHash, Decrypt, ExportKey, ImportKey ─────────────
+#
+# KEY_SRC is here for the curve-family predicates KSP_ExportKey uses to send
+# Edwards and Montgomery keys to the raw-point exporter rather than the
+# X9.62 one.
 test_ksp_crypto: test_ksp_crypto.c \
-    $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(MEM_SRC) $(MOCK_SRC)
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+    $(CRYPT_SRC) $(KEY_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) \
+    $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_oaep_params : P11_MapHashAlg, P11_BuildOaepParams (Phase 2) ──────
+test_oaep_params: test_oaep_params.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
+
+# ── test_ecdh : SecretAgreement, DeriveKey, FreeSecret (Phase 4) ──────────
+test_ecdh: test_ecdh.c \
+    $(CRYPT_SRC) $(KEY_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) \
+    $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_eddsa : Ed25519 / Ed448 keygen, sign, export (Phase 5) ───────────
+test_eddsa: test_eddsa.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) $(MEM_SRC) $(LOG_SRC) \
+    $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_aes_keys : AES keygen, Encrypt/Decrypt, HMAC (Phase 6) ───────────
+test_aes_keys: test_aes_keys.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) \
+    $(CAPS_SRC) $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_mldsa : capability probe + post-quantum gating (Phase 4) ─────────
+test_mldsa: test_mldsa.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_certificate : NCRYPT_CERTIFICATE_PROPERTY (PROP-14) ──────────────
+test_certificate: test_certificate.c \
+    $(KEY_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_keywrap : AES key wrap / unwrap (AES-09) ─────────────────────────
+test_keywrap: test_keywrap.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROV_SRC) $(PROP_SRC) $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_p11_context : module load, init retry, slot selection (OPS-08) ───
+test_p11_context: test_p11_context.c \
+    $(SRC)/pkcs11/p11_context.c $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_key_pin : per-key PIN via CKU_CONTEXT_SPECIFIC (PROP-13) ─────────
+test_key_pin: test_key_pin.c \
+    $(KEY_SRC) $(CRYPT_SRC) $(PROP_SRC) $(PROV_SRC) $(P11U_SRC) $(CAPS_SRC) \
+    $(MEM_SRC) $(LOG_SRC) $(MOCK_SRC) $(PIN_STUB)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lpthread
+
+# ── test_cert_subject : X.509 subject extraction for CKA_SUBJECT ──────────
+test_cert_subject: test_cert_subject.c $(PURE_STUBS) $(P11U_SRC) $(MEM_SRC)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 run: all
 	@echo "════════════════════════════════════════════════════════"

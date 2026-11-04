@@ -1,0 +1,41 @@
+<section id="standing" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1">Inherit this honestly: what is proven and what is merely written</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">Read the second column as the real backlog. The provider has never been compiled for Windows, so everything that depends on <span style="font-family:'JetBrains Mono', 'Courier New', monospace">ncrypt.dll</span> is a hypothesis about the code <i>and</i> about the suite that would test it.</p>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #2F6F8F">
+<h3 style="font-size:32px;font-weight:600">Proven by execution</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li>2 051 unit assertions, 27 suites, 86.2 % lines at 100 % functions</li>
+<li>The real sources against two independent live tokens, each suite run twice</li>
+<li>RSA and ECDSA signing, key reopen by name, certificate storage, deletion</li>
+<li>32 threads over the 16-session pool, compared by signature bytes, under ThreadSanitizer</li>
+<li>Per-scope token isolation, verified with two tokens and two PINs</li>
+<li>Five static checks and a mingw cross-compile on every commit</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFF6EE;padding:36px;border:1px solid #E8CDB4;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">Written, never executed</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li><b>The DLL itself.</b> One of ten source files cannot compile without the CPDK header</li>
+<li>40 integration tests and ~150 HLK-conformant checks</li>
+<li><span style="font-family:'JetBrains Mono', 'Courier New', monospace">register_ksp.ps1</span> — parses and its C# compiles; never run</li>
+<li><span style="font-family:'JetBrains Mono', 'Courier New', monospace">set_ksp_pin.ps1</span> and the DPAPI registry read behind it</li>
+<li>Every statement about how ADCS calls a provider on renewal</li>
+<li>Whether Windows loads an unsigned user-mode KSP at all</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:36px;border-radius:16px">
+<h3 style="font-size:32px;font-weight:600;color:#E08A4A">Not an engineering question</h3>
+<ul style="font-size:25px;line-height:1.5;color:#AFC3D4;padding:0 0 0 30px">
+<li>A CA key cannot carry a Windows DACL — PKCS#11 has no ACL model. The token boundary is the whole control</li>
+<li>Which HSM. If it ships its own KSP, this project may be the wrong tool</li>
+<li>An OV or EV code-signing certificate, bought by a verified legal entity</li>
+<li>FIPS posture, which needs certified hardware rather than code</li>
+</ul>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Feature matrix: 103 capability rows, 73 covered · of the 30 open, 10 could start today and 20 are blocked outside the repository · 2 / 10</p>
+<aside>Spend the most time on the middle column. The temptation on joining will be to read the proven column and conclude the project is nearly done; it is roughly half done, and the unexecuted half is the half that decides whether it works. Five defects have already survived the mock and been caught the first time a real token ran — expect the same ratio when Windows enters the picture.</aside>
+</section>

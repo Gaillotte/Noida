@@ -1,0 +1,33 @@
+<section id="install2" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Installation · step 2 of 3</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Register the provider, then give it a token and a credential</h2>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:34px;border-radius:16px">
+<h3 style="font-size:30px;font-weight:600;color:#E08A4A">Commands, elevated</h3>
+<p style="font-size:24px;line-height:1.65;font-family:'JetBrains Mono', 'Courier New', monospace;color:#CFDEE8">.\register_ksp.ps1 -DllPath C:\KSP\softhsm_ksp.dll<br>
+certutil -csplist<br><br>
+setx /M KSP_PKCS11_LIB "C:\hsm\vendor-p11.dll"<br>
+setx /M KSP_MACHINE_TOKEN_LABEL "CA-MACHINE"<br>
+setx /M KSP_USER_TOKEN_LABEL&#8195;&#8195;"CA-USER"<br><br>
+.\set_ksp_pin.ps1 -Scope Machine `<br>
+&#8195;-ServiceAccount 'NT Service\CertSvc'<br><br>
+setx /M KSP_DEBUG 1&#8195;&#8195;# DebugView, pilot only</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFFFF;padding:30px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:29px;font-weight:600">Registration is two things, not one</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">The binary goes in with <b>BCryptRegisterProvider</b>; the algorithm list goes in with <b>BCryptAddContextFunctionProvider</b>. Writing the registry values by hand does only the first: the provider loads, reports no algorithms, and anything discovering providers by algorithm skips it.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFFFF;padding:30px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:29px;font-weight:600">Two tokens, not two label prefixes</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Set the pair and NCRYPT_MACHINE_KEY_FLAG selects <b>which token</b> — own PIN, own session pool. Without them the scopes are a label prefix inside one token, which is namespacing, not isolation. Half-configured is refused.</p>
+</div>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#FFF6EE;padding:28px 34px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="flex:1;font-size:27px;line-height:1.45;color:#44525E">Then <b>restart anything already running.</b> CNG reads the provider list at process start, so certsrv will not see a newly registered provider until it restarts. And remove SOFTHSM2_PIN once the blob is provisioned, or you cannot tell which credential a successful login used.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">set_ksp_pin.ps1 reads the PIN with Read-Host -AsSecureString, so it never reaches the process list or the shell history · 13 / 15</p>
+</section>

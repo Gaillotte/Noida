@@ -28,9 +28,9 @@ library exposed via the standard **PKCS#11 v2.40** interface.
 │  │  ksp_main.c          │   │  p11_context.c  (singleton)          │ │
 │  │  ksp_provider.c      │──▶│  p11_session.c  (session pool)       │ │
 │  │  ksp_key.c           │   │  p11_utils.c    (mechanisms, attrs)  │ │
-│  │  ksp_crypto.c        │   └──────────────────┬───────────────────┘ │
-│  │  ksp_properties.c    │                      │ C_XXX()             │
-│  └─────────────────────┘                      │                     │
+│  │  ksp_crypto.c        │   │  p11_caps.c     (token capabilities) │ │
+│  │  ksp_properties.c    │   └──────────────────┬───────────────────┘ │
+│  └─────────────────────┘                      │ C_XXX()             │
 │  ┌─────────────────────┐                      │                     │
 │  │    Common            │                      │                     │
 │  │  config.h            │                      │                     │
@@ -58,18 +58,19 @@ library exposed via the standard **PKCS#11 v2.40** interface.
 |------|---------------|
 | `ksp_main.c` | `DllMain`, `GetKeyStorageInterface`, `NCRYPT_KEY_STORAGE_FUNCTION_TABLE` table |
 | `ksp_provider.c` | `OpenProvider`, `FreeProvider`, provider properties, stubs |
-| `ksp_key.c` | `CreatePersistedKey`, `OpenKey`, `FinalizeKey`, `DeleteKey`, `EnumKeys` |
-| `ksp_crypto.c` | `SignHash`, `Decrypt`, `ExportKey`, `ImportKey` |
-| `ksp_properties.c` | `GetKeyProperty`, `SetKeyProperty` |
+| `ksp_key.c` | `CreatePersistedKey`, `OpenKey`, `FinalizeKey`, `DeleteKey`, `EnumKeys`; RSA / EC / EdDSA / symmetric generators and the algorithm classifiers |
+| `ksp_crypto.c` | `SignHash`, `Decrypt`, `Encrypt`, `ExportKey`, `ImportKey`, `SecretAgreement`, `DeriveKey`, `FreeSecret` |
+| `ksp_properties.c` | `GetKeyProperty`, `SetKeyProperty` — including the AES chaining mode and IV |
 
 ### PKCS#11 layer
 
 | File | Responsibility |
 |------|---------------|
-| `pkcs11.h` | Standard OASIS v2.40 header (types, constants, `CK_FUNCTION_LIST`) |
-| `p11_context.c` | Singleton — DLL loading, `C_Initialize`, slot selection |
+| `pkcs11.h` | OASIS header subset — v2.40 types and constants, plus the v3.2 post-quantum mechanisms, copied from the header vendored in the SoftHSM2 submodule |
+| `p11_context.c` | Singleton — module loading, `C_Initialize`, slot selection, capability probe |
+| `p11_caps.c` | Capability probe. `C_GetMechanismList` once at startup; the provider advertises the intersection of what it can map and what the token implements |
 | `p11_session.c` | Session pool with Windows semaphore |
-| `p11_utils.c` | Mechanism resolution, error conversion, key export |
+| `p11_utils.c` | Mechanism resolution, curve OIDs, hash mapping, OAEP parameters, DER encode/decode, key export |
 
 ### Common
 
@@ -101,15 +102,46 @@ The `dwMagic` field enables validation of incoming handles (defense in depth).
 typedef struct _KSP_KEY {
     DWORD            dwMagic;         // KSP_KEY_MAGIC = 0x4B53504B ('KSPK')
     WCHAR            szKeyName[256];  // = CKA_LABEL in SoftHSM2
-    WCHAR            szAlgId[64];     // "RSA", "ECDSA_P256", "ECDSA_P384"
-    DWORD            dwKeyBitLen;     // 2048, 3072, 4096 (RSA) / 256, 384 (EC)
+    WCHAR            szAlgId[64];     // "RSA", "ECDSA_P521", "ECDH_P256",
+                                      // "EDDSA_ED25519", "AES", "HMAC_SHA256"...
+    DWORD            dwKeyBitLen;     // RSA 2048/3072/4096; EC 256/384/521;
+                                      // Ed 255/448; AES 128/192/256
     DWORD            dwKeySpec;       // AT_SIGNATURE | AT_KEYEXCHANGE
     CK_OBJECT_HANDLE hPrivKey;        // PKCS#11 private key handle
     CK_OBJECT_HANDLE hPubKey;         // PKCS#11 public key handle
     CK_SLOT_ID       slotId;          // Selected SoftHSM2 slot
     BOOL             bFinalized;      // FinalizeKey() called?
     BOOL             bPersistOnly;    // Deferred generation?
+
+    /* Symmetric key support */
+    DWORD            dwKeyClass;      // KSP_KEY_CLASS_ASYMMETRIC | _SYMMETRIC
+    CK_OBJECT_HANDLE hSecretKey;      // AES / HMAC secret object
+    BOOL             bSessionObject;  // Imported key — destroy on FreeKey
+
+    /* AES cipher state, set through NCryptSetProperty */
+    WCHAR            szChainingMode[64]; // NCRYPT_CHAINING_MODE_PROPERTY
+    BYTE             pbIV[16];           // NCRYPT_INITIALIZATION_VECTOR
+    DWORD            cbIV;
+    BYTE             pbAuthData[256];    // GCM additional authenticated data
+    DWORD            cbAuthData;
 } KSP_KEY;
+```
+
+An asymmetric key uses `hPrivKey` / `hPubKey`; a symmetric key uses
+`hSecretKey` and leaves the other two at `CK_INVALID_HANDLE`. `dwKeyClass`
+is the discriminator every operation checks first.
+
+### KSP_SECRET
+
+ECDH agreement produces a separate handle type, returned as an
+`NCRYPT_SECRET_HANDLE` and consumed by `NCryptDeriveKey`:
+
+```c
+typedef struct _KSP_SECRET {
+    DWORD            dwMagic;      // KSP_SECRET_MAGIC = 0x4B535053 ('KSPS')
+    CK_OBJECT_HANDLE hSecretObj;   // CKO_SECRET_KEY from C_DeriveKey
+    DWORD            dwSecretLen;  // Raw shared secret length in bytes
+} KSP_SECRET;
 ```
 
 ### P11_CONTEXT (singleton)

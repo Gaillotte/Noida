@@ -1,0 +1,557 @@
+name: KSP CI
+
+# This repository holds more than one project, and the KMIP work has its own
+# .github/workflows/ci.yml. Both would own that filename, so this one is
+# named for its project and scoped by path: it runs only when the KSP, or
+# this workflow itself, actually changes.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'softhsm_ksp/**'
+      - '.github/workflows/ksp-ci.yml'
+  pull_request:
+    paths:
+      - 'softhsm_ksp/**'
+      - '.github/workflows/ksp-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ksp-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── The fast gate ───────────────────────────────────────────────────────
+  # Unit suite plus a Windows cross-compile. mingw-w64 is not the Windows
+  # SDK, but it catches the class of defect that let seven of ten source
+  # files reach main unable to compile for Windows at all.
+  linux:
+    name: Unit tests and Windows cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 mingw-w64-common gcovr
+
+      - name: Unit tests
+        working-directory: softhsm_ksp/tests/unit
+        run: |
+          set -o pipefail
+          make -f ../Makefile.linux run | tee "$RUNNER_TEMP/unit-run.log"
+
+      # The suite's own output, not a second run: a count checked against a
+      # different invocation than the one that gated the build is a count
+      # that can disagree with it. docs/09-tests.md's pyramid said 22 suites
+      # and 1816 assertions while the suite ran 25 and reported 1886, with
+      # one whole suite missing from the per-suite table.
+      - name: Test counts in the docs match the suite
+        working-directory: softhsm_ksp
+        run: python3 tests/check_test_counts.py "$RUNNER_TEMP/unit-run.log"
+
+      - name: Windows-only integration test parses
+        working-directory: softhsm_ksp/tests/unit
+        run: make -f ../Makefile.linux syntax-check
+
+      # The mock is hand-written. This fails the build if it disagrees with
+      # the real Windows headers, which is how the wrong values for
+      # NCRYPT_IMPL_HARDWARE_FLAG and NTE_BAD_KEYSET_PARAM went unnoticed.
+      - name: Mock has not drifted from the Windows headers
+        working-directory: softhsm_ksp
+        run: python3 tests/check_mock_drift.py
+
+      # The feature matrix's three artifacts — the PDF, the coverage
+      # workbook and docs/15-gap-analysis.md — are generated from
+      # feature-matrix.csv, coverage_blockers.py and gap_detail.py. Nothing
+      # checked that the committed copies still matched those inputs, so
+      # editing the CSV and forgetting to regenerate left three documents
+      # describing a matrix that no longer existed, silently. This project
+      # has shipped a coverage figure that was stale for two sessions and a
+      # CLAUDE.md passage that contradicted the code for six, so the failure
+      # mode is not hypothetical.
+      #
+      # Each artifact carries a fingerprint of its own inputs and this
+      # recomputes it; byte-comparing a regenerated artifact cannot work,
+      # because all three embed a generation date and two of them are
+      # binaries with unstable internal ordering. Needs no third-party
+      # module, deliberately: a staleness check should not be the thing
+      # that makes CI install reportlab.
+      - name: Generated artifacts match the feature matrix
+        working-directory: softhsm_ksp
+        run: python3 tests/check_generated_artifacts.py
+
+      # docs/05-properties.md's tables against the dispatch chains they
+      # summarise. Proposal A made NCRYPT_EXPORT_POLICY_PROPERTY writable,
+      # updated the prose, and left the table six lines above it saying
+      # "Always 0 (non-exportable), write ✗". Four more properties had been
+      # implemented and never added to the table, and one row in it was
+      # fiction — "SoftHSM Slot" is a provider property, so a key handle
+      # answers NTE_NOT_SUPPORTED. A documented property that does not
+      # exist is worse than an undocumented one: a reader writes code
+      # against it.
+      - name: Property tables match the dispatch code
+        working-directory: softhsm_ksp
+        run: python3 tests/check_property_docs.py
+
+      # The registration script and g_KspAlgorithms are two accounts of one
+      # fact. An algorithm the script publishes and the provider does not
+      # advertise sends Windows callers to a provider that refuses them; one
+      # the provider advertises and the script omits is implemented and
+      # unfindable. Both had happened: AES-CMAC was advertised and never
+      # registered, and RSA was never published under the
+      # asymmetric-encryption interface, so RSA decryption was
+      # undiscoverable. On the AD CS critical path, because registration is
+      # the first thing that has to work and a wrong list fails later, in
+      # the CA wizard, as an absence.
+      - name: Registration publishes what the provider advertises
+        working-directory: softhsm_ksp
+        run: python3 tests/check_registration.py
+
+      - name: Cross-compile for Windows
+        working-directory: softhsm_ksp
+        run: |
+          set -e
+          fail=0
+          for f in src/pkcs11/*.c src/ksp/*.c src/common/*.c; do
+            # ksp_main.c needs the WDK's ncrypt_provider.h, which mingw-w64
+            # does not ship. The windows job below is what covers it.
+            if [ "$(basename "$f")" = "ksp_main.c" ]; then
+              echo "SKIP $f (needs WDK ncrypt_provider.h)"
+              continue
+            fi
+            # -Werror on the two that are crashes rather than style.
+            #
+            # This gate is the ONLY check that compiles Windows-only code,
+            # and until session 19 it was the weakest of the three: the
+            # unit build promotes an implicit declaration to an error and
+            # this did not. p11_credential.c called KSP_AllocZero without
+            # including memory.h, so with no prototype it was assumed to
+            # return int and the cast truncated a Win64 heap pointer to 32
+            # bits -- a guaranteed crash on the first provisioned PIN read.
+            # The step printed the warning and exited 0.
+            if x86_64-w64-mingw32-gcc -c -municode \
+                 -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN \
+                 -Werror=implicit-function-declaration \
+                 -Werror=int-to-pointer-cast \
+                 -Isrc/pkcs11 -Isrc/ksp -Isrc/common \
+                 "$f" -o /dev/null 2>/tmp/cc.err; then
+              echo "OK   $f"
+            else
+              echo "FAIL $f"; cat /tmp/cc.err; fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Coverage
+        working-directory: softhsm_ksp/tests/unit
+        run: |
+          gcovr --root ../.. --filter '.*/src/.*' --print-summary --txt
+
+  # ── The second backend ──────────────────────────────────────────────────
+  # Everything else this project knows about itself comes from a mock we
+  # wrote. This job is the only one that tests the claim the architecture
+  # rests on — that any PKCS#11 v2.40+ module can back the provider — by
+  # running the real p11_* and ksp_* sources against Kryoptic, a PKCS#11
+  # token written in Rust by people with no connection to this repository.
+  #
+  # It earned its place on the first run: it found two defects that had
+  # survived 1434 assertions against the mock. See docs/13-roadmap.md,
+  # phase 7.
+  second-backend:
+    name: Against a second PKCS#11 backend (Kryoptic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      # Kryoptic is the slow part of this job, and it only changes when the
+      # pinned ref does.
+      - name: Cache the Kryoptic build
+        id: kryoptic-cache
+        uses: actions/cache@v4
+        with:
+          path: softhsm_ksp/tests/linux/.kryoptic
+          key: kryoptic-${{ runner.os }}-main-v1
+
+      - name: Build Kryoptic
+        working-directory: softhsm_ksp/tests/linux
+        run: make kryoptic
+
+      - name: Initialise a token
+        working-directory: softhsm_ksp/tests/linux
+        run: make token
+
+      # Twice, against the same token, without re-initialising between.
+      # Anything the provider leaves behind is invisible to a single pass —
+      # the orphaned-certificate defect was found precisely this way.
+      - name: Run the provider against it, twice
+        working-directory: softhsm_ksp/tests/linux
+        run: make run-twice
+
+      # 32 threads over a pool of 16 sessions. The provider claims all 22
+      # NCrypt functions are re-entrant; this is the only thing that tests
+      # it. Correctness is checked by comparing signature BYTES against a
+      # single-threaded reference, because a crossed session returns
+      # ERROR_SUCCESS with the wrong data — a status-only check sees
+      # nothing.
+      - name: Concurrency
+        working-directory: softhsm_ksp/tests/linux
+        run: make concurrent
+
+      # Separate from the run above because the two find different things.
+      # A race is timing-dependent, so a clean plain run proves little;
+      # TSan reports the race whether or not it corrupted anything this
+      # time. The value checks catch corruption whether or not TSan saw the
+      # race behind it. Neither subsumes the other.
+      - name: Concurrency under ThreadSanitizer
+        working-directory: softhsm_ksp/tests/linux
+        run: make tsan
+
+      # TWO tokens behind the one module.
+      #
+      # Token selection cannot be tested with one token: every selection
+      # "succeeds" by landing on the slot the default would have chosen
+      # anyway, so the assertions pass whether the provider reads the
+      # caller's choice or discards it. With two tokens carrying different
+      # labels, different PINs and different keys, a selection that was
+      # ignored fails — on the slot number, on the login, and on finding a
+      # key that belongs to the other token.
+      - name: Initialise two tokens
+        working-directory: softhsm_ksp/tests/linux
+        run: make token-two
+
+      # IFACE-04: choosing the token through NCryptSetProperty, in the
+      # window between opening the provider and the first operation.
+      - name: Token selection against two real tokens
+        working-directory: softhsm_ksp/tests/linux
+        run: make two-tokens
+
+      # LIFE-08: the machine and user scopes on SEPARATE tokens with
+      # SEPARATE PINs, which is isolation rather than the label prefix that
+      # anyone logged in could read. The case that matters runs WITHOUT the
+      # machine PIN and requires the machine token to be unreachable; under
+      # the old one-token scheme it would have been readable with the one
+      # PIN. The misconfiguration cases require a half-configured or
+      # same-token setup to fail closed rather than half-apply.
+      - name: Per-scope token isolation
+        working-directory: softhsm_ksp/tests/linux
+        run: make scope-tokens
+
+      # The CA-shaped sequence, twice over one token.
+      #
+      # The provider is targeted at an ADCS certification authority, and
+      # this runs what a CA actually does in order: the wizard's key-size
+      # query, machine-scoped key creation, signing, certificate storage, a
+      # refused duplicate name, a deliberate renewal, deletion. Twice,
+      # because anything a renewal half-cleans is invisible to one pass.
+      #
+      # It earned its place immediately: it found that a key opened BY NAME
+      # never recovered its RSA modulus size, because CKA_MODULUS_BITS was
+      # read from the private key where PKCS#11 puts it on the public one.
+      # Signing hid it — the token knows its own key size — but CNG calls
+      # every operation twice, length first, so every signature with a
+      # reopened key failed at the first call. For a CA that is every
+      # operation after setup.
+      - name: ADCS lifecycle, twice over one token
+        working-directory: softhsm_ksp/tests/linux
+        run: make adcs-twice
+
+      # tools/p11_qualify asks the inverse question of everything above: not
+      # "does the provider work against this token" but "does this token
+      # meet the provider's requirements". It is the executable form of
+      # docs/12-pkcs11-requirements.md §9, which used to be a list to read
+      # against a vendor's documentation — and that is how its ECDSA line
+      # stayed wrong for four sessions, telling an evaluator to confirm DER
+      # signatures when PKCS#11 v2.40 §2.3.1 mandates raw r||s.
+      #
+      # Run here so the tool itself is exercised. A probe nobody runs is
+      # the checklist it replaced, and this one shipped with two defects of
+      # its own: it failed a conformant token over an extension curve, and
+      # it sent OAEP source = 0 where the KSP sends CKZ_DATA_SPECIFIED,
+      # which made a working token look like it supported no OAEP hash at
+      # all.
+      - name: Qualify the token against the KSP's requirements
+        working-directory: softhsm_ksp/tests/linux
+        run: make qualify
+
+  # ── The same provider against a token that can do EdDSA and ML-DSA ──────
+  #
+  # Separate from the job above because it is a genuinely different token,
+  # not a bigger one. That build has the Montgomery generator and NOT the
+  # Edwards one, which is what showed the two are separate mechanisms; this
+  # one has both, plus CKM_EDDSA and the post-quantum mechanisms.
+  #
+  # Every capability-dependent assertion in the suite asks the token and
+  # requires the provider to agree, so the same source is a real test under
+  # either configuration: it checks that the gate opens here and that it
+  # closes there. Running only one of them would leave half of the
+  # capability probe unexercised.
+  #
+  # The cost is an OpenSSL build — Kryoptic gates eddsa on 3.2 and the
+  # post-quantum mechanisms on 3.5, and the runner image ships 3.0.
+  second-backend-pqc:
+    name: Against a post-quantum capable Kryoptic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config
+
+      # Both halves are slow and both are pinned, so both are cached. The
+      # keys carry the pinned versions: bumping either rebuilds only it.
+      - name: Cache the OpenSSL build
+        uses: actions/cache@v4
+        with:
+          path: softhsm_ksp/tests/linux/.openssl
+          key: openssl-${{ runner.os }}-3.5.8-v1
+
+      - name: Cache the Kryoptic build
+        uses: actions/cache@v4
+        with:
+          path: softhsm_ksp/tests/linux/.kryoptic
+          key: kryoptic-pqc-${{ runner.os }}-main-v1
+
+      - name: Build OpenSSL and Kryoptic with eddsa + pqc
+        working-directory: softhsm_ksp/tests/linux
+        run: make kryoptic-pqc
+
+      - name: Initialise a token
+        working-directory: softhsm_ksp/tests/linux
+        run: make token
+
+      - name: Run the provider against it, twice
+        working-directory: softhsm_ksp/tests/linux
+        run: make run-twice
+
+  # ── The authority ───────────────────────────────────────────────────────
+  # Only this job can answer whether the DLL actually builds. Everything
+  # above is a proxy.
+  windows:
+    name: MSVC build
+    runs-on: windows-latest
+    # Hoisted to the job so the signing step's `if` can read it. A step's
+    # own `env:` block is not visible to that step's condition.
+    env:
+      KSP_SIGN_PFX_BASE64:   ${{ secrets.KSP_SIGN_PFX_BASE64 }}
+      KSP_SIGN_PFX_PASSWORD: ${{ secrets.KSP_SIGN_PFX_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ncrypt_provider.h, which declares NCRYPT_KEY_STORAGE_FUNCTION_TABLE,
+      # does not exist on a GitHub-hosted Windows runner. Established, not
+      # assumed: a dir /s /b across C: and D: returned exactly one hit, this
+      # repository's own test mock, and that was after `choco install
+      # windowsdriverkit11` reported success. The WDK install step is gone
+      # because it cost three minutes a run and never supplied the header.
+      #
+      # So this job builds what MSVC can build — nine of the ten source
+      # files, plus test_p11_layer — and CMake skips the DLL target rather
+      # than emitting one without its entry point. TABLE-01 and BUILD-01
+      # stay open in the feature matrix until a machine with the header
+      # proves the whole DLL builds.
+      - name: Configure
+        run: cmake -S softhsm_ksp -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      # A green job here must not be mistaken for "the DLL builds".
+      - name: Confirm the DLL was not silently produced
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build -Recurse -Filter softhsm_ksp.dll -ErrorAction SilentlyContinue
+          if ($dll) {
+            Write-Host "softhsm_ksp.dll was built: $($dll[0].FullName)"
+            "### KSP DLL built" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          } else {
+            Write-Host "::warning::softhsm_ksp.dll was NOT built - ncrypt_provider.h is unavailable on hosted runners. Nine of ten sources compiled; the DLL target was skipped by design."
+            @(
+              "### KSP DLL not built"
+              ""
+              "``ncrypt_provider.h`` is not available on GitHub-hosted Windows"
+              "runners, so CMake skipped the ``softhsm_ksp`` target rather than"
+              "produce a DLL without its entry point."
+              ""
+              "MSVC did compile the other nine source files and ``test_p11_layer``."
+              "See ``softhsm_ksp/docs/13-roadmap.md`` (BUILD-01, TABLE-01)."
+            ) | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      # Signing runs only when a certificate is configured. There is none
+      # today (OPS-03 needs a purchased certificate and a legal entity), so
+      # this step is normally skipped — but it is wired now so that adding
+      # the secret is the only step left, rather than a procedure to work
+      # out later.
+      - name: Sign the DLL
+        if: env.KSP_SIGN_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx,
+              [Convert]::FromBase64String($env:KSP_SIGN_PFX_BASE64))
+          try {
+              ./softhsm_ksp/tools/sign_ksp.ps1 -PfxPath $pfx `
+                  -DllPath build/Release/softhsm_ksp.dll
+          } finally {
+              # The runner is ephemeral, but a build artefact step running
+              # afterwards would otherwise pick the certificate up.
+              Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      # sign_ksp.ps1 has never actually signed anything — it only parsed.
+      # That is the failure mode this project keeps hitting: tooling that
+      # looks right and was never run. A self-signed certificate exercises
+      # the whole path against the real signtool: sign, timestamp, verify,
+      # and the verification parsing that decides whether a timestamp was
+      # applied.
+      #
+      # This proves the TOOLING, not the product. A self-signed certificate
+      # is not a code-signing identity; OPS-03 still needs one bought by a
+      # verified legal entity, and the artefact this job publishes stays
+      # unsigned.
+      - name: Signing pipeline self-test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # test_p11_layer.exe builds even without ncrypt_provider.h, so
+          # there is always a real PE file to sign.
+          $target = 'build/Release/test_p11_layer.exe'
+          if (-not (Test-Path $target)) {
+              Write-Host "::warning::$target not built; cannot self-test signing."
+              exit 0
+          }
+
+          $work = Join-Path $env:RUNNER_TEMP 'signtest'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Copy-Item $target (Join-Path $work 'subject.exe')
+          $subject = Join-Path $work 'subject.exe'
+
+          $cert = New-SelfSignedCertificate `
+              -Subject 'CN=KSP CI Signing Self-Test' `
+              -Type CodeSigningCert `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -NotAfter (Get-Date).AddDays(1)
+          Write-Host "Test certificate: $($cert.Thumbprint)"
+
+          $pfx = Join-Path $work 'selftest.pfx'
+          $pw  = [Guid]::NewGuid().ToString()
+          $sec = ConvertTo-SecureString -String $pw -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $sec | Out-Null
+
+          # signtool verify checks the chain, so the throwaway root has to
+          # be trusted for the verification half to mean anything. The
+          # runner is destroyed after the job.
+          Import-Certificate -FilePath (Export-Certificate -Cert $cert `
+              -FilePath (Join-Path $work 'selftest.cer')).FullName `
+              -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+
+          try {
+              $env:KSP_SIGN_PFX_PASSWORD = $pw
+              ./softhsm_ksp/tools/sign_ksp.ps1 -PfxPath $pfx -DllPath $subject
+              Write-Host ''
+              Write-Host 'Re-checking with -VerifyOnly:'
+              ./softhsm_ksp/tools/sign_ksp.ps1 -VerifyOnly -DllPath $subject
+              Write-Host ''
+              Write-Host 'Signing pipeline works end to end.'
+          } finally {
+              $env:KSP_SIGN_PFX_PASSWORD = $null
+              Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+              Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              Remove-Item "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+          }
+
+      # Reported either way. An unsigned DLL is the expected state today;
+      # what matters is that the state is visible rather than assumed.
+      - name: Report signature state
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $dll = 'build/Release/softhsm_ksp.dll'
+          if (-not (Test-Path $dll)) {
+              Write-Host 'No DLL built; nothing to check. See BUILD-01.'
+              exit 0
+          }
+          ./softhsm_ksp/tools/sign_ksp.ps1 -VerifyOnly -DllPath $dll
+
+      - name: Show output
+        shell: pwsh
+        run: Get-ChildItem -Recurse build\Release -ErrorAction SilentlyContinue | Select-Object Name, Length
+
+  # ── PowerShell tooling ──────────────────────────────────────────────────
+  scripts:
+    name: PowerShell scripts parse and compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the HLK suite's embedded C#
+        shell: pwsh
+        run: ./softhsm_ksp/tools/validate_hlk_script.ps1
+
+      # The PIN provisioning script (ADCS plan C-b). Parsing is all that can
+      # be checked anywhere but Windows: ProtectedData.Protect resolves on
+      # Linux and throws when called, which is correct and is not a test.
+      - name: PIN provisioning script parses
+        shell: pwsh
+        working-directory: softhsm_ksp/tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path 'set_ksp_pin.ps1').Path, [ref]$null, [ref]$errors)
+          if ($errors.Count) {
+              $errors | ForEach-Object {
+                  Write-Host "PARSE ERROR line $($_.Extent.StartLineNumber): $($_.Message)"
+              }
+              exit 1
+          }
+          Write-Host 'Parse OK'
+
+      - name: Signing script parses
+        shell: pwsh
+        working-directory: softhsm_ksp/tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path 'sign_ksp.ps1').Path, [ref]$null, [ref]$errors)
+          if ($errors.Count) {
+              $errors | ForEach-Object {
+                  Write-Host "PARSE ERROR line $($_.Extent.StartLineNumber): $($_.Message)"
+              }
+              exit 1
+          }
+          Write-Host 'sign_ksp.ps1 parses OK'
+
+      - name: Registration script parses and its C# compiles
+        shell: pwsh
+        working-directory: softhsm_ksp/tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'register_ksp.ps1'
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path).Path, [ref]$null, [ref]$errors)
+          if ($errors.Count) {
+              $errors | ForEach-Object {
+                  Write-Host "PARSE ERROR line $($_.Extent.StartLineNumber): $($_.Message)"
+              }
+              exit 1
+          }
+          Write-Host 'Parse OK'
+          $src   = Get-Content $path -Raw
+          $open  = $src.IndexOf('@"')
+          $close = $src.IndexOf('"@', $open)
+          Add-Type -TypeDefinition $src.Substring($open + 2, $close - $open - 2)
+          Write-Host 'C# compiles OK'

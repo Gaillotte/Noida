@@ -28,20 +28,170 @@ LPWSTR KSP_WStrDup(LPCWSTR p);
 
 /* ── Session and PKCS#11 utility stubs ───────────────────────────────────── */
 
-SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
+/* The scope parameter is not used here: these suites run against one mock
+ * token, which is a single-token deployment, and PoolFor() collapses every
+ * scope onto one pool in that configuration.
+ *
+ * p11_session.h is included above so the COMPILER checks this stub against
+ * the real prototype. It was not, and when P11_AcquireSession gained the
+ * scope parameter every one of these stubs kept its old shape: no
+ * diagnostic, because the mismatch is across translation units, and then
+ * ten segfaults as the scope argument arrived in the pointer parameter. A
+ * stub that is not checked against the thing it stands in for is a trap
+ * waiting for the next signature change. */
+SECURITY_STATUS P11_AcquireSession(int nScope, CK_SESSION_HANDLE *ph)
 {
     *ph = (CK_SESSION_HANDLE)0xBEEF;
     return ERROR_SUCCESS;
 }
 void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
+/* Which object class the stub should report as present.
+ * CKO_PRIVATE_KEY (the default) exercises the asymmetric path;
+ * CKO_SECRET_KEY exercises the symmetric path in KSP_OpenKey. */
+static CK_OBJECT_CLASS g_findableClass = CKO_PRIVATE_KEY;
+
+/* Labels the code under test asked for, in order, so a test can assert
+ * that the scoped name is tried before the legacy one. */
+static WCHAR g_aTried[8][128];
+static int   g_nTried = 0;
+/* When set, only this exact label resolves. NULL means any label does. */
+static const WCHAR *g_pszFindable = NULL;
+
+static void ResetFind(void) { g_nTried = 0; g_pszFindable = NULL; }
+
 CK_OBJECT_HANDLE P11_FindObjectByLabel(
     CK_SESSION_HANDLE h, CK_OBJECT_CLASS cls, LPCWSTR pszLabel)
 {
-    (void)h; (void)cls; (void)pszLabel;
-    if (P11Mock_GetConfig()->nKeyObjects > 0)
-        return (CK_OBJECT_HANDLE)0x10;
-    return CK_INVALID_HANDLE;
+    (void)h;
+    if (pszLabel && g_nTried < 8) {
+        wcsncpy(g_aTried[g_nTried], pszLabel, 127);
+        g_aTried[g_nTried][127] = L'\0';
+        g_nTried++;
+    }
+    if (P11Mock_GetConfig()->nKeyObjects <= 0)
+        return CK_INVALID_HANDLE;
+    if (g_pszFindable && pszLabel && wcscmp(pszLabel, g_pszFindable) != 0)
+        return CK_INVALID_HANDLE;
+
+    /* Public keys are always reported alongside a findable private key */
+    if (cls == CKO_PUBLIC_KEY && g_findableClass == CKO_PRIVATE_KEY)
+        return (CK_OBJECT_HANDLE)0x11;
+
+    if (cls != g_findableClass)
+        return CK_INVALID_HANDLE;
+
+    return (CK_OBJECT_HANDLE)0x10;
+}
+
+/* Curve OID lookup — mirrors the real P11_GetCurveOid mapping */
+const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
+{
+    if (!pszAlgId || !pcbOid) return NULL;
+    if (wcscmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
+        wcscmp(pszAlgId, ALG_ECDH_P256)  == 0) {
+        *pcbOid = EC_OID_P256_LEN; return EC_OID_P256;
+    }
+    if (wcscmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        wcscmp(pszAlgId, ALG_ECDH_P384)  == 0) {
+        *pcbOid = EC_OID_P384_LEN; return EC_OID_P384;
+    }
+    if (wcscmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        wcscmp(pszAlgId, ALG_ECDH_P521)  == 0) {
+        *pcbOid = EC_OID_P521_LEN; return EC_OID_P521;
+    }
+    if (wcscmp(pszAlgId, ALG_EDDSA_ED25519) == 0) {
+        *pcbOid = EC_OID_ED25519_LEN; return EC_OID_ED25519;
+    }
+    if (wcscmp(pszAlgId, ALG_EDDSA_ED448) == 0) {
+        *pcbOid = EC_OID_ED448_LEN; return EC_OID_ED448;
+    }
+    if (wcscmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0) {
+        *pcbOid = EC_OID_SECP256K1_LEN; return EC_OID_SECP256K1;
+    }
+    if (wcscmp(pszAlgId, ALG_ECDH_X25519) == 0) {
+        *pcbOid = EC_OID_X25519_LEN; return EC_OID_X25519;
+    }
+    return NULL;
+}
+
+/* ML-DSA parameter sets — mirrors the real table in p11_utils.c.
+ *
+ * This suite stubs p11_utils.c rather than linking it, so the mapping is
+ * repeated here. The real table is what test_mldsa.c exercises; these
+ * stubs exist only so ksp_key.c links, and they are kept deliberately
+ * dumb — if they ever disagree with the real ones, test_mldsa is the
+ * suite that will say so. */
+/* Certificate subject extraction lives in p11_utils.c, which this suite
+ * stubs rather than links. Refusing here exercises the empty-Name fallback
+ * in KSP_StoreCertificate; test_cert_subject.c covers the real parser. */
+BOOL P11_ExtractCertSubject(const BYTE *pbCert, DWORD cbCert,
+                            const BYTE **ppSubject, DWORD *pcbSubject)
+{
+    (void)pbCert; (void)cbCert; (void)ppSubject; (void)pcbSubject;
+    return FALSE;
+}
+
+/* The reverse curve lookup, built out of the forward stub above rather
+ * than as a second hand-written table — the two therefore cannot disagree
+ * with each other, which is the same property the real pair now has by
+ * reading one table. The real functions are covered by the round-trip
+ * test in test_mechanism_resolve.c, which links p11_utils.c. */
+LPCWSTR P11_CurveAlgFromOid(const BYTE *pbOid, DWORD cbOid,
+                            BOOL bDerive, DWORD *pdwBits)
+{
+    static const struct { LPCWSTR szAlg; DWORD dwBits; } aCandidates[] = {
+        { ALG_ECDH_P256,     256 }, { ALG_ECDH_P384,   384 },
+        { ALG_ECDH_P521,     521 }, { ALG_ECDH_X25519, 255 },
+        { ALG_ECDSA_P256,    256 }, { ALG_ECDSA_P384,  384 },
+        { ALG_ECDSA_P521,    521 },
+        { ALG_EDDSA_ED25519, 255 }, { ALG_EDDSA_ED448, 448 },
+    };
+    size_t i;
+
+    if (!pbOid || cbOid == 0)
+        return NULL;
+
+    /* The agreement names come first, so scanning forward when bDerive is
+     * set finds ECDH_P256 before ECDSA_P256, and scanning from the signing
+     * names when it is not. */
+    for (i = bDerive ? 0 : 4; i < sizeof(aCandidates) / sizeof(aCandidates[0]);
+         i++) {
+        CK_ULONG    cbCand = 0;
+        const char *pbCand = P11_GetCurveOid(aCandidates[i].szAlg, &cbCand);
+
+        if (!pbCand || cbCand != cbOid || memcmp(pbCand, pbOid, cbOid) != 0)
+            continue;
+        if (pdwBits) *pdwBits = aCandidates[i].dwBits;
+        return aCandidates[i].szAlg;
+    }
+    return NULL;
+}
+
+LPCWSTR P11_MlDsaAlgFromParameterSet(CK_ULONG ulParamSet)
+{
+    if (ulParamSet == CKP_ML_DSA_44) return ALG_MLDSA_44;
+    if (ulParamSet == CKP_ML_DSA_65) return ALG_MLDSA_65;
+    if (ulParamSet == CKP_ML_DSA_87) return ALG_MLDSA_87;
+    return NULL;
+}
+
+CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return 0;
+    if (wcscmp(pszAlgId, ALG_MLDSA_44) == 0) return CKP_ML_DSA_44;
+    if (wcscmp(pszAlgId, ALG_MLDSA_65) == 0) return CKP_ML_DSA_65;
+    if (wcscmp(pszAlgId, ALG_MLDSA_87) == 0) return CKP_ML_DSA_87;
+    return 0;
+}
+
+DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId)
+{
+    if (!pszAlgId) return 0;
+    if (wcscmp(pszAlgId, ALG_MLDSA_44) == 0) return MLDSA_44_PUBKEY_SIZE;
+    if (wcscmp(pszAlgId, ALG_MLDSA_65) == 0) return MLDSA_65_PUBKEY_SIZE;
+    if (wcscmp(pszAlgId, ALG_MLDSA_87) == 0) return MLDSA_87_PUBKEY_SIZE;
+    return 0;
 }
 
 CK_RV P11_GetUlongAttr(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
@@ -49,8 +199,14 @@ CK_RV P11_GetUlongAttr(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
 {
     (void)h; (void)o;
     switch (t) {
-    case CKA_KEY_TYPE:     *pv = P11Mock_GetConfig()->ulKeyType;  return CKR_OK;
-    case CKA_MODULUS_BITS: *pv = P11Mock_GetConfig()->ulModBits;  return CKR_OK;
+    case CKA_KEY_TYPE:     *pv = P11Mock_GetConfig()->ulKeyType;   return CKR_OK;
+    case CKA_MODULUS_BITS: *pv = P11Mock_GetConfig()->ulModBits;   return CKR_OK;
+    case CKA_VALUE_LEN:    *pv = P11Mock_GetConfig()->ulValueLen;  return CKR_OK;
+    case CKA_DERIVE:       *pv = P11Mock_GetConfig()->ulDerive;    return CKR_OK;
+    /* An ML-DSA key's whole identity: it has neither a curve nor a
+     * modulus, so a reopen that does not read this has nothing. */
+    case CKA_PARAMETER_SET:
+        *pv = P11Mock_GetConfig()->ulParameterSet;                  return CKR_OK;
     default: return CKR_ATTRIBUTE_TYPE_INVALID;
     }
 }
@@ -79,6 +235,7 @@ SECURITY_STATUS P11RvToSecStatus(CK_RV rv)
 
 #include "../../src/ksp/ksp_key.h"
 #include "../../src/ksp/ksp_provider.h"
+#include "../../src/pkcs11/p11_session.h"
 
 int main(void)
 {
@@ -552,6 +709,659 @@ int main(void)
     ss = KSP_EnumKeys(0, NULL, &pName, &pState, 0);
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+    /* ── Suite: OpenKey — curve identification (P-521, EdDSA, ECDH) ─────── */
+    TEST_SUITE("KSP_OpenKey — curve identification");
+
+    /* P-521 is recognised from its DER OID */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_P521;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_P521_LEN;
+    P11Mock_GetConfig()->ulDerive    = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"P521Key", AT_SIGNATURE, 0);
+        ASSERT_OK("P-521 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is ECDSA_P521", k->szAlgId, ALG_ECDSA_P521);
+            ASSERT_EQ("Length is 521 bits", k->dwKeyBitLen, 521U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* X25519, which used to fall through to the P-384 default.
+     *
+     * The reopen path identified curves with a hand-written chain whose
+     * final else named everything it did not recognise ECDSA/ECDH_P384.
+     * X25519, secp256k1 and all three Brainpool curves went through it,
+     * so a key generated by this provider came back as a different curve
+     * at a different size. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC_MONTGOMERY;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_X25519;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_X25519_LEN;
+    P11Mock_GetConfig()->ulDerive    = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"X25519Key", AT_KEYEXCHANGE, 0);
+        ASSERT_OK("X25519 key opened", ss);
+        if (ss == ERROR_SUCCESS) {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is ECDH_X25519", k->szAlgId,
+                        ALG_ECDH_X25519);
+            ASSERT_EQ("Length is 255 bits", k->dwKeyBitLen, 255U);
+            KSP_FreeKey(hProv, h);
+        }
+    }
+
+    /* An OID the provider does not know is refused, not guessed. P-192,
+     * which this provider deliberately does not support. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC;
+    P11Mock_GetConfig()->pbEcParams  =
+        "\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x01";
+    P11Mock_GetConfig()->cbEcParams  = 10;
+    P11Mock_GetConfig()->ulDerive    = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"P192Key", AT_SIGNATURE, 0);
+        ASSERT_EQ("An unknown curve is refused, not called P-384",
+            ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+    }
+
+    /* ML-DSA: CKA_PARAMETER_SET is the whole identity of the key. Nothing
+     * read it back, so a reopened ML-DSA key had an empty algorithm name
+     * and a zero key size. */
+    {
+        struct { CK_ULONG ulSet; LPCWSTR szAlg; } aSets[] = {
+            { CKP_ML_DSA_44, ALG_MLDSA_44 },
+            { CKP_ML_DSA_65, ALG_MLDSA_65 },
+            { CKP_ML_DSA_87, ALG_MLDSA_87 },
+        };
+        size_t i;
+        for (i = 0; i < sizeof(aSets) / sizeof(aSets[0]); i++) {
+            NCRYPT_KEY_HANDLE h = 0;
+            P11Mock_Reset();
+            g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+            g_findableClass = CKO_PRIVATE_KEY;
+            P11Mock_GetConfig()->nKeyObjects   = 1;
+            P11Mock_GetConfig()->ulKeyType     = CKK_ML_DSA;
+            P11Mock_GetConfig()->ulParameterSet = aSets[i].ulSet;
+
+            ss = KSP_OpenKey(hProv, &h, L"MlDsaKey", AT_SIGNATURE, 0);
+            ASSERT_OK("ML-DSA key opened", ss);
+            if (ss == ERROR_SUCCESS) {
+                KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+                ASSERT_WSTR("and the parameter set came back intact",
+                            k->szAlgId, aSets[i].szAlg);
+                ASSERT("with a non-zero key size", k->dwKeyBitLen > 0);
+                KSP_FreeKey(hProv, h);
+            }
+        }
+
+        /* A parameter set the provider does not know. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        g_findableClass = CKO_PRIVATE_KEY;
+        P11Mock_GetConfig()->nKeyObjects    = 1;
+        P11Mock_GetConfig()->ulKeyType      = CKK_ML_DSA;
+        P11Mock_GetConfig()->ulParameterSet = 0x7FFFFFFF;
+        {
+            NCRYPT_KEY_HANDLE h = 0;
+            ss = KSP_OpenKey(hProv, &h, L"MlDsaKey", AT_SIGNATURE, 0);
+            ASSERT_EQ("An unknown ML-DSA parameter set is refused",
+                ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+        }
+    }
+
+    /* CKA_DERIVE set on a P-256 key means ECDH, not ECDSA */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_P256;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_P256_LEN;
+    P11Mock_GetConfig()->ulDerive    = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"EcdhKey", AT_KEYEXCHANGE, 0);
+        ASSERT_OK("ECDH P-256 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("CKA_DERIVE → ECDH_P256", k->szAlgId, ALG_ECDH_P256);
+            ASSERT_EQ("Length is 256 bits", k->dwKeyBitLen, 256U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Ed25519 is recognised from its OID and reported as an Edwards curve */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC_EDWARDS;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_ED25519;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_ED25519_LEN;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"Ed25519Key", AT_SIGNATURE, 0);
+        ASSERT_OK("Ed25519 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is EDDSA_ED25519", k->szAlgId,
+                        ALG_EDDSA_ED25519);
+            ASSERT_EQ("Length is 255 bits", k->dwKeyBitLen, 255U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Ed448 */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_EC_EDWARDS;
+    P11Mock_GetConfig()->pbEcParams  = EC_OID_ED448;
+    P11Mock_GetConfig()->cbEcParams  = EC_OID_ED448_LEN;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"Ed448Key", AT_SIGNATURE, 0);
+        ASSERT_OK("Ed448 key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is EDDSA_ED448", k->szAlgId,
+                        ALG_EDDSA_ED448);
+            ASSERT_EQ("Length is 448 bits", k->dwKeyBitLen, 448U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* ── Suite: OpenKey — symmetric keys ────────────────────────────────── */
+    TEST_SUITE("KSP_OpenKey — symmetric keys");
+
+    /* An AES key has no private object, only a secret object */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_SECRET_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_AES;
+    P11Mock_GetConfig()->ulValueLen  = 32;      /* 256-bit AES key */
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"AesKey", 0, 0);
+        ASSERT_OK("AES key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is AES", k->szAlgId, ALG_AES);
+            ASSERT_EQ("Key class is symmetric", k->dwKeyClass,
+                      (DWORD)KSP_KEY_CLASS_SYMMETRIC);
+            ASSERT_EQ("Length derived from CKA_VALUE_LEN", k->dwKeyBitLen, 256U);
+            ASSERT_NEQ("Secret handle set", k->hSecretKey,
+                       (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+            ASSERT_EQ("No private key handle", k->hPrivKey,
+                      (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* A generic-secret object is reported as an HMAC key */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_SECRET_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    P11Mock_GetConfig()->ulKeyType   = CKK_GENERIC_SECRET;
+    P11Mock_GetConfig()->ulValueLen  = 48;      /* 384-bit HMAC key */
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"HmacKey", 0, 0);
+        ASSERT_OK("HMAC key opened", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_WSTR("Algorithm is HMAC_SHA256", k->szAlgId,
+                        ALG_HMAC_SHA256);
+            ASSERT_EQ("Key class is symmetric", k->dwKeyClass,
+                      (DWORD)KSP_KEY_CLASS_SYMMETRIC);
+            ASSERT_EQ("Length is 384 bits", k->dwKeyBitLen, 384U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* Neither a private nor a secret object exists */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_DATA;      /* nothing the KSP looks for */
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"Missing", 0, 0);
+        ASSERT_EQ("No key object → NTE_BAD_KEYSET", ss,
+                  (SECURITY_STATUS)NTE_BAD_KEYSET);
+    }
+
+    /* ── Suite: symmetric key creation and deletion ─────────────────────── */
+    TEST_SUITE("Symmetric key creation and deletion");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"AesDel",
+                                    AT_KEYEXCHANGE, 0);
+        ASSERT_OK("AES key created", ss);
+        ASSERT_EQ("C_GenerateKey used, not C_GenerateKeyPair",
+                  P11Mock_GetCalls()->nGenerateKeyPair, 0);
+        ASSERT_EQ("C_GenerateKey called once",
+                  P11Mock_GetCalls()->nGenerateKey, 1);
+
+        /* Deleting a symmetric key destroys its secret object */
+        ss = KSP_DeleteKey(hProv, h, 0);
+        ASSERT_OK("AES key deleted", ss);
+        ASSERT_EQ("Secret object destroyed",
+                  P11Mock_GetCalls()->nDestroyObject, 1);
+    }
+
+    /* Symmetric generation failure propagates */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->rv_GenerateKey = CKR_DEVICE_ERROR;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"AesFail",
+                                    AT_KEYEXCHANGE, 0);
+        ASSERT_ERR("C_GenerateKey failure propagates", ss);
+    }
+
+    /* An unknown algorithm is rejected before any PKCS#11 call */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, L"DSA", L"DsaKey",
+                                    AT_SIGNATURE, 0);
+        ASSERT_EQ("DSA → NTE_BAD_ALGID", ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+        ASSERT_EQ("No key generated", P11Mock_GetCalls()->nGenerateKeyPair, 0);
+    }
+
+    /* ── Suite: P-521 and ECDH key generation ───────────────────────────── */
+    TEST_SUITE("P-521 and ECDH key generation");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_ECDSA_P521, L"P521Gen",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("ECDSA P-521 key created", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_EQ("Default length is 521 bits", k->dwKeyBitLen, 521U);
+            ASSERT_EQ("Key spec is AT_SIGNATURE", k->dwKeySpec,
+                      (DWORD)AT_SIGNATURE);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        /* ECDH keys are key-agreement keys even when AT_SIGNATURE is asked */
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_ECDH_P384, L"EcdhGen",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("ECDH P-384 key created", ss);
+        {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_EQ("ECDH forces AT_KEYEXCHANGE", k->dwKeySpec,
+                      (DWORD)AT_KEYEXCHANGE);
+            ASSERT_EQ("Default length is 384 bits", k->dwKeyBitLen, 384U);
+        }
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* ── secp256k1 and the configurable RSA public exponent ───────────── */
+    TEST_SUITE("secp256k1 generation and RSA public exponent");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_ECDSA_SECP256K1,
+                                    L"K1Gen", AT_SIGNATURE, 0);
+        ASSERT_OK("secp256k1 key created", ss);
+        ASSERT("secp256k1 handle non-null", h != 0);
+        if (h != 0) {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)h;
+            ASSERT_EQ("Default length is 256 bits", k->dwKeyBitLen, 256U);
+            ASSERT_EQ("Key spec stays AT_SIGNATURE", k->dwKeySpec,
+                      (DWORD)AT_SIGNATURE);
+            ASSERT_EQ("Signing key, not a derive key", k->dwKeySpec,
+                      (DWORD)AT_SIGNATURE);
+        }
+        ASSERT_EQ("Generated with CKM_EC_KEY_PAIR_GEN",
+            (CK_ULONG)P11Mock_GetConfig()->lastGenerateKeyPairMech,
+            (CK_ULONG)CKM_EC_KEY_PAIR_GEN);
+        KSP_FreeKey(hProv, h);
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* HMAC-SHA224 rounds out the HMAC family. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_HMAC_SHA224,
+                                    L"Hmac224", AT_SIGNATURE, 0);
+        ASSERT_OK("HMAC-SHA224 key created", ss);
+        ASSERT("HMAC-SHA224 handle non-null", h != 0);
+        if (h != 0)
+            ASSERT_EQ("Default length is 224 bits",
+                      ((KSP_KEY *)(ULONG_PTR)h)->dwKeyBitLen, 224U);
+        KSP_FreeKey(hProv, h);
+    }
+
+    {
+        /* A new RSA key must still default to F4. */
+        NCRYPT_KEY_HANDLE h = 0;
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"RsaExp",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("RSA key created", ss);
+        ASSERT("RSA handle non-null", h != 0);
+        if (h != 0)
+            ASSERT_EQ("Public exponent defaults to 65537",
+                ((KSP_KEY *)(ULONG_PTR)h)->dwPublicExponent,
+                (DWORD)RSA_DEFAULT_PUBEXP);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* KSP_EncodePublicExponent: DWORD → big-endian, no leading zero bytes,
+     * which is what CKA_PUBLIC_EXPONENT requires. */
+    {
+        CK_BYTE  buf[4];
+        CK_ULONG n;
+
+        n = KSP_EncodePublicExponent(65537, buf);
+        ASSERT_EQ("F4 encodes to 3 bytes", (CK_ULONG)n, (CK_ULONG)3);
+        ASSERT_EQ("F4 byte 0 = 0x01", (CK_ULONG)buf[0], (CK_ULONG)0x01);
+        ASSERT_EQ("F4 byte 1 = 0x00", (CK_ULONG)buf[1], (CK_ULONG)0x00);
+        ASSERT_EQ("F4 byte 2 = 0x01", (CK_ULONG)buf[2], (CK_ULONG)0x01);
+
+        n = KSP_EncodePublicExponent(3, buf);
+        ASSERT_EQ("3 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
+        ASSERT_EQ("3 byte 0 = 0x03", (CK_ULONG)buf[0], (CK_ULONG)0x03);
+
+        n = KSP_EncodePublicExponent(17, buf);
+        ASSERT_EQ("17 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
+        ASSERT_EQ("17 byte 0 = 0x11", (CK_ULONG)buf[0], (CK_ULONG)0x11);
+
+        n = KSP_EncodePublicExponent(0x01000001, buf);
+        ASSERT_EQ("0x01000001 encodes to 4 bytes", (CK_ULONG)n, (CK_ULONG)4);
+        ASSERT_EQ("byte 0 = 0x01", (CK_ULONG)buf[0], (CK_ULONG)0x01);
+        ASSERT_EQ("byte 3 = 0x01", (CK_ULONG)buf[3], (CK_ULONG)0x01);
+
+        n = KSP_EncodePublicExponent(0x0000FFFF, buf);
+        ASSERT_EQ("0xFFFF encodes to 2 bytes", (CK_ULONG)n, (CK_ULONG)2);
+        ASSERT_EQ("0xFFFF byte 0 = 0xFF", (CK_ULONG)buf[0], (CK_ULONG)0xFF);
+
+        /* Degenerate input still yields a well-formed single zero byte
+         * rather than a zero-length attribute. */
+        n = KSP_EncodePublicExponent(0, buf);
+        ASSERT_EQ("0 encodes to 1 byte", (CK_ULONG)n, (CK_ULONG)1);
+        ASSERT_EQ("0 byte 0 = 0x00", (CK_ULONG)buf[0], (CK_ULONG)0x00);
+    }
+
+    /* ── Machine vs user key scope (LIFE-08) ──────────────────────────── */
+    TEST_SUITE("Key scope — machine vs user");
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* A user key's CKA_LABEL carries the "u/" prefix. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"mykey",
+                                    AT_SIGNATURE, 0);
+        ASSERT_OK("Create a user-scope key", ss);
+        ASSERT_STR("Label is prefixed u/",
+            P11Mock_GetConfig()->lastLabel, "u/mykey");
+        if (h) KSP_FreeKey(hProv, h);
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* The same name in machine scope is a different object. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_RSA, L"mykey",
+                                    AT_SIGNATURE, NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Create a machine-scope key of the same name", ss);
+        ASSERT_STR("Label is prefixed m/",
+            P11Mock_GetConfig()->lastLabel, "m/mykey");
+        if (h) {
+            ASSERT("Key records its scope",
+                   ((KSP_KEY *)(ULONG_PTR)h)->bMachineKey);
+            KSP_FreeKey(hProv, h);
+        }
+    }
+
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        /* Symmetric keys take the same treatment. */
+        NCRYPT_KEY_HANDLE h = 0;
+        ss = KSP_CreatePersistedKey(hProv, &h, ALG_AES, L"aeskey",
+                                    AT_KEYEXCHANGE, NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Create a machine-scope AES key", ss);
+        ASSERT_STR("AES label is prefixed m/",
+            P11Mock_GetConfig()->lastLabel, "m/aeskey");
+        if (h) KSP_FreeKey(hProv, h);
+    }
+
+    /* Lookup order: the scoped name first. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ss = KSP_OpenKey(hProv, &h, L"mykey", AT_SIGNATURE, 0);
+        ASSERT_OK("Open without the flag", ss);
+        ASSERT("A label was looked up", g_nTried > 0);
+        ASSERT_WSTR("User scope is tried first", g_aTried[0], L"u/mykey");
+        if (h) KSP_FreeKey(hProv, h);
+
+        ResetFind();
+        h = 0;
+        ss = KSP_OpenKey(hProv, &h, L"mykey", AT_SIGNATURE,
+                         NCRYPT_MACHINE_KEY_FLAG);
+        ASSERT_OK("Open with NCRYPT_MACHINE_KEY_FLAG", ss);
+        ASSERT_WSTR("Machine scope is tried first", g_aTried[0], L"m/mykey");
+        if (h) {
+            ASSERT("Opened key records machine scope",
+                   ((KSP_KEY *)(ULONG_PTR)h)->bMachineKey);
+            KSP_FreeKey(hProv, h);
+        }
+    }
+
+    /* Keys created before scoping have no prefix and must still open. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    g_findableClass = CKO_PRIVATE_KEY;
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        g_pszFindable = L"legacykey";      /* only the unprefixed label */
+
+        ss = KSP_OpenKey(hProv, &h, L"legacykey", AT_SIGNATURE, 0);
+        ASSERT_OK("Legacy unprefixed key still opens", ss);
+        ASSERT("Scoped name was tried first", g_nTried >= 2);
+        ASSERT_WSTR("  first the scoped name", g_aTried[0], L"u/legacykey");
+        ASSERT_WSTR("  then the legacy name", g_aTried[1], L"legacykey");
+        if (h) KSP_FreeKey(hProv, h);
+        g_pszFindable = NULL;
+    }
+
+    /* A name present in neither scope is still not found. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ss = KSP_OpenKey(hProv, &h, L"nosuchkey", AT_SIGNATURE, 0);
+        ASSERT_EQ("Missing key → NTE_BAD_KEYSET",
+            ss, (SECURITY_STATUS)NTE_BAD_KEYSET);
+    }
+
+    /* ── A name already in use (ADCS G4) ─────────────────────────────────
+     *
+     * CNG's contract: NCryptCreatePersistedKey on a name already taken is
+     * NTE_EXISTS, unless the caller passes NCRYPT_OVERWRITE_KEY_FLAG. This
+     * provider checked nothing, so a second create added a SECOND object
+     * with the same CKA_LABEL and NCryptOpenKey afterwards returned
+     * whichever the token's search found first.
+     *
+     * For a CA that is a correctness failure with certificate-validity
+     * consequences: renewing a CA certificate is exactly the operation that
+     * reuses a container name, and a CA signing with an indeterminate key
+     * generation issues certificates that may not chain.
+     *
+     * Tested in BOTH directions. A refusal that never fires is as useless
+     * as none, and an overwrite that never replaces anything is worse —
+     * it leaves the duplicate the feature exists to prevent. */
+    TEST_SUITE("Duplicate key names (NTE_EXISTS / OVERWRITE)");
+
+    /* The name is free: unchanged behaviour. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 0;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("A free name still creates",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"freename", AT_SIGNATURE, 0));
+        ASSERT_EQ("and the key was generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 1);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* The name is taken, and the caller did not say to replace it. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_EQ("A taken name → NTE_EXISTS",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE, 0),
+            (SECURITY_STATUS)NTE_EXISTS);
+        ASSERT_EQ("and NOTHING was generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 0);
+        ASSERT_EQ("and nothing was destroyed",
+            P11Mock_GetCalls()->nDestroyObject, 0);
+        ASSERT_EQ("and no handle was returned", (int)(h == 0), 1);
+    }
+
+    /* The name is taken and the caller said to replace it. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects  = 1;
+    P11Mock_GetConfig()->nCertObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("OVERWRITE on a taken name succeeds",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE,
+                                   NCRYPT_OVERWRITE_KEY_FLAG));
+        ASSERT_EQ("the new key was generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 1);
+        ASSERT("and the replaced objects were destroyed",
+            P11Mock_GetCalls()->nDestroyObject > 0);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* The assertion that matters most for a CA.
+     *
+     * If generation fails, the key being replaced must survive. The obvious
+     * implementation — destroy first, then generate — loses the existing
+     * key outright when generation fails, and for a CA key that is
+     * unrecoverable. Generating first costs a moment in which two objects
+     * share a label; that is the right trade, because the failure mode is a
+     * duplicate rather than a destroyed key. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects        = 1;
+    P11Mock_GetConfig()->rv_GenerateKeyPair = CKR_DEVICE_ERROR;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_ERR("OVERWRITE with a failing generation fails",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE,
+                                   NCRYPT_OVERWRITE_KEY_FLAG));
+        ASSERT_EQ("and the key it would have replaced is UNTOUCHED",
+            P11Mock_GetCalls()->nDestroyObject, 0);
+    }
+
+    /* An unnamed key is ephemeral and can collide with nothing, so it must
+     * not pay for a token round trip to discover that. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("An unnamed key ignores the existence check",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   NULL, AT_SIGNATURE, 0));
+        ASSERT_EQ("and never searched the token for a name",
+            P11Mock_GetCalls()->nFindObjectsInit, 0);
+        KSP_FreeKey(hProv, h);
+    }
+
+    /* The deferred path: with NCRYPT_PERSIST_ONLY_FLAG the key is generated
+     * at FinalizeKey, so the replacement must happen there too — not at
+     * create, where a caller who never finalises would have destroyed the
+     * old key for nothing. */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->nKeyObjects = 1;
+    {
+        NCRYPT_KEY_HANDLE h = 0;
+        ResetFind();
+        ASSERT_OK("Deferred create with OVERWRITE",
+            KSP_CreatePersistedKey(hProv, &h, BCRYPT_RSA_ALGORITHM,
+                                   L"taken", AT_SIGNATURE,
+                                   NCRYPT_OVERWRITE_KEY_FLAG |
+                                   NCRYPT_PERSIST_ONLY_FLAG));
+        ASSERT_EQ("nothing generated yet",
+            P11Mock_GetCalls()->nGenerateKeyPair, 0);
+        ASSERT_EQ("and nothing destroyed yet — the caller may never finalise",
+            P11Mock_GetCalls()->nDestroyObject, 0);
+
+        ASSERT_OK("FinalizeKey", KSP_FinalizeKey(hProv, h, 0));
+        ASSERT_EQ("now it is generated",
+            P11Mock_GetCalls()->nGenerateKeyPair, 1);
+        ASSERT("and only now are the replaced objects destroyed",
+            P11Mock_GetCalls()->nDestroyObject > 0);
+        KSP_FreeKey(hProv, h);
+    }
 
     KSP_FreeProvider(hProv);
 

@@ -19,6 +19,11 @@
       S7  — Key enumeration and NCryptOpenKey round-trip
       S8  — Error conditions: invalid handles, missing keys, forbidden private export
       S9  — Cleanup: delete all test keys
+      S10 — ECDSA P-521: create, sign SHA-512, export, BCrypt verify
+      S11 — ECDH key agreement over P-256 / P-384 / P-521, both parties agree
+      S12 — EdDSA Ed25519 and Ed448: create, sign, export
+      S13 — AES-256 symmetric encryption: ECB / CBC / CTR / GCM round-trips
+      S14 — Error conditions for the extended algorithm set
 
     Requirements:
       - SoftHSM2 installed and initialised (softhsm2-util --init-token)
@@ -36,6 +41,14 @@ $KeyRsaKex    = "HLK_RSA_KEX_$Rnd"
 $KeyRsa3072   = "HLK_RSA3072_$Rnd"
 $KeyEcP256    = "HLK_ECP256_$Rnd"
 $KeyEcP384    = "HLK_ECP384_$Rnd"
+$KeyEcP521    = "HLK_ECP521_$Rnd"
+$KeyAes       = "HLK_AES256_$Rnd"
+
+# Handles and names created by the ECDH (S11) and EdDSA (S12) sections
+$ecdhKeys   = New-Object System.Collections.ArrayList
+$ecdhNames  = New-Object System.Collections.ArrayList
+$eddsaKeys  = New-Object System.Collections.ArrayList
+$eddsaNames = New-Object System.Collections.ArrayList
 
 $script:Pass  = 0
 $script:Fail  = 0
@@ -129,6 +142,28 @@ public static class Hlk {
 
     [DllImport("ncrypt.dll")]
     public static extern int NCryptFreeBuffer(IntPtr pvInput);
+
+    [DllImport("ncrypt.dll", CharSet = CharSet.Unicode)]
+    public static extern int NCryptImportKey(
+        IntPtr hProvider, IntPtr hImportKey, string pszBlobType,
+        IntPtr pParameterList, out IntPtr phKey,
+        byte[] pbData, uint cbData, uint dwFlags);
+
+    [DllImport("ncrypt.dll")]
+    public static extern int NCryptEncrypt(
+        IntPtr hKey, byte[] pbInput, uint cbInput, IntPtr pPaddingInfo,
+        byte[] pbOutput, uint cbOutput, out uint pcbResult, uint dwFlags);
+
+    [DllImport("ncrypt.dll")]
+    public static extern int NCryptSecretAgreement(
+        IntPtr hPrivKey, IntPtr hPubKey, out IntPtr phAgreedSecret,
+        uint dwFlags);
+
+    [DllImport("ncrypt.dll", CharSet = CharSet.Unicode)]
+    public static extern int NCryptDeriveKey(
+        IntPtr hSharedSecret, string pwszKDF, IntPtr pParameterList,
+        byte[] pbDerivedKey, uint cbDerivedKey, out uint pcbResult,
+        uint dwFlags);
 
     // ── BCrypt ────────────────────────────────────────────────────────────────
 
@@ -404,15 +439,115 @@ public static class Hlk {
         Array.Resize(ref sig, (int)cbResult);
         return sig;
     }
+
+    // ── NCrypt helper: set a string key property ─────────────────────────────
+    public static int SetStringProperty(IntPtr hObject, string property,
+                                        string value) {
+        byte[] buf = System.Text.Encoding.Unicode.GetBytes(value + "\0");
+        return NCryptSetProperty(hObject, property, buf, (uint)buf.Length, 0);
+    }
+
+    // ── NCrypt helper: set a binary key property (IV, AAD) ───────────────────
+    public static int SetBinaryProperty(IntPtr hObject, string property,
+                                        byte[] value) {
+        return NCryptSetProperty(hObject, property, value,
+                                 (uint)value.Length, 0);
+    }
+
+    // ── NCrypt helper: set a DWORD key property ──────────────────────────────
+    public static int SetDwordProperty(IntPtr hObject, string property,
+                                       int value) {
+        byte[] buf = BitConverter.GetBytes(value);
+        return NCryptSetProperty(hObject, property, buf, 4, 0);
+    }
+
+    // ── NCrypt helper: symmetric encrypt (double-call) ───────────────────────
+    public static byte[] Encrypt(IntPtr hKey, byte[] input, uint flags) {
+        uint cb = 0;
+        if (NCryptEncrypt(hKey, input, (uint)input.Length, IntPtr.Zero,
+                          null, 0, out cb, flags) != 0)
+            return null;
+        byte[] output = new byte[cb];
+        if (NCryptEncrypt(hKey, input, (uint)input.Length, IntPtr.Zero,
+                          output, cb, out cb, flags) != 0)
+            return null;
+        Array.Resize(ref output, (int)cb);
+        return output;
+    }
+
+    // ── NCrypt helper: symmetric decrypt (double-call) ───────────────────────
+    public static byte[] DecryptSym(IntPtr hKey, byte[] input, uint flags) {
+        uint cb = 0;
+        if (NCryptDecrypt(hKey, input, (uint)input.Length, IntPtr.Zero,
+                          null, 0, out cb, flags) != 0)
+            return null;
+        byte[] output = new byte[cb];
+        if (NCryptDecrypt(hKey, input, (uint)input.Length, IntPtr.Zero,
+                          output, cb, out cb, flags) != 0)
+            return null;
+        Array.Resize(ref output, (int)cb);
+        return output;
+    }
+
+    // ── NCrypt helper: ECDH agree + derive the raw shared secret ─────────────
+    public static byte[] AgreeAndDeriveRaw(IntPtr hPriv, IntPtr hPub) {
+        IntPtr hSecret = IntPtr.Zero;
+        if (NCryptSecretAgreement(hPriv, hPub, out hSecret, 0) != 0)
+            return null;
+        try {
+            uint cb = 0;
+            if (NCryptDeriveKey(hSecret, "TRUNCATE", IntPtr.Zero,
+                                null, 0, out cb, 0) != 0)
+                return null;
+            byte[] secret = new byte[cb];
+            if (NCryptDeriveKey(hSecret, "TRUNCATE", IntPtr.Zero,
+                                secret, cb, out cb, 0) != 0)
+                return null;
+            Array.Resize(ref secret, (int)cb);
+            return secret;
+        } finally {
+            if (hSecret != IntPtr.Zero) NCryptFreeObject(hSecret);
+        }
+    }
+
+    // ── NCrypt helper: import a public key blob back into the KSP ────────────
+    public static IntPtr ImportPublic(IntPtr hProv, string blobType,
+                                      byte[] blob) {
+        IntPtr hKey = IntPtr.Zero;
+        if (NCryptImportKey(hProv, IntPtr.Zero, blobType, IntPtr.Zero,
+                            out hKey, blob, (uint)blob.Length, 0) != 0)
+            return IntPtr.Zero;
+        return hKey;
+    }
+
+    // ── Byte-array comparison (avoids LINQ generic inference from PowerShell)
+    public static bool BytesEqual(byte[] a, byte[] b) {
+        if (a == null || b == null) return false;
+        if (a.Length != b.Length)   return false;
+        for (int i = 0; i < a.Length; i++)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    // ── True when the first cbCompare bytes of a and b differ ────────────────
+    public static bool BytesDiffer(byte[] a, byte[] b, int cbCompare) {
+        if (a == null || b == null) return true;
+        if (a.Length < cbCompare || b.Length < cbCompare) return true;
+        for (int i = 0; i < cbCompare; i++)
+            if (a[i] != b[i]) return true;
+        return false;
+    }
 }
 "@ -PassThru | Out-Null
 
 # ── Common test data ──────────────────────────────────────────────────────────
 $sha256     = [System.Security.Cryptography.SHA256]::Create()
 $sha384     = [System.Security.Cryptography.SHA384]::Create()
+$sha512     = [System.Security.Cryptography.SHA512]::Create()
 $testData   = [System.Text.Encoding]::UTF8.GetBytes("SoftHSM KSP HLK Test 2024")
 $hashSha256 = $sha256.ComputeHash($testData)
 $hashSha384 = $sha384.ComputeHash($testData)
+$hashSha512 = $sha512.ComputeHash($testData)
 $plaintext  = [System.Text.Encoding]::UTF8.GetBytes("HLK OAEP plaintext 12345!")
 
 # Handles that need cleanup
@@ -555,8 +690,7 @@ if ($hRsaKex -ne [IntPtr]::Zero) {
 
         if ($ciphertext -ne $null) {
             $decrypted = [Hlk]::DecryptOaep($hRsaKex, "SHA1", $ciphertext)
-            $decOk = ($decrypted -ne $null -and
-                      [System.Linq.Enumerable]::SequenceEqual($decrypted, $plaintext))
+            $decOk = [Hlk]::BytesEqual($decrypted, $plaintext)
             Test-Result "S3.6 NCryptDecrypt RSA OAEP: plaintext matches" $decOk `
                 "decLen=$($decrypted.Length) expected=$($plaintext.Length)"
         }
@@ -774,6 +908,322 @@ $hrProp = [Hlk]::NCryptGetProperty([IntPtr]::Zero, "Algorithm Name",
 Test-Result "S8.4 NCryptGetProperty(invalid handle) returns error" ($hrProp -ne 0) "hr=0x$($hrProp.ToString('X8'))"
 
 # =============================================================================
+# S10 — ECDSA P-521: full lifecycle, SHA-512 signing, BCrypt verify
+# =============================================================================
+Write-Host ""
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+Write-Host "S10 — ECDSA P-521: create, sign SHA-512, BCrypt verify" -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+
+$hEcP521 = [IntPtr]::Zero
+$hr = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hEcP521, "ECDSA_P521", $KeyEcP521, 2, 0)
+Test-Result "S10.1 NCryptCreatePersistedKey ECDSA_P521" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+
+if ($hr -eq 0) {
+    $hr = [Hlk]::NCryptFinalizeKey($hEcP521, 0)
+    Test-Result "S10.2 NCryptFinalizeKey ECDSA_P521" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+}
+
+if ($hEcP521 -ne [IntPtr]::Zero) {
+    $alg = [Hlk]::GetStringProperty($hEcP521, "Algorithm Name")
+    Test-Result "S10.3 NCRYPT_ALGORITHM_PROPERTY = 'ECDSA_P521'" ($alg -eq "ECDSA_P521") "got='$alg'"
+
+    $len = [Hlk]::GetDwordProperty($hEcP521, "Length", [ref]$ok)
+    Test-Result "S10.4 NCRYPT_LENGTH_PROPERTY = 521" ($ok -and $len -eq 521) "len=$len"
+
+    $group = [Hlk]::GetStringProperty($hEcP521, "Algorithm Group")
+    Test-Result "S10.5 NCRYPT_ALGORITHM_GROUP_PROPERTY = 'ECDSA'" ($group -eq "ECDSA") "got='$group'"
+
+    $sigEc521 = [Hlk]::SignEcdsa($hEcP521, $hashSha512)
+    Test-Result "S10.6 NCryptSignHash ECDSA P-521 (SHA-512) = 132 bytes" `
+        ($sigEc521 -ne $null -and $sigEc521.Length -eq 132) "len=$($sigEc521.Length)"
+
+    $eccBlob521 = [Hlk]::ExportPublicKey($hEcP521, "ECCPUBLICBLOB")
+    Test-Result "S10.7 NCryptExportKey ECCPUBLICBLOB (P-521)" ($eccBlob521 -ne $null) "blob=$($eccBlob521.Length) bytes"
+
+    if ($eccBlob521 -ne $null) {
+        # BCRYPT_ECCKEY_BLOB header is 8 bytes; P-521 carries 2 x 66-byte coords
+        Test-Result "S10.8 Blob size = 8 + 132" ($eccBlob521.Length -eq 140) "got=$($eccBlob521.Length)"
+        $cbKey = [BitConverter]::ToInt32($eccBlob521, 4)
+        Test-Result "S10.9 Blob cbKey field = 66" ($cbKey -eq 66) "got=$cbKey"
+
+        if ($sigEc521 -ne $null) {
+            $ok2 = [Hlk]::VerifyEcdsa("ECDSA_P521", $eccBlob521, $hashSha512, $sigEc521)
+            Test-Result "S10.10 BCryptVerifySignature ECDSA P-521" $ok2
+        }
+    }
+
+    Test-Result "S10.11 Private key export refused (P-521)" `
+        (([Hlk]::ExportPublicKey($hEcP521, "ECCPRIVATEBLOB")) -eq $null)
+}
+
+# =============================================================================
+# S11 — ECDH key agreement: P-256, P-384, P-521
+# =============================================================================
+Write-Host ""
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+Write-Host "S11 — ECDH key agreement (P-256 / P-384 / P-521)" -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+
+$ecdhCurves = @(
+    @{ Alg = "ECDH_P256"; Bits = 256; Secret = 32 },
+    @{ Alg = "ECDH_P384"; Bits = 384; Secret = 48 },
+    @{ Alg = "ECDH_P521"; Bits = 521; Secret = 66 }
+)
+
+$n = 0
+foreach ($curve in $ecdhCurves) {
+    $n++
+    $algName = $curve.Alg
+    $nameA   = "HLK_${algName}_A_$Rnd"
+    $nameB   = "HLK_${algName}_B_$Rnd"
+
+    $hA = [IntPtr]::Zero
+    $hB = [IntPtr]::Zero
+    $hrA = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hA, $algName, $nameA, 1, 0)
+    $hrB = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hB, $algName, $nameB, 1, 0)
+    Test-Result "S11.$n.1 Create both $algName key pairs" (($hrA -eq 0) -and ($hrB -eq 0)) "hrA=0x$($hrA.ToString('X8')) hrB=0x$($hrB.ToString('X8'))"
+
+    if (($hrA -eq 0) -and ($hrB -eq 0)) {
+        [Hlk]::NCryptFinalizeKey($hA, 0) | Out-Null
+        [Hlk]::NCryptFinalizeKey($hB, 0) | Out-Null
+        $ecdhKeys.Add($hA); $ecdhKeys.Add($hB)
+        $ecdhNames.Add($nameA); $ecdhNames.Add($nameB)
+
+        $usage = [Hlk]::GetDwordProperty($hA, "Key Usage", [ref]$ok)
+        Test-Result "S11.$n.2 $algName usage has ALLOW_KEY_AGREEMENT (0x4)" `
+            ($ok -and ($usage -band 4) -ne 0) "usage=0x$($usage.ToString('X'))"
+
+        $group = [Hlk]::GetStringProperty($hA, "Algorithm Group")
+        Test-Result "S11.$n.3 $algName Algorithm Group = 'ECDH'" ($group -eq "ECDH") "got='$group'"
+
+        # Exchange public keys through export/import
+        $blobA = [Hlk]::ExportPublicKey($hA, "ECCPUBLICBLOB")
+        $blobB = [Hlk]::ExportPublicKey($hB, "ECCPUBLICBLOB")
+        Test-Result "S11.$n.4 Both $algName public keys exported" `
+            (($blobA -ne $null) -and ($blobB -ne $null))
+
+        if (($blobA -ne $null) -and ($blobB -ne $null)) {
+            $hPubB = [Hlk]::ImportPublic($hProv, "ECCPUBLICBLOB", $blobB)
+            $hPubA = [Hlk]::ImportPublic($hProv, "ECCPUBLICBLOB", $blobA)
+            Test-Result "S11.$n.5 Both $algName public keys imported" `
+                (($hPubA -ne [IntPtr]::Zero) -and ($hPubB -ne [IntPtr]::Zero))
+
+            if (($hPubA -ne [IntPtr]::Zero) -and ($hPubB -ne [IntPtr]::Zero)) {
+                $secretA = [Hlk]::AgreeAndDeriveRaw($hA, $hPubB)
+                $secretB = [Hlk]::AgreeAndDeriveRaw($hB, $hPubA)
+
+                Test-Result "S11.$n.6 Party A derived a $algName secret" ($secretA -ne $null)
+                Test-Result "S11.$n.7 Party B derived a $algName secret" ($secretB -ne $null)
+
+                if (($secretA -ne $null) -and ($secretB -ne $null)) {
+                    Test-Result "S11.$n.8 $algName secret length = $($curve.Secret)" `
+                        ($secretA.Length -eq $curve.Secret) "got=$($secretA.Length)"
+                    $same = [Hlk]::BytesEqual($secretA, $secretB)
+                    Test-Result "S11.$n.9 Both parties agreed on the SAME $algName secret" $same
+                }
+
+                [Hlk]::NCryptFreeObject($hPubA) | Out-Null
+                [Hlk]::NCryptFreeObject($hPubB) | Out-Null
+            }
+        }
+    }
+}
+
+# =============================================================================
+# S12 — EdDSA: Ed25519 and Ed448
+# =============================================================================
+Write-Host ""
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+Write-Host "S12 — EdDSA (Ed25519 / Ed448)" -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+
+$eddsaCurves = @(
+    @{ Alg = "EDDSA_ED25519"; Bits = 255; Sig = 64;  Pub = 32 },
+    @{ Alg = "EDDSA_ED448";   Bits = 448; Sig = 114; Pub = 57 }
+)
+
+$n = 0
+foreach ($curve in $eddsaCurves) {
+    $n++
+    $algName = $curve.Alg
+    $keyName = "HLK_${algName}_$Rnd"
+
+    $hEd = [IntPtr]::Zero
+    $hr = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hEd, $algName, $keyName, 2, 0)
+    Test-Result "S12.$n.1 NCryptCreatePersistedKey $algName" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+
+    if ($hr -eq 0) {
+        $hr = [Hlk]::NCryptFinalizeKey($hEd, 0)
+        Test-Result "S12.$n.2 NCryptFinalizeKey $algName" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+        $eddsaKeys.Add($hEd); $eddsaNames.Add($keyName)
+
+        $len = [Hlk]::GetDwordProperty($hEd, "Length", [ref]$ok)
+        Test-Result "S12.$n.3 $algName Length = $($curve.Bits)" ($ok -and $len -eq $curve.Bits) "len=$len"
+
+        $group = [Hlk]::GetStringProperty($hEd, "Algorithm Group")
+        Test-Result "S12.$n.4 $algName Algorithm Group = 'EDDSA'" ($group -eq "EDDSA") "got='$group'"
+
+        # EdDSA signs the message directly rather than a pre-computed hash
+        $sig = [Hlk]::SignEcdsa($hEd, $testData)
+        Test-Result "S12.$n.5 NCryptSignHash $algName = $($curve.Sig) bytes" `
+            ($sig -ne $null -and $sig.Length -eq $curve.Sig) "len=$($sig.Length)"
+
+        $blob = [Hlk]::ExportPublicKey($hEd, "ECCPUBLICBLOB")
+        Test-Result "S12.$n.6 NCryptExportKey $algName public blob" ($blob -ne $null)
+
+        if ($blob -ne $null) {
+            Test-Result "S12.$n.7 $algName blob size = 8 + $($curve.Pub)" `
+                ($blob.Length -eq (8 + $curve.Pub)) "got=$($blob.Length)"
+            $cbKey = [BitConverter]::ToInt32($blob, 4)
+            Test-Result "S12.$n.8 $algName blob cbKey = $($curve.Pub)" `
+                ($cbKey -eq $curve.Pub) "got=$cbKey"
+        }
+
+        Test-Result "S12.$n.9 $algName private export refused" `
+            (([Hlk]::ExportPublicKey($hEd, "ECCPRIVATEBLOB")) -eq $null)
+    }
+}
+
+# =============================================================================
+# S13 — AES symmetric keys: ECB / CBC / CTR / GCM round-trips
+# =============================================================================
+Write-Host ""
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+Write-Host "S13 — AES symmetric encryption (ECB / CBC / CTR / GCM)" -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+
+# A whole number of AES blocks, so unpadded modes work without padding
+$aesPlain = [System.Text.Encoding]::UTF8.GetBytes("HLK AES block test data 32 bytes")
+$aesIV    = New-Object byte[] 16
+$aesNonce = New-Object byte[] 12
+[System.Random]::new(42).NextBytes($aesIV)
+[System.Random]::new(43).NextBytes($aesNonce)
+
+$aesModes = @(
+    @{ Name = "ECB"; Mode = "ChainingModeECB"; IV = $null;      Num = 1 },
+    @{ Name = "CBC"; Mode = "ChainingModeCBC"; IV = $aesIV;     Num = 2 },
+    @{ Name = "CTR"; Mode = "ChainingModeCTR"; IV = $aesIV;     Num = 3 },
+    @{ Name = "GCM"; Mode = "ChainingModeGCM"; IV = $aesNonce;  Num = 4 }
+)
+
+# One AES-256 key reused across every mode
+$hAes = [IntPtr]::Zero
+$hr = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hAes, "AES", $KeyAes, 1, 0x40000000)
+Test-Result "S13.0.1 NCryptCreatePersistedKey AES (deferred)" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+
+if ($hr -eq 0) {
+    $hr = [Hlk]::SetDwordProperty($hAes, "Length", 256)
+    Test-Result "S13.0.2 NCryptSetProperty Length = 256" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+
+    $hr = [Hlk]::NCryptFinalizeKey($hAes, 0)
+    Test-Result "S13.0.3 NCryptFinalizeKey AES-256" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+
+    $alg = [Hlk]::GetStringProperty($hAes, "Algorithm Name")
+    Test-Result "S13.0.4 Algorithm Name = 'AES'" ($alg -eq "AES") "got='$alg'"
+
+    $blk = [Hlk]::GetDwordProperty($hAes, "Block Length", [ref]$ok)
+    Test-Result "S13.0.5 Block Length = 16" ($ok -and $blk -eq 16) "got=$blk"
+
+    $group = [Hlk]::GetStringProperty($hAes, "Algorithm Group")
+    Test-Result "S13.0.6 Algorithm Group = 'AES'" ($group -eq "AES") "got='$group'"
+
+    foreach ($m in $aesModes) {
+        $i = $m.Num
+
+        $hr = [Hlk]::SetStringProperty($hAes, "Chaining Mode", $m.Mode)
+        Test-Result "S13.$i.1 Set chaining mode $($m.Name)" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+        if ($hr -ne 0) { continue }
+
+        if ($m.IV -ne $null) {
+            $hr = [Hlk]::SetBinaryProperty($hAes, "IV", $m.IV)
+            Test-Result "S13.$i.2 Set IV for $($m.Name)" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+        }
+
+        $ct = [Hlk]::Encrypt($hAes, $aesPlain, 0)
+        Test-Result "S13.$i.3 NCryptEncrypt AES-$($m.Name)" ($ct -ne $null) "ciphertext=$(if($ct){$ct.Length}else{0}) bytes"
+
+        if ($ct -ne $null) {
+            $differs = [Hlk]::BytesDiffer($ct, $aesPlain, $aesPlain.Length)
+            Test-Result "S13.$i.4 AES-$($m.Name) ciphertext differs from plaintext" $differs
+
+            # The mode consumed the IV during encryption; set it again to decrypt
+            if ($m.IV -ne $null) { [Hlk]::SetBinaryProperty($hAes, "IV", $m.IV) | Out-Null }
+
+            $pt = [Hlk]::DecryptSym($hAes, $ct, 0)
+            Test-Result "S13.$i.5 NCryptDecrypt AES-$($m.Name)" ($pt -ne $null)
+
+            if ($pt -ne $null) {
+                $same = [Hlk]::BytesEqual($pt, $aesPlain)
+                Test-Result "S13.$i.6 AES-$($m.Name) plaintext round-trips" $same
+            }
+        }
+    }
+
+    # CFB has no SoftHSM2 mechanism behind it and must be refused
+    $hr = [Hlk]::SetStringProperty($hAes, "Chaining Mode", "ChainingModeCFB")
+    Test-Result "S13.5.1 Unsupported chaining mode CFB rejected" ($hr -ne 0) "hr=0x$($hr.ToString('X8'))"
+}
+
+# =============================================================================
+# S14 — Error conditions for the extended algorithm set
+# =============================================================================
+Write-Host ""
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+Write-Host "S14 — Error conditions (extended algorithms)" -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
+
+# An unsupported curve must be rejected at creation
+$hBad = [IntPtr]::Zero
+$hr = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hBad, "ECDSA_P192", "HLK_BAD_$Rnd", 2, 0)
+Test-Result "S14.1 Unsupported curve ECDSA_P192 rejected" ($hr -ne 0) "hr=0x$($hr.ToString('X8'))"
+
+# An invalid AES key length must be rejected at SetProperty
+$hAesBad = [IntPtr]::Zero
+$hr = [Hlk]::NCryptCreatePersistedKey($hProv, [ref]$hAesBad, "AES", "HLK_AESBAD_$Rnd", 1, 0x40000000)
+if ($hr -eq 0) {
+    $hr2 = [Hlk]::SetDwordProperty($hAesBad, "Length", 512)
+    Test-Result "S14.2 AES-512 key length rejected" ($hr2 -ne 0) "hr=0x$($hr2.ToString('X8'))"
+    [Hlk]::NCryptFreeObject($hAesBad) | Out-Null
+} else {
+    Skip-Test "S14.2 AES-512 key length rejected" "could not create deferred AES key"
+}
+
+# Symmetric cipher properties do not apply to asymmetric keys
+if ($hRsa2048 -ne [IntPtr]::Zero) {
+    $hr = [Hlk]::SetBinaryProperty($hRsa2048, "IV", $aesIV)
+    Test-Result "S14.3 IV property rejected on an RSA key" ($hr -ne 0) "hr=0x$($hr.ToString('X8'))"
+}
+
+# NCryptEncrypt is a symmetric operation; RSA keys must refuse it
+if ($hRsaKex -ne [IntPtr]::Zero) {
+    $enc = [Hlk]::Encrypt($hRsaKex, $plaintext, 0)
+    Test-Result "S14.4 NCryptEncrypt refused on an RSA key" ($enc -eq $null)
+}
+
+# Key agreement requires two keys on the same curve
+if (($ecdhKeys.Count -ge 4)) {
+    # ecdhKeys[0] is P-256 private; export a P-384 public key to mismatch it
+    $blobP384 = [Hlk]::ExportPublicKey($ecdhKeys[2], "ECCPUBLICBLOB")
+    if ($blobP384 -ne $null) {
+        $hMismatch = [Hlk]::ImportPublic($hProv, "ECCPUBLICBLOB", $blobP384)
+        if ($hMismatch -ne [IntPtr]::Zero) {
+            $hSec = [IntPtr]::Zero
+            $hr = [Hlk]::NCryptSecretAgreement($ecdhKeys[0], $hMismatch, [ref]$hSec, 0)
+            Test-Result "S14.5 ECDH across mismatched curves rejected" ($hr -ne 0) "hr=0x$($hr.ToString('X8'))"
+            if ($hSec -ne [IntPtr]::Zero) { [Hlk]::NCryptFreeObject($hSec) | Out-Null }
+            [Hlk]::NCryptFreeObject($hMismatch) | Out-Null
+        } else {
+            Skip-Test "S14.5 ECDH across mismatched curves rejected" "public key import failed"
+        }
+    } else {
+        Skip-Test "S14.5 ECDH across mismatched curves rejected" "P-384 export failed"
+    }
+} else {
+    Skip-Test "S14.5 ECDH across mismatched curves rejected" "ECDH keys unavailable"
+}
+
+# =============================================================================
 # S9 — Cleanup: delete all test keys
 # =============================================================================
 Write-Host ""
@@ -781,20 +1231,40 @@ Write-Host "══════════════════════�
 Write-Host "S9 — Cleanup: deleting all HLK test keys" -ForegroundColor Cyan
 Write-Host "══════════════════════════════════════════════════════════════════════" -ForegroundColor White
 
-$deleteMap = @{
+$deleteMap = [ordered]@{
     $KeyRsa2048 = $hRsa2048
     $KeyRsaKex  = $hRsaKex
     $KeyRsa3072 = $hRsa3072
     $KeyEcP256  = $hEcP256
     $KeyEcP384  = $hEcP384
+    $KeyEcP521  = $hEcP521
+    $KeyAes     = $hAes
 }
 
 foreach ($entry in $deleteMap.GetEnumerator()) {
     $name = $entry.Key
     $h    = $entry.Value
-    if ($h -ne [IntPtr]::Zero) {
+    if ($h -ne $null -and $h -ne [IntPtr]::Zero) {
         $hr = [Hlk]::NCryptDeleteKey($h, 0)
         Test-Result "S9 NCryptDeleteKey '$name'" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+    }
+}
+
+# ECDH key pairs created in S11
+for ($i = 0; $i -lt $ecdhKeys.Count; $i++) {
+    $h = $ecdhKeys[$i]
+    if ($h -ne [IntPtr]::Zero) {
+        $hr = [Hlk]::NCryptDeleteKey($h, 0)
+        Test-Result "S9 NCryptDeleteKey '$($ecdhNames[$i])'" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
+    }
+}
+
+# EdDSA keys created in S12
+for ($i = 0; $i -lt $eddsaKeys.Count; $i++) {
+    $h = $eddsaKeys[$i]
+    if ($h -ne [IntPtr]::Zero) {
+        $hr = [Hlk]::NCryptDeleteKey($h, 0)
+        Test-Result "S9 NCryptDeleteKey '$($eddsaNames[$i])'" ($hr -eq 0) "hr=0x$($hr.ToString('X8'))"
     }
 }
 

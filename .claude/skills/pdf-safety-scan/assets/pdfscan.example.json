@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "Copy to pdfscan.json beside your PDFs, or at your repository root, and",
+    "delete the keys you do not need. Every key is documented in",
+    "references/config.md. JSON has no comments, so this one is a key the",
+    "scanner rejects - remove the _comment block before use, which is also",
+    "a cheap check that the scanner is reading the file you think it is.",
+    "",
+    "Severity order: critical > warn > review > info.",
+    "fail_on is the level that exits 2."
+  ],
+
+  "fail_on": "critical",
+
+  "allow_emails": [
+    "*@yourcompany.example",
+    "submissions@partner.example"
+  ],
+
+  "allow_uri_hosts": [
+    "docs.yourcompany.example",
+    "github.com"
+  ],
+
+  "ignore_identifier_prefixes": [
+    "MYAPP_"
+  ],
+
+  "allow_text": [],
+
+  "extra_patterns": [
+    {
+      "label": "internal hostname",
+      "pattern": "\\b[\\w-]+\\.corp\\.yourcompany\\.example\\b",
+      "severity": "critical",
+      "advice": "names internal infrastructure; strip before release"
+    },
+    {
+      "label": "ticket reference",
+      "pattern": "\\bPROJ-\\d{3,6}\\b",
+      "severity": "review",
+      "advice": "confirm an internal tracker id was meant to be visible"
+    }
+  ],
+
+  "expect_no_text_layer": false,
+  "allow_embedded_files": false,
+  "allow_incremental_updates": false
+}

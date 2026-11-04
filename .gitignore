@@ -158,3 +158,22 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# SoftHSM2 build artefacts
+softhsm2-install/
+softhsm2-build-linux/
+softhsm2-build-win/
+vcpkg/
+
+# Code-signing material. A certificate committed by accident is a
+# certificate that must be revoked, so it is excluded before one exists
+# rather than after.
+*.pfx
+*.p12
+*.snk
+
+# SoftHSM2 test token created by the live suite when run against SoftHSM2
+softhsm_ksp/tests/linux/.shsm-token/
+
+# Skill eval workspaces: run artifacts, rebuilt on demand
+.claude/skills/*-workspace/

@@ -11,13 +11,44 @@ cryptographic operations to **SoftHSM2** via the **PKCS#11 v2.40** interface.
 |----------|---------|
 | [01 — Architecture](./01-architecture.md) | Overview, layers, data structures, threading model, memory management |
 | [02 — Initialisation](./02-initialisation.md) | Loading softhsm2.dll, `InitOnceExecuteOnce` singleton, session pool, lifecycle |
-| [03 — Key management](./03-gestion-cles.md) | CreatePersistedKey (RSA / ECDSA), OpenKey, EnumKeys, DeleteKey, DER OIDs |
-| [04 — Cryptographic operations](./04-operations-crypto.md) | SignHash (PKCS1 / PSS / ECDSA), Decrypt (PKCS1 / OAEP), ExportKey, ImportKey, blob formats |
-| [05 — Properties](./05-proprietes.md) | GetKeyProperty, SetKeyProperty, GetProviderProperty, mapping table |
-| [06 — Error mapping](./06-mapping-erreurs.md) | CK_RV → SECURITY_STATUS, codes by function, error flow diagram |
-| [07 — Security and threading](./07-securite-threading.md) | Concurrency, handle validation, PIN management, logging |
-| [08 — Complete flows](./08-flux-complets.md) | TLS scenarios, code signing, enumeration, key rotation, missing token error |
-| [09 — Test suite](./09-tests.md) | Three-layer test pyramid: unit tests (281 assertions, 91 % coverage), integration tests (21 tests incl. HLK scenarios 15–21), PowerShell HLK suite (61 tests) |
+| [03 — Key management](./03-key-management.md) | The five algorithm families, CreatePersistedKey, OpenKey, EnumKeys, DeleteKey, curve OIDs, symmetric keys |
+| [04 — Cryptographic operations](./04-crypto-operations.md) | SignHash (PKCS1 / PSS / ECDSA / EdDSA / HMAC), Decrypt (PKCS1 / OAEP / AES), Encrypt, ECDH agreement, Export/Import, blob formats |
+| [05 — Properties](./05-properties.md) | GetKeyProperty, SetKeyProperty, GetProviderProperty, chaining mode and IV, mapping table |
+| [06 — Error mapping](./06-error-mapping.md) | CK_RV → SECURITY_STATUS, codes by function, mechanism dispatch, error flow diagram |
+| [07 — Security and threading](./07-security-threading.md) | Concurrency, the three handle types, PIN management, secret zeroing, logging |
+| [08 — Complete flows](./08-complete-flows.md) | TLS signing, code signing, enumeration, key rotation, ECDH agreement, AES encryption, missing-token recovery |
+| [09 — Test suite](./09-tests.md) | Four-layer test pyramid: unit tests (1816 assertions, 86.2 % lines / 100 % functions), a live second backend (256 assertions, plus 53 for token selection, 28 for per-scope isolation and 33 for concurrency), integration tests (40 tests), PowerShell HLK suite (~150 tests) |
+| [10 — Running the Microsoft HLK tests](./10-hlk-execution.md) | The in-repo HLK suite, the official HLK Studio procedure, code-signing reality (Microsoft does not sign providers), and what blocks a real certification submission |
+| [11 — CNG KSP market comparison](./11-market-comparison.md) | Capability audit against Microsoft, AWS, Utimaco, Thales, Entrust and Securosys providers, with evidence grades on every claim |
+| [12 — PKCS#11 backend requirements](./12-pkcs11-requirements.md) | Every function, mechanism, attribute and parameter a token must provide, in capability tiers, with a backend evaluation checklist |
+| [13 — Roadmap to market parity](./13-roadmap.md) | Why the Windows build has never worked, the six defects behind it, and the phased plan to interface parity |
+| [14 — Closing the Partial rows](./14-partial-remediation-plan.md) | The remediation plan and its outcome: proposals A–D are implemented, which closed `AES-09`, `FMT-08`, `IFACE-04` and `LIFE-08`. Includes what implementing them found, none of it in their own code |
+| [15 — Gap analysis](./15-gap-analysis.md) | **Generated.** All 30 open rows, grouped by what actually blocks each one, with what works today and what the blocker rests on. 19 are outside this repository; 11 are decisions this project made. Also the gaps the matrix cannot show |
+| [16 — ADCS readiness](./16-adcs-readiness.md) | Whether this provider can back an Active Directory Certificate Services CA, and the phased plan to get there. Verdict: the architecture fits, the artifact does not exist yet, and two of the gaps are risk decisions rather than code . Also as a PDF to read away from a terminal: `SoftHSM2_KSP_ADCS_Readiness_Plan.pdf`, generated from this markdown |
+
+### Generated deliverables
+
+| Artefact | Source of truth | Regenerate with |
+|----------|-----------------|-----------------|
+| [`SoftHSM2_KSP_Feature_Matrix.pdf`](../SoftHSM2_KSP_Feature_Matrix.pdf) — 103 market capabilities, our coverage, and the gap remedy for each | [`feature-matrix.csv`](./feature-matrix.csv) | `python3 generate_feature_matrix.py` |
+| `SoftHSM2_KSP_Algorithm_Reference.docx` | `generate_algo_ref.py` | `python3 generate_algo_ref.py` |
+| `SoftHSM2_KSP_Complete_Developer_Guide.docx` | `generate_guide.py` | `python3 generate_guide.py` |
+| [`SoftHSM2_KSP_ADCS_Readiness_Plan.pdf`](../SoftHSM2_KSP_ADCS_Readiness_Plan.pdf) | [`16-adcs-readiness.md`](./16-adcs-readiness.md) | `python3 generate_adcs_plan.py` |
+| [`SoftHSM2_KSP_Design_Tests_ADCS_Slides.html`](../SoftHSM2_KSP_Design_Tests_ADCS_Slides.html) — 15 slides: the design, the test strategy, installing under ADCS, what remains | [`docs/slides/adcs-overview/`](./slides/adcs-overview/) | `python3 generate_slide_decks.py` |
+| [`SoftHSM2_KSP_Team_Plan_Slides.html`](../SoftHSM2_KSP_Team_Plan_Slides.html) — 10 slides: the plan for a team joining to finalise the work | [`docs/slides/joining-team-plan/`](./slides/joining-team-plan/) | `python3 generate_slide_decks.py` |
+
+Every row above is checked by `python3 tests/check_generated_artifacts.py`,
+which recomputes a fingerprint of each artefact's own inputs. Edit a slide
+and forget to rebuild, and CI names the deck to regenerate. **Edit the
+source under `docs/slides/`, never the built `.html`** — a hand edit to the
+output is overwritten on the next build and reported as stale before that.
+
+A slide deck's source is one `deck.json` (the title, the slide order and
+the outline) plus one HTML fragment per slide: a single `<section>` on a
+fixed 1920×1080 canvas with every style inline. One slide, one file, so a
+one-slide change reads as a one-slide diff. Speaker notes are the `<aside>`
+at the end of a slide; the build lifts them out below the canvas on screen
+and omits them from print.
 
 ---
 
@@ -33,7 +64,7 @@ Windows Application
        │ NCRYPT_KEY_STORAGE_FUNCTION_TABLE
        ▼
 softhsm_ksp.dll
-  ├── ksp_*()          Implements the 22 functions of the CNG table
+  ├── ksp_*()          Implements the 26 slots of the CNG table
   ├── p11_context.c    PKCS#11 singleton (LoadLibrary + C_Initialize)
   ├── p11_session.c    Pool of 16 sessions (Windows semaphore)
   └── p11_utils.c      Mechanisms, format conversion, key export
@@ -48,13 +79,14 @@ softhsm2-x64.dll       PKCS#11 v2.40 — encrypted SQLite storage
 
 ## Supported algorithms
 
-| Algorithm | Generation | Signing | Decryption | Public export |
-|-----------|:---------:|:-------:|:----------:|:-------------:|
-| RSA 2048 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP | ✓ |
-| RSA 3072 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP | ✓ |
-| RSA 4096 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP | ✓ |
-| ECDSA P-256 | ✓ | ✓ (r‖s) | — | ✓ |
-| ECDSA P-384 | ✓ | ✓ (r‖s) | — | ✓ |
+| Algorithm | Generation | Signing | Decryption | Key agreement | Public export |
+|-----------|:---------:|:-------:|:----------:|:-------------:|:-------------:|
+| RSA 2048 / 3072 / 4096 | ✓ | PKCS1 v1.5, PSS | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
+| ECDSA P-256 / P-384 / P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDH P-256 / P-384 / P-521 | ✓ | — | — | ✓ | ✓ |
+| EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |
+| AES 128 / 192 / 256 | ✓ | — | ECB, CBC, CTR, GCM | — | — |
+| HMAC SHA-1/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
 
 ---
 
@@ -64,11 +96,20 @@ softhsm2-x64.dll       PKCS#11 v2.40 — encrypted SQLite storage
 |-------------|-------------------|-------|
 | `SignHash` RSA PKCS1 | `CKM_RSA_PKCS` | Hash passed as-is |
 | `SignHash` RSA PSS | `CKM_RSA_PKCS_PSS` | `CK_RSA_PKCS_PSS_PARAMS` mapped from `BCRYPT_PSS_PADDING_INFO` |
-| `SignHash` ECDSA | `CKM_ECDSA` | DER result converted to r‖s |
+| `SignHash` ECDSA | `CKM_ECDSA` | Raw r‖s passed through — PKCS#11 v2.40 §2.3.1 mandates that form and it is already CNG's. The DER decoder is a fallback for a non-conformant token only |
 | `Decrypt` PKCS1 | `CKM_RSA_PKCS` | — |
 | `Decrypt` OAEP | `CKM_RSA_PKCS_OAEP` | `CK_RSA_PKCS_OAEP_PARAMS` mapped from `BCRYPT_OAEP_PADDING_INFO` |
+| `SignHash` EdDSA | `CKM_EDDSA` | Raw signature, no DER conversion |
+| `SignHash` HMAC | `CKM_SHA*_HMAC` | Secret-key MAC through `C_Sign` |
+| `Decrypt` AES | `CKM_AES_ECB/CBC/CBC_PAD/CTR/GCM` | Mode from `NCRYPT_CHAINING_MODE_PROPERTY` |
+| `Encrypt` AES | `CKM_AES_ECB/CBC/CBC_PAD/CTR/GCM` | IV from `NCRYPT_INITIALIZATION_VECTOR` |
+| `SecretAgreement` | `CKM_ECDH1_DERIVE` | `CKD_NULL`; raw Z returned by `DeriveKey` |
 | `CreateKey` RSA | `CKM_RSA_PKCS_KEY_PAIR_GEN` | `SENSITIVE=TRUE`, `EXTRACTABLE=FALSE` |
-| `CreateKey` EC | `CKM_EC_KEY_PAIR_GEN` | P-256 or P-384 DER OID in `CKA_EC_PARAMS` |
+| `CreateKey` EC | `CKM_EC_KEY_PAIR_GEN` | P-256/P-384/P-521 DER OID in `CKA_EC_PARAMS` |
+| `CreateKey` EdDSA | `CKM_EC_EDWARDS_KEY_PAIR_GEN` | Ed25519 or Ed448 OID in `CKA_EC_PARAMS` |
+| `CreateKey` X25519 | `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` | A separate mechanism from the Edwards one |
+| `CreateKey` AES | `CKM_AES_KEY_GEN` | `CKA_VALUE_LEN` = 16 / 24 / 32 |
+| `CreateKey` HMAC | `CKM_GENERIC_SECRET_KEY_GEN` | Generic secret sized to the hash |
 
 ---
 

@@ -18,6 +18,8 @@
 #include <stdarg.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <errno.h>
+#include <time.h>
 
 /* ── PKCS#11 platform macros (replace the _WIN32 section of pkcs11.h) */
 #ifndef CK_PTR
@@ -30,9 +32,21 @@
 
 /* ── Basic Windows types ────────────────────────────────────────────────── */
 typedef unsigned char      BYTE;
-typedef unsigned char      BOOL;
+/* Windows defines BOOL as int (minwindef.h: `typedef int WINBOOL;` then
+ * `#define BOOL WINBOOL`). It was `unsigned char` here, which is a
+ * different width and a different ABI: a function returning a masked flag
+ * wider than 8 bits would have truncated on Linux and not on Windows, and
+ * every struct carrying a BOOL laid out differently in the tests than in
+ * production. check_mock_drift.py compares macro VALUES, so a wrong
+ * typedef was outside what it could see.
+ *
+ * Not to be confused with CK_BBOOL, which PKCS#11 genuinely defines as one
+ * byte. That one is correct and stays. */
+typedef int                BOOL;
 typedef unsigned short     WORD;
+typedef unsigned short     USHORT;
 typedef unsigned int       DWORD;
+typedef unsigned int       ULONG;
 typedef unsigned long long QWORD;
 typedef long               LONG;
 typedef unsigned long long ULONG_PTR;
@@ -48,6 +62,8 @@ typedef wchar_t            WCHAR;
 typedef wchar_t           *LPWSTR;
 typedef const wchar_t     *LPCWSTR;
 typedef unsigned char     *PBYTE;
+typedef unsigned char     *PUCHAR;
+typedef unsigned long long ULONGLONG;
 
 #define TRUE  1
 #define FALSE 0
@@ -87,24 +103,40 @@ typedef long SECURITY_STATUS;
 #define NTE_PROV_TYPE_NO_MATCH    0x8009001BL
 #define NTE_SIGNATURE_FILE_BAD    0x8009001CL
 #define NTE_PROVIDER_DLL_FAIL     0x8009001DL
-#define NTE_BAD_KEYSET_PARAM      0x8009001EL
-#define NTE_BAD_KEYSET_ACCESS     0x8009001FL
+#define NTE_BAD_KEYSET_PARAM      0x8009001FL
 #define NTE_NOT_SUPPORTED         0x80090029L
 #define NTE_NO_MORE_ITEMS         0x8009002AL
 #define NTE_BUFFER_TOO_SMALL      0x80090028L
 #define NTE_INVALID_PARAMETER     0x80090027L
 #define NTE_INVALID_HANDLE        0x80090026L
-#define NTE_KEY_DOES_NOT_EXIST    0x80090026L
 
 /* ── NCrypt flags ────────────────────────────────────────────────────────── */
+#define NCRYPT_NO_PADDING_FLAG    0x00000001
 #define NCRYPT_PAD_PKCS1_FLAG     0x00000002
 #define NCRYPT_PAD_PSS_FLAG       0x00000008
 #define NCRYPT_PAD_OAEP_FLAG      0x00000004
+#define NCRYPT_PAD_CIPHER_FLAG    0x00000010
+
+/* Symmetric cipher key properties */
+#define NCRYPT_CHAINING_MODE_PROPERTY   L"Chaining Mode"
+#define NCRYPT_INITIALIZATION_VECTOR    L"IV"
+#define NCRYPT_AUTH_TAG_LENGTH          L"AuthTagLength"
+
+/* Key change notification flags. Values from <ncrypt.h>; check_mock_drift.py
+ * verifies them against the real header. */
+#define NCRYPT_REGISTER_NOTIFY_FLAG     0x00000001
+#define NCRYPT_UNREGISTER_NOTIFY_FLAG   0x00000002
+#define NCRYPT_MACHINE_KEY_FLAG         0x00000020
+#define NCRYPT_OVERWRITE_KEY_FLAG       0x80
 #define NCRYPT_PERSIST_ONLY_FLAG  0x40000000
 
-#define NCRYPT_ALLOW_SIGNING_FLAG  0x00000002
-#define NCRYPT_ALLOW_DECRYPT_FLAG  0x00000001
-#define NCRYPT_IMPL_HARDWARE_FLAG  0x00000002
+#define NCRYPT_ALLOW_SIGNING_FLAG       0x00000002
+#define NCRYPT_ALLOW_DECRYPT_FLAG       0x00000001
+#define NCRYPT_ALLOW_KEY_AGREEMENT_FLAG 0x00000004
+#define NCRYPT_BLOCK_LENGTH_PROPERTY    L"Block Length"
+#define NCRYPT_IMPL_HARDWARE_FLAG  0x00000001
+#define NCRYPT_IMPL_SOFTWARE_FLAG  0x00000002
+#define NCRYPT_IMPL_REMOVABLE_FLAG 0x00000008
 
 /* AT_KEYEXCHANGE / AT_SIGNATURE */
 #define AT_KEYEXCHANGE 1
@@ -121,6 +153,16 @@ typedef long SECURITY_STATUS;
 static inline int wcscpy_s(wchar_t *dst, size_t n, const wchar_t *src) {
     if (!dst || n == 0) return 1;
     wcsncpy(dst, src, n - 1);
+    dst[n - 1] = L'\0';
+    return 0;
+}
+
+static inline int wcscat_s(wchar_t *dst, size_t n, const wchar_t *src) {
+    size_t used;
+    if (!dst || !src || n == 0) return 1;
+    used = wcslen(dst);
+    if (used >= n) return 1;
+    wcsncat(dst, src, n - used - 1);
     dst[n - 1] = L'\0';
     return 0;
 }
@@ -172,21 +214,80 @@ static inline DWORD GetEnvironmentVariableA(const char *name, char *buf, DWORD n
 #define CP_UTF8 65001
 #define CP_ACP  0
 
-static inline int MultiByteToWideChar(DWORD cp, DWORD flags,
-    const char *src, int srcLen, wchar_t *dst, int dstLen) {
-    (void)cp; (void)flags;
-    if (srcLen == -1) srcLen = (int)strlen(src) + 1;
-    int n = mbstowcs(dst, src, dstLen > 0 ? (size_t)dstLen : 0);
-    return (n < 0) ? 0 : n;
-}
-
+/* These replace the earlier wcstombs/mbstowcs versions, which ignored
+ * srcLen and depended on the process locale — in the default "C" locale
+ * any non-ASCII character failed outright, which Windows does not do.
+ * Conversion is real UTF-8 here, and srcLen is honoured.
+ *
+ * Note wchar_t is 4 bytes on Linux and 2 on Windows, so these operate on
+ * whole code points and do not model surrogate pairs. Every caller in this
+ * project passes text, not lone surrogates. */
 static inline int WideCharToMultiByte(DWORD cp, DWORD flags,
     const wchar_t *src, int srcLen, char *dst, int dstLen,
     const char *def, int *used) {
-    (void)cp; (void)flags; (void)def; (void)used;
-    if (srcLen == -1) srcLen = (int)wcslen(src) + 1;
-    size_t n = wcstombs(dst, src, dstLen > 0 ? (size_t)dstLen : 0);
-    return (n == (size_t)-1) ? 0 : (int)n;
+    int i, out = 0;
+    (void)cp; (void)flags; (void)def;
+    if (used) *used = 0;
+    if (!src) return 0;
+    if (srcLen < 0) srcLen = (int)wcslen(src) + 1;   /* includes the NUL */
+
+    for (i = 0; i < srcLen; i++) {
+        unsigned long c = (unsigned long)src[i];
+        char buf[4];
+        int  n;
+
+        if (c < 0x80)          { buf[0] = (char)c; n = 1; }
+        else if (c < 0x800)    { buf[0] = (char)(0xC0 | (c >> 6));
+                                 buf[1] = (char)(0x80 | (c & 0x3F)); n = 2; }
+        else if (c < 0x10000)  { buf[0] = (char)(0xE0 | (c >> 12));
+                                 buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+                                 buf[2] = (char)(0x80 | (c & 0x3F)); n = 3; }
+        else                   { buf[0] = (char)(0xF0 | (c >> 18));
+                                 buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+                                 buf[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+                                 buf[3] = (char)(0x80 | (c & 0x3F)); n = 4; }
+
+        if (dstLen > 0) {
+            if (out + n > dstLen) return 0;   /* Windows: ERROR_INSUFFICIENT_BUFFER */
+            memcpy(dst + out, buf, (size_t)n);
+        }
+        out += n;
+    }
+    return out;
+}
+
+static inline int MultiByteToWideChar(DWORD cp, DWORD flags,
+    const char *src, int srcLen, wchar_t *dst, int dstLen) {
+    int i = 0, out = 0;
+    (void)cp; (void)flags;
+    if (!src) return 0;
+    if (srcLen < 0) srcLen = (int)strlen(src) + 1;   /* includes the NUL */
+
+    while (i < srcLen) {
+        unsigned char b = (unsigned char)src[i];
+        unsigned long c;
+        int extra;
+
+        if (b < 0x80)           { c = b;         extra = 0; }
+        else if ((b & 0xE0) == 0xC0) { c = b & 0x1F; extra = 1; }
+        else if ((b & 0xF0) == 0xE0) { c = b & 0x0F; extra = 2; }
+        else if ((b & 0xF8) == 0xF0) { c = b & 0x07; extra = 3; }
+        else return 0;                      /* invalid lead byte */
+
+        if (i + extra >= srcLen + (extra ? 0 : 1)) {
+            if (i + extra >= srcLen) return 0;   /* truncated sequence */
+        }
+        for (int k = 1; k <= extra; k++)
+            c = (c << 6) | ((unsigned char)src[i + k] & 0x3F);
+        i += extra + 1;
+
+        if (dstLen > 0) {
+            if (out >= dstLen) return 0;
+            dst[out] = (wchar_t)c;
+        }
+        out++;
+    }
+    return out;
 }
 
 /* ── CRITICAL_SECTION (→ pthread_mutex_t) ────────────────────────────────── */
@@ -216,11 +317,37 @@ static inline sem_t *CreateSemaphoreW(void *attr, long init, long max, void *nam
 static inline int CloseHandle(sem_t *s) { sem_destroy(s); free(s); return 1; }
 
 #define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT  0x102
 #define INFINITE      0xFFFFFFFF
 
+/* The timeout is honoured rather than ignored.
+ *
+ * This used to be a bare sem_wait, which cannot time out. The session pool
+ * waits 5 s for a free session and maps anything else to NTE_NO_MEMORY, so
+ * with sem_wait that entire path was unreachable on Linux — a leaked
+ * session hung the process instead of failing. A leak is precisely what a
+ * concurrency test is looking for, and a hang is a much worse way to learn
+ * about one than a returned error. */
 static inline DWORD WaitForSingleObject(sem_t *s, DWORD ms) {
-    (void)ms;
-    sem_wait(s);
+    struct timespec ts;
+
+    if (ms == INFINITE) {
+        while (sem_wait(s) != 0 && errno == EINTR) { }
+        return WAIT_OBJECT_0;
+    }
+
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        while (sem_wait(s) != 0 && errno == EINTR) { }
+        return WAIT_OBJECT_0;
+    }
+    ts.tv_sec  += (time_t)(ms / 1000);
+    ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+
+    while (sem_timedwait(s, &ts) != 0) {
+        if (errno == EINTR) continue;
+        return WAIT_TIMEOUT;
+    }
     return WAIT_OBJECT_0;
 }
 static inline int ReleaseSemaphore(sem_t *s, long n, long *prev) {
@@ -229,35 +356,59 @@ static inline int ReleaseSemaphore(sem_t *s, long n, long *prev) {
     return 1;
 }
 
-/* ── INIT_ONCE (→ pthread_once_t) ────────────────────────────────────────── */
-typedef pthread_once_t INIT_ONCE;
-#define INIT_ONCE_STATIC_INIT PTHREAD_ONCE_INIT
+/* ── INIT_ONCE ───────────────────────────────────────────────────────────── */
+/*
+ * Each INIT_ONCE carries its own state. It used to be a bare
+ * pthread_once_t plus a single file-static callback pointer that
+ * InitOnceExecuteOnce wrote before calling pthread_once — so two threads
+ * racing on the same INIT_ONCE both wrote that pointer, and two DIFFERENT
+ * INIT_ONCE objects in one translation unit would each run whichever
+ * callback happened to be stored last. It worked only because no
+ * translation unit here uses two of them, which is luck rather than
+ * design, and it is a data race whatever the outcome.
+ *
+ * A mutex and a flag are per-object, race-free, and match the Windows
+ * semantics this code relies on: the callback runs exactly once, and
+ * every caller waits until it has.
+ */
+typedef struct { pthread_mutex_t mtx; int done; } INIT_ONCE;
+typedef INIT_ONCE *PINIT_ONCE;
+#define INIT_ONCE_STATIC_INIT { PTHREAD_MUTEX_INITIALIZER, 0 }
 typedef int (*PINIT_ONCE_FN)(INIT_ONCE*, void*, void**);
-
-/* Simulated simply with pthread_once */
-typedef struct { pthread_once_t once; PINIT_ONCE_FN fn; } _INIT_ONCE_CTX;
-static _INIT_ONCE_CTX _g_once_ctx;
-static void _once_runner(void) { _g_once_ctx.fn(NULL, NULL, NULL); }
 
 static inline int InitOnceExecuteOnce(INIT_ONCE *o, PINIT_ONCE_FN fn,
                                       void *param, void **ctx) {
-    (void)param; (void)ctx;
-    _g_once_ctx.fn = fn;
-    return pthread_once(o, _once_runner) == 0;
+    int ok = 1;
+    pthread_mutex_lock(&o->mtx);
+    if (!o->done) {
+        ok = fn(o, param, ctx);
+        if (ok) o->done = 1;
+    }
+    pthread_mutex_unlock(&o->mtx);
+    return ok;
 }
 
 /* ── HMODULE (mock) ─────────────────────────────────────────────────────── */
 typedef void* HMODULE;
 typedef void* HINSTANCE;
-static inline HMODULE LoadLibraryW(const wchar_t *path) { (void)path; return NULL; }
-static inline void *GetProcAddress(HMODULE m, const char *n) { (void)m; (void)n; return NULL; }
-static inline int FreeLibrary(HMODULE m) { (void)m; return 1; }
+/* Module loading is defined in p11_mock.c rather than inlined here, so a
+ * test can decide whether the load succeeds. These used to be inline stubs
+ * that always failed, which meant p11_context.c could not be exercised at
+ * all and had no unit coverage. */
+HMODULE LoadLibraryW(const wchar_t *path);
+void   *GetProcAddress(HMODULE m, const char *n);
+int     FreeLibrary(HMODULE m);
 static inline DWORD GetLastError(void) { return 0; }
 static inline int DisableThreadLibraryCalls(HINSTANCE h) { (void)h; return 1; }
 
 /* ── UNREFERENCED_PARAMETER ─────────────────────────────────────────────── */
 #define UNREFERENCED_PARAMETER(x) ((void)(x))
 #define WINAPI
+/* CALLBACK and APIENTRY are __stdcall on Windows, which is a no-op on
+ * x86-64. Defined here because p11_session.c and p11_context.c use
+ * CALLBACK for their InitOnceExecuteOnce callbacks. */
+#define CALLBACK
+#define APIENTRY
 #define __cdecl
 
 /* ── snprintf_s stubs ────────────────────────────────────────────────────── */
@@ -281,40 +432,183 @@ typedef struct _BCRYPT_ECCKEY_BLOB {
     DWORD cbKey;
 } BCRYPT_ECCKEY_BLOB;
 
+/* Symmetric key blob (AES / HMAC raw key material) */
+typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER {
+    DWORD dwMagic;
+    DWORD dwVersion;
+    DWORD cbKeyData;
+} BCRYPT_KEY_DATA_BLOB_HEADER;
+
 #define BCRYPT_RSAPUBLIC_MAGIC      0x31415352UL
 #define BCRYPT_RSAPRIVATE_MAGIC     0x32415352UL
 #define BCRYPT_RSAFULLPRIVATE_MAGIC 0x33415352UL
 #define BCRYPT_ECDSA_PUBLIC_P256_MAGIC 0x31534345UL
 #define BCRYPT_ECDSA_PUBLIC_P384_MAGIC 0x33534345UL
+#define BCRYPT_ECDSA_PUBLIC_P521_MAGIC 0x35534345UL
 #define BCRYPT_ECDSA_PRIVATE_P256_MAGIC 0x32534345UL
 #define BCRYPT_ECDSA_PRIVATE_P384_MAGIC 0x34534345UL
+#define BCRYPT_ECDSA_PRIVATE_P521_MAGIC 0x36534345UL
+#define BCRYPT_ECDH_PUBLIC_P256_MAGIC  0x314B4345UL
+#define BCRYPT_ECDH_PUBLIC_P384_MAGIC  0x334B4345UL
+#define BCRYPT_ECDH_PUBLIC_P521_MAGIC  0x354B4345UL
+/* Generic ECC magic used for Edwards curves (Windows 10 1903+) */
+#define BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC 0x50444345UL
+#define BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC  0x504B4345UL
+#define BCRYPT_KEY_DATA_BLOB_MAGIC   0x4D42444BUL
+#define BCRYPT_KEY_DATA_BLOB_VERSION1 0x00000001UL
 
 #define BCRYPT_RSAPUBLIC_BLOB       L"RSAPUBLICBLOB"
 #define BCRYPT_RSAPRIVATE_BLOB      L"RSAPRIVATEBLOB"
 #define BCRYPT_RSAFULLPRIVATE_BLOB  L"RSAFULLPRIVATEBLOB"
 #define BCRYPT_ECCPUBLIC_BLOB       L"ECCPUBLICBLOB"
 #define BCRYPT_ECCPRIVATE_BLOB      L"ECCPRIVATEBLOB"
+#define BCRYPT_AES_CMAC_ALGORITHM   L"AES-CMAC"
+#define BCRYPT_KEY_DATA_BLOB        L"KeyDataBlob"
+/* RFC 3394 / 5649 AES key wrap. Value copied from the real bcrypt.h — the
+ * string is "Rfc3565KeyWrapBlob", which does not match the RFC number the
+ * mechanism is usually called by; check_mock_drift.py verifies it. */
+#define BCRYPT_AES_WRAP_KEY_BLOB    L"Rfc3565KeyWrapBlob"
 
 #define BCRYPT_SHA1_ALGORITHM    L"SHA1"
 #define BCRYPT_SHA256_ALGORITHM  L"SHA256"
 #define BCRYPT_SHA384_ALGORITHM  L"SHA384"
 #define BCRYPT_SHA512_ALGORITHM  L"SHA512"
 
+/* Block cipher chaining modes */
+#define BCRYPT_CHAIN_MODE_ECB    L"ChainingModeECB"
+#define BCRYPT_CHAIN_MODE_CBC    L"ChainingModeCBC"
+#define BCRYPT_CHAIN_MODE_GCM    L"ChainingModeGCM"
+#define BCRYPT_CHAIN_MODE_CCM    L"ChainingModeCCM"
+#define BCRYPT_CHAIN_MODE_CFB    L"ChainingModeCFB"
+#define BCRYPT_MESSAGE_BLOCK_LENGTH L"MessageBlockLength"
+
+/* Key derivation function identifiers */
+#define BCRYPT_KDF_RAW_SECRET    L"TRUNCATE"
+#define BCRYPT_KDF_HASH          L"HASH"
+#define BCRYPT_KDF_HMAC          L"HMAC"
+
+/* ── BCrypt runtime API ──────────────────────────────────────────────────
+ * Declarations only. The integration test (tests/test_ksp_integration.c)
+ * runs on Windows against the real bcrypt.dll; these let it be
+ * syntax-checked on Linux so typos are caught before a Windows build.
+ * ------------------------------------------------------------------------ */
+typedef long  NTSTATUS;
+typedef void *BCRYPT_ALG_HANDLE;
+typedef void *BCRYPT_KEY_HANDLE;
+
+typedef struct { LPCWSTR pszAlgId; } BCRYPT_PKCS1_PADDING_INFO;
+
+#define BCRYPT_RSA_ALGORITHM         L"RSA"
+#define BCRYPT_ECDSA_P256_ALGORITHM  L"ECDSA_P256"
+#define BCRYPT_ECDSA_P384_ALGORITHM  L"ECDSA_P384"
+#define BCRYPT_ECDSA_P521_ALGORITHM  L"ECDSA_P521"
+#define BCRYPT_ECDH_P256_ALGORITHM   L"ECDH_P256"
+#define BCRYPT_ECDH_P384_ALGORITHM   L"ECDH_P384"
+#define BCRYPT_ECDH_P521_ALGORITHM   L"ECDH_P521"
+#define BCRYPT_AES_ALGORITHM         L"AES"
+
+#define BCRYPT_PAD_PKCS1  0x00000002
+#define BCRYPT_PAD_OAEP   0x00000004
+#define BCRYPT_PAD_PSS    0x00000008
+
+NTSTATUS BCryptOpenAlgorithmProvider(BCRYPT_ALG_HANDLE *phAlgorithm,
+    LPCWSTR pszAlgId, LPCWSTR pszImplementation, DWORD dwFlags);
+NTSTATUS BCryptCloseAlgorithmProvider(BCRYPT_ALG_HANDLE hAlgorithm,
+    DWORD dwFlags);
+NTSTATUS BCryptImportKeyPair(BCRYPT_ALG_HANDLE hAlgorithm,
+    BCRYPT_KEY_HANDLE hImportKey, LPCWSTR pszBlobType,
+    BCRYPT_KEY_HANDLE *phKey, PBYTE pbInput, DWORD cbInput, DWORD dwFlags);
+NTSTATUS BCryptDestroyKey(BCRYPT_KEY_HANDLE hKey);
+NTSTATUS BCryptVerifySignature(BCRYPT_KEY_HANDLE hKey, VOID *pPaddingInfo,
+    PBYTE pbHash, DWORD cbHash, PBYTE pbSignature, DWORD cbSignature,
+    DWORD dwFlags);
+NTSTATUS BCryptEncrypt(BCRYPT_KEY_HANDLE hKey, PBYTE pbInput, DWORD cbInput,
+    VOID *pPaddingInfo, PBYTE pbIV, DWORD cbIV, PBYTE pbOutput,
+    DWORD cbOutput, DWORD *pcbResult, DWORD dwFlags);
+NTSTATUS BCryptDecrypt(BCRYPT_KEY_HANDLE hKey, PBYTE pbInput, DWORD cbInput,
+    VOID *pPaddingInfo, PBYTE pbIV, DWORD cbIV, PBYTE pbOutput,
+    DWORD cbOutput, DWORD *pcbResult, DWORD dwFlags);
+
+BOOL SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue);
+
 typedef struct { LPCWSTR pszAlgId; DWORD cbSalt; } BCRYPT_PSS_PADDING_INFO;
 typedef struct { LPCWSTR pszAlgId; PBYTE pbLabel; DWORD cbLabel; } BCRYPT_OAEP_PADDING_INFO;
+
+/* Field order and types copied from <bcrypt.h>. This is what CNG passes as
+ * pPaddingInfo for an authenticated chaining mode (GCM, CCM): it is the
+ * standard route for the nonce, the additional authenticated data and the
+ * tag, none of which are key properties. */
+#define BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION 1
+
+typedef struct _BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+    ULONG      cbSize;
+    ULONG      dwInfoVersion;
+    PUCHAR     pbNonce;
+    ULONG      cbNonce;
+    PUCHAR     pbAuthData;
+    ULONG      cbAuthData;
+    PUCHAR     pbTag;
+    ULONG      cbTag;
+    PUCHAR     pbMacContext;
+    ULONG      cbMacContext;
+    ULONG      cbAAD;
+    ULONGLONG  cbData;
+    ULONG      dwFlags;
+} BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO;
+
+/* BCRYPT_AUTH_TAG_LENGTHS_STRUCT is a typedef of the key-lengths struct in
+ * <bcrypt.h>; AuthTagLength reports a range, it does not set one. */
+typedef struct __BCRYPT_KEY_LENGTHS_STRUCT {
+    ULONG dwMinLength;
+    ULONG dwMaxLength;
+    ULONG dwIncrement;
+} BCRYPT_KEY_LENGTHS_STRUCT;
+typedef BCRYPT_KEY_LENGTHS_STRUCT BCRYPT_AUTH_TAG_LENGTHS_STRUCT;
+
+/* NCRYPT_SUPPORTED_LENGTHS — copied from mingw-w64 <ncrypt.h>, which
+ * declares it as __NCRYPT_SUPPORTED_LENGTHS with these four DWORDs.
+ *
+ * It is NOT the same shape as BCRYPT_KEY_LENGTHS_STRUCT above, and assuming
+ * it was would have been the natural mistake: that one has three ULONGs and
+ * no default. Reading the real header rather than recalling it is what this
+ * project's BCRYPT_SHA224_ALGORITHM failure bought. */
+typedef struct __NCRYPT_SUPPORTED_LENGTHS {
+    DWORD dwMinLength;
+    DWORD dwMaxLength;
+    DWORD dwIncrement;
+    DWORD dwDefaultLength;
+} NCRYPT_SUPPORTED_LENGTHS;
 
 /* ── NCrypt types ────────────────────────────────────────────────────────── */
 typedef ULONG_PTR NCRYPT_PROV_HANDLE;
 typedef ULONG_PTR NCRYPT_KEY_HANDLE;
+typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
 
 #define NCRYPT_NAME_PROPERTY            L"Name"
 #define NCRYPT_VERSION_PROPERTY         L"Version"
 #define NCRYPT_IMPL_TYPE_PROPERTY       L"Impl Type"
+#define NCRYPT_PIN_PROPERTY             L"SmartCardPin"
+/* Value copied from the real ncrypt.h, not invented: the name says "smart
+ * card" but this is the standard property every KSP uses to hold the
+ * certificate issued for a key. check_mock_drift.py verifies it. */
+#define NCRYPT_CERTIFICATE_PROPERTY     L"SmartCardKeyCertificate"
 #define NCRYPT_ALGORITHM_PROPERTY       L"Algorithm Name"
-#define NCRYPT_LENGTH_PROPERTY          L"KeyLength"
+#define NCRYPT_LENGTH_PROPERTY          L"Length"
+#define NCRYPT_LENGTHS_PROPERTY         L"Lengths"
 #define NCRYPT_KEY_TYPE_PROPERTY        L"Key Type"
 #define NCRYPT_UNIQUE_NAME_PROPERTY     L"Unique Name"
 #define NCRYPT_EXPORT_POLICY_PROPERTY   L"Export Policy"
+
+/* Export policy flags. Values from <ncrypt.h>; check_mock_drift.py verifies
+ * them against the real header. ALLOW_EXPORT permits wrapped export,
+ * ALLOW_PLAINTEXT_EXPORT permits reading the key in the clear — they are
+ * different permissions and this provider maps them to different PKCS#11
+ * attributes. The ARCHIVING pair is about key escrow and is deliberately
+ * not honoured. */
+#define NCRYPT_ALLOW_EXPORT_FLAG                0x00000001
+#define NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG      0x00000002
+#define NCRYPT_ALLOW_ARCHIVING_FLAG             0x00000004
+#define NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG   0x00000008
 #define NCRYPT_KEY_USAGE_PROPERTY       L"Key Usage"
 #define NCRYPT_ALGORITHM_GROUP_PROPERTY L"Algorithm Group"
 
@@ -328,35 +622,138 @@ typedef struct _NCryptKeyName {
     DWORD  dwFlags;
 } NCryptKeyName;
 
-typedef struct _NCryptBufferDesc { DWORD ulVersion; DWORD cBuffers; void *pBuffers; }
-    NCryptBufferDesc;
+/* Real Windows shape: NCryptBuffer and NCryptBufferDesc are typedefs of
+ * BCryptBuffer / BCryptBufferDesc, and pBuffers is a typed pointer, not
+ * void*. The previous stand-in used void* and DWORD, which compiled but
+ * would not have caught a caller indexing the array wrongly. */
+typedef struct _BCryptBuffer {
+    ULONG cbBuffer;
+    ULONG BufferType;
+    PVOID pvBuffer;
+} BCryptBuffer, *PBCryptBuffer;
 
-/* ── NCRYPT_KEY_STORAGE_FUNCTION_TABLE ───────────────────────────────────── */
-#define NCRYPT_KEY_STORAGE_INTERFACE_VERSION 1
+typedef struct _BCryptBufferDesc {
+    ULONG          ulVersion;
+    ULONG          cBuffers;
+    PBCryptBuffer  pBuffers;
+} BCryptBufferDesc, *PBCryptBufferDesc;
+
+typedef BCryptBuffer      NCryptBuffer;
+typedef BCryptBuffer     *PNCryptBuffer;
+typedef BCryptBufferDesc  NCryptBufferDesc;
+typedef BCryptBufferDesc *PNCryptBufferDesc;
+
+/* KDF parameter buffer types (bcrypt.h) */
+#define KDF_HASH_ALGORITHM   0x0
+#define KDF_SECRET_PREPEND   0x1
+#define KDF_SECRET_APPEND    0x2
+#define KDF_HMAC_KEY         0x3
+#define KDF_TLS_PRF_LABEL    0x4
+#define KDF_TLS_PRF_SEED     0x5
+#define KDF_TLS_PRF_PROTOCOL 0x7
+#define KDF_ALGORITHMID      0x8
+#define KDF_PARTYUINFO       0x9
+#define KDF_PARTYVINFO       0xa
+#define KDF_LABEL            0xd
+#define KDF_HKDF_SALT        0x13
+#define KDF_HKDF_INFO        0x14
+#define KDF_USE_SECRET_AS_HMAC_KEY_FLAG 1
+#define KDF_CONTEXT          0xe
+
+#define BCRYPT_KDF_HASH              L"HASH"
+#define BCRYPT_KDF_HMAC              L"HMAC"
+#define BCRYPT_KDF_TLS_PRF           L"TLS_PRF"
+#define BCRYPT_KDF_SP80056A_CONCAT   L"SP800_56A_CONCAT"
+#define BCRYPT_KDF_HKDF              L"HKDF"
+
+
+/* ── Algorithm enumeration ────────────────────────────────────────────────
+ * Values verified against the Windows SDK bcrypt.h / ncrypt.h: the
+ * NCRYPT_*_OPERATION names are aliases of the BCRYPT_*_OPERATION ones. */
+#define BCRYPT_CIPHER_OPERATION                 0x00000001
+#define BCRYPT_HASH_OPERATION                   0x00000002
+#define BCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION  0x00000004
+#define BCRYPT_SECRET_AGREEMENT_OPERATION       0x00000008
+#define BCRYPT_SIGNATURE_OPERATION              0x00000010
+#define BCRYPT_RNG_OPERATION                    0x00000020
+#define BCRYPT_KEY_DERIVATION_OPERATION         0x00000040
+
+#define NCRYPT_KEY_STORAGE_INTERFACE            0x00010001
+
+/* DllMain reasons */
+#define DLL_PROCESS_ATTACH  1
+#define DLL_THREAD_ATTACH   2
+#define DLL_THREAD_DETACH   3
+#define DLL_PROCESS_DETACH  0
+
+#define NCRYPT_CIPHER_OPERATION                 BCRYPT_CIPHER_OPERATION
+#define NCRYPT_HASH_OPERATION                   BCRYPT_HASH_OPERATION
+#define NCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION  BCRYPT_ASYMMETRIC_ENCRYPTION_OPERATION
+#define NCRYPT_SECRET_AGREEMENT_OPERATION       BCRYPT_SECRET_AGREEMENT_OPERATION
+#define NCRYPT_SIGNATURE_OPERATION              BCRYPT_SIGNATURE_OPERATION
+#define NCRYPT_RNG_OPERATION                    BCRYPT_RNG_OPERATION
+#define NCRYPT_KEY_DERIVATION_OPERATION         BCRYPT_KEY_DERIVATION_OPERATION
+
+typedef struct _NCryptAlgorithmName {
+    LPWSTR pszName;
+    DWORD  dwClass;
+    DWORD  dwAlgOperations;
+    DWORD  dwFlags;
+} NCryptAlgorithmName;
+
+/* ── NCRYPT_KEY_STORAGE_FUNCTION_TABLE ─────────────────────────────────────
+ *
+ * The real declaration lives in the Windows SDK's <ncrypt_provider.h>,
+ * which ships with the WDK and is not vendored here. This stand-in exists
+ * only so the Linux unit suite can link.
+ *
+ * ksp_main.c initialises the table with designated initialisers, so the
+ * field ORDER below does not affect correctness on Windows — the SDK
+ * header decides that. Only the field NAMES have to match, and a name that
+ * does not exist in the real header becomes a build error rather than a
+ * silently displaced slot. Do not reintroduce positional initialisation.
+ *
+ * Version is a two-USHORT structure in the SDK, not a DWORD.
+ */
+typedef struct _BCRYPT_INTERFACE_VERSION {
+    USHORT MajorVersion;
+    USHORT MinorVersion;
+} BCRYPT_INTERFACE_VERSION;
+
+#define BCRYPT_MAKE_INTERFACE_VERSION(major, minor) \
+    { (USHORT)(major), (USHORT)(minor) }
+
+#define NCRYPT_KEY_STORAGE_INTERFACE_VERSION \
+    BCRYPT_MAKE_INTERFACE_VERSION(1, 0)
 
 typedef struct _NCRYPT_KEY_STORAGE_FUNCTION_TABLE {
-    DWORD  dwVersion;
-    void  *OpenProvider;
-    void  *OpenKey;
-    void  *CreatePersistedKey;
-    void  *GetProviderProperty;
-    void  *GetKeyProperty;
-    void  *SetProviderProperty;
-    void  *SetKeyProperty;
-    void  *FinalizeKey;
-    void  *DeleteKey;
-    void  *FreeProvider;
-    void  *FreeKey;
-    void  *FreeBuffer;
-    void  *EnumKeys;
-    void  *ImportKey;
-    void  *ExportKey;
-    void  *SignHash;
-    void  *Decrypt;
-    void  *NotifyChangeKey;
-    void  *GetOperationProperty;
-    void  *FreeObject;
-    void  *PromptUser;
+    BCRYPT_INTERFACE_VERSION Version;
+    void *OpenProvider;
+    void *OpenKey;
+    void *CreatePersistedKey;
+    void *GetProviderProperty;
+    void *GetKeyProperty;
+    void *SetProviderProperty;
+    void *SetKeyProperty;
+    void *FinalizeKey;
+    void *DeleteKey;
+    void *FreeProvider;
+    void *FreeKey;
+    void *FreeBuffer;
+    void *Encrypt;
+    void *Decrypt;
+    void *IsAlgSupported;
+    void *EnumAlgorithms;
+    void *EnumKeys;
+    void *ImportKey;
+    void *ExportKey;
+    void *SignHash;
+    void *VerifySignature;
+    void *PromptUser;
+    void *NotifyChangeKey;
+    void *SecretAgreement;
+    void *DeriveKey;
+    void *FreeSecret;
 } NCRYPT_KEY_STORAGE_FUNCTION_TABLE;
 
 /* ── Tick count (mock) ───────────────────────────────────────────────────── */

@@ -9,35 +9,68 @@ Prototype of a complete **CNG (Cryptography Next Generation) Key Storage Provide
 | Windows   | 10 / 11 x64     |
 | Visual Studio | 2022 (MSVC) |
 | CMake     | 3.20+           |
-| SoftHSM2  | 2.6+            |
+| SoftHSM2  | **2.7.0** (OpenSSL backend — built from submodule or installed separately) |
+| OpenSSL   | 1.1.x or 3.x (via vcpkg when building from source) |
 | Windows SDK | 10.0.19041+  |
+| **`ncrypt_provider.h`** | **Required for `ksp_main.c`**, which defines the CNG function table. It is **not** in the Windows SDK, and **not present at all on a GitHub-hosted Windows runner** — a `dir /s /b` across both drives found only this repository's own test mock, after a WDK install that reported success. Where it comes from is unestablished. Without it CMake skips the DLL target and warns; the other nine source files still compile. |
 
-### Installing SoftHSM2
+If you have `ncrypt_provider.h`, point the build at the directory holding it:
 
-1. Download the installer from https://github.com/opendnssec/SoftHSMv2
-2. Install in `C:\Program Files\SoftHSM2\` (default path)
+```powershell
+cmake .. -A x64 -DCPDK_INCLUDE_DIR="C:\Program Files (x86)\Windows Kits\10\Cryptographic Provider Development Kit\Include\um"
+```
+
+## Getting SoftHSM2 2.7.0
+
+Two options — choose one:
+
+### Option A — Build from source (recommended, included as submodule)
+
+```powershell
+# After cloning the repo:
+git submodule update --init --recursive
+
+# In a Visual Studio x64 Native Tools prompt:
+.\softhsm_ksp\tools\build_softhsm_windows.ps1
+
+# The DLL ends up in softhsm2-install\ and the KSP CMake step below
+# picks it up automatically via -DSOFTHSM2_DIR.
+```
+
+### Option B — Pre-built installer
+
+1. Download the 2.7.0 installer from https://github.com/opendnssec/SoftHSMv2/releases
+2. Install to `C:\Program Files\SoftHSM2\` (default)
 3. Initialise a token:
-   ```
-   softhsm2-util --init-token --slot 0 --label "MyToken" \
-                 --so-pin 0000 --pin 1234
+   ```powershell
+   softhsm2-util --init-token --slot 0 --label "MyToken" --so-pin 0000 --pin 1234
    ```
 
 ## Build
 
 ```powershell
-# In a Visual Studio terminal (x64 Native Tools)
+# In a Visual Studio x64 Native Tools prompt
+cd softhsm_ksp
 mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
+
+# Option A (submodule build — DLL path baked in at compile time):
+cmake .. -A x64 `
+         -DSOFTHSM2_DIR=..\..\softhsm2-install
+
+# Option B (pre-built installer in default location):
+cmake .. -A x64
+
 cmake --build . --config Release
 ```
 
-The DLL `Release\softhsm_ksp.dll` is built in `build\Release\`.
+The DLL `Release\softhsm_ksp.dll` is built in `softhsm_ksp\build\Release\`.
 
 ## Configuration
 
 | Environment variable | Default value | Description |
 |----------------------|---------------|-------------|
-| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | Path to the SoftHSM2 DLL |
+| `KSP_PKCS11_LIB` | — | Path to the PKCS#11 module. Any v2.40+ module works; the provider asks it what it implements at startup and advertises only that |
+| `SOFTHSM2_LIB` | `C:\Program Files\SoftHSM2\lib\softhsm2-x64.dll` | The older name for the same path, still honoured when `KSP_PKCS11_LIB` is unset |
 | `SOFTHSM2_PIN` | `1234` | Token user PIN |
 | `KSP_DEBUG` | `0` | Enable logging (`1` = enabled) |
 
@@ -51,9 +84,25 @@ Logging is visible in real time with **DebugView** (Sysinternals).
 .\tools\register_ksp.ps1 -DllPath "C:\path\to\softhsm_ksp.dll"
 ```
 
+The script does two things, and both matter. `BCryptRegisterProvider`
+records the DLL so `NCryptOpenStorageProvider` can load it by name;
+`BCryptAddContextFunctionProvider` publishes the algorithm list so that
+callers which discover providers *by algorithm* can find it. To undo both:
+
+```powershell
+.\tools\register_ksp.ps1 -Unregister
+```
+
+CNG reads the provider list at process start, so restart any application
+that was already running.
+
 ### Via the .reg file
 
 Edit `tools\register_ksp.reg` to replace `<ABSOLUTE_PATH>`, then double-click.
+
+This route writes only the `Image` and `Type` values, which covers loading
+the provider by name but **not** algorithm publication — use it only as a
+fallback when the PowerShell script cannot run.
 
 ### Verification
 
@@ -69,21 +118,24 @@ Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Providers
 
 ## Tests
 
-Three complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full test reference.
+Four complementary layers. See [docs/09-tests.md](docs/09-tests.md) for the full test reference.
 
 ### Layer 1 — Unit tests (Linux/GCC, no SoftHSM2 needed)
 
 ```bash
-cd tests/unit && make
-./test_p11rv_mapping && ./test_logging && ./test_mechanism_resolve \
-  && ./test_export_blobs && ./test_ksp_provider && ./test_ksp_key_ops \
-  && ./test_ksp_crypto && ./test_ksp_key_props && ./test_memory && ./test_ecdsa_decode
+cd tests/unit && make run
 ```
 
-10 test suites · 281 assertions · **91 % line coverage, 100 % function coverage** (gcov).
+22 test suites · 1816 assertions · **86.2 % line coverage, 100 % function coverage** (gcov).
 Full HTML report: `tests/unit/coverage_html/index.html`.
 
-### Layer 2 — KSP integration tests (Windows, 21 tests)
+```bash
+make run           # build and run all 22 suites
+make coverage      # plus an HTML coverage report
+make syntax-check  # parse the Windows-only integration test
+```
+
+### Layer 2 — KSP integration tests (Windows, 40 tests)
 
 ```powershell
 .\build\Release\test_ksp_integration.exe
@@ -91,22 +143,37 @@ Full HTML report: `tests/unit/coverage_html/index.html`.
 
 Tests 1–14: original integration suite (OpenProvider → DeleteKey).  
 Tests 15–21: **HLK-conformant scenarios** — RSA PSS + BCrypt verify, RSA PKCS1 BCrypt verify,
-ECDSA P-256/P-384 BCrypt verify, RSA 3072 deferred generation, RSA OAEP decrypt, error conditions.
+ECDSA P-256/P-384 BCrypt verify, RSA 3072 deferred generation, RSA OAEP decrypt, error conditions.  
+Tests 22–40: **SoftHSM2 2.7.0 mechanism coverage** — ECDSA P-521, OAEP SHA-384/512 and labels,
+EC public key import, ECDH agreement on all three curves, Ed25519/Ed448, AES ECB/CBC/CTR/GCM,
+HMAC-SHA256, symmetric key reopen.
 
 ### Layer 3 — PowerShell functional tests (registered KSP)
 
 ```powershell
-# Basic functional tests (9 scenarios)
+# Basic functional tests (9 scenarios, 17 checks)
 .\tools\test_ksp.ps1
 
-# Microsoft CNG HLK-conformant test suite (61 tests, 9 sections)
+# Microsoft CNG HLK-conformant test suite (~150 tests, 14 sections)
 .\tools\test_cng_hlk.ps1
 ```
 
 `test_cng_hlk.ps1` mirrors Microsoft's **TPM 2.0 Platform Crypto Provider KSP Test**
 (HLK ID: `7c938be0-ff4a-44f9-916c-b578f027f0ca`). Covers RSA 2048/3072 PKCS1+PSS with
-BCrypt end-to-end verification, OAEP encrypt/decrypt, ECDSA P-256/P-384 with BCrypt verify,
-all NCrypt property queries, error conditions, and full key lifecycle.
+BCrypt end-to-end verification, OAEP encrypt/decrypt, ECDSA P-256/P-384/P-521 with BCrypt
+verify, ECDH two-party key agreement, EdDSA, AES across four chaining modes, all NCrypt
+property queries, error conditions, and full key lifecycle.
+
+The suite embeds a C# P/Invoke block. Validate it on any platform — no Windows needed:
+
+```bash
+pwsh -File tools/validate_hlk_script.ps1
+```
+
+### Layer 4 — Official Microsoft HLK
+
+See [docs/10-hlk-execution.md](docs/10-hlk-execution.md) for the HLK Studio procedure,
+prerequisites, and what stands between this KSP and a real certification submission.
 
 ## Architecture
 
@@ -135,13 +202,31 @@ Windows Application
 
 ## Supported algorithms
 
-| Algorithm | Generation | Signing | Decryption | Public export |
-|-----------|-----------|---------|------------|---------------|
-| RSA 2048/3072/4096 | ✓ | PKCS1, PSS | PKCS1, OAEP | ✓ |
-| ECDSA P-256 | ✓ | ✓ | — | ✓ |
-| ECDSA P-384 | ✓ | ✓ | — | ✓ |
+| Algorithm | Generation | Signing | Decryption | Key agreement | Public export |
+|-----------|:----------:|---------|------------|:-------------:|:-------------:|
+| RSA 2048–16384 (step 64) | ✓ | PKCS1, PSS (SHA-1/224/256/384/512) | PKCS1, OAEP (SHA-1/224/256/384/512) | — | ✓ |
+| ECDSA P-256/P-384/P-521 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDSA secp256k1 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDSA brainpoolP256r1/P384r1/P512r1 | ✓ | ✓ (r‖s) | — | — | ✓ |
+| ECDH P-256/P-384/P-521 | ✓ | — | — | ✓ | ✓ |
+| X25519 | ✓ | — | — | ✓ | ✓ |
+| EdDSA Ed25519 / Ed448 | ✓ | ✓ (raw) | — | — | ✓ |
+| AES 128/192/256 | ✓ | — | ECB, CBC, CTR, GCM | — | — |
+| HMAC SHA-1/224/256/384/512 | ✓ | ✓ (MAC) | — | — | — |
 
-Private keys are **never exportable** (to simulate the behaviour of a hardware HSM).
+`EDDSA_ED25519`, `EDDSA_ED448`, `HMAC_SHA*`, `ECDSA_SECP256K1` and
+`ECDH_X25519` are this
+provider's own identifiers, not standard CNG ones, so only an application
+written against this KSP will reach them. CNG has no EdDSA algorithm
+identifier at all; it does know secp256k1, but as a curve selected through
+`BCRYPT_ECC_CURVE_NAME` (`BCRYPT_ECC_CURVE_SECP256K1`) on the generic ECDSA
+algorithm rather than as an algorithm name — supporting that route as well
+is tracked as ECDSA-05 in the feature matrix. Everything else in the table
+uses the standard CNG identifiers.
+
+Asymmetric private keys are **never exportable** (to simulate the behaviour of a
+hardware HSM). See [SoftHSM2_KSP_Algorithm_Reference.docx](SoftHSM2_KSP_Algorithm_Reference.docx)
+for the full mechanism, mode and key-size reference.
 
 ## Security
 
@@ -154,3 +239,7 @@ Private keys are **never exportable** (to simulate the behaviour of a hardware H
 - SoftHSM2 does not support `CKM_RSA_X_509` (raw RSA) — not implemented
 - Private key import not supported (HSM by design)
 - Only one token/slot used (the first one with a token present)
+- DES/3DES, DSA, PKCS#3 Diffie-Hellman and GOST are deliberately out of scope
+  (deprecated, or outside the HLK test plan)
+- Raw hash and sign-with-integrated-hash PKCS#11 mechanisms are unreachable by
+  design: CNG always hands `NCryptSignHash` a pre-computed hash

@@ -1,0 +1,38 @@
+<section id="gates" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<h2 style="font-size:60px;font-weight:600;line-height:1.1">Four gates, each one a claim somebody can check</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#44525E">A gate is not a milestone with a date on it. It is a sentence that is either true or false, and no phase starts until the one before it is true.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:18px;width:1664px">
+<div style="display:flex;gap:26px;align-items:stretch;background:#FFFFFF;padding:30px 34px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<p style="width:140px;font-size:34px;font-weight:700;color:#B3561A">B</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">The provider loads, enumerates and signs through the real ncrypt.dll</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Not "it compiles". Not "certutil lists it". A signature produced by a key on the token, through the public NCrypt API, verified against BCrypt. <b>Until this is true, every statement in the ADCS plan is a projection</b> — including the ones on these slides.</p>
+</div>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch;background:#FFFFFF;padding:30px 34px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<p style="width:140px;font-size:34px;font-weight:700;color:#B3561A">C</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">190 written tests have executed, and every failure is triaged</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Triaged, not necessarily passing — a first run that finds nothing means the run was wrong. Each failure is classified as a provider defect, a test defect or a documented limitation, and the suite's own counts are reconciled with the docs by the existing checker.</p>
+</div>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch;background:#FFFFFF;padding:30px 34px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<p style="width:140px;font-size:34px;font-weight:700;color:#2F6F8F">E</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">E1&#8211;E7 pass on a throwaway CA, twice, including renewal with a new key</h3>
+<p style="font-size:25px;line-height:1.4;color:#44525E">Twice, because a single pass cannot see what the provider leaves behind — that is how the orphaned-certificate defect was found. Then a service restart <i>and</i> a host reboot, since the credential has to be available before any logon.</p>
+</div>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch;background:#111E2B;color:#F7F7F4;padding:30px 34px;border-radius:16px;border-left:6px solid #E08A4A">
+<p style="width:140px;font-size:34px;font-weight:700;color:#E08A4A">F</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:30px;font-weight:600">Signed binary, real HSM, DACL risk accepted in writing</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Plus FIPS posture if required, which needs certified hardware rather than a code change. <b style="color:#F7F7F4">This is what "finalized" means</b> — and the test CA from gate E is destroyed, never promoted.</p>
+</div>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Standing gate throughout: five static checks, both live-token suites and the mingw cross-compile green on every commit · 7 / 10</p>
+<aside>The gates exist to stop the project reporting progress it has not made, which is a risk here because so much is written and so little has run. Gate C's wording is deliberate: a first execution of 190 never-run tests that comes back clean is evidence the harness is broken, not that the code is perfect. Four consecutive fault injections once ran against a stale binary in this project and looked undetected.</aside>
+</section>

@@ -1,0 +1,33 @@
+<section id="checks" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1620px">Five static checks, because prose does not stay true</h2>
+<p style="font-size:29px;line-height:1.4;width:1620px;color:#AFC3D4">The project's most persistent defect is not a bug. It is <b style="color:#F7F7F4">a summary of a fact, sitting next to the fact, not updated with it</b> — found in the feature matrix, the property tables, the test counts, the registration script and the vendor-facing requirements document. Each one became a machine-checked invariant instead.</p>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:22px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_mock_drift.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The test mock against the real Windows headers — values <b style="color:#F7F7F4">and typedef widths</b>. The mock once invented two constants and mis-valued two more, and every test passed because the tests read the same wrong numbers.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_registration.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The registration script against what the provider advertises, both ways. Found AES-CMAC advertised and never registered, and <b style="color:#F7F7F4">RSA decryption implemented and undiscoverable</b> — never published under the asymmetric-encryption interface.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_property_docs.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The property tables against the dispatch chains, in both directions and including the read and write columns. Its first run reported four real defects — one documented property did not exist at all.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_test_counts.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Every documented suite and assertion figure against the suite's own run log. The historical session entries are deliberately excluded — a check that flags the record as drift pressures the next reader into falsifying history.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#1A2C3D;padding:30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600;font-family:'JetBrains Mono', 'Courier New', monospace;color:#E08A4A">check_generated_artifacts.py</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">Four generated documents against their inputs, by fingerprint. It compares inputs rather than outputs, because every artifact embeds a date and two are binaries with unstable internal ordering.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#2A1A14;padding:30px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">The weakest gate was the one nobody could run</h3>
+<p style="font-size:25px;line-height:1.4;color:#AFC3D4">The mingw cross-compile is the only check that compiles Windows-only code, and it did not promote an implicit declaration to an error where the unit build did. It let a truncated Win64 heap pointer through with <b style="color:#F7F7F4">exit 0</b>.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">All five run in the Linux CI job and need no toolchain · 11 / 15</p>
+</section>

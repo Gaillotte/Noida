@@ -1,0 +1,11 @@
+schema_version: "1.1"
+name: catches-javascript-in-object-stream
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Finds the JavaScript open action in quarterly-report.pdf even though the
+  user's grep did not, and explains WHY the grep missed it: the catalog and
+  the action live inside a Flate-compressed object stream, so the name
+  /JavaScript does not appear in the file's raw bytes at all. Corrects the
+  user's conclusion rather than confirming it, and treats the file as unsafe
+  to forward. Reports appendix.pdf as clean.

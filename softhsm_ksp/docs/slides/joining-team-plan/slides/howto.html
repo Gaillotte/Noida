@@ -1,0 +1,42 @@
+<section id="howto" data-transition="fade" style="background:#111E2B;color:#F7F7F4;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#E08A4A">Seven rules, each one paid for</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">How to work in this codebase without re-learning its lessons</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:20px">
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">1 · Break it before you believe it</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">No claim lands without a fault injection that the suite catches. And restore the injection <b style="color:#F7F7F4">from a copy made beforehand, never from git</b> — that has destroyed uncommitted work three times.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">2 · Two tokens, two passes</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">One token cannot tell a working selection from an ignored one; one pass cannot see what the provider leaves behind. Each shortcut hid a real defect until the second was added.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">3 · Never hand-edit the mock</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">It once invented two constants and mis-valued two more, and every test passed because the tests read the same wrong numbers. A checker now compares it to the real headers, values and typedef widths both.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">4 · The function table is assigned by name</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">Designated initialisers, permanently. Positional initialisation put a key handle where a <span style="font-family:'JetBrains Mono', 'Courier New', monospace">HANDLE *</span> belonged and returned success to a caller that then waited forever.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">5 · A grep for a fix can match the fix's comment</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">An audit once reported ten files as correct when none was: the pattern matched the sentence <i>describing</i> the include. Verify with the compiler, not with a search.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#1A2C3D;padding:26px 30px;border-radius:14px">
+<h3 style="font-size:28px;font-weight:600">6 · The five static checks are the contract</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">Docs, counts, property tables and the registration script are all machine-compared to the code. They exist because <b style="color:#F7F7F4">a summary sitting next to a fact does not stay true</b> — the most persistent defect here.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#2A1A14;padding:26px 30px;border-radius:14px;border-left:6px solid #B3561A">
+<h3 style="font-size:28px;font-weight:600">7 · Closing a capability row is two edits</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">Set the row Covered <i>and</i> delete its gap entry, then regenerate. A status change edits the existing row — appending a new ID left one capability with two rows, one of them asserting the opposite of the other, for three sessions.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#15303A;padding:26px 30px;border-radius:14px;border-left:6px solid #6FA8C9">
+<h3 style="font-size:28px;font-weight:600">And one habit to keep</h3>
+<p style="font-size:24px;line-height:1.4;color:#AFC3D4">When the authoritative source is out of reach, <b style="color:#F7F7F4">record the gap; do not fill it from memory.</b> Both times this project guessed at a Microsoft constant, the guess was wrong and passed every test.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#7E95A8">All of this is in CLAUDE.md, which is the onboarding document — read it before the source · 8 / 10</p>
+<aside>Hand this slide out rather than presenting it. Every rule here is the residue of a specific incident, and the incidents are written up in CLAUDE.md with enough detail to be convincing. Rule 1's second sentence is the one people skip and the one that has cost the most.</aside>
+</section>

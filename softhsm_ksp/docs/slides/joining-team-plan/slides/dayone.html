@@ -1,0 +1,29 @@
+<section id="dayone" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">Week one</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">Four things to start before anyone writes a line of code</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:26px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">1 · Find the header, and decide the fallback</h3>
+<p style="font-size:25px;line-height:1.45;color:#44525E">It is associated with the Cryptographic Provider Development Kit, but that is <b>unconfirmed</b> and two guesses at its location were already wrong. Give someone an MSDN or partner account and a week. <b>Decide now what happens if it cannot be had</b> — reconstructing the function table from observed behaviour is possible and is the riskiest thing anyone could do to this project.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">2 · Open the certificate purchase</h3>
+<p style="font-size:25px;line-height:1.45;color:#44525E">An OV or EV code-signing certificate needs a verified legal entity, which is weeks of paperwork, not an afternoon. Signing, timestamping and verification are already scripted and CI signs automatically once the secret exists — <b>so the only missing part is the one that cannot be hurried.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-left:6px solid #2F6F8F">
+<h3 style="font-size:32px;font-weight:600">3 · Run p11_qualify against the real HSM</h3>
+<p style="font-size:25px;line-height:1.45;color:#44525E">One C file, one header, no Windows and no KSP build. It runs all 18 Tier 1 requirements and four strictness probes, and reports which of the three PKCS#11 authentication models the token uses. <b>If the token has a PIN pad, Phase C closes with no work at all.</b></p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#111E2B;color:#F7F7F4;padding:36px;border-radius:16px;border-left:6px solid #E08A4A">
+<h3 style="font-size:32px;font-weight:600">4 · Get the DACL question answered</h3>
+<p style="font-size:25px;line-height:1.45;color:#AFC3D4">Put it to whoever owns the CA's threat model, in writing: <i>is a CA key protected only by the token boundary and its credential acceptable here?</i> The CA MMC's private-key permissions dialog will not work, and an operator must not discover that during an incident.</p>
+</div>
+</div>
+<div style="display:flex;gap:20px;align-items:center;background:#FFF6EE;padding:26px 34px;border-radius:14px;border-left:6px solid #B3561A">
+<p style="flex:1;font-size:27px;line-height:1.45;color:#44525E">Also in week one, and it costs a morning: <b>A4 is the one Phase A item still open</b> — a regression test that <span style="font-family:'JetBrains Mono', 'Courier New', monospace">NCRYPT_SILENT_FLAG</span> combined with each padding flag still resolves the right mechanism. The masking is correct today <i>by construction</i>; nothing stops a future equality comparison breaking CA signing silently.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Items 1, 2 and 4 are not engineering work and should not be assigned to engineers · 4 / 10</p>
+<aside>If only one slide survives this deck, make it this one. None of these four is hard; all four have long tails; and three of them need authority rather than skill. Item 1's fallback decision matters more than it sounds — reconstructing a function table layout from behaviour is exactly the class of guess that cost this project the SHA-224 identifier and a post-quantum blob format.</aside>
+</section>

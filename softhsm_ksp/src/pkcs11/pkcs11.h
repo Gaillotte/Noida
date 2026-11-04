@@ -75,7 +75,10 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKK_DSA             0x00000001UL
 #define CKK_DH              0x00000002UL
 #define CKK_EC              0x00000003UL
+#define CKK_GENERIC_SECRET  0x00000010UL
 #define CKK_AES             0x0000001FUL
+#define CKK_EC_EDWARDS      0x00000040UL
+#define CKK_EC_MONTGOMERY   0x00000041UL
 
 /* Attributs */
 #define CKA_CLASS              0x00000000UL
@@ -86,6 +89,9 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKA_VALUE              0x00000011UL
 #define CKA_OBJECT_ID          0x00000012UL
 #define CKA_CERTIFICATE_TYPE   0x00000080UL
+/* CK_CERTIFICATE_TYPE. Only X.509 is used here — CNG hands a provider a
+ * DER-encoded certificate and names no other type. */
+#define CKC_X_509              0x00000000UL
 #define CKA_ISSUER             0x00000081UL
 #define CKA_SERIAL_NUMBER      0x00000082UL
 #define CKA_KEY_TYPE           0x00000100UL
@@ -112,6 +118,7 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKA_EXPONENT_1         0x00000126UL
 #define CKA_EXPONENT_2         0x00000127UL
 #define CKA_COEFFICIENT        0x00000128UL
+#define CKA_VALUE_LEN          0x00000161UL
 #define CKA_EC_PARAMS          0x00000180UL
 #define CKA_EC_POINT           0x00000181UL
 #define CKA_EXTRACTABLE        0x00000162UL
@@ -144,6 +151,118 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKM_SHA256_RSA_PKCS_PSS   0x00000043UL
 #define CKM_SHA384_RSA_PKCS_PSS   0x00000044UL
 #define CKM_SHA512_RSA_PKCS_PSS   0x00000045UL
+#define CKM_SHA224                0x00000255UL
+
+/* ECDH key agreement */
+#define CKM_ECDH1_DERIVE          0x00001050UL
+
+/* EdDSA (Edwards curves: Ed25519, Ed448) */
+#define CKM_EC_EDWARDS_KEY_PAIR_GEN 0x00001055UL
+#define CKM_EDDSA                 0x00001057UL
+
+/* Montgomery curves (X25519, X448) — a SEPARATE generator and key type.
+ * PKCS#11 3.0 gave Montgomery curves their own pair; they are not a flavour
+ * of Edwards distinguished only by the curve OID. A token may implement one
+ * without the other, and Kryoptic built with ec_montgomery and without eddsa
+ * advertises exactly 0x1056 and no 0x1055. Values from the OASIS header
+ * vendored in the SoftHSM2 submodule. */
+#define CKM_EC_MONTGOMERY_KEY_PAIR_GEN 0x00001056UL
+
+/* CK_EDDSA_PARAMS — required for Ed448, and NOT to be sent for Ed25519.
+ *
+ * RFC 8032 defines five distinct algorithms, not two. Ed25519 has a pure
+ * form that takes no context; Ed448 always takes one, empty by default.
+ * So a token reads an ABSENT parameter as pure Ed25519 and a PRESENT one
+ * with phFlag false as Ed25519ctx — a different signature scheme — while
+ * for Ed448 the absent parameter is simply an error.
+ *
+ * Layout confirmed against two independent sources: the OASIS header
+ * vendored in the SoftHSM2 submodule (struct ck_eddsa_params) and
+ * Kryoptic's own bindgen output, which additionally pins sizeof to 24. */
+typedef struct CK_EDDSA_PARAMS {
+    CK_BBOOL   phFlag;
+    CK_ULONG   ulContextDataLen;
+    CK_BYTE   *pContextData;
+} CK_EDDSA_PARAMS;
+
+/* CK_MECHANISM_INFO.flags — what a token says a mechanism may be used for.
+ * Values copied from the vendored OASIS header, as with everything below. */
+#define CKF_HW                    (1UL << 0)
+#define CKF_ENCRYPT               (1UL << 8)
+#define CKF_DECRYPT               (1UL << 9)
+#define CKF_SIGN                  (1UL << 11)
+#define CKF_VERIFY                (1UL << 13)
+#define CKF_GENERATE              (1UL << 15)
+#define CKF_GENERATE_KEY_PAIR     (1UL << 16)
+#define CKF_WRAP                  (1UL << 17)
+#define CKF_DERIVE                (1UL << 19)
+
+/* Post-quantum (PKCS#11 v3.2): ML-DSA (FIPS 204) and ML-KEM (FIPS 203).
+ *
+ * Every value below is copied from the OASIS v3.2 header vendored in the
+ * SoftHSM2 submodule at softhsm2/src/lib/pkcs11/pkcs11.h — not transcribed
+ * from a specification and not guessed. Check them against that file rather
+ * than against this comment.
+ *
+ * SoftHSM2 2.7.0 defines these constants and implements none of them: the
+ * names appear in its header and nowhere in its src/. They are declared here
+ * so the provider can recognise a backend that DOES implement them, which is
+ * the whole point of the capability probe in p11_caps.c. Nothing reaches
+ * these mechanisms unless C_GetMechanismList says the token has them. */
+#define CKM_ML_KEM_KEY_PAIR_GEN   0x0000000FUL
+#define CKM_ML_KEM                0x00000017UL
+#define CKM_ML_DSA_KEY_PAIR_GEN   0x0000001CUL
+#define CKM_ML_DSA                0x0000001DUL
+
+#define CKK_ML_KEM                0x00000049UL
+#define CKK_ML_DSA                0x0000004AUL
+
+/* CKA_PARAMETER_SET carries the parameter set of a PQC key, and replaces
+ * the key-size attributes used by RSA and EC: an ML-DSA key has no
+ * modulus bits and no curve. */
+#define CKA_PARAMETER_SET      0x0000061DUL
+
+/* CK_ML_DSA_PARAMETER_SET_TYPE */
+#define CKP_ML_DSA_44          0x00000001UL
+#define CKP_ML_DSA_65          0x00000002UL
+#define CKP_ML_DSA_87          0x00000003UL
+
+/* CK_ML_KEM_PARAMETER_SET_TYPE */
+#define CKP_ML_KEM_512         0x00000001UL
+#define CKP_ML_KEM_768         0x00000002UL
+#define CKP_ML_KEM_1024        0x00000003UL
+
+/* AES */
+#define CKM_AES_KEY_GEN           0x00001080UL
+#define CKM_AES_ECB               0x00001081UL
+#define CKM_AES_CBC               0x00001082UL
+#define CKM_AES_MAC               0x00001083UL
+#define CKM_AES_CBC_PAD           0x00001085UL
+#define CKM_AES_CTR               0x00001086UL
+#define CKM_AES_GCM               0x00001087UL
+#define CKM_AES_CCM               0x00001088UL
+#define CKM_AES_CMAC              0x0000108AUL
+/* CFB comes in feedback sizes and they are DIFFERENT mechanisms. CNG's
+ * ChainingModeCFB defaults to 8-bit feedback and selects full-block only
+ * when MessageBlockLength is set to the block size, so CFB8 is the one a
+ * caller gets without asking. Values from the OASIS header vendored in the
+ * SoftHSM2 submodule. */
+#define CKM_AES_CFB64             0x00002105UL
+#define CKM_AES_CFB8              0x00002106UL
+#define CKM_AES_CFB128            0x00002107UL
+
+#define CKM_AES_KEY_WRAP          0x00002109UL
+#define CKM_AES_KEY_WRAP_PAD      0x0000210AUL
+
+/* HMAC */
+#define CKM_SHA_1_HMAC            0x00000221UL
+#define CKM_SHA224_HMAC           0x00000256UL
+#define CKM_SHA256_HMAC           0x00000251UL
+#define CKM_SHA384_HMAC           0x00000261UL
+#define CKM_SHA512_HMAC           0x00000271UL
+
+/* Generic secret */
+#define CKM_GENERIC_SECRET_KEY_GEN 0x00000350UL
 
 /* Return codes */
 #define CKR_OK                          0x00000000UL
@@ -240,9 +359,18 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKR_FUNCTION_REJECTED           0x00000200UL
 #define CKR_VENDOR_DEFINED              0x80000000UL
 
+/* Start of the vendor mechanism range. Nothing in it is defined by any
+ * standard, so a value here is guaranteed absent from a conformant token's
+ * mechanism list. Value from the OASIS header in the SoftHSM2 submodule. */
+#define CKM_VENDOR_DEFINED              0x80000000UL
+
 /* User types */
 #define CKU_SO   0UL
 #define CKU_USER 1UL
+/* Re-authentication for a key carrying CKA_ALWAYS_AUTHENTICATE. This is
+ * PKCS#11's own per-key authentication, and the only correct basis for a
+ * per-key PIN — there is no notion of a second user within a slot. */
+#define CKU_CONTEXT_SPECIFIC 2UL
 
 /* Initialisation flags */
 #define CKF_TOKEN_PRESENT    0x00000001UL
@@ -260,6 +388,14 @@ typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 #define CKG_MGF1_SHA224 0x00000005UL
 
 #define CKZ_DATA_SPECIFIED 0x00000001UL
+
+/* EC key derivation functions (CK_EC_KDF_TYPE) */
+#define CKD_NULL        0x00000001UL
+#define CKD_SHA1_KDF    0x00000002UL
+#define CKD_SHA224_KDF  0x00000005UL
+#define CKD_SHA256_KDF  0x00000006UL
+#define CKD_SHA384_KDF  0x00000007UL
+#define CKD_SHA512_KDF  0x00000008UL
 
 /* Hash algorithms for PSS */
 #define CKM_SHA_1_HMAC  0x00000221UL
@@ -286,6 +422,34 @@ typedef struct CK_SLOT_INFO {
     CK_VERSION  firmwareVersion;
 } CK_SLOT_INFO;
 
+/* CK_TOKEN_INFO.flags — the bits this provider reads.
+ *
+ * Copied verbatim from the OASIS PKCS#11 header, not recalled. None of
+ * these existed here before, which is why the provider could never ask a
+ * token HOW it expects to be authenticated and simply demanded a PIN of
+ * everything.
+ *
+ * The two that matter are not cosmetic:
+ *
+ *   CKF_LOGIN_REQUIRED               clear means the token does not want a
+ *                                    C_Login at all.
+ *   CKF_PROTECTED_AUTHENTICATION_PATH  the user authenticates to the token
+ *                                    by some means of its own — a PIN pad,
+ *                                    a smart card reader, a biometric — and
+ *                                    PKCS#11 v2.40 §11.6 says pPin must
+ *                                    then be NULL_PTR.
+ *
+ * A provider that sends a PIN regardless is non-conformant against both,
+ * and since this one also refuses to start without a PIN, a hardware HSM
+ * with a PIN pad was rejected outright.
+ */
+#define CKF_RNG                           0x00000001UL
+#define CKF_WRITE_PROTECTED               0x00000002UL
+#define CKF_LOGIN_REQUIRED                0x00000004UL
+#define CKF_USER_PIN_INITIALIZED          0x00000008UL
+#define CKF_PROTECTED_AUTHENTICATION_PATH 0x00000100UL
+#define CKF_TOKEN_INITIALIZED             0x00000400UL
+
 typedef struct CK_TOKEN_INFO {
     CK_UTF8CHAR label[32];
     CK_UTF8CHAR manufacturerID[32];
@@ -306,6 +470,14 @@ typedef struct CK_TOKEN_INFO {
     CK_VERSION  firmwareVersion;
     CK_CHAR     utcTime[16];
 } CK_TOKEN_INFO;
+
+/* Session states (CK_SESSION_INFO.state). Values taken from the SoftHSM2
+ * submodule's own pkcs11.h, not from memory. */
+#define CKS_RO_PUBLIC_SESSION   (0UL)
+#define CKS_RO_USER_FUNCTIONS   (1UL)
+#define CKS_RW_PUBLIC_SESSION   (2UL)
+#define CKS_RW_USER_FUNCTIONS   (3UL)
+#define CKS_RW_SO_FUNCTIONS     (4UL)
 
 typedef struct CK_SESSION_INFO {
     CK_SLOT_ID  slotID;
@@ -351,6 +523,51 @@ typedef struct CK_RSA_PKCS_OAEP_PARAMS {
     CK_ULONG          ulSourceDataLen;
 } CK_RSA_PKCS_OAEP_PARAMS;
 typedef CK_RSA_PKCS_OAEP_PARAMS CK_PTR CK_RSA_PKCS_OAEP_PARAMS_PTR;
+
+/* ECDH1 key derivation parameters (CKM_ECDH1_DERIVE) */
+typedef CK_ULONG CK_EC_KDF_TYPE;
+typedef struct CK_ECDH1_DERIVE_PARAMS {
+    CK_EC_KDF_TYPE kdf;              /* CKD_NULL, CKD_SHA256_KDF, ... */
+    CK_ULONG       ulSharedDataLen;  /* Optional shared data length   */
+    CK_BYTE_PTR    pSharedData;      /* Optional shared data          */
+    CK_ULONG       ulPublicDataLen;  /* Peer public key length        */
+    CK_BYTE_PTR    pPublicData;      /* Peer public key (04||X||Y)    */
+} CK_ECDH1_DERIVE_PARAMS;
+typedef CK_ECDH1_DERIVE_PARAMS CK_PTR CK_ECDH1_DERIVE_PARAMS_PTR;
+
+/* AES-GCM parameters (CKM_AES_GCM) */
+typedef struct CK_GCM_PARAMS {
+    CK_BYTE_PTR pIv;
+    CK_ULONG    ulIvLen;
+    CK_ULONG    ulIvBits;
+    CK_BYTE_PTR pAAD;
+    CK_ULONG    ulAADLen;
+    CK_ULONG    ulTagBits;
+} CK_GCM_PARAMS;
+typedef CK_GCM_PARAMS CK_PTR CK_GCM_PARAMS_PTR;
+
+/* AES-CCM parameters (CKM_AES_CCM).
+ *
+ * ulDataLen is the length of the PLAINTEXT and must be known before the
+ * operation starts — CCM is not an online mode, unlike GCM. On decryption
+ * that is the ciphertext length minus the MAC. Field order and types from
+ * struct ck_ccm_params in the OASIS header vendored in the submodule. */
+typedef struct CK_CCM_PARAMS {
+    CK_ULONG    ulDataLen;
+    CK_BYTE_PTR pNonce;
+    CK_ULONG    ulNonceLen;
+    CK_BYTE_PTR pAAD;
+    CK_ULONG    ulAADLen;
+    CK_ULONG    ulMACLen;
+} CK_CCM_PARAMS;
+typedef CK_CCM_PARAMS CK_PTR CK_CCM_PARAMS_PTR;
+
+/* AES-CTR parameters (CKM_AES_CTR) */
+typedef struct CK_AES_CTR_PARAMS {
+    CK_ULONG ulCounterBits;
+    CK_BYTE  cb[16];
+} CK_AES_CTR_PARAMS;
+typedef CK_AES_CTR_PARAMS CK_PTR CK_AES_CTR_PARAMS_PTR;
 
 /* Cryptoki initialisation parameters */
 typedef CK_VOID_PTR CK_CREATEMUTEX;

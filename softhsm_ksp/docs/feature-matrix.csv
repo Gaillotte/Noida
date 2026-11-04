@@ -1,0 +1,104 @@
+id,category,feature,detail,market,evidence,status,gap_solution,effort
+IFACE-01,Provider interface,GetKeyStorageInterface export,Sole exported symbol; returns the KSP function table,All providers,A,Covered,,
+IFACE-02,Provider interface,OpenProvider / FreeProvider,Provider handle lifecycle,All providers,A,Covered,,
+IFACE-03,Provider interface,GetProviderProperty,Name / Version / ImplType,All providers,A,Covered,,
+IFACE-04,Provider interface,SetProviderProperty,"NCRYPT_PIN_PROPERTY is implemented: the PIN is handed to the session layer, and because sessions open lazily a PIN set before the first cryptographic call is the one used to log in. Token selection is now writable too, by KSP_TOKEN_LABEL_PROPERTY or KSP_SLOT_PROPERTY, in the window between NCryptOpenStorageProvider and the first operation: the slot is bound on first use rather than during initialisation, so the choice is still open. After binding it is refused with NTE_INVALID_HANDLE rather than accepted and ignored, because PKCS#11 cannot move a session between tokens and a caller told its selection succeeded would keep using the old one. A selection naming no present token is an error, never a fallback. Verified against TWO real tokens with different labels, PINs and keys; a test with one token cannot distinguish a working selection from an ignored one.",Vendor-specific,A,Covered,,
+IFACE-05,Provider interface,NotifyChangeKey,Key-change notification handle,Microsoft KSP,A,Partial,"Was a no-op returning ERROR_SUCCESS with the caller's HANDLE never written, so an application registering for notification was told it had succeeded and then waited on an uninitialised handle. It now validates the provider and the flags, clears *phEvent and refuses registration with NTE_NOT_SUPPORTED; unregistering succeeds because there is nothing to tear down. Real support needs a key-change channel a PKCS#11 token does not have - there is no C_WaitForSlotEvent equivalent for objects, and polling C_FindObjects on a timer would be a fabrication rather than a notification.",L
+IFACE-06,Provider interface,GetOperationProperty,Async / overlapped operation state,Microsoft KSP,B,Not covered,Returns NTE_NOT_SUPPORTED. Only needed for overlapped I/O; PKCS#11 is synchronous so there is nothing to report.,L
+IFACE-07,Provider interface,PromptUser,Interactive PIN / consent dialog,Smart card KSPs,B,Not covered,Returns NTE_NOT_SUPPORTED. Would need a UI thread and a window handle from NCRYPT_WINDOW_HANDLE_PROPERTY.,L
+IFACE-08,Provider interface,FreeBuffer / FreeObject,Provider-allocated memory release,All providers,A,Covered,,
+IFACE-09,Provider interface,VerifySignature,NCryptVerifySignature through the provider,All providers implement the slot,A,Covered,,
+TABLE-01,Provider interface,Function table layout matches the SDK,NCRYPT_KEY_STORAGE_FUNCTION_TABLE slot order and membership,All providers,A,Partial,"The table uses designated initialisers, so the SDK header assigns slots by name and a wrong NAME is a build error. Since session 14 eight provider-scoped slots are also signature-checked: their KSP prototype equals the documented public NCrypt one, so test_function_table.c assigns each to a pointer type copied from <ncrypt.h> and the build promotes incompatible-pointer-types to an error. That caught KSP_NotifyChangeKey taking an NCRYPT_KEY_HANDLE where the parameter is HANDLE *phEvent. Key-scoped slots cannot be checked this way - NCryptSignHash takes (hKey, ...) while the slot takes (hProvider, hKey, ...) - so full confirmation still needs ncrypt_provider.h.",S
+BUILD-01,Provider interface,Builds for Windows at all,The shipped artefact is a Windows DLL,All providers,A,Partial,"Phase 0 fixed all six root causes. MSVC compiles nine of the ten source files clean at /W3 /WX and links test_p11_layer. ksp_main.c cannot be built in hosted CI: ncrypt_provider.h does not exist on a windows-latest runner, established by a dir /s /b across C: and D: that returned only this repo's own test mock, after a WDK install that reported success. Needs a machine that has the header.",M
+BUILD-02,Provider interface,Continuous integration,Automated build and test on the target platform,All providers,A,Covered,,
+RSA-01,Asymmetric RSA,RSA key generation,2048 / 3072 / 4096 bits,All providers,A,Covered,,
+RSA-02,Asymmetric RSA,RSA 1024 and below,512-1024 bits,MS Software KSP; Utimaco,B,Partial,"Build-time opt-in only. KSP_RSA_MIN_BITS defaults to 2048; a legacy build can lower it, but the shipped default still rejects <2048 with NTE_BAD_LEN. Deliberate: silently allowing 1024 would weaken every deployment.",S
+RSA-03,Asymmetric RSA,RSA above 4096,8192 / 16384 bits,MS Software KSP; Utimaco,B,Covered,,
+RSA-04,Asymmetric RSA,RSA arbitrary size increments,64-bit (MS) or 8-bit (Utimaco) steps,MS Software KSP; Utimaco,B,Covered,,
+RSA-05,Asymmetric RSA,Custom public exponent,Exponent other than 65537,Vendor-specific,C,Covered,,
+RSA-06,Asymmetric RSA,PKCS#1 v1.5 signing,SHA-1 / 256 / 384 / 512,All providers,A,Covered,,
+RSA-07,Asymmetric RSA,PSS signing,SHA-1 / 256 / 384 / 512 with caller salt length,All providers,B,Covered,,
+RSA-08,Asymmetric RSA,PSS with SHA-224,SHA-224 salt and MGF1,Unknown,C,Covered,,
+RSA-09,Asymmetric RSA,PKCS#1 v1.5 decryption,AT_KEYEXCHANGE keys,All providers,A,Covered,,
+RSA-10,Asymmetric RSA,OAEP decryption,SHA-1 / 224 / 256 / 384 / 512,All providers,A,Covered,,
+RSA-11,Asymmetric RSA,OAEP application label,pbLabel / cbLabel passed through,Unknown,C,Covered,,
+RSA-12,Asymmetric RSA,Raw RSA (no padding),CKM_RSA_X_509,Some HSMs,A,Covered,,
+ECDSA-01,Asymmetric ECDSA,ECDSA P-256,secp256r1; 64-byte signature,All providers,A,Covered,,
+ECDSA-02,Asymmetric ECDSA,ECDSA P-384,secp384r1; 96-byte signature,All providers,A,Covered,,
+ECDSA-03,Asymmetric ECDSA,ECDSA P-521,secp521r1; 132-byte signature,All providers,A,Covered,,
+ECDSA-04,Asymmetric ECDSA,Brainpool curves,brainpoolP256r1 / 384r1 / 512r1,Entrust; Utimaco (device),C,Covered,,
+ECDSA-05,Asymmetric ECDSA,secp256k1,Bitcoin curve,Entrust (device),C,Covered,,
+ECDSA-06,Asymmetric ECDSA,DER to r||s conversion,PKCS#11 returns DER; CNG wants raw,All providers,A,Covered,,
+ECDH-01,Key agreement,ECDH P-256 / P-384 / P-521,CKM_ECDH1_DERIVE with CKD_NULL,MS Software KSP; Utimaco,B,Covered,,
+ECDH-02,Key agreement,SecretAgreement / DeriveKey / FreeSecret,NCRYPT_SECRET_HANDLE lifecycle,MS Software KSP; Utimaco,B,Covered,,
+ECDH-03,Key agreement,BCRYPT_KDF_RAW_SECRET,Raw Z value returned,MS Software KSP,B,Covered,,
+ECDH-04,Key agreement,BCRYPT_KDF_HASH,SP 800-56A concatenation KDF,MS Software KSP,B,Covered,,
+ECDH-05,Key agreement,BCRYPT_KDF_HMAC / TLS_PRF / HKDF,Protocol-specific KDFs,MS Software KSP,B,Covered,,
+ECDH-06,Key agreement,Finite-field Diffie-Hellman,DH 512-4096,MS Software KSP,B,Not covered,Out of scope by choice. ECDH supersedes it and no surveyed HSM KSP exposes it. Would need CKM_DH_PKCS_KEY_PAIR_GEN plus CKM_DH_PKCS_DERIVE.,L
+EDDSA-01,Asymmetric EdDSA,Ed25519 signing,64-byte raw signature,None,A,Partial,"Works against SoftHSM2 AND verified end to end against Kryoptic (session 10), but uses the non-standard identifier EDDSA_ED25519. CNG defines no EdDSA algorithm ID so no stock application can request it. Nothing to fix in the KSP; blocked on Microsoft.",N/A
+EDDSA-02,Asymmetric EdDSA,Ed448 signing,114-byte raw signature,None,A,Partial,"Same constraint as EDDSA-01. Note that Ed448 signing did not in fact work until session 10: CKM_EDDSA requires CK_EDDSA_PARAMS for Ed448 and the provider sent none. SoftHSM2 tolerates its absence, so this was invisible until a second token refused it.",N/A
+EDDSA-03,Asymmetric EdDSA,X25519 key agreement,Curve25519 ECDH,MS CNG has BCRYPT_ECC_CURVE_25519,A,Covered,,
+DSA-01,Asymmetric DSA,DSA signing,512-1024 bits,MS Software KSP,B,Not covered,Deliberately out of scope. Deprecated in modern Windows PKI and absent from every HSM KSP surveyed.,L
+PQC-01,Post-quantum,ML-DSA (Dilithium),FIPS 204,Microsoft Software KSP (GA late 2025; AD CS ML-DSA enrolment May 2026). Thales Luna firmware 7.9+ and Entrust nShield XC/5/nSaaS ship it in the device; whether their CNG providers expose it is not established,A,Partial,"ML-DSA is wired through the KSP and gated on the capability probe: mechanism resolution, CKA_PARAMETER_SET key generation for all three parameter sets, key reopen, and signing. Verified end to end in session 10 against Kryoptic built with its pqc feature over OpenSSL 3.5.8 — generation, reopen by parameter set, and signature at the exact size for ML-DSA-44/65/87. Unreachable on SoftHSM2 2.7.0, which defines the mechanisms and implements none of them. Still Partial for one reason only: public key export is refused, because the CNG post-quantum key blob layout is in a Windows SDK header not available here. That is the same blocker as BUILD-01 and no backend fixes it.",M
+PQC-02,Post-quantum,ML-KEM (Kyber),FIPS 203,Microsoft CNG GA (BCrypt side). Thales and Entrust device firmware. No KSP-side exposure established for any provider,B,Not covered,"NOT the same blocker as PQC-01. The probe recognises CKM_ML_KEM, so the backend is not what stops this: encapsulation and decapsulation have no slot in the NCRYPT_KEY_STORAGE_FUNCTION_TABLE this provider implements, so a KSP can hold an ML-KEM key with no entry point to use it. Whether a newer ncrypt_provider.h adds such slots cannot be determined here — same missing header as BUILD-01.",L
+PQC-03,Post-quantum,LMS / XMSS,Stateful hash-based signatures,"Thales Luna, Entrust nShield (device claims only)",C,Not covered,"Blocked at the backend, unlike PQC-01: no PKCS#11 v3.2 token surveyed implements LMS or XMSS. Stateful schemes also need one-time-key state persistence the KSP has no model for, and a lost state update forges signatures.",L
+AES-01,Symmetric AES,AES key generation,128 / 192 / 256 bits,None via KSP,A,Covered,,
+AES-02,Symmetric AES,AES-ECB,No IV,None via KSP,A,Covered,,
+AES-03,Symmetric AES,AES-CBC,16-byte IV,None via KSP,A,Covered,,
+AES-04,Symmetric AES,AES-CBC with padding,NCRYPT_PAD_CIPHER_FLAG,None via KSP,A,Covered,,
+AES-05,Symmetric AES,AES-GCM,12-byte nonce; 128-bit tag; AAD,None via KSP,A,Covered,,
+AES-06,Symmetric AES,AES-CTR,16-byte counter block,None via KSP,A,Partial,Works but ChainingModeCTR is a KSP extension. CNG defines no standard counter-mode string so no stock application will select it.,N/A
+AES-07,Symmetric AES,AES-CCM,Authenticated mode,None via KSP,A,Covered,,
+AES-08,Symmetric AES,AES-CFB,Cipher feedback,None via KSP,A,Partial,"Implemented and verified against a live token for both feedback sizes CNG can reach: the 8-bit default and full-block via MessageBlockLength. Partial because CNG permits any feedback size up to the block, while PKCS#11 defines mechanisms only for 1, 8, 64 and 128 bits; a size with no mechanism is refused rather than silently rounded to a different cipher.",M
+AES-09,Symmetric AES,AES key wrap,RFC 3394 / 5649,Some HSMs (device),A,Covered,,
+AES-10,Symmetric AES,AES-CMAC,Block-cipher MAC,Some HSMs (device),A,Covered,,
+HMAC-01,Symmetric MAC,HMAC-SHA1 / 256 / 384 / 512,Generic secret keys,None via KSP,A,Partial,Works against SoftHSM2 but HMAC_SHA* are our own identifiers. CNG does HMAC through BCrypt algorithm handles not KSP key algorithms.,N/A
+HMAC-02,Symmetric MAC,HMAC-SHA224,SHA-224 variant,None,C,Covered,,
+3DES-01,Symmetric legacy,3DES / DES,56 / 112 / 168 bits,None via KSP,B,Not covered,Deliberately out of scope. Deprecated and excluded from modern HLK requirements despite SoftHSM2 supporting 14 DES mechanisms.,L
+FMT-01,Key formats,BCRYPT_RSAPUBLIC_BLOB export,Header + exponent + modulus,All providers,A,Covered,,
+FMT-02,Key formats,BCRYPT_ECCPUBLIC_BLOB export,Header + X + Y,All providers,A,Covered,,
+FMT-03,Key formats,EdDSA public blob export,Generic ECC magic + raw point,None,A,Covered,,
+FMT-04,Key formats,BCRYPT_RSAPUBLIC_BLOB import,Creates a session public key object,Vendor-specific,C,Covered,,
+FMT-05,Key formats,BCRYPT_ECCPUBLIC_BLOB import,Creates a session public key object,Vendor-specific,C,Covered,,
+FMT-06,Key formats,Private key export,RSAFULLPRIVATE / ECCPRIVATE,None (all refuse),A,Not covered,Refused by design with NTE_NOT_SUPPORTED. Keys are CKA_EXTRACTABLE=FALSE. This is correct HSM behaviour not a gap.,N/A
+FMT-07,Key formats,Private key import,Wrapping an external private key onto the token,Some HSMs,C,Not covered,Returns NTE_NOT_SUPPORTED. Would need C_CreateObject with private material or C_UnwrapKey. Contradicts the HSM posture; only add if a migration workflow demands it.,L
+FMT-08,Key formats,BCRYPT_KEY_DATA_BLOB,Raw symmetric key material,MS Software KSP,A,Covered,,
+FMT-09,Key formats,PKCS#8 blob,NCRYPT_PKCS8_PRIVATE_KEY_BLOB,MS Software KSP,B,Not covered,Same constraint as FMT-07: it is a private-key format and keys are non-extractable.,L
+FMT-10,Key formats,OPAQUETRANSPORT blob,Vendor-opaque key transport,Vendor-specific,C,Not covered,Would let keys move between instances of the same provider. Needs a defined wrapping format; no standard to follow.,L
+PROP-01,Key properties,NCRYPT_ALGORITHM_PROPERTY,Read,All providers,A,Covered,,
+PROP-02,Key properties,NCRYPT_LENGTH_PROPERTY,Read and write before finalize,All providers,A,Covered,,
+PROP-03,Key properties,NCRYPT_KEY_TYPE_PROPERTY,AT_SIGNATURE / AT_KEYEXCHANGE,All providers,A,Covered,,
+PROP-04,Key properties,NCRYPT_NAME / UNIQUE_NAME,Key label,All providers,A,Covered,,
+PROP-05,Key properties,NCRYPT_EXPORT_POLICY_PROPERTY,Caller declares before FinalizeKey whether a key may leave the token and in what form; default 0 seals it,All providers,A,Covered,,
+PROP-06,Key properties,NCRYPT_KEY_USAGE_PROPERTY,Signing / decrypt / key agreement flags,All providers,A,Covered,,
+PROP-07,Key properties,NCRYPT_ALGORITHM_GROUP_PROPERTY,RSA / ECDSA / ECDH / EDDSA / AES / HMAC,All providers,A,Covered,,
+PROP-08,Key properties,NCRYPT_CHAINING_MODE_PROPERTY,Read and write on symmetric keys,MS Software KSP (BCrypt),A,Covered,,
+PROP-09,Key properties,NCRYPT_INITIALIZATION_VECTOR,Read and write on symmetric keys,MS Software KSP (BCrypt),A,Covered,,
+PROP-10,Key properties,NCRYPT_BLOCK_LENGTH_PROPERTY,AES block size,MS Software KSP,B,Covered,,
+PROP-11,Key properties,NCRYPT_SECURITY_DESCR_PROPERTY,Per-key ACL,MS Software KSP,B,Not covered,Returns NTE_NOT_SUPPORTED. PKCS#11 has no ACL model; would need a side-channel store mapping key labels to SDDL strings.,L
+PROP-12,Key properties,NCRYPT_UI_POLICY_PROPERTY,Strong-key protection prompt,MS Software KSP; smart cards,B,Not covered,Depends on PromptUser (IFACE-07). Same UI-thread requirement.,L
+PROP-13,Key properties,NCRYPT_PIN_PROPERTY,Per-key PIN,Smart card KSPs,A,Covered,,
+PROP-14,Key properties,NCRYPT_CERTIFICATE_PROPERTY,Certificate stored alongside the key,Smart card KSPs,A,Covered,,
+PROP-15,Key properties,NCRYPT_WINDOW_HANDLE_PROPERTY,Parent HWND for dialogs,Smart card KSPs,B,Not covered,Only meaningful with PromptUser (IFACE-07).,L
+PROP-16,Key properties,NCRYPT_USE_COUNT_PROPERTY,Key usage counter,Some HSMs,C,Not covered,Would need a counter object on the token incremented per operation. SoftHSM2 has no atomic counter primitive.,L
+PROP-19,Key properties,NCRYPT_LENGTHS_PROPERTY,Supported key sizes for the algorithm (NCRYPT_SUPPORTED_LENGTHS),All providers,A,Covered,,
+LIFE-01,Key lifecycle,CreatePersistedKey,Immediate and deferred generation,All providers,A,Covered,,
+LIFE-02,Key lifecycle,FinalizeKey,Deferred generation trigger,All providers,A,Covered,,
+LIFE-03,Key lifecycle,OpenKey by name,Asymmetric and symmetric,All providers,A,Covered,,
+LIFE-04,Key lifecycle,DeleteKey,Destroys all token objects,All providers,A,Covered,,
+LIFE-05,Key lifecycle,EnumKeys,Paged enumeration with state,All providers,A,Covered,,
+LIFE-06,Key lifecycle,EnumAlgorithms,NCryptEnumAlgorithms support,All providers,B,Covered,,
+LIFE-07,Key lifecycle,IsAlgSupported,NCryptIsAlgSupported,All providers,B,Covered,,
+LIFE-08,Key lifecycle,Machine vs user key scope,"NCRYPT_MACHINE_KEY_FLAG is honoured on CreatePersistedKey, OpenKey and EnumKeys. Within one token it is a CKA_LABEL prefix (""m/name"" or ""u/name""), which keeps distinct keys distinct and is NAMESPACING, NOT ISOLATION. Set KSP_MACHINE_TOKEN_LABEL and KSP_USER_TOKEN_LABEL (or the slot equivalents) and the flag instead selects WHICH TOKEN, each with its own PIN and its own session pool, so isolation is as strong as the token boundary PKCS#11 does have: a caller holding the user PIN cannot read machine keys because it cannot log in to read them. Setting only one of a pair, or two names resolving to one token, is refused rather than half-applied — isolation that reports success and does not isolate is worse than none. Unconfigured behaviour is unchanged. Verified against two real tokens with different PINs, including a case run WITHOUT the machine PIN in which the machine token must be unreachable.",All providers,A,Covered,,
+OPS-01,Operational,Hardware key protection,Tamper-resistant storage,All commercial providers,A,Not covered,Fundamental: SoftHSM2 is a software token using encrypted SQLite. Only fixable by pointing the KSP at a real HSM which the PKCS#11 abstraction already allows.,N/A
+OPS-02,Operational,FIPS 140-2/3 validation,Certified cryptographic module,All commercial providers,B,Not covered,Follows from OPS-01. Requires certified hardware and a formal validation programme.,N/A
+OPS-03,Operational,Authenticode-signed binary,Commercial code-signing certificate,All commercial providers,A,Not covered,"Signing is fully tooled: tools/sign_ksp.ps1 signs, timestamps and verifies, taking a certificate from the Windows store, a PFX (password from the environment, never a parameter) or Azure Trusted Signing, and the CI windows job signs automatically once the KSP_SIGN_PFX_BASE64 secret exists. What remains is not engineering: an OV or EV code-signing certificate must be bought by a verified legal entity. Nothing in this repository can supply that, so the row stays Not covered — the binary is unsigned.",N/A
+OPS-04,Operational,Multiple slots / tokens,Selecting among several tokens,All commercial providers,B,Covered,,
+OPS-05,Operational,Key attestation,TPM / HSM-signed key origin proof,MS Platform Crypto; some HSMs,B,Not covered,No PKCS#11 standard mechanism exists. Vendor-specific and unreachable through a portable PKCS#11 layer.,L
+OPS-06,Operational,Load balancing / HA,Multiple HSM members,Thales; Entrust,C,Not covered,Handled inside vendor PKCS#11 libraries. Our KSP would inherit it automatically when pointed at such a library; nothing to implement.,N/A
+OPS-07,Operational,Session pool concurrency,Concurrent NCrypt calls,All providers,A,Covered,,
+OPS-08,Operational,Re-initialisation without restart,Recover from a bad DLL path,Vendor-specific,A,Covered,,
+OPS-09,Operational,PIN caching / re-login,Session recovery after token logout,All commercial providers,C,Covered,,
+OPS-10,Operational,Logging / diagnostics,Trace output for support,All providers,A,Covered,,
+OPS-13,Operational,Runtime capability discovery,"Advertised algorithms reflect what the token implements, not a compiled-in list",All commercial providers (implicit — each ships for its own device),A,Covered,,
+OPS-14,Operational,Backend portability,Any PKCS#11 v2.40+ module can back the provider (KSP_PKCS11_LIB),Not offered — commercial providers are bound to their own hardware,A,Covered,,

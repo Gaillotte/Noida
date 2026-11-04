@@ -26,23 +26,34 @@ void *KSP_AllocZero(SIZE_T n);
 void  KSP_Free(void *p);
 
 /* ── Session stubs ────────────────────────────────────────────────────────── */
-SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *ph)
+/* The scope parameter is not used here: these suites run against one mock
+ * token, which is a single-token deployment, and PoolFor() collapses every
+ * scope onto one pool in that configuration.
+ *
+ * p11_session.h is included above so the COMPILER checks this stub against
+ * the real prototype. It was not, and when P11_AcquireSession gained the
+ * scope parameter every one of these stubs kept its old shape: no
+ * diagnostic, because the mismatch is across translation units, and then
+ * ten segfaults as the scope argument arrived in the pointer parameter. A
+ * stub that is not checked against the thing it stands in for is a trap
+ * waiting for the next signature change. */
+SECURITY_STATUS P11_AcquireSession(int nScope, CK_SESSION_HANDLE *ph)
 {
     *ph = (CK_SESSION_HANDLE)0xBEEF;
     return ERROR_SUCCESS;
 }
 void P11_ReleaseSession(CK_SESSION_HANDLE h) { (void)h; }
 
-/* ── KSP_IsValidKey stub (defined in ksp_key.c, not linked here) ───────────── */
+/* ksp_key.c is linked into this suite now — KSP_ExportKey asks it which
+ * curve family a key belongs to, so that KSP_IsEddsaAlg and
+ * KSP_IsMontgomeryAlg are the real ones here rather than a copy that could
+ * drift from them. It also supplies the real KSP_IsValidKey, which this
+ * file used to stub. */
 #include "../../src/ksp/ksp_key.h"
-BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey)
-{
-    KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hKey;
-    return (k && k->dwMagic == KSP_KEY_MAGIC);
-}
 
 #include "../../src/ksp/ksp_provider.h"
 #include "../../src/ksp/ksp_crypto.h"
+#include "../../src/pkcs11/p11_session.h"
 
 /* ── Test key constructor ────────────────────────────────────────────────── */
 static NCRYPT_KEY_HANDLE make_test_key(
@@ -96,6 +107,9 @@ int main(void)
 
     NCRYPT_KEY_HANDLE hRsa = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
     BYTE hash[32]; memset(hash, 0xAA, sizeof hash);
+    /* PSS parameters are captured from C_SignInit, so those tests must
+     * sign for real — a size query no longer reaches the token. */
+    BYTE sigbuf[512];
 
     /* Size-only mode (pbSignature=NULL) */
     cbResult = 0;
@@ -103,8 +117,14 @@ int main(void)
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
     ASSERT_OK("SignHash RSA PKCS1 size → OK", ss);
     ASSERT_EQ("cbResult = 256", cbResult, 256U);
-    ASSERT_EQ("SignInit called", P11Mock_GetCalls()->nSignInit, 1);
-    ASSERT_EQ("Sign called (size)", P11Mock_GetCalls()->nSign, 1);
+    /* A size query must NOT start a token operation. It used to, and the
+     * abandoned operation stayed active on a POOLED session — the next
+     * caller to draw that session got CKR_OPERATION_ACTIVE from its own
+     * C_SignInit. SoftHSM2 tolerates re-init over an active operation so
+     * the bug was invisible until the provider met a stricter token. */
+    ASSERT_EQ("Size query does not call C_SignInit",
+        P11Mock_GetCalls()->nSignInit, 0);
+    ASSERT_EQ("nor C_Sign", P11Mock_GetCalls()->nSign, 0);
 
     /* Actual signing mode */
     P11Mock_Reset();
@@ -154,8 +174,14 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha1, hash, 20,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA1 size → OK", ss);
+    ASSERT_EQ("PSS SHA-1 → hashAlg CKM_SHA_1",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA_1);
+    ASSERT_EQ("PSS SHA-1 → mgf CKG_MGF1_SHA1",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA1);
+    ASSERT_EQ("PSS SHA-1 → salt 20 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)20);
 
     /* PSS with SHA512 */
     P11Mock_Reset();
@@ -168,8 +194,14 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha512, hash, 32,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA512 size → OK", ss);
+    ASSERT_EQ("PSS SHA-512 → hashAlg CKM_SHA512",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA512);
+    ASSERT_EQ("PSS SHA-512 → mgf CKG_MGF1_SHA512",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA512);
+    ASSERT_EQ("PSS SHA-512 → salt 64 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)64);
 
     /* PSS with SHA384 */
     P11Mock_Reset();
@@ -182,8 +214,34 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha384, hash, 32,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS SHA384 size → OK", ss);
+    ASSERT_EQ("PSS SHA-384 → hashAlg CKM_SHA384",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA384);
+    ASSERT_EQ("PSS SHA-384 → mgf CKG_MGF1_SHA384",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA384);
+    ASSERT_EQ("PSS SHA-384 → salt 48 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)48);
+
+    /* PSS with SHA224 */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    P11Mock_GetConfig()->cbSignature = 256;
+
+    BCRYPT_PSS_PADDING_INFO pssInfoSha224;
+    pssInfoSha224.pszAlgId = KSP_SHA224_ALGORITHM;
+    pssInfoSha224.cbSalt   = 28;
+
+    cbResult = 0;
+    ss = KSP_SignHash(hProv, hRsaPss, &pssInfoSha224, hash, 28,
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
+    ASSERT_OK("SignHash RSA PSS SHA224 size → OK", ss);
+    ASSERT_EQ("PSS SHA-224 → hashAlg CKM_SHA224",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA224);
+    ASSERT_EQ("PSS SHA-224 → mgf CKG_MGF1_SHA224",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.mgf, (CK_ULONG)CKG_MGF1_SHA224);
+    ASSERT_EQ("PSS SHA-224 → salt 28 bytes",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.sLen, (CK_ULONG)28);
 
     /* PSS without pPaddingInfo → default parameters */
     P11Mock_Reset();
@@ -192,8 +250,10 @@ int main(void)
 
     cbResult = 0;
     ss = KSP_SignHash(hProv, hRsaPss, NULL, hash, sizeof hash,
-        NULL, 0, &cbResult, NCRYPT_PAD_PSS_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PSS_FLAG);
     ASSERT_OK("SignHash RSA PSS without info → OK (default SHA256)", ss);
+    ASSERT_EQ("PSS default → hashAlg CKM_SHA256",
+        (CK_ULONG)P11Mock_GetConfig()->lastSignPss.hashAlg, (CK_ULONG)CKM_SHA256);
 
     KSP_Free((void *)(ULONG_PTR)hRsaPss); hRsaPss = 0;
 
@@ -230,6 +290,39 @@ int main(void)
     ASSERT_EQ("r[0] = 0x11", ecSigBuf[0], (BYTE)0x11);
     ASSERT_EQ("s[0] = 0x22", ecSigBuf[32], (BYTE)0x22);
 
+    /* The conformant case, which is what a PKCS#11 token actually returns.
+     *
+     * PKCS#11 v2.40 section 2.3.1: CKM_ECDSA produces r||s, each padded to
+     * the length of the curve order. It is NOT DER. This provider decoded
+     * DER unconditionally — including from SoftHSM2, whose OSSLECDSA.cpp
+     * writes BN_bn2bin(r) then BN_bn2bin(s) into a 2*len buffer — so every
+     * ECDSA signature was parsed as a structure it never was. The mock hid
+     * it by returning whatever DER these tests supplied; a run against
+     * Kryoptic returned NTE_INVALID_PARAMETER on the first real signature.
+     *
+     * The DER path above is kept as a fallback for a non-conformant token,
+     * so both shapes are pinned here. */
+    {
+        static BYTE abRawSig[64];
+        DWORD i;
+        for (i = 0; i < 32; i++)  abRawSig[i]      = 0xA1;
+        for (i = 0; i < 32; i++)  abRawSig[32 + i] = 0xB2;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        P11Mock_GetConfig()->pbSignature = abRawSig;
+        P11Mock_GetConfig()->cbSignature = 64;    /* raw r||s, 2 * 32 */
+
+        memset(ecSigBuf, 0, sizeof ecSigBuf);
+        cbResult = 0;
+        ss = KSP_SignHash(hProv, hEc, NULL, hash, sizeof hash,
+            ecSigBuf, sizeof ecSigBuf, &cbResult, 0);
+        ASSERT_OK("A raw r||s signature is accepted as-is", ss);
+        ASSERT_EQ("still 64 bytes", cbResult, 64U);
+        ASSERT_EQ("r passed through unaltered", ecSigBuf[0],  (BYTE)0xA1);
+        ASSERT_EQ("s passed through unaltered", ecSigBuf[32], (BYTE)0xB2);
+    }
+
     KSP_Free((void *)(ULONG_PTR)hEc); hEc = 0;
 
     /* ── Suite 4 : KSP_SignHash — cas d'erreur ────────────────────────────── */
@@ -265,12 +358,12 @@ int main(void)
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
 
-    /* Unfinalized key → NTE_KEY_DOES_NOT_EXIST */
+    /* Unfinalized key → NTE_INVALID_HANDLE */
     NCRYPT_KEY_HANDLE hUnfin = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, FALSE);
     ss = KSP_SignHash(hProv, hUnfin, NULL, hash, sizeof hash,
         NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_EQ("Unfinalized key → NTE_KEY_DOES_NOT_EXIST",
-        ss, (SECURITY_STATUS)NTE_KEY_DOES_NOT_EXIST);
+    ASSERT_EQ("Unfinalized key → NTE_INVALID_HANDLE",
+        ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
     KSP_Free((void *)(ULONG_PTR)hUnfin);
 
     /* Unknown mechanism */
@@ -287,8 +380,15 @@ int main(void)
     P11Mock_GetConfig()->cbSignature = 256;
     P11Mock_GetConfig()->rv_SignInit  = CKR_FUNCTION_FAILED;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
-        NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
     ASSERT_ERR("C_SignInit fails → error", ss);
+    /* The same failure is invisible to a size query, and that is correct:
+     * the query is answered from the key, not from the token. */
+    cbResult = 0;
+    ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
+        NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
+    ASSERT_OK("but a size query still answers", ss);
+    ASSERT_EQ("with the modulus length", cbResult, 256U);
 
     /* C_Sign (size) fails */
     P11Mock_Reset();
@@ -296,8 +396,8 @@ int main(void)
     P11Mock_GetConfig()->cbSignature = 256;
     P11Mock_GetConfig()->rv_Sign     = CKR_FUNCTION_FAILED;
     ss = KSP_SignHash(hProv, hErrKey, NULL, hash, sizeof hash,
-        NULL, 0, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
-    ASSERT_ERR("C_Sign (size) fails → error", ss);
+        sigbuf, sizeof sigbuf, &cbResult, NCRYPT_PAD_PKCS1_FLAG);
+    ASSERT_ERR("C_Sign fails → error", ss);
 
     /* Output buffer too small (RSA) */
     P11Mock_Reset();
@@ -327,7 +427,12 @@ int main(void)
     ss = KSP_Decrypt(hProv, hDecRsa, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
     ASSERT_OK("Decrypt RSA PKCS1 size → OK", ss);
-    ASSERT_EQ("cbResult = 32 (mock)", cbResult, 32U);
+    /* The plaintext length is not known until the padding comes off, so the
+     * query reports the modulus as an upper bound rather than starting a
+     * decryption and abandoning it on a pooled session. */
+    ASSERT_EQ("cbResult is the modulus length", cbResult, 256U);
+    ASSERT_EQ("and the token was never asked",
+        P11Mock_GetCalls()->nDecryptInit, 0);
 
     /* Actual decryption */
     P11Mock_Reset();
@@ -403,8 +508,8 @@ int main(void)
     NCRYPT_KEY_HANDLE hDecUnfin = make_test_key(ALG_RSA, 2048, AT_KEYEXCHANGE, FALSE);
     ss = KSP_Decrypt(hProv, hDecUnfin, ciphertext, sizeof ciphertext,
         NULL, NULL, 0, &cbResult, 0);
-    ASSERT_EQ("Unfinalized key → NTE_KEY_DOES_NOT_EXIST",
-        ss, (SECURITY_STATUS)NTE_KEY_DOES_NOT_EXIST);
+    ASSERT_EQ("Unfinalized key → NTE_INVALID_HANDLE",
+        ss, (SECURITY_STATUS)NTE_INVALID_HANDLE);
     KSP_Free((void *)(ULONG_PTR)hDecUnfin);
 
     /* Invalid parameters */
@@ -431,9 +536,12 @@ int main(void)
     P11Mock_Reset();
     g_testCtx.pFunctionList = P11Mock_GetFunctionList();
     P11Mock_GetConfig()->rv_DecryptInit = CKR_FUNCTION_FAILED;
-    ss = KSP_Decrypt(hProv, hDecErr, ciphertext, sizeof ciphertext,
-        NULL, NULL, 0, &cbResult, 0);
-    ASSERT_ERR("C_DecryptInit fails → error", ss);
+    {
+        BYTE abPlain[256];
+        ss = KSP_Decrypt(hProv, hDecErr, ciphertext, sizeof ciphertext,
+            NULL, abPlain, sizeof abPlain, &cbResult, 0);
+        ASSERT_ERR("C_DecryptInit fails → error", ss);
+    }
 
     /* C_Decrypt fails */
     P11Mock_Reset();
@@ -668,8 +776,40 @@ int main(void)
     NCRYPT_KEY_HANDLE hSmallEc = 0;
     ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
         &hSmallEc, smallEcc, sizeof smallEcc, 0);
-    ASSERT_OK("ImportKey EC blob short → OK (default alg)", ss);
-    KSP_Free((void *)(ULONG_PTR)hSmallEc);
+    ASSERT_EQ("ImportKey EC blob shorter than header → NTE_INVALID_PARAMETER",
+              ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+    /* Header present but coordinates truncated → still rejected */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        BYTE truncEcc[sizeof(BCRYPT_ECCKEY_BLOB) + 10];
+        BCRYPT_ECCKEY_BLOB *pT = (BCRYPT_ECCKEY_BLOB *)truncEcc;
+        NCRYPT_KEY_HANDLE hTrunc = 0;
+        memset(truncEcc, 0, sizeof truncEcc);
+        pT->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+        pT->cbKey   = EC_P256_COORD_SIZE;   /* claims 32+32 but only 10 present */
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+            &hTrunc, truncEcc, sizeof truncEcc, 0);
+        ASSERT_EQ("ImportKey EC truncated coordinates → NTE_INVALID_PARAMETER",
+                  ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+    }
+
+    /* Unknown coordinate size → NTE_BAD_ALGID */
+    P11Mock_Reset();
+    g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+    {
+        BYTE oddEcc[sizeof(BCRYPT_ECCKEY_BLOB) + 2 * 20];
+        BCRYPT_ECCKEY_BLOB *pO = (BCRYPT_ECCKEY_BLOB *)oddEcc;
+        NCRYPT_KEY_HANDLE hOdd = 0;
+        memset(oddEcc, 0, sizeof oddEcc);
+        pO->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+        pO->cbKey   = 20;                   /* not a supported curve size */
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_ECCPUBLIC_BLOB, NULL,
+            &hOdd, oddEcc, sizeof oddEcc, 0);
+        ASSERT_EQ("ImportKey EC unknown curve size → NTE_BAD_ALGID",
+                  ss, (SECURITY_STATUS)NTE_BAD_ALGID);
+    }
 
     /* Private blob → NTE_NOT_SUPPORTED */
     P11Mock_Reset();
@@ -701,6 +841,309 @@ int main(void)
         &hImpRsa, (BYTE *)1, 1, 0);
     ASSERT_EQ("hProv=0 → NTE_INVALID_PARAMETER",
         ss, (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+    /* ── Suite : BCRYPT_KEY_DATA_BLOB import (FMT-08) ─────────────────── */
+    TEST_SUITE("KSP_ImportKey — BCRYPT_KEY_DATA_BLOB");
+    {
+        BYTE blob[sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32];
+        BCRYPT_KEY_DATA_BLOB_HEADER *pHdr =
+            (BCRYPT_KEY_DATA_BLOB_HEADER *)blob;
+        BYTE *pbKey = blob + sizeof(BCRYPT_KEY_DATA_BLOB_HEADER);
+        NCRYPT_KEY_HANDLE hSym = 0;
+        size_t i;
+
+        for (i = 0; i < 32; i++) pbKey[i] = (BYTE)i;
+
+        #define INIT_HDR(n) do {                                   \
+            pHdr->dwMagic   = BCRYPT_KEY_DATA_BLOB_MAGIC;          \
+            pHdr->dwVersion = BCRYPT_KEY_DATA_BLOB_VERSION1;       \
+            pHdr->cbKeyData = (n);                                 \
+        } while (0)
+
+        /* AES-256 */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        INIT_HDR(32);
+        hSym = 0;
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32), 0);
+        ASSERT_OK("Import 32-byte key → OK", ss);
+        ASSERT("Handle returned", hSym != 0);
+        if (hSym) {
+            KSP_KEY *k = (KSP_KEY *)(ULONG_PTR)hSym;
+            ASSERT_WSTR("Recognised as AES", k->szAlgId, ALG_AES);
+            ASSERT_EQ("256 bits", k->dwKeyBitLen, 256U);
+            ASSERT("Stored as a secret key",
+                k->hSecretKey != (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+            ASSERT("Not an asymmetric key",
+                k->hPrivKey == (CK_OBJECT_HANDLE)CK_INVALID_HANDLE);
+            ASSERT("Marked finalized", k->bFinalized);
+            KSP_Free((void *)(ULONG_PTR)hSym);
+        }
+        ASSERT_EQ("Created one PKCS#11 object",
+            P11Mock_GetCalls()->nCreateObject, 1);
+
+        /* AES-128 and AES-192 are the other legal AES sizes. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        INIT_HDR(16);
+        hSym = 0;
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 16), 0);
+        ASSERT_OK("Import 16-byte key → OK", ss);
+        if (hSym) {
+            ASSERT_WSTR("AES", ((KSP_KEY *)(ULONG_PTR)hSym)->szAlgId, ALG_AES);
+            ASSERT_EQ("128 bits",
+                ((KSP_KEY *)(ULONG_PTR)hSym)->dwKeyBitLen, 128U);
+            KSP_Free((void *)(ULONG_PTR)hSym);
+        }
+
+        /* A length that is not an AES size becomes a generic secret,
+         * which is how SoftHSM2 stores HMAC keys. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        INIT_HDR(20);
+        hSym = 0;
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 20), 0);
+        ASSERT_OK("Import 20-byte key → OK", ss);
+        if (hSym) {
+            ASSERT_EQ("160 bits",
+                ((KSP_KEY *)(ULONG_PTR)hSym)->dwKeyBitLen, 160U);
+            ASSERT("Not treated as AES",
+                wcscmp(((KSP_KEY *)(ULONG_PTR)hSym)->szAlgId, ALG_AES) != 0);
+            KSP_Free((void *)(ULONG_PTR)hSym);
+        }
+
+        /* Malformed blobs. cbKeyData is caller-supplied, so a value
+         * larger than the buffer must be rejected before it is read. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+
+        INIT_HDR(32);
+        pHdr->dwMagic = 0xDEADBEEF;
+        ASSERT_EQ("Wrong magic → NTE_BAD_DATA",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_BAD_DATA);
+
+        INIT_HDR(32);
+        pHdr->dwVersion = 99;
+        ASSERT_EQ("Wrong version → NTE_BAD_DATA",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_BAD_DATA);
+
+        INIT_HDR(1000);
+        ASSERT_EQ("cbKeyData beyond the buffer → NTE_INVALID_PARAMETER",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        INIT_HDR(0);
+        ASSERT_EQ("Zero-length key → NTE_INVALID_PARAMETER",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        INIT_HDR(32);
+        ASSERT_EQ("Buffer shorter than the header → NTE_INVALID_PARAMETER",
+            KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, 4, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        ASSERT_EQ("No object created from a malformed blob",
+            P11Mock_GetCalls()->nCreateObject, 0);
+
+        #undef INIT_HDR
+    }
+
+    /* Export of symmetric material is refused, and says why. Every key
+     * this provider holds is CKA_EXTRACTABLE=FALSE. */
+    TEST_SUITE("KSP_ExportKey — BCRYPT_KEY_DATA_BLOB refused");
+    {
+        /* A real imported key, so the refusal comes from the blob-type
+         * check rather than from handle validation. */
+        BYTE blob[sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 32];
+        BCRYPT_KEY_DATA_BLOB_HEADER *pHdr =
+            (BCRYPT_KEY_DATA_BLOB_HEADER *)blob;
+        NCRYPT_KEY_HANDLE hSym = 0;
+        DWORD cb = 0;
+
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+        memset(blob, 0, sizeof blob);
+        pHdr->dwMagic   = BCRYPT_KEY_DATA_BLOB_MAGIC;
+        pHdr->dwVersion = BCRYPT_KEY_DATA_BLOB_VERSION1;
+        pHdr->cbKeyData = 32;
+
+        ss = KSP_ImportKey(hProv, 0, BCRYPT_KEY_DATA_BLOB, NULL, &hSym,
+                blob, (DWORD)sizeof(blob), 0);
+        ASSERT_OK("Import a key to export", ss);
+
+        ASSERT_EQ("Export symmetric blob → NTE_NOT_SUPPORTED",
+            KSP_ExportKey(hProv, hSym, 0, BCRYPT_KEY_DATA_BLOB, NULL,
+                NULL, 0, &cb, 0),
+            (SECURITY_STATUS)NTE_NOT_SUPPORTED);
+
+        if (hSym) KSP_Free((void *)(ULONG_PTR)hSym);
+    }
+
+    /* ── Suite : KSP_VerifySignature ───────────────────────────────────── */
+    TEST_SUITE("KSP_VerifySignature");
+
+    /* The slot used to be a stub returning NTE_NOT_SUPPORTED. It now goes
+     * to C_Verify, and the thing most worth pinning down is WHICH object
+     * it verifies with: an asymmetric key must present its PUBLIC object.
+     * Passing the private one is the same class of mistake that left HMAC
+     * signing impossible for six sessions. */
+    {
+        NCRYPT_KEY_HANDLE hKey;
+        KSP_KEY          *k;
+
+        /* A full reset, not just the counters: an earlier suite may have
+         * left an injected return value in the config. */
+        P11Mock_Reset();
+        g_testCtx.pFunctionList = P11Mock_GetFunctionList();
+
+        ASSERT_EQ("A bad key handle is refused",
+            KSP_VerifySignature(hProv, 0, NULL, (PBYTE)"h", 1, (PBYTE)"s", 1, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        hKey = make_test_key(ALG_RSA, 2048, AT_SIGNATURE, TRUE);
+        k = (KSP_KEY *)(ULONG_PTR)hKey;
+        k->hPubKey  = (CK_OBJECT_HANDLE)0x99;
+        k->hPrivKey = (CK_OBJECT_HANDLE)0x21;
+
+        ASSERT_EQ("A NULL hash is refused",
+            KSP_VerifySignature(hProv, hKey, NULL, NULL, 0, (PBYTE)"s", 1, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+        ASSERT_EQ("An empty signature is refused",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"h", 1, (PBYTE)"s", 0, 0),
+            (SECURITY_STATUS)NTE_INVALID_PARAMETER);
+
+        P11Mock_ResetCalls();
+        ASSERT_OK("RSA PKCS#1 signature verified",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"hash", 4,
+                                (PBYTE)"sig", 3, NCRYPT_PAD_PKCS1_FLAG));
+        ASSERT_EQ("C_VerifyInit was called once",
+                  (DWORD)P11Mock_GetCalls()->nVerifyInit, 1U);
+        ASSERT_EQ("with CKM_RSA_PKCS",
+                  P11Mock_GetConfig()->lastVerifyMech,
+                  (CK_MECHANISM_TYPE)CKM_RSA_PKCS);
+        ASSERT_EQ("and with the PUBLIC key object, not the private one",
+                  (DWORD)P11Mock_GetConfig()->lastVerifyKey, 0x99U);
+
+        /* A rejected signature is a verdict, not a malfunction. */
+        P11Mock_ResetCalls();
+        P11Mock_GetConfig()->rv_Verify = CKR_SIGNATURE_INVALID;
+        ASSERT_EQ("A bad signature reports NTE_BAD_SIGNATURE",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"hash", 4,
+                                (PBYTE)"sig", 3, NCRYPT_PAD_PKCS1_FLAG),
+            (SECURITY_STATUS)NTE_BAD_SIGNATURE);
+        P11Mock_GetConfig()->rv_Verify = CKR_OK;
+
+        /* PSS carries its parameters in pPaddingInfo, exactly as signing
+         * does — a verifier that ignored them would check against the
+         * wrong salt length and hash. */
+        {
+            BCRYPT_PSS_PADDING_INFO pssInfo;
+            pssInfo.pszAlgId = BCRYPT_SHA384_ALGORITHM;
+            pssInfo.cbSalt   = 48;
+
+            P11Mock_ResetCalls();
+            ASSERT_OK("RSA-PSS signature verified",
+                KSP_VerifySignature(hProv, hKey, &pssInfo, (PBYTE)"hash", 4,
+                                    (PBYTE)"sig", 3, NCRYPT_PAD_PSS_FLAG));
+            ASSERT_EQ("with CKM_RSA_PKCS_PSS",
+                      P11Mock_GetConfig()->lastVerifyMech,
+                      (CK_MECHANISM_TYPE)CKM_RSA_PKCS_PSS);
+        }
+
+        /* A token that refuses C_VerifyInit reports its own reason, not a
+         * bad-signature verdict — the two mean very different things to a
+         * caller. */
+        P11Mock_ResetCalls();
+        P11Mock_GetConfig()->rv_VerifyInit = CKR_KEY_FUNCTION_NOT_PERMITTED;
+        ASSERT("A refused C_VerifyInit is not reported as a bad signature",
+               KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"hash", 4,
+                                   (PBYTE)"sig", 3, NCRYPT_PAD_PKCS1_FLAG)
+               != (SECURITY_STATUS)NTE_BAD_SIGNATURE);
+        ASSERT_EQ("and C_Verify is never reached",
+                  (DWORD)P11Mock_GetCalls()->nVerify, 0U);
+        P11Mock_GetConfig()->rv_VerifyInit = CKR_OK;
+
+        /* An algorithm the provider cannot map is refused before any
+         * session is taken. */
+        wcscpy_s(k->szAlgId, MAX_ALG_ID_LEN, L"NoSuchAlgorithm");
+        P11Mock_ResetCalls();
+        ASSERT("An unresolvable algorithm is refused",
+               KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"h", 1,
+                                   (PBYTE)"s", 1, 0) != ERROR_SUCCESS);
+        ASSERT_EQ("without calling the token",
+                  (DWORD)P11Mock_GetCalls()->nVerifyInit, 0U);
+        wcscpy_s(k->szAlgId, MAX_ALG_ID_LEN, ALG_RSA);
+
+        /* A key with no public object cannot verify, and must say so
+         * rather than reaching for the private one. */
+        k->hPubKey = CK_INVALID_HANDLE;
+        ASSERT_EQ("Without a public object, verification is refused",
+            KSP_VerifySignature(hProv, hKey, NULL, (PBYTE)"h", 1,
+                                (PBYTE)"s", 1, NCRYPT_PAD_PKCS1_FLAG),
+            (SECURITY_STATUS)NTE_INVALID_HANDLE);
+
+        KSP_FreeKey(hProv, hKey);
+    }
+
+    /* A symmetric key verifies with itself — it has no public object. */
+    {
+        NCRYPT_KEY_HANDLE hMac = make_test_key(ALG_AES, 256, 0, TRUE);
+        KSP_KEY          *k    = (KSP_KEY *)(ULONG_PTR)hMac;
+
+        k->dwKeyClass = KSP_KEY_CLASS_SYMMETRIC;
+        k->hSecretKey = (CK_OBJECT_HANDLE)0x55;
+        k->hPubKey    = CK_INVALID_HANDLE;
+        wcscpy_s(k->szAlgId, MAX_ALG_ID_LEN, BCRYPT_AES_CMAC_ALGORITHM);
+
+        P11Mock_ResetCalls();
+        ASSERT_OK("A CMAC key verifies",
+            KSP_VerifySignature(hProv, hMac, NULL, (PBYTE)"hash", 4,
+                                (PBYTE)"sig", 3, 0));
+        ASSERT_EQ("using its secret object",
+                  (DWORD)P11Mock_GetConfig()->lastVerifyKey, 0x55U);
+
+        KSP_FreeKey(hProv, hMac);
+    }
+
+    /* Ed448 requires CK_EDDSA_PARAMS and Ed25519 must not be given them —
+     * the same asymmetry signing has, for the same RFC 8032 reason. */
+    {
+        NCRYPT_KEY_HANDLE hEd;
+        KSP_KEY          *k;
+
+        hEd = make_test_key(ALG_EDDSA_ED25519, 255, AT_SIGNATURE, TRUE);
+        k = (KSP_KEY *)(ULONG_PTR)hEd;
+        k->hPubKey = (CK_OBJECT_HANDLE)0x77;
+        P11Mock_ResetCalls();
+        ASSERT_OK("Ed25519 verifies",
+            KSP_VerifySignature(hProv, hEd, NULL, (PBYTE)"m", 1,
+                                (PBYTE)"s", 1, 0));
+        ASSERT("and is given NO CK_EDDSA_PARAMS — params would select "
+               "Ed25519ctx, a different scheme",
+               P11Mock_GetConfig()->lastVerifyEddsaParams == 0);
+        KSP_FreeKey(hProv, hEd);
+
+        hEd = make_test_key(ALG_EDDSA_ED448, 448, AT_SIGNATURE, TRUE);
+        k = (KSP_KEY *)(ULONG_PTR)hEd;
+        k->hPubKey = (CK_OBJECT_HANDLE)0x78;
+        P11Mock_ResetCalls();
+        ASSERT_OK("Ed448 verifies",
+            KSP_VerifySignature(hProv, hEd, NULL, (PBYTE)"m", 1,
+                                (PBYTE)"s", 1, 0));
+        ASSERT("and IS given CK_EDDSA_PARAMS, which it cannot work without",
+               P11Mock_GetConfig()->lastVerifyEddsaParams != 0);
+        KSP_FreeKey(hProv, hEd);
+    }
 
     KSP_FreeProvider(hProv);
 

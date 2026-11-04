@@ -16,7 +16,35 @@
 
 > Two threads can perform cryptographic operations **simultaneously**
 > because each uses a distinct session from the pool (different `CK_SESSION_HANDLE`).
-> `CKF_OS_LOCKING_OK` guarantees that SoftHSM2 itself is thread-safe internally.
+> `CKF_OS_LOCKING_OK` tells the module it will be called from several
+> threads, which PKCS#11 v2.40 §5.4 requires before an application may
+> rely on the module's own locking.
+
+### This is tested, not asserted
+
+Until session 11 the paragraph above was a claim about code nobody had run
+concurrently. `tests/linux/test_concurrent.c` now runs **32 threads over
+the pool of 16 sessions** against a live token — more threads than
+sessions on purpose, so every thread blocks on the semaphore and reuses a
+session another thread has just returned.
+
+**Correctness is checked by value, not by return code.** The failure mode
+that matters here is silent: if two threads' operations cross, the likely
+result is not a crash but a signature computed with the wrong key,
+returned with `ERROR_SUCCESS`. RSA PKCS#1 v1.5 is deterministic, so each
+reference signature is computed single-threaded and recomputed under
+contention and compared byte for byte. ECDSA cannot serve this purpose —
+it is randomised, and two correct signatures over one hash differ.
+
+The suite is also run under ThreadSanitizer, which answers a different
+question: a race is timing-dependent, so a clean run proves little, while
+TSan reports the race whether or not it corrupted anything that time.
+
+Each claim about what the suite detects was established by injecting the
+defect. Removing the pool lock from `P11_AcquireSession` is caught by TSan
+and **not** by the value checks; a release freeing the wrong entry is
+caught by the value checks and not by TSan. Neither tool subsumes the
+other, which is why both run in CI.
 
 ---
 
@@ -105,9 +133,33 @@ flowchart LR
     B -- No --> ERR
 ```
 
+ECDH introduces a third handle type with its own magic, validated by
+`KSP_IsValidSecret()`:
+
+```mermaid
+flowchart LR
+    H["NCRYPT_SECRET_HANDLE hSecret"]
+    A["(KSP_SECRET *)hSecret"]
+    B{"pSecret != NULL\nand\npSecret->dwMagic ==\nKSP_SECRET_MAGIC ?"}
+    OK["Normal processing"]
+    ERR["NTE_INVALID_HANDLE"]
+
+    H --> A --> B
+    B -- Yes --> OK
+    B -- No --> ERR
+```
+
+| Handle type | Struct | Magic | Value |
+|-------------|--------|-------|-------|
+| `NCRYPT_PROV_HANDLE` | `KSP_PROVIDER` | `KSP_PROVIDER_MAGIC` | `0x4B535050` (`'KSPP'`) |
+| `NCRYPT_KEY_HANDLE` | `KSP_KEY` | `KSP_KEY_MAGIC` | `0x4B53504B` (`'KSPK'`) |
+| `NCRYPT_SECRET_HANDLE` | `KSP_SECRET` | `KSP_SECRET_MAGIC` | `0x4B535053` (`'KSPS'`) |
+
 The magic numbers serve as canaries: if a caller passes an arbitrary pointer
 or a handle from another provider, the magic check fails before any potentially
-dangerous dereference.
+dangerous dereference. Each magic is zeroed on free, so a double-free or
+use-after-free is caught by the same check rather than dereferencing
+released memory.
 
 ---
 
@@ -138,13 +190,42 @@ stateDiagram-v2
 
 ### Non-exportable keys
 
-All private keys are created with:
+All private and secret keys are created with:
 ```c
 { CKA_EXTRACTABLE, &bFalse, sizeof(bFalse) }  // FALSE
 { CKA_SENSITIVE,   &bTrue,  sizeof(bTrue)  }  // TRUE
 ```
 
-Attempting to export a private key → immediate `NTE_NOT_SUPPORTED` (without any PKCS#11 call).
+This covers every family: RSA, ECDSA, ECDH, EdDSA private keys and AES /
+HMAC secret keys. Attempting to export a private key → immediate
+`NTE_NOT_SUPPORTED` (without any PKCS#11 call).
+
+### The one deliberately extractable object
+
+The shared secret produced by `KSP_SecretAgreement` is the single exception.
+It is created as a **session object** with:
+
+```c
+{ CKA_TOKEN,       &bFalse, sizeof(bFalse) }  // never written to the token
+{ CKA_SENSITIVE,   &bFalse, sizeof(bFalse) }
+{ CKA_EXTRACTABLE, &bTrue,  sizeof(bTrue)  }  // so CKA_VALUE can be read
+```
+
+This is required by the contract: `NCryptDeriveKey` must hand the caller
+raw key material, which means reading `CKA_VALUE` back. Three properties
+bound the exposure:
+
+- It never touches persistent storage (`CKA_TOKEN=FALSE`).
+- `KSP_FreeSecret` destroys the object with `C_DestroyObject`.
+- The buffer read from `CKA_VALUE` is zeroed with `SecureZeroMemory()`
+  before being freed, on both the success and the buffer-too-small path.
+
+### Imported public keys are session objects
+
+`KSP_ImportKey` creates public key objects with `CKA_TOKEN=FALSE` and marks
+the wrapper `bSessionObject = TRUE`, so `KSP_FreeKey` destroys them. Without
+this, every import would leak an object into the session for the lifetime of
+the process.
 
 ### No static link to softhsm2.dll
 
@@ -156,7 +237,11 @@ The DLL is loaded via `LoadLibrary` only, which avoids:
 ### Sensitive memory zeroing
 
 - PIN: `SecureZeroMemory()` after `C_Login()`
+- ECDH shared secret: `SecureZeroMemory()` after copying to the caller's
+  buffer, and also on the `NTE_BUFFER_TOO_SMALL` path
 - Hash and signature buffers are **not** zeroed because they are not secret
+- AES IVs are not secret and are not zeroed; the key material behind them
+  never leaves SoftHSM2
 
 ---
 

@@ -1,20 +1,88 @@
 /* config.h — SoftHSM2 KSP configuration constants
  * Default paths, PIN, and global constants.
+ * Minimum SoftHSM2 version required: 2.7.0 (OpenSSL backend, PKCS#11 v2.40)
  */
 #ifndef CONFIG_H
 #define CONFIG_H
 
-/* Default path to the SoftHSM2 library */
-#define SOFTHSM2_LIB_DEFAULT   L"C:\\Program Files\\SoftHSM2\\lib\\softhsm2-x64.dll"
+/* Default path to the SoftHSM2 library.
+ * SOFTHSM2_LIB_DEFAULT_OVERRIDE is injected by CMake when SOFTHSM2_DIR is set
+ * (i.e. when SoftHSM2 is compiled from the in-tree submodule). */
+#ifdef SOFTHSM2_LIB_DEFAULT_OVERRIDE
+# define SOFTHSM2_LIB_DEFAULT  L ## SOFTHSM2_LIB_DEFAULT_OVERRIDE
+#else
+# define SOFTHSM2_LIB_DEFAULT  L"C:\\Program Files\\SoftHSM2\\lib\\softhsm2-x64.dll"
+#endif
 
-/* Environment variable to override the library path */
+/* Environment variables naming the PKCS#11 module to load.
+ *
+ * KSP_PKCS11_LIB is the name to use. Nothing in this provider is specific
+ * to SoftHSM2 — the KSP talks to a CK_FUNCTION_LIST, and which module
+ * supplies it has always been a matter of this one path. Calling the
+ * variable SOFTHSM2_LIB made a general mechanism look like a debug hook for
+ * one backend, and that misreading is what left "use a different PKCS#11
+ * token" looking like unstarted work when it was a matter of configuration.
+ *
+ * SOFTHSM2_LIB keeps working and is read when KSP_PKCS11_LIB is unset, so
+ * no existing deployment has to change. If both are set the new name wins.
+ *
+ * What the module must provide is in docs/12-pkcs11-requirements.md. The
+ * provider no longer assumes: it asks the token through C_GetMechanismList
+ * at startup and advertises the intersection — see p11_caps.c. */
+#define KSP_PKCS11_LIB_ENV     "KSP_PKCS11_LIB"
 #define SOFTHSM2_LIB_ENV       "SOFTHSM2_LIB"
 
 /* Default user PIN */
+/* The compiled-in fallback PIN, and whether it is used at all.
+ *
+ * OFF by default since the ADCS work. A provider that silently tries
+ * "1234" when nothing is configured is worse than one that refuses to
+ * start: the refusal is one clear error at deployment time, while the
+ * silent attempt is a login failure from the token with no indication that
+ * the administrator never set a PIN at all. For a CA, whose key is the
+ * whole asset, failing closed is the only defensible default.
+ *
+ * Build with -DKSP_ALLOW_DEFAULT_PIN=1 to restore it for a lab. That is the
+ * same shape as KSP_RSA_MIN_BITS and KSP_ALLOW_EXPORT_POLICY: the unsafe
+ * convenience stays available and nobody gets it without asking.
+ *
+ * The remediation plan proposed removing the fallback for MACHINE scope
+ * only. One rule for both scopes is better: a scope-dependent default
+ * would mean a developer's user-scope key silently works while the
+ * identical machine-scope configuration fails, which is confusing in
+ * exactly the situation someone is already debugging. */
+#ifndef KSP_ALLOW_DEFAULT_PIN
+# define KSP_ALLOW_DEFAULT_PIN 0
+#endif
 #define SOFTHSM2_PIN_DEFAULT   "1234"
 
 /* Environment variable to override the PIN */
 #define SOFTHSM2_PIN_ENV       "SOFTHSM2_PIN"
+
+/* Slot selection. Without either of these the KSP takes the first slot
+ * reporting a token, which is what it has always done and remains the
+ * default. A machine with more than one token needs to say which:
+ *
+ *   SOFTHSM2_SLOT        decimal slot ID, e.g. "1"
+ *   SOFTHSM2_TOKEN_LABEL CKA_LABEL of the token, e.g. "signing-token"
+ *
+ * The label is the more stable of the two — SoftHSM2 slot IDs are assigned
+ * at initialisation and shift when tokens are added or removed. If both are
+ * set the label wins, because it is the one that survives a reshuffle.
+ * Either may also be set at runtime through NCryptSetProperty on the
+ * provider handle; see KSP_SetProviderProperty. */
+#define SOFTHSM2_SLOT_ENV        "SOFTHSM2_SLOT"
+#define SOFTHSM2_TOKEN_LABEL_ENV "SOFTHSM2_TOKEN_LABEL"
+
+/* PKCS#11 pads CK_TOKEN_INFO.label to 32 bytes with spaces, not NUL. */
+#define P11_TOKEN_LABEL_LEN    32
+
+/* Upper bound on slots enumerated by C_GetSlotList. */
+#define P11_MAX_SLOTS          64
+
+/* Longest user PIN accepted. PKCS#11 imposes no limit; this bounds the
+ * fixed buffer the PIN is copied into. */
+#define P11_MAX_PIN_LEN        127
 
 /* Environment variable to enable debug logging */
 #define KSP_DEBUG_ENV          "KSP_DEBUG"
@@ -35,6 +103,36 @@
 /* Default RSA key size (bits) */
 #define RSA_DEFAULT_KEY_BITS   2048
 
+/* Accepted RSA modulus range.
+ *
+ * The floor is deliberately 2048: Microsoft's Software KSP and Utimaco both
+ * accept 512-bit RSA, but issuing such a key from this provider would be a
+ * security regression. Define KSP_RSA_MIN_BITS at build time to lower it for
+ * legacy interoperability — the default is never weakened silently.
+ *
+ *     cmake .. -DCMAKE_C_FLAGS="/DKSP_RSA_MIN_BITS=1024"
+ */
+#ifndef KSP_RSA_MIN_BITS
+# define KSP_RSA_MIN_BITS      2048
+#endif
+#define KSP_RSA_MAX_BITS       16384
+#define KSP_RSA_BITS_STEP      64      /* modulus must be a multiple of this */
+
+/* The RSA size NCRYPT_LENGTHS_PROPERTY reports as the default.
+ *
+ * Deliberately a separate constant from KSP_RSA_MIN_BITS. A legacy build
+ * lowers the floor to 1024 so an old key can be opened; it must not thereby
+ * make 1024 the size a CA setup wizard offers first. The reported value is
+ * clamped into [min, max] so a build that raises the floor above 2048 still
+ * reports something legal. */
+#ifndef KSP_RSA_DEFAULT_BITS
+# define KSP_RSA_DEFAULT_BITS  2048
+#endif
+
+/* Default RSA public exponent (65537). Overridable per key through
+ * KSP_PUBLIC_EXPONENT_PROPERTY — see below. */
+#define RSA_DEFAULT_PUBEXP     65537UL
+
 /* Maximum key label length */
 #define MAX_KEY_LABEL_LEN      256
 
@@ -52,13 +150,364 @@
     "\x06\x05\x2b\x81\x04\x00\x22"
 #define EC_OID_P384_LEN  7
 
+/* X25519: OID 1.3.101.110. SoftHSM2 also accepts the PKCS#11 3.0
+ * PrintableString form ("curve25519"); the OID is used here because it is
+ * the same shape as every other curve this provider sends, and SoftHSM2
+ * handles both — see OSSLUtil.cpp byteString2oid in the submodule. */
+#define EC_OID_X25519 \
+    "\x06\x03\x2b\x65\x6e"
+#define EC_OID_X25519_LEN     5
+#define EC_X25519_COORD_SIZE  32
+
+/* Brainpool curve OIDs, taken from `openssl ecparam -name <curve>
+ * -outform DER` rather than transcribed:
+ *   brainpoolP256r1  1.3.36.3.3.2.8.1.1.7
+ *   brainpoolP384r1  1.3.36.3.3.2.8.1.1.11
+ *   brainpoolP512r1  1.3.36.3.3.2.8.1.1.13
+ * All three are 11 bytes and differ only in the last, so they are compared
+ * in full like every other curve here. */
+#define EC_OID_BP256 \
+    "\x06\x09\x2b\x24\x03\x03\x02\x08\x01\x01\x07"
+#define EC_OID_BP384 \
+    "\x06\x09\x2b\x24\x03\x03\x02\x08\x01\x01\x0b"
+#define EC_OID_BP512 \
+    "\x06\x09\x2b\x24\x03\x03\x02\x08\x01\x01\x0d"
+#define EC_OID_BP_LEN         11
+
+#define EC_BP256_COORD_SIZE   32
+#define EC_BP384_COORD_SIZE   48
+#define EC_BP512_COORD_SIZE   64
+
+/* secp256k1: OID 1.3.132.0.10 — note the final byte is the only thing
+ * separating it from P-384 (0x22) and P-521 (0x23); all three are 7 bytes. */
+#define EC_OID_SECP256K1 \
+    "\x06\x05\x2b\x81\x04\x00\x0a"
+#define EC_OID_SECP256K1_LEN  7
+
+/* P-521 (secp521r1): OID 1.3.132.0.35 */
+#define EC_OID_P521 \
+    "\x06\x05\x2b\x81\x04\x00\x23"
+#define EC_OID_P521_LEN  7
+
+/* Ed25519: OID 1.3.101.112 */
+#define EC_OID_ED25519 \
+    "\x06\x03\x2b\x65\x70"
+#define EC_OID_ED25519_LEN  5
+
+/* Ed448: OID 1.3.101.113 */
+#define EC_OID_ED448 \
+    "\x06\x03\x2b\x65\x71"
+#define EC_OID_ED448_LEN  5
+
 /* EC coordinate size in bytes */
 #define EC_P256_COORD_SIZE  32
 #define EC_P384_COORD_SIZE  48
+#define EC_P521_COORD_SIZE  66   /* ceil(521 / 8) */
+#define EC_SECP256K1_COORD_SIZE 32
 
-/* CNG algorithm names */
+/* EdDSA public key / signature sizes in bytes */
+#define ED25519_PUBKEY_SIZE   32
+#define ED25519_SIG_SIZE      64
+#define ED448_PUBKEY_SIZE     57
+#define ED448_SIG_SIZE       114
+
+/* AES key sizes in bytes */
+#define AES_128_KEY_BYTES  16
+#define AES_192_KEY_BYTES  24
+#define AES_256_KEY_BYTES  32
+#define AES_BLOCK_SIZE     16
+#define AES_GCM_TAG_BITS  128
+
+/* CNG algorithm names — asymmetric */
 #define ALG_RSA        L"RSA"
 #define ALG_ECDSA_P256 L"ECDSA_P256"
 #define ALG_ECDSA_P384 L"ECDSA_P384"
+#define ALG_ECDSA_P521 L"ECDSA_P521"
+/* secp256k1. CNG names the algorithm "ECDSA" and selects the curve through
+ * BCRYPT_ECC_CURVE_NAME; this per-curve identifier is a KSP extension, in
+ * keeping with how the NIST curves are already named here. */
+#define ALG_ECDSA_SECP256K1 L"ECDSA_SECP256K1"
+
+/* Brainpool (RFC 5639). SoftHSM2 never mentions these curves by name, but
+ * its OpenSSL backend decodes CKA_EC_PARAMS with d2i_ECPKParameters, which
+ * accepts any named curve OpenSSL knows — so they pass straight through.
+ * Verified by reading OSSLUtil.cpp, not assumed from the absence of the
+ * word "brainpool" in the source. */
+/* ── Generic ECC algorithms and named curves ─────────────────────────────
+ *
+ * Real Windows names, defined here only as a fallback: the guards mean the
+ * SDK's definitions win wherever they exist. mingw-w64 has none of them,
+ * in 11 or master, so without these the project cannot be cross-compiled.
+ *
+ * The values were taken from two independent sources that agree exactly —
+ * Wine's include/bcrypt.h and the Rust winapi crate's shared/bcrypt.rs —
+ * not guessed. Curve names are compared with _wcsicmp, so CNG's mixed
+ * capitalisation ("secP256k1") cannot cause a mismatch. */
+#ifndef BCRYPT_ECDSA_ALGORITHM
+#  define BCRYPT_ECDSA_ALGORITHM            L"ECDSA"
+#endif
+#ifndef BCRYPT_ECDH_ALGORITHM
+#  define BCRYPT_ECDH_ALGORITHM             L"ECDH"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NAME
+#  define BCRYPT_ECC_CURVE_NAME             L"ECCCurveName"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NISTP256
+#  define BCRYPT_ECC_CURVE_NISTP256         L"nistP256"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NISTP384
+#  define BCRYPT_ECC_CURVE_NISTP384         L"nistP384"
+#endif
+#ifndef BCRYPT_ECC_CURVE_NISTP521
+#  define BCRYPT_ECC_CURVE_NISTP521         L"nistP521"
+#endif
+#ifndef BCRYPT_ECC_CURVE_25519
+#  define BCRYPT_ECC_CURVE_25519            L"curve25519"
+#endif
+#ifndef BCRYPT_ECC_CURVE_SECP256K1
+#  define BCRYPT_ECC_CURVE_SECP256K1        L"secP256k1"
+#endif
+#ifndef BCRYPT_ECC_CURVE_BRAINPOOLP256R1
+#  define BCRYPT_ECC_CURVE_BRAINPOOLP256R1  L"brainpoolP256r1"
+#endif
+#ifndef BCRYPT_ECC_CURVE_BRAINPOOLP384R1
+#  define BCRYPT_ECC_CURVE_BRAINPOOLP384R1  L"brainpoolP384r1"
+#endif
+#ifndef BCRYPT_ECC_CURVE_BRAINPOOLP512R1
+#  define BCRYPT_ECC_CURVE_BRAINPOOLP512R1  L"brainpoolP512r1"
+#endif
+
+/* CNG's standard route to any curve: create a key with the generic
+ * BCRYPT_ECDSA_ALGORITHM or BCRYPT_ECDH_ALGORITHM identifier, then set
+ * BCRYPT_ECC_CURVE_NAME before finalising. This is how a portable
+ * application reaches secp256k1, Brainpool or X25519 without knowing
+ * anything provider-specific. */
+
+#define ALG_ECDSA_BP256 L"ECDSA_BRAINPOOLP256R1"
+#define ALG_ECDSA_BP384 L"ECDSA_BRAINPOOLP384R1"
+#define ALG_ECDSA_BP512 L"ECDSA_BRAINPOOLP512R1"
+/* X25519 key agreement.
+ *
+ * SoftHSM2 2.7.0 supports this through its OpenSSL backend: keys are
+ * generated with CKM_EC_EDWARDS_KEY_PAIR_GEN and CKK_EC_EDWARDS carrying
+ * the curve25519 parameters, and CKM_ECDH1_DERIVE on such a key routes to
+ * SoftHSM's deriveEDDSA. Verified by reading the submodule, not assumed.
+ *
+ * The identifier below is this provider's own. CNG is documented to have
+ * BCRYPT_ECC_CURVE_25519 for the generic ECDH algorithm (evidence grade B
+ * in docs/11), but no header available in this workspace defines it — not
+ * the mingw-w64 we check against, nor mingw-w64 master — so it cannot be
+ * referenced by name here. Reaching X25519 the standard way needs
+ * BCRYPT_ECC_CURVE_NAME handling and a header that declares the constant. */
+#define ALG_ECDH_X25519 L"ECDH_X25519"
+
+/* ── Post-quantum: ML-DSA (FIPS 204) ─────────────────────────────────────
+ *
+ * Reachable only on a PKCS#11 v3.2 token that implements CKM_ML_DSA.
+ * SoftHSM2 2.7.0 is not such a token — it defines the constants and
+ * implements none of them — so on the default backend none of this is ever
+ * advertised or accepted. The capability probe decides at runtime; see
+ * p11_caps.c.
+ *
+ * THE IDENTIFIERS BELOW ARE THIS PROVIDER'S OWN, not CNG's.
+ *
+ * That is a deliberate choice, and the reason is worth stating. CNG is
+ * documented to name the algorithm L"ML-DSA" and to select a parameter set
+ * through a property on it — the same shape as BCRYPT_ECC_CURVE_NAME. But
+ * every primary source for the exact spellings is Microsoft Learn, which
+ * the network policy in this workspace blocks, and the names are absent
+ * from mingw-w64 (11 and master), from Wine's bcrypt.h and from the Rust
+ * winapi crate: all three were checked and none carries a post-quantum
+ * name at all. That leaves search-result summaries, which is grade B.
+ *
+ * The BCRYPT_ECC_CURVE_* constants above were added only because two
+ * independent sources agreed on them character for character. Nothing here
+ * meets that bar, so no BCRYPT_* name is declared — a wrong one would be
+ * exactly the BCRYPT_SHA224_ALGORITHM failure again, invented in one
+ * header and believed by every test that read it.
+ *
+ * Naming the parameter sets outright keeps them reachable by an
+ * application coded against this KSP, in the same way EdDSA and HMAC
+ * already are, and asserts nothing about Windows. Reaching them the
+ * standard CNG way needs the SDK constants confirmed first. */
+#define ALG_MLDSA_44   L"ML-DSA-44"
+#define ALG_MLDSA_65   L"ML-DSA-65"
+#define ALG_MLDSA_87   L"ML-DSA-87"
+
+#define ALG_GROUP_MLDSA  L"ML-DSA"
+
+/* ML-DSA signature and public key sizes in bytes. Fixed per parameter set,
+ * and the signature is raw — there is no DER wrapper to strip, as with
+ * EdDSA and unlike ECDSA.
+ *
+ * Taken from liboqs src/sig/ml_dsa/sig_ml_dsa.h (OQS_SIG_ml_dsa_*_length_*),
+ * which is generated from the reference implementation. The local OpenSSL
+ * is 3.0.13 and has no ML-DSA, so these could not be measured here. */
+#define MLDSA_44_SIG_SIZE   2420
+#define MLDSA_65_SIG_SIZE   3309
+#define MLDSA_87_SIG_SIZE   4627
+
+#define MLDSA_44_PUBKEY_SIZE  1312
+#define MLDSA_65_PUBKEY_SIZE  1952
+#define MLDSA_87_PUBKEY_SIZE  2592
+
+#define ALG_ECDH_P256  L"ECDH_P256"
+#define ALG_ECDH_P384  L"ECDH_P384"
+#define ALG_ECDH_P521  L"ECDH_P521"
+#define ALG_EDDSA_ED25519 L"EDDSA_ED25519"
+#define ALG_EDDSA_ED448   L"EDDSA_ED448"
+
+/* CNG algorithm names — symmetric / MAC */
+#define ALG_AES          L"AES"
+#define ALG_HMAC_SHA1    L"HMAC_SHA1"
+#define ALG_HMAC_SHA224  L"HMAC_SHA224"
+
+/* CNG defines no SHA-224 algorithm identifier — Windows has no SHA-224 at
+ * all — so there is no BCRYPT_SHA224_ALGORITHM to compare against. This is
+ * our own name for it, accepted by KSP_SignHash and KSP_Decrypt as a
+ * provider extension. No standard CNG caller will ever send it; only an
+ * application coded against this KSP can reach SHA-224. */
+#define KSP_SHA224_ALGORITHM  L"SHA224"
+#define ALG_HMAC_SHA256  L"HMAC_SHA256"
+#define ALG_HMAC_SHA384  L"HMAC_SHA384"
+#define ALG_HMAC_SHA512  L"HMAC_SHA512"
+
+/* CNG algorithm group names */
+#define ALG_GROUP_RSA    L"RSA"
+#define ALG_GROUP_ECDSA  L"ECDSA"
+#define ALG_GROUP_ECDH   L"ECDH"
+#define ALG_GROUP_EDDSA  L"EDDSA"
+#define ALG_GROUP_AES    L"AES"
+#define ALG_GROUP_HMAC   L"HMAC"
+
+/* Key class — distinguishes asymmetric pairs from symmetric secrets */
+#define KSP_KEY_CLASS_ASYMMETRIC  0
+#define KSP_KEY_CLASS_SYMMETRIC   1
+
+/* Maximum GCM additional-authenticated-data length retained on a key */
+#define MAX_AUTH_DATA_LEN  256
+
+/* Chaining mode for AES-CTR. CNG defines no standard string for counter
+ * mode, so the KSP accepts this name in NCRYPT_CHAINING_MODE_PROPERTY. */
+/* Whether NCRYPT_EXPORT_POLICY_PROPERTY may be set at all.
+ *
+ * On by default: CNG defines the property, callers legitimately use it for
+ * key backup and migration, and a provider that silently ignores it is not
+ * safer — only harder to reason about. A deployment that wants the absolute
+ * guarantee that no key material can ever leave the token, whatever the
+ * caller asks, builds with -DKSP_ALLOW_EXPORT_POLICY=0 and every key stays
+ * CKA_SENSITIVE=TRUE / CKA_EXTRACTABLE=FALSE as before.
+ *
+ * Same shape as KSP_RSA_MIN_BITS: the weaker option exists, is reachable,
+ * and is never the default. */
+#ifndef KSP_ALLOW_EXPORT_POLICY
+#define KSP_ALLOW_EXPORT_POLICY 1
+#endif
+
+#define KSP_CHAIN_MODE_CTR  L"ChainingModeCTR"
+
+/* CCM nonce bounds, NIST SP 800-38C §A.1: the nonce is 7 to 13 bytes, and
+ * its length fixes the maximum message length. Outside that range the
+ * mode is undefined, so the provider refuses rather than passing it down. */
+#define AES_CCM_MIN_NONCE   7
+#define AES_CCM_MAX_NONCE   13
+
+/* AES-GCM and AES-CCM tag lengths CNG reports through AuthTagLength.
+ * GCM: 12..16 bytes in steps of 1 (SP 800-38D §5.2.1.2 also allows 4 and
+ * 8; CNG reports the 12..16 range). CCM: 4..16 in steps of 2
+ * (SP 800-38C §6.1). */
+#define AES_GCM_TAG_MIN     12
+#define AES_GCM_TAG_MAX     16
+#define AES_CCM_TAG_MIN     4
+#define AES_CCM_TAG_MAX     16
+
+/* RSA public exponent, settable before FinalizeKey. CNG defines no standard
+ * property for this, so the name is a KSP extension. */
+#define KSP_PUBLIC_EXPONENT_PROPERTY  L"RSA Public Exponent"
+
+/* Provider-level configuration, settable through NCryptSetProperty on the
+ * provider handle. NCRYPT_PIN_PROPERTY is a standard CNG name; the token
+ * selectors are this provider's own, because CNG has no notion of a slot. */
+/* Key scope prefixes applied to CKA_LABEL.
+ *
+ * CNG separates machine keys from user keys; PKCS#11 has no user concept
+ * within a token, so the scope is encoded in the label instead. A machine
+ * key named "signing" is stored as "m/signing" and a user key of the same
+ * name as "u/signing", so the two no longer collide.
+ *
+ * Within ONE token this is NAMESPACING, NOT ISOLATION. Anyone who can log
+ * into the token can read either namespace — the separation keeps distinct
+ * keys distinct, it does not protect one caller's keys from another. No
+ * amount of label work supplies an ACL model PKCS#11 does not have.
+ *
+ * For real isolation, configure a token PER SCOPE (below). PKCS#11 does
+ * have a boundary with a credential on it: the token. Then the two scopes
+ * are in different tokens with different PINs, and a caller holding the
+ * user PIN cannot read machine keys because it cannot log in to read them.
+ * See docs/03-key-management.md. */
+#define KSP_SCOPE_PREFIX_MACHINE  "m/"
+#define KSP_SCOPE_PREFIX_USER     "u/"
+#define KSP_SCOPE_PREFIX_LEN      2
+
+/* ── Per-scope tokens (optional) ───────────────────────────────────────────
+ *
+ * Set BOTH of the label variables, or BOTH of the slot variables, to give
+ * the machine and user scopes separate tokens. Set neither and behaviour is
+ * exactly as before: one token, two label prefixes.
+ *
+ * Setting only one is an error rather than a half-measure. A deployment
+ * that names a machine token and forgets the user one would silently put
+ * user keys on the machine token — isolation that reports success and does
+ * not isolate, which is worse than no isolation at all because nobody
+ * looks again.
+ *
+ * Each scope may also carry its own PIN. If it does not, the scope falls
+ * back to the single PIN (the provider property, then SOFTHSM2_PIN), which
+ * is correct for two tokens initialised with the same PIN and useless for
+ * isolation — two tokens sharing one PIN share one credential.
+ */
+#define KSP_MACHINE_TOKEN_LABEL_ENV "KSP_MACHINE_TOKEN_LABEL"
+#define KSP_USER_TOKEN_LABEL_ENV    "KSP_USER_TOKEN_LABEL"
+#define KSP_MACHINE_SLOT_ENV        "KSP_MACHINE_SLOT"
+#define KSP_USER_SLOT_ENV           "KSP_USER_SLOT"
+/* Where a DPAPI-protected PIN lives (ADCS plan option C-b).
+ *
+ * HKLM, and a value per scope so the two tokens can carry different
+ * credentials exactly as the per-scope environment variables allow.
+ *
+ * The DPAPI scope is CRYPTPROTECT_LOCAL_MACHINE, so anything running on
+ * the host could unprotect the blob if it could READ it. The ACL on this
+ * registry key is therefore the whole of the protection, not a detail of
+ * the deployment: provision it readable by the CA service account and
+ * nothing else. tools/set_ksp_pin.ps1 does that. */
+#define KSP_PIN_BLOB_KEY            "SOFTWARE\\SoftHSM KSP"
+#define KSP_PIN_BLOB_VALUE_MACHINE  "MachinePinBlob"
+#define KSP_PIN_BLOB_VALUE_USER     "UserPinBlob"
+
+#define KSP_MACHINE_PIN_ENV         "KSP_MACHINE_PIN"
+#define KSP_USER_PIN_ENV            "KSP_USER_PIN"
+
+/* Scope identifiers. These index the per-scope slot and session pools, so
+ * the values matter: USER is 0 because it is the scope a single-token
+ * deployment collapses onto, which makes "unconfigured behaves as before"
+ * a property of the array indexing rather than something to remember. */
+#define P11_SCOPE_USER     0
+#define P11_SCOPE_MACHINE  1
+#define P11_SCOPE_COUNT    2
+
+/* The scope a key belongs to. */
+#define P11_SCOPE_OF(pKey) \
+    ((pKey)->bMachineKey ? P11_SCOPE_MACHINE : P11_SCOPE_USER)
+
+/* The scope a CNG flag word asks for. */
+#define P11_SCOPE_OF_FLAGS(dwFlags) \
+    (((dwFlags) & NCRYPT_MACHINE_KEY_FLAG) ? P11_SCOPE_MACHINE \
+                                           : P11_SCOPE_USER)
+
+#define KSP_TOKEN_LABEL_PROPERTY  L"SoftHSM Token Label"
+#define KSP_SLOT_PROPERTY         L"SoftHSM Slot"
+
+/* Magic number validating a (KSP_SECRET *) agreed-secret handle */
+#define KSP_SECRET_MAGIC       0x4B535053UL  /* 'KSPS' */
 
 #endif /* CONFIG_H */

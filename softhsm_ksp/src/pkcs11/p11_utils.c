@@ -1,5 +1,6 @@
 /* p11_utils.c — PKCS#11 utility implementation */
 #include "p11_utils.h"
+#include "p11_caps.h"
 #include "p11_context.h"
 #include "../common/config.h"
 #include "../common/logging.h"
@@ -35,6 +36,197 @@ SECURITY_STATUS P11RvToSecStatus(CK_RV rv)
     }
 }
 
+/* ── ML-DSA parameter sets ───────────────────────────────────────────────
+ *
+ * One table drives the mechanism resolution, the key-generation attribute
+ * and the two sizes, so a parameter set cannot be half-added. Returning 0
+ * for "not an ML-DSA identifier" is safe: CKP_ML_DSA_44 is 1 and PKCS#11
+ * assigns no parameter set the value 0. */
+typedef struct _MLDSA_PARAM_SET {
+    LPCWSTR  pszAlgId;
+    CK_ULONG ulParamSet;
+    DWORD    cbSignature;
+    DWORD    cbPublicKey;
+} MLDSA_PARAM_SET;
+
+static const MLDSA_PARAM_SET g_MlDsaSets[] = {
+    { ALG_MLDSA_44, CKP_ML_DSA_44, MLDSA_44_SIG_SIZE, MLDSA_44_PUBKEY_SIZE },
+    { ALG_MLDSA_65, CKP_ML_DSA_65, MLDSA_65_SIG_SIZE, MLDSA_65_PUBKEY_SIZE },
+    { ALG_MLDSA_87, CKP_ML_DSA_87, MLDSA_87_SIG_SIZE, MLDSA_87_PUBKEY_SIZE },
+};
+
+#define MLDSA_SET_COUNT (sizeof(g_MlDsaSets) / sizeof(g_MlDsaSets[0]))
+
+static const MLDSA_PARAM_SET *MlDsaLookup(LPCWSTR pszAlgId)
+{
+    size_t i;
+
+    if (!pszAlgId)
+        return NULL;
+
+    for (i = 0; i < MLDSA_SET_COUNT; i++) {
+        if (_wcsicmp(pszAlgId, g_MlDsaSets[i].pszAlgId) == 0)
+            return &g_MlDsaSets[i];
+    }
+    return NULL;
+}
+
+CK_ULONG P11_MlDsaParameterSet(LPCWSTR pszAlgId)
+{
+    const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
+    return p ? p->ulParamSet : 0;
+}
+
+DWORD P11_MlDsaSignatureSize(LPCWSTR pszAlgId)
+{
+    const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
+    return p ? p->cbSignature : 0;
+}
+
+/* Reverse of P11_MlDsaParameterSet, from the same table, so reopening a
+ * key by name recovers the parameter set it was generated with. */
+LPCWSTR P11_MlDsaAlgFromParameterSet(CK_ULONG ulParamSet)
+{
+    size_t i;
+    for (i = 0; i < MLDSA_SET_COUNT; i++)
+        if (g_MlDsaSets[i].ulParamSet == ulParamSet)
+            return g_MlDsaSets[i].pszAlgId;
+    return NULL;
+}
+
+DWORD P11_MlDsaPublicKeySize(LPCWSTR pszAlgId)
+{
+    const MLDSA_PARAM_SET *p = MlDsaLookup(pszAlgId);
+    return p ? p->cbPublicKey : 0;
+}
+
+/* ── X.509 subject extraction ────────────────────────────────────────────
+ *
+ * PKCS#11 marks CKA_SUBJECT required for an X.509 certificate object.
+ * SoftHSM2 does not enforce it; Kryoptic answers CKR_TEMPLATE_INCONSISTENT
+ * without it. CNG hands a provider nothing but the encoded certificate, so
+ * the subject has to come out of the DER.
+ *
+ * This walks only as far as it must:
+ *
+ *   Certificate ::= SEQUENCE {
+ *       tbsCertificate SEQUENCE {
+ *           [0] version   OPTIONAL,
+ *           serialNumber  INTEGER,
+ *           signature     AlgorithmIdentifier,
+ *           issuer        Name,
+ *           validity      SEQUENCE,
+ *           subject       Name,        <- this, header included
+ *           ...
+ *
+ * It is a parser over attacker-adjacent input, and this project has already
+ * shipped one out-of-bounds read in DER handling
+ * (P11_DecodeDerEcdsaSignature, found with AddressSanitizer). Every read
+ * here is bounded by pEnd before it happens, long-form lengths are capped
+ * at four bytes, and a length that would run past the buffer fails rather
+ * than truncating. Failure is not fatal to the caller: KSP_StoreCertificate
+ * falls back to an empty subject, so an unparseable certificate is still
+ * stored.
+ */
+
+/* Read one DER tag-length header. On success *ppValue points at the value
+ * and *pcbValue is its length; *ppNext is the element after this one. */
+static BOOL DerReadHeader(const BYTE *pbData, const BYTE *pEnd,
+                          BYTE *pbTag, const BYTE **ppValue,
+                          DWORD *pcbValue, const BYTE **ppNext)
+{
+    DWORD cbLen = 0;
+
+    if (!pbData || pbData + 2 > pEnd)
+        return FALSE;
+
+    *pbTag = pbData[0];
+    pbData++;
+
+    if (pbData[0] < 0x80) {
+        cbLen = pbData[0];
+        pbData++;
+    } else {
+        DWORD cbLenBytes = pbData[0] & 0x7F;
+        DWORD i;
+
+        /* 0x80 is the indefinite form, which DER forbids; more than four
+         * length bytes cannot be represented here and is refused rather
+         * than wrapped. */
+        if (cbLenBytes == 0 || cbLenBytes > 4)
+            return FALSE;
+        pbData++;
+        if (pbData + cbLenBytes > pEnd)
+            return FALSE;
+
+        for (i = 0; i < cbLenBytes; i++)
+            cbLen = (cbLen << 8) | pbData[i];
+        pbData += cbLenBytes;
+    }
+
+    if (cbLen > (DWORD)(pEnd - pbData))
+        return FALSE;
+
+    *ppValue  = pbData;
+    *pcbValue = cbLen;
+    *ppNext   = pbData + cbLen;
+    return TRUE;
+}
+
+BOOL P11_ExtractCertSubject(const BYTE *pbCert, DWORD cbCert,
+                            const BYTE **ppSubject, DWORD *pcbSubject)
+{
+    const BYTE *pEnd;
+    const BYTE *pVal, *pNext, *pCur, *pTbsEnd;
+    DWORD       cbVal;
+    BYTE        bTag;
+    int         i;
+
+    if (!pbCert || cbCert == 0 || !ppSubject || !pcbSubject)
+        return FALSE;
+
+    pEnd = pbCert + cbCert;
+
+    /* Certificate ::= SEQUENCE */
+    if (!DerReadHeader(pbCert, pEnd, &bTag, &pVal, &cbVal, &pNext) ||
+        bTag != 0x30)
+        return FALSE;
+
+    /* tbsCertificate ::= SEQUENCE */
+    if (!DerReadHeader(pVal, pVal + cbVal, &bTag, &pVal, &cbVal, &pNext) ||
+        bTag != 0x30)
+        return FALSE;
+
+    pCur    = pVal;
+    pTbsEnd = pVal + cbVal;
+
+    /* [0] version is optional; everything after it is positional. */
+    if (!DerReadHeader(pCur, pTbsEnd, &bTag, &pVal, &cbVal, &pNext))
+        return FALSE;
+    if (bTag == 0xA0)
+        pCur = pNext;          /* skip version */
+
+    /* serialNumber, signature, issuer, validity — four elements, then
+     * subject is next. Their tags are not checked beyond being readable:
+     * the position is what identifies the field. */
+    for (i = 0; i < 4; i++) {
+        if (!DerReadHeader(pCur, pTbsEnd, &bTag, &pVal, &cbVal, &pNext))
+            return FALSE;
+        pCur = pNext;
+    }
+
+    /* subject ::= Name, which is a SEQUENCE. CKA_SUBJECT is the whole
+     * encoded Name including its header, not just the contents. */
+    if (!DerReadHeader(pCur, pTbsEnd, &bTag, &pVal, &cbVal, &pNext))
+        return FALSE;
+    if (bTag != 0x30)
+        return FALSE;
+
+    *ppSubject  = pCur;
+    *pcbSubject = (DWORD)(pNext - pCur);
+    return TRUE;
+}
+
 /* Resolve the PKCS#11 mechanism from algorithm identifier and CNG flags */
 SECURITY_STATUS P11_ResolveMechanism(
     LPCWSTR          pszAlgId,
@@ -48,6 +240,17 @@ SECURITY_STATUS P11_ResolveMechanism(
     memset(pMechanism, 0, sizeof(*pMechanism));
 
     if (_wcsicmp(pszAlgId, ALG_RSA) == 0) {
+        /* Raw RSA — NCRYPT_NO_PADDING_FLAG. This has to be decided INSIDE
+         * the RSA branch: the branch returns, so a check placed after it
+         * is unreachable. Gated on the probe at the point of use, as
+         * ML-DSA is; SoftHSM2 2.7.0 does not implement CKM_RSA_X_509, so
+         * it stays dark there and lights up on a token that has it. */
+        if (dwFlags & NCRYPT_NO_PADDING_FLAG) {
+            if (!P11_HasMechanism(CKM_RSA_X_509))
+                return NTE_NOT_SUPPORTED;
+            pMechanism->mechanism = CKM_RSA_X_509;
+            return ERROR_SUCCESS;
+        }
         if (dwFlags & NCRYPT_PAD_PSS_FLAG) {
             pMechanism->mechanism    = CKM_RSA_PKCS_PSS;
             if (pPssParams) {
@@ -66,12 +269,128 @@ SECURITY_STATUS P11_ResolveMechanism(
     }
 
     if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
-        _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0) {
+        _wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0) {
         pMechanism->mechanism = CKM_ECDSA;
         return ERROR_SUCCESS;
     }
 
+    /* EdDSA: deterministic, no padding, no external parameters */
+    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0 ||
+        _wcsicmp(pszAlgId, ALG_EDDSA_ED448)   == 0) {
+        pMechanism->mechanism = CKM_EDDSA;
+        return ERROR_SUCCESS;
+    }
+
+    /* ML-DSA: like EdDSA, no padding and no parameters on the mechanism.
+     * The parameter set belongs to the key, not to the signature, so it is
+     * set as CKA_PARAMETER_SET at generation and never repeated here. */
+    if (P11_MlDsaParameterSet(pszAlgId) != 0) {
+        pMechanism->mechanism = CKM_ML_DSA;
+        return ERROR_SUCCESS;
+    }
+
+    /* AES-CMAC. Unlike HMAC this is a standard CNG identifier
+     * (BCRYPT_AES_CMAC_ALGORITHM), so a portable application can ask for it
+     * by name. The key is an ordinary AES key used for signing. */
+    if (_wcsicmp(pszAlgId, BCRYPT_AES_CMAC_ALGORITHM) == 0) {
+        pMechanism->mechanism = CKM_AES_CMAC;
+        return ERROR_SUCCESS;
+    }
+
+    /* HMAC secret keys sign through C_Sign with the matching HMAC mechanism */
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA1) == 0) {
+        pMechanism->mechanism = CKM_SHA_1_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA224) == 0) {
+        pMechanism->mechanism = CKM_SHA224_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA256) == 0) {
+        pMechanism->mechanism = CKM_SHA256_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA384) == 0) {
+        pMechanism->mechanism = CKM_SHA384_HMAC;
+        return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszAlgId, ALG_HMAC_SHA512) == 0) {
+        pMechanism->mechanism = CKM_SHA512_HMAC;
+        return ERROR_SUCCESS;
+    }
+
     return NTE_BAD_ALGID;
+}
+
+/* Map a CNG hash name to PKCS#11 digest mechanism + MGF1 identifier */
+SECURITY_STATUS P11_MapHashAlg(
+    LPCWSTR            pszHashAlg,
+    CK_MECHANISM_TYPE *pHashMech,
+    CK_ULONG          *pMgf)
+{
+    if (!pszHashAlg || !pHashMech || !pMgf)
+        return NTE_INVALID_PARAMETER;
+
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA1_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA_1;   *pMgf = CKG_MGF1_SHA1;   return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, KSP_SHA224_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA224;  *pMgf = CKG_MGF1_SHA224; return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA256_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA256;  *pMgf = CKG_MGF1_SHA256; return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA384_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA384;  *pMgf = CKG_MGF1_SHA384; return ERROR_SUCCESS;
+    }
+    if (_wcsicmp(pszHashAlg, BCRYPT_SHA512_ALGORITHM) == 0) {
+        *pHashMech = CKM_SHA512;  *pMgf = CKG_MGF1_SHA512; return ERROR_SUCCESS;
+    }
+
+    return NTE_NOT_SUPPORTED;
+}
+
+/* Populate CK_RSA_PKCS_OAEP_PARAMS from a BCRYPT_OAEP_PADDING_INFO.
+ * Defaults to SHA-1 when no padding info is supplied (CNG legacy behaviour). */
+SECURITY_STATUS P11_BuildOaepParams(
+    BCRYPT_OAEP_PADDING_INFO *pOaepInfo,
+    CK_RSA_PKCS_OAEP_PARAMS  *pParams)
+{
+    SECURITY_STATUS ss;
+
+    if (!pParams)
+        return NTE_INVALID_PARAMETER;
+
+    memset(pParams, 0, sizeof(*pParams));
+
+    if (!pOaepInfo || !pOaepInfo->pszAlgId) {
+        /* No padding info → SHA-1, the CNG default for OAEP */
+        pParams->hashAlg = CKM_SHA_1;
+        pParams->mgf     = CKG_MGF1_SHA1;
+    } else {
+        ss = P11_MapHashAlg(pOaepInfo->pszAlgId,
+                            &pParams->hashAlg, &pParams->mgf);
+        if (ss != ERROR_SUCCESS)
+            return ss;
+    }
+
+    pParams->source = CKZ_DATA_SPECIFIED;
+
+    /* An OAEP label is optional; pass it through when present */
+    if (pOaepInfo && pOaepInfo->pbLabel && pOaepInfo->cbLabel > 0) {
+        pParams->pSourceData     = pOaepInfo->pbLabel;
+        pParams->ulSourceDataLen = pOaepInfo->cbLabel;
+    } else {
+        pParams->pSourceData     = NULL;
+        pParams->ulSourceDataLen = 0;
+    }
+
+    return ERROR_SUCCESS;
 }
 
 /* Search for an object by label and class */
@@ -242,7 +561,6 @@ SECURITY_STATUS P11_ExportEcPublicKey(
     DWORD  cbCoord;
     DWORD  cbBlob;
     BCRYPT_ECCKEY_BLOB *pEccBlob;
-    P11_CONTEXT *pCtx = P11_GetContext();
 
     /* Read CKA_EC_POINT (ANSI X9.62 format: 0x04 || Qx || Qy) */
     if (P11_GetBinaryAttr(hSession, hPubKey, CKA_EC_POINT,
@@ -261,13 +579,20 @@ SECURITY_STATUS P11_ExportEcPublicKey(
         BYTE *pbPoint = pbEcPoint;
         DWORD cbRemain = cbEcPoint;
 
-        /* Skip DER OCTET STRING wrapper (PKCS#11 CKA_EC_POINT is always DER-encoded) */
+        /* Skip the DER OCTET STRING wrapper. P-256/P-384 points use a
+         * short-form length; a P-521 point is 133 bytes and uses the
+         * long form (0x81 LEN), so the header is one byte longer. */
         if (pbPoint[0] == 0x04 && cbRemain > 2) {
-            pbPoint  += 2;
-            cbRemain -= 2;
+            if (pbPoint[1] == 0x81 && cbRemain > 3) {
+                pbPoint  += 3;
+                cbRemain -= 3;
+            } else if (pbPoint[1] < 128) {
+                pbPoint  += 2;
+                cbRemain -= 2;
+            }
         }
 
-        if (pbPoint[0] != 0x04) {
+        if (cbRemain < 1 || pbPoint[0] != 0x04) {
             KSP_Free(pbEcPoint);
             return NTE_BAD_KEY;
         }
@@ -282,9 +607,12 @@ SECURITY_STATUS P11_ExportEcPublicKey(
         }
 
         pEccBlob = (BCRYPT_ECCKEY_BLOB *)*ppBlob;
-        pEccBlob->dwMagic = (cbCoord == EC_P256_COORD_SIZE)
-                          ? BCRYPT_ECDSA_PUBLIC_P256_MAGIC
-                          : BCRYPT_ECDSA_PUBLIC_P384_MAGIC;
+        if (cbCoord == EC_P256_COORD_SIZE)
+            pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+        else if (cbCoord == EC_P521_COORD_SIZE)
+            pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_P521_MAGIC;
+        else
+            pEccBlob->dwMagic = BCRYPT_ECDSA_PUBLIC_P384_MAGIC;
         pEccBlob->cbKey   = cbCoord;
 
         memcpy(*ppBlob + sizeof(BCRYPT_ECCKEY_BLOB), pbPoint + 1, 2 * cbCoord);
@@ -295,14 +623,285 @@ SECURITY_STATUS P11_ExportEcPublicKey(
     return ERROR_SUCCESS;
 }
 
-/* Return the EC coordinate size in bytes */
+/* Return the EC coordinate size in bytes (ECDSA and ECDH curves) */
 DWORD P11_EcCoordSize(LPCWSTR pszAlgId)
 {
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0)
+    if (!pszAlgId)
+        return 0;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P256) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P256)  == 0)
         return EC_P256_COORD_SIZE;
-    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0)
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P384) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P384)  == 0)
         return EC_P384_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_P521) == 0 ||
+        _wcsicmp(pszAlgId, ALG_ECDH_P521)  == 0)
+        return EC_P521_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_SECP256K1) == 0)
+        return EC_SECP256K1_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP256) == 0)
+        return EC_BP256_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP384) == 0)
+        return EC_BP384_COORD_SIZE;
+    if (_wcsicmp(pszAlgId, ALG_ECDSA_BP512) == 0)
+        return EC_BP512_COORD_SIZE;
+    /* X25519: a 32-byte scalar field. The public key is these 32 bytes
+     * raw — there is no second coordinate and no 0x04 prefix. */
+    if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
+        return EC_X25519_COORD_SIZE;
     return 0;
+}
+
+/* Every curve this provider can put on a token, in one table.
+ *
+ * Both directions read from it — name to OID when generating, OID back to
+ * name when reopening a key. They were separate hand-written chains, and
+ * the reverse one covered five of the ten curves: X25519, secp256k1 and
+ * the three Brainpool curves all fell through to a final `else` that
+ * named them P-384. A key generated here and reopened by name came back
+ * claiming a curve it was not, with a key size to match. One table cannot
+ * drift from itself.
+ *
+ * pszDeriveAlgId is the name to report when CKA_DERIVE is set — the same
+ * NIST curve serves ECDSA and ECDH, and only that attribute separates
+ * them. It is NULL for a curve with one purpose. */
+typedef struct _EC_CURVE_ENTRY {
+    LPCWSTR     pszAlgId;
+    LPCWSTR     pszDeriveAlgId;
+    const char *pbOid;
+    CK_ULONG    cbOid;
+    DWORD       dwBits;
+} EC_CURVE_ENTRY;
+
+static const EC_CURVE_ENTRY g_EcCurves[] = {
+    { ALG_ECDSA_P256,      ALG_ECDH_P256,  EC_OID_P256,      EC_OID_P256_LEN,      256 },
+    { ALG_ECDSA_P384,      ALG_ECDH_P384,  EC_OID_P384,      EC_OID_P384_LEN,      384 },
+    { ALG_ECDSA_P521,      ALG_ECDH_P521,  EC_OID_P521,      EC_OID_P521_LEN,      521 },
+    { ALG_ECDSA_SECP256K1, NULL,           EC_OID_SECP256K1, EC_OID_SECP256K1_LEN, 256 },
+    { ALG_ECDSA_BP256,     NULL,           EC_OID_BP256,     EC_OID_BP_LEN,        256 },
+    { ALG_ECDSA_BP384,     NULL,           EC_OID_BP384,     EC_OID_BP_LEN,        384 },
+    { ALG_ECDSA_BP512,     NULL,           EC_OID_BP512,     EC_OID_BP_LEN,        512 },
+    { ALG_EDDSA_ED25519,   NULL,           EC_OID_ED25519,   EC_OID_ED25519_LEN,   255 },
+    { ALG_EDDSA_ED448,     NULL,           EC_OID_ED448,     EC_OID_ED448_LEN,     448 },
+    /* X25519 is agreement-only, so it is named by the derive column and
+     * has no signing name at all. */
+    { NULL,                ALG_ECDH_X25519, EC_OID_X25519,   EC_OID_X25519_LEN,    255 },
+};
+
+#define EC_CURVE_COUNT (sizeof(g_EcCurves) / sizeof(g_EcCurves[0]))
+
+/* Map an EC / EdDSA algorithm name to its DER-encoded curve OID */
+const char *P11_GetCurveOid(LPCWSTR pszAlgId, CK_ULONG *pcbOid)
+{
+    size_t i;
+
+    if (!pszAlgId || !pcbOid)
+        return NULL;
+
+    for (i = 0; i < EC_CURVE_COUNT; i++) {
+        if ((g_EcCurves[i].pszAlgId &&
+             _wcsicmp(pszAlgId, g_EcCurves[i].pszAlgId) == 0) ||
+            (g_EcCurves[i].pszDeriveAlgId &&
+             _wcsicmp(pszAlgId, g_EcCurves[i].pszDeriveAlgId) == 0)) {
+            *pcbOid = g_EcCurves[i].cbOid;
+            return g_EcCurves[i].pbOid;
+        }
+    }
+    return NULL;
+}
+
+/* The reverse: identify a curve from the CKA_EC_PARAMS read off a key.
+ *
+ * bDerive is the key's CKA_DERIVE, which is the only thing distinguishing
+ * an ECDH key from an ECDSA key on the same NIST curve. Returns NULL for
+ * an OID this provider does not know, so the caller can say so rather
+ * than guess — the previous code guessed P-384. */
+LPCWSTR P11_CurveAlgFromOid(
+    const BYTE *pbOid,
+    DWORD       cbOid,
+    BOOL        bDerive,
+    DWORD      *pdwBits)
+{
+    size_t i;
+
+    if (!pbOid || cbOid == 0)
+        return NULL;
+
+    for (i = 0; i < EC_CURVE_COUNT; i++) {
+        if (cbOid != g_EcCurves[i].cbOid ||
+            memcmp(pbOid, g_EcCurves[i].pbOid, cbOid) != 0)
+            continue;
+
+        if (pdwBits)
+            *pdwBits = g_EcCurves[i].dwBits;
+
+        /* A curve with only one purpose reports that purpose whatever
+         * CKA_DERIVE says; asking a Brainpool key to be an ECDH name it
+         * has no identifier for would be worse than ignoring the flag. */
+        if (bDerive && g_EcCurves[i].pszDeriveAlgId)
+            return g_EcCurves[i].pszDeriveAlgId;
+        if (g_EcCurves[i].pszAlgId)
+            return g_EcCurves[i].pszAlgId;
+        return g_EcCurves[i].pszDeriveAlgId;
+    }
+    return NULL;
+}
+
+/* Build CKA_EC_POINT (DER OCTET STRING wrapping 0x04 || X || Y).
+ * Uses short-form DER length for points below 128 bytes and long-form
+ * (0x81 LEN) above — a P-521 point is 133 bytes and needs long form. */
+SECURITY_STATUS P11_BuildEcPointDer(
+    const BYTE *pbX,
+    const BYTE *pbY,
+    DWORD       cbCoord,
+    BYTE      **ppDer,
+    DWORD      *pcbDer)
+{
+    DWORD cbPoint;   /* 0x04 || X || Y */
+    DWORD cbHeader;
+    BYTE *pb;
+
+    if (!pbX || !pbY || !ppDer || !pcbDer || cbCoord == 0)
+        return NTE_INVALID_PARAMETER;
+
+    cbPoint  = 1 + 2 * cbCoord;
+    cbHeader = (cbPoint < 128) ? 2 : 3;
+
+    *ppDer = (BYTE *)KSP_Alloc(cbHeader + cbPoint);
+    if (!*ppDer)
+        return NTE_NO_MEMORY;
+
+    pb = *ppDer;
+    *pb++ = 0x04;                       /* OCTET STRING tag */
+    if (cbPoint < 128) {
+        *pb++ = (BYTE)cbPoint;          /* short-form length */
+    } else {
+        *pb++ = 0x81;                   /* long form, 1 length byte */
+        *pb++ = (BYTE)cbPoint;
+    }
+    *pb++ = 0x04;                       /* uncompressed point marker */
+    memcpy(pb, pbX, cbCoord); pb += cbCoord;
+    memcpy(pb, pbY, cbCoord);
+
+    *pcbDer = cbHeader + cbPoint;
+    return ERROR_SUCCESS;
+}
+
+/* Build CKA_EC_POINT for a curve whose public key is a single raw string:
+ * a DER OCTET STRING wrapping the bytes, with no 0x04 marker. Ed25519,
+ * Ed448 and X25519 all use this form. */
+SECURITY_STATUS P11_BuildRawEcPointDer(
+    const BYTE *pbRaw,
+    DWORD       cbRaw,
+    BYTE      **ppDer,
+    DWORD      *pcbDer)
+{
+    DWORD cbHeader;
+    BYTE *pb;
+
+    if (!pbRaw || !ppDer || !pcbDer || cbRaw == 0 || cbRaw > 0xFF)
+        return NTE_INVALID_PARAMETER;
+
+    cbHeader = (cbRaw < 128) ? 2 : 3;
+
+    *ppDer = (BYTE *)KSP_AllocZero(cbHeader + cbRaw);
+    if (!*ppDer)
+        return NTE_NO_MEMORY;
+
+    pb = *ppDer;
+    *pb++ = 0x04;                       /* OCTET STRING */
+    if (cbRaw < 128) {
+        *pb++ = (BYTE)cbRaw;
+    } else {
+        *pb++ = 0x81;
+        *pb++ = (BYTE)cbRaw;
+    }
+    memcpy(pb, pbRaw, cbRaw);
+
+    *pcbDer = cbHeader + cbRaw;
+    return ERROR_SUCCESS;
+}
+
+/* Export an Edwards- or Montgomery-curve public key as a BCRYPT_ECCKEY_BLOB.
+ *
+ * Ed25519, Ed448 and X25519 public keys are a single compressed point, so
+ * the blob carries the raw key bytes directly after the header. There is no
+ * 0x04 uncompressed-point marker and no second coordinate, which is why
+ * P11_ExportEcPublicKey cannot be used: it would consume the first key byte
+ * as a marker and halve the rest into two coordinates.
+ *
+ * Until session 10 this function was never called. KSP_ExportKey dispatched
+ * on the blob type alone and sent every EC-family key to the X9.62 parser,
+ * so EdDSA export had never worked through the provider's own entry point
+ * despite being unit-tested here directly. */
+SECURITY_STATUS P11_ExportEddsaPublicKey(
+    CK_SESSION_HANDLE  hSession,
+    CK_OBJECT_HANDLE   hPubKey,
+    LPCWSTR            pszAlgId,
+    BYTE             **ppBlob,
+    DWORD             *pcbBlob)
+{
+    BYTE  *pbEcPoint = NULL;
+    DWORD  cbEcPoint = 0;
+    BYTE  *pbRaw;
+    DWORD  cbRaw;
+    DWORD  cbExpected;
+    DWORD  cbBlob;
+    BCRYPT_ECCKEY_BLOB *pEccBlob;
+
+    if (!pszAlgId || !ppBlob || !pcbBlob)
+        return NTE_INVALID_PARAMETER;
+
+    if (_wcsicmp(pszAlgId, ALG_EDDSA_ED25519) == 0)
+        cbExpected = ED25519_PUBKEY_SIZE;
+    else if (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
+        cbExpected = EC_X25519_COORD_SIZE;
+    else
+        cbExpected = ED448_PUBKEY_SIZE;
+
+    if (P11_GetBinaryAttr(hSession, hPubKey, CKA_EC_POINT,
+                          &pbEcPoint, &cbEcPoint) != CKR_OK)
+        return NTE_BAD_KEY;
+
+    /* CKA_EC_POINT is DER OCTET STRING wrapped; unwrap to the raw point */
+    pbRaw = pbEcPoint;
+    cbRaw = cbEcPoint;
+
+    if (cbRaw >= 2 && pbRaw[0] == 0x04) {
+        if (pbRaw[1] == 0x81 && cbRaw >= 3) {
+            pbRaw += 3; cbRaw -= 3;     /* long-form length */
+        } else if (pbRaw[1] < 128) {
+            pbRaw += 2; cbRaw -= 2;     /* short-form length */
+        }
+    }
+
+    if (cbRaw != cbExpected) {
+        KSP_Free(pbEcPoint);
+        return NTE_BAD_KEY;
+    }
+
+    cbBlob  = sizeof(BCRYPT_ECCKEY_BLOB) + cbRaw;
+    *ppBlob = (BYTE *)KSP_AllocZero(cbBlob);
+    if (!*ppBlob) {
+        KSP_Free(pbEcPoint);
+        return NTE_NO_MEMORY;
+    }
+
+    pEccBlob = (BCRYPT_ECCKEY_BLOB *)*ppBlob;
+    /* The magic is the only thing that tells X25519 from Ed25519 on the way
+     * back in: both are 32 raw bytes, and cbKey cannot separate them.
+     * Signing curves get the ECDSA generic magic, agreement curves the
+     * ECDH one — which is also how CNG distinguishes them. */
+    pEccBlob->dwMagic = (_wcsicmp(pszAlgId, ALG_ECDH_X25519) == 0)
+                        ? BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC
+                        : BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC;
+    pEccBlob->cbKey   = cbRaw;
+
+    memcpy(*ppBlob + sizeof(BCRYPT_ECCKEY_BLOB), pbRaw, cbRaw);
+
+    *pcbBlob = cbBlob;
+    KSP_Free(pbEcPoint);
+    return ERROR_SUCCESS;
 }
 
 /* Decode a DER ECDSA signature into Windows r||s format */
@@ -340,6 +939,7 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     /* Skip the sequence length */
     if (*p & 0x80) {
         DWORD nLenBytes = *p & 0x7F; p++;
+        if (nLenBytes > (DWORD)(pEnd - p)) return NTE_INVALID_PARAMETER;
         p += nLenBytes;
     } else {
         p++;
@@ -348,7 +948,9 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     /* Decode INTEGER r */
     if (p >= pEnd || *p != 0x02) return NTE_INVALID_PARAMETER; p++;
     if (p >= pEnd) return NTE_INVALID_PARAMETER;
-    cbInt = *p++; pbInt = p; p += cbInt;
+    cbInt = *p++;
+    if (cbInt > (DWORD)(pEnd - p)) return NTE_INVALID_PARAMETER;
+    pbInt = p; p += cbInt;
 
     /* Strip the 0x00 sign byte if present */
     if (cbInt > 0 && *pbInt == 0x00) { pbInt++; cbInt--; }
@@ -358,7 +960,9 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
     /* Decode INTEGER s */
     if (p >= pEnd || *p != 0x02) return NTE_INVALID_PARAMETER; p++;
     if (p >= pEnd) return NTE_INVALID_PARAMETER;
-    cbInt = *p++; pbInt = p;
+    cbInt = *p++;
+    if (cbInt > (DWORD)(pEnd - p)) return NTE_INVALID_PARAMETER;
+    pbInt = p;
 
     if (cbInt > 0 && *pbInt == 0x00) { pbInt++; cbInt--; }
     if (cbInt > cbCoord) return NTE_INVALID_PARAMETER;
@@ -366,4 +970,56 @@ SECURITY_STATUS P11_DecodeDerEcdsaSignature(
 
     *pcbOut = cbSig;
     return ERROR_SUCCESS;
+}
+
+/* Compare a PKCS#11 token label (space-padded, not NUL terminated) against
+ * a caller's C string. See the header for why this needs its own function. */
+BOOL P11_TokenLabelMatches(const CK_UTF8CHAR *pbLabel, const char *szWanted)
+{
+    size_t cbLabel = P11_TOKEN_LABEL_LEN;
+    size_t cbWanted;
+
+    if (!pbLabel || !szWanted)
+        return FALSE;
+
+    while (cbLabel > 0 && pbLabel[cbLabel - 1] == ' ')
+        cbLabel--;
+
+    cbWanted = strlen(szWanted);
+    if (cbWanted != cbLabel)
+        return FALSE;
+
+    return memcmp(pbLabel, szWanted, cbLabel) == 0;
+}
+
+/* Map a CNG curve name to this provider's identifier. See the header. */
+LPCWSTR P11_CurveNameToAlgId(LPCWSTR pszCurveName, BOOL bAgreement)
+{
+    if (!pszCurveName)
+        return NULL;
+
+    /* NIST curves exist in both signing and agreement forms. */
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP256) == 0)
+        return bAgreement ? ALG_ECDH_P256 : ALG_ECDSA_P256;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP384) == 0)
+        return bAgreement ? ALG_ECDH_P384 : ALG_ECDSA_P384;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_NISTP521) == 0)
+        return bAgreement ? ALG_ECDH_P521 : ALG_ECDSA_P521;
+
+    /* X25519 is agreement-only; asking to sign with it is a mismatch the
+     * caller should hear about rather than have quietly reinterpreted. */
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_25519) == 0)
+        return bAgreement ? ALG_ECDH_X25519 : NULL;
+
+    /* These are signing curves in this provider; no ECDH form is wired. */
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_SECP256K1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_SECP256K1;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP256R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP256;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP384R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP384;
+    if (_wcsicmp(pszCurveName, BCRYPT_ECC_CURVE_BRAINPOOLP512R1) == 0)
+        return bAgreement ? NULL : ALG_ECDSA_BP512;
+
+    return NULL;
 }

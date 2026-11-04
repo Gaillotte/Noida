@@ -1,0 +1,28 @@
+<section id="injection" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">The discipline</p>
+<h2 style="font-size:62px;font-weight:600;line-height:1.1;width:1620px">A green test proves nothing until you have watched it go red</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">Every claim in this project is established by breaking the code and confirming the suite catches it. The habit exists because vacuous tests kept passing: one asserted a defect <i>as</i> the expected behaviour, another compared two handles that could be swapped freely.</p>
+</div>
+<div style="display:flex;gap:26px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;padding:36px;border:1px solid #D9DCD6;border-radius:16px;border-top:6px solid #B3561A">
+<h3 style="font-size:32px;font-weight:600">Five defects the mock could not see</h3>
+<ul style="font-size:25px;line-height:1.5;color:#44525E;padding:0 0 0 30px">
+<li>ECDSA signing had <b>never</b> worked against a conformant token — the provider decoded DER where v2.40 mandates raw r&#8214;s, and the mock returned whatever DER the test had just built</li>
+<li>A size query poisoned the session pool</li>
+<li>A deleted key left its certificate on the token</li>
+<li>HMAC and CMAC signing had never worked</li>
+<li>A key opened by name lost its modulus size, so every signature failed at CNG's first call</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#111E2B;color:#F7F7F4;padding:36px;border-radius:16px">
+<h3 style="font-size:32px;font-weight:600;color:#E08A4A">And three traps in the harness itself</h3>
+<ul style="font-size:25px;line-height:1.5;color:#AFC3D4;padding:0 0 0 30px">
+<li>Building one test binary <b>silently rebuilt nothing</b>, so four consecutive fault injections ran against a stale binary and looked undetected — the worst possible failure for the one tool whose job is to show a test can fail</li>
+<li>Ten stubs were never checked against the real prototype, so a signature change produced ten segfaults and no diagnostic</li>
+<li>A grep for a fix matched the comment <i>describing</i> the fix, and reported ten files as correct when none was</li>
+</ul>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Restore an injection from a copy, never from git — that mistake has cost uncommitted work three times · 10 / 15</p>
+</section>

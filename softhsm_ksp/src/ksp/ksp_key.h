@@ -2,7 +2,7 @@
 #ifndef KSP_KEY_H
 #define KSP_KEY_H
 
-#include <windows.h>
+#include "../common/ksp_windows.h"
 #include <ncrypt.h>
 #include "../pkcs11/pkcs11.h"
 #include "../common/config.h"
@@ -13,13 +13,99 @@ typedef struct _KSP_KEY {
     WCHAR            szKeyName[MAX_KEY_LABEL_LEN]; /* CKA_LABEL */
     WCHAR            szAlgId[MAX_ALG_ID_LEN];    /* L"RSA", L"ECDSA_P256"... */
     DWORD            dwKeyBitLen;               /* Key length in bits (RSA) */
+    DWORD            dwPublicExponent;          /* RSA public exponent (default 65537) */
     DWORD            dwKeySpec;                 /* AT_SIGNATURE or AT_KEYEXCHANGE */
     CK_OBJECT_HANDLE hPrivKey;                  /* PKCS#11 private key handle */
     CK_OBJECT_HANDLE hPubKey;                   /* PKCS#11 public key handle */
     CK_SLOT_ID       slotId;                    /* PKCS#11 slot */
     BOOL             bFinalized;                /* FinalizeKey called? */
     BOOL             bPersistOnly;              /* Deferred generation? */
+    DWORD            dwKeyClass;                /* KSP_KEY_CLASS_ASYMMETRIC / _SYMMETRIC */
+    CK_OBJECT_HANDLE hSecretKey;                /* Symmetric key object (AES/HMAC) */
+    BOOL             bSessionObject;            /* TRUE = session object, destroy on FreeKey */
+    BOOL             bMachineKey;               /* NCRYPT_MACHINE_KEY_FLAG was set */
+    BOOL             bCurvePending;             /* generic ECDSA/ECDH awaiting BCRYPT_ECC_CURVE_NAME */
+
+    /* NCRYPT_EXPORT_POLICY_PROPERTY, as set before FinalizeKey.
+     *
+     * Zero — the default — means the key never leaves the token, which is
+     * the posture every key had before this existed and the one every key
+     * still has unless a caller deliberately asks otherwise.
+     *
+     * The two CNG flags are NOT interchangeable and must not be collapsed
+     * into one boolean:
+     *
+     *   NCRYPT_ALLOW_EXPORT_FLAG            -> CKA_EXTRACTABLE=TRUE only.
+     *       C_WrapKey succeeds, so the key can leave WRAPPED under a KEK
+     *       already on the token. CKA_SENSITIVE stays TRUE, so CKA_VALUE
+     *       is still refused and plaintext export still fails.
+     *
+     *   NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG  -> also CKA_SENSITIVE=FALSE.
+     *       CKA_VALUE becomes readable, which is what BCRYPT_KEY_DATA_BLOB
+     *       export needs. Strictly weaker than the line above.
+     *
+     * CKA_SENSITIVE is what stops CKA_VALUE being read; CKA_EXTRACTABLE is
+     * what stops C_WrapKey. Relaxing the wrong one grants the wrong thing.
+     */
+    DWORD            dwExportPolicy;
+
+    /* Symmetric cipher state (AES) — set via NCryptSetProperty */
+    WCHAR            szChainingMode[MAX_ALG_ID_LEN]; /* NCRYPT_CHAINING_MODE_PROPERTY */
+    BYTE             pbIV[AES_BLOCK_SIZE];      /* NCRYPT_INITIALIZATION_VECTOR */
+    DWORD            cbIV;                      /* IV length actually set */
+    BYTE             pbAuthData[MAX_AUTH_DATA_LEN]; /* GCM additional authenticated data */
+    DWORD            cbAuthData;                /* AAD length actually set */
+    /* CFB feedback size in bytes, from BCRYPT_MESSAGE_BLOCK_LENGTH.
+     * Zero means unset, which is CNG's default of 1 (8-bit CFB) — NOT the
+     * full block. Microsoft's own property documentation: "By default,
+     * this property is set to 1 for 8-bit CFB. Setting it to the block
+     * size in bytes causes full-block CFB to be used." Mapping
+     * ChainingModeCFB straight to CKM_AES_CFB128 would therefore be wrong
+     * for every caller that did not set this, and the ciphertext would not
+     * decrypt on any other CNG implementation. */
+    DWORD            cbMessageBlockLen;
+
+    /* Per-key PIN (NCRYPT_PIN_PROPERTY on a key handle).
+     *
+     * Empty unless the caller set one. When set, every operation with this
+     * key re-authenticates through C_Login(CKU_CONTEXT_SPECIFIC), which is
+     * PKCS#11's own per-key mechanism for a key marked
+     * CKA_ALWAYS_AUTHENTICATE. Zeroed in KSP_FreeKey. */
+    char             szKeyPin[P11_MAX_PIN_LEN + 1];
+
+    /* NCRYPT_OVERWRITE_KEY_FLAG: the objects the old key of this name owns.
+     *
+     * Recorded when the key is CREATED and destroyed only after the new key
+     * has been generated successfully. The ordering is the whole point. The
+     * obvious implementation — destroy the old key, then generate — loses
+     * the existing key outright if generation then fails, and for a CA key
+     * that is unrecoverable. Generating first costs a moment in which two
+     * objects share a CKA_LABEL, which is the state this feature exists to
+     * prevent; it is still the right trade, because the failure mode is a
+     * duplicate rather than a destroyed key.
+     *
+     * Handles can go stale between create and finalize if another process
+     * deletes the key. C_DestroyObject on a stale handle is logged and
+     * ignored: the object is gone, which is what was wanted. */
+    BOOL             bOverwrite;
+    CK_OBJECT_HANDLE hOldPriv;
+    CK_OBJECT_HANDLE hOldPub;
+    CK_OBJECT_HANDLE hOldSecret;
+    CK_OBJECT_HANDLE hOldCert;
 } KSP_KEY;
+
+/* Agreed-secret handle produced by KSP_SecretAgreement (ECDH).
+ * Consumed by KSP_DeriveKey and released by KSP_FreeSecret. */
+typedef struct _KSP_SECRET {
+    DWORD            dwMagic;      /* KSP_SECRET_MAGIC */
+    CK_OBJECT_HANDLE hSecretObj;   /* CKO_SECRET_KEY produced by C_DeriveKey */
+    DWORD            dwSecretLen;  /* Raw secret length in bytes */
+    /* The scope whose token the derived object lives on — the private key's
+     * (LIFE-08). It has to be recorded here rather than recomputed: by the
+     * time NCryptDeriveKey runs, the caller holds only the secret handle,
+     * and a derive on the wrong token would not find the object at all. */
+    int              nScope;
+} KSP_SECRET;
 
 /* Open an existing key from SoftHSM2 */
 SECURITY_STATUS WINAPI KSP_OpenKey(
@@ -66,17 +152,79 @@ SECURITY_STATUS WINAPI KSP_EnumKeys(
 /* Validate a key handle */
 BOOL KSP_IsValidKey(NCRYPT_KEY_HANDLE hKey);
 
+/* Store an issued certificate beside the key, as a CKO_CERTIFICATE object
+ * carrying the key's scoped CKA_LABEL. Replaces any certificate already
+ * stored under that label. Backs NCRYPT_CERTIFICATE_PROPERTY. */
+SECURITY_STATUS KSP_StoreCertificate(KSP_KEY *pKey,
+                                     const BYTE *pbCert, DWORD cbCert);
+
+/* Read that certificate back, following the CNG two-call convention.
+ * Returns NTE_NOT_FOUND when the key has no certificate yet, which is the
+ * normal state between generation and enrolment. */
+SECURITY_STATUS KSP_LoadCertificate(KSP_KEY *pKey, PBYTE pbOutput,
+                                    DWORD cbOutput, DWORD *pcbResult);
+
 /* Generate an RSA key pair in SoftHSM2 */
 SECURITY_STATUS KSP_GenerateRsaKeyPair(KSP_KEY *pKey);
 
-/* Generate an EC key pair in SoftHSM2 */
+/* Generate an EC key pair in SoftHSM2 (NIST P-256 / P-384 / P-521) */
 SECURITY_STATUS KSP_GenerateEcKeyPair(KSP_KEY *pKey);
+
+/* Generate an Edwards-curve key pair in SoftHSM2 (Ed25519 / Ed448) */
+SECURITY_STATUS KSP_GenerateEddsaKeyPair(KSP_KEY *pKey);
+
+/* Generate an ML-DSA key pair (FIPS 204).
+ *
+ * Needs a PKCS#11 v3.2 token that implements CKM_ML_DSA_KEY_PAIR_GEN and
+ * CKM_ML_DSA, which SoftHSM2 2.7.0 does not; returns NTE_NOT_SUPPORTED
+ * when the capability probe says the mechanisms are absent. */
+SECURITY_STATUS KSP_GenerateMlDsaKeyPair(KSP_KEY *pKey);
+
+/* Generate a symmetric key in SoftHSM2 (AES / HMAC generic secret) */
+SECURITY_STATUS KSP_GenerateSymmetricKey(KSP_KEY *pKey);
+
+/* Encode an RSA public exponent as minimal-length big-endian bytes.
+ * pbOut must have room for 4 bytes; returns the count written. */
+CK_ULONG KSP_EncodePublicExponent(DWORD dwExp, CK_BYTE *pbOut);
+
+/* Return TRUE when pszAlgId names a NIST ECDSA curve */
+BOOL KSP_IsEcdsaAlg(LPCWSTR pszAlgId);
+
+/* Return TRUE when pszAlgId names a NIST ECDH curve */
+BOOL KSP_IsEcdhAlg(LPCWSTR pszAlgId);
+
+/* Return TRUE when pszAlgId names an Edwards curve */
+BOOL KSP_IsEddsaAlg(LPCWSTR pszAlgId);
+
+/* X25519 — a Montgomery curve generated with the Edwards mechanism */
+BOOL KSP_IsMontgomeryAlg(LPCWSTR pszAlgId);
+
+/* The generic CNG ECC identifiers, whose curve arrives later through the
+ * BCRYPT_ECC_CURVE_NAME property. Returns TRUE for BCRYPT_ECDSA_ALGORITHM
+ * and BCRYPT_ECDH_ALGORITHM. */
+BOOL KSP_IsGenericEccAlg(LPCWSTR pszAlgId);
+
+/* Default key length in bits for an algorithm identifier. Exposed so the
+ * curve-name property can set it when it resolves a generic ECC key. */
+DWORD KSP_DefaultKeyBits(LPCWSTR pszAlgId);
+
+/* Return TRUE when pszAlgId names a symmetric algorithm (AES or HMAC) */
+BOOL KSP_IsSymmetricAlg(LPCWSTR pszAlgId);
+
+/* TRUE for ALG_MLDSA_44 / _65 / _87. Says nothing about whether the token
+ * implements the mechanisms — see P11_HasMechanism. */
+BOOL KSP_IsMlDsaAlg(LPCWSTR pszAlgId);
 
 /* Internal enumeration state */
 typedef struct _KSP_ENUM_STATE {
     CK_OBJECT_HANDLE *phObjects;   /* Array of found handles */
     DWORD             dwCount;     /* Total count */
     DWORD             dwIndex;     /* Current index */
+    /* The scope being enumerated (LIFE-08). NCryptEnumKeys passes its flags
+     * on the FIRST call only; the continuations receive the state and no
+     * flags, so a scope recomputed per call would silently enumerate the
+     * user token from the second key onwards. */
+    int               nScope;
 } KSP_ENUM_STATE;
 
 #endif /* KSP_KEY_H */

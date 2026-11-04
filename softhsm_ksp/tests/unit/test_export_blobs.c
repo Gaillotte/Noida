@@ -4,6 +4,8 @@
 #include "../mock/windows_compat.h"
 #include "../mock/p11_mock.h"
 #include "../../src/pkcs11/pkcs11.h"
+#include "../../src/common/config.h"
+#include "../../src/pkcs11/p11_utils.h"
 #include "test_framework.h"
 
 /* P11 context stubs to bypass the singleton */
@@ -220,6 +222,69 @@ int main(void)
     P11Mock_GetConfig()->rv_GetAttributeValue = CKR_SESSION_HANDLE_INVALID;
     rv = P11_GetUlongAttr(0xBEEF, 0x10, CKA_KEY_TYPE, &ulVal);
     ASSERT_NEQ("GetUlongAttr (error) → != CKR_OK", rv, (CK_RV)CKR_OK);
+
+    /* ── Token label matching (slot selection, OPS-04) ─────────────────── */
+    TEST_SUITE("P11_TokenLabelMatches");
+    {
+        /* CK_TOKEN_INFO.label is 32 bytes, space-padded, NOT NUL
+         * terminated. Every case below is built that way on purpose. */
+        CK_UTF8CHAR lbl[P11_TOKEN_LABEL_LEN];
+
+        #define SET_LABEL(txt) do {                                  \
+            memset(lbl, ' ', sizeof lbl);                            \
+            memcpy(lbl, (txt), strlen(txt));                         \
+        } while (0)
+
+        SET_LABEL("signing-token");
+        ASSERT("Exact match", P11_TokenLabelMatches(lbl, "signing-token"));
+        ASSERT("Different label rejected",
+            !P11_TokenLabelMatches(lbl, "other-token"));
+
+        /* The reason strncmp cannot be used: a prefix must not match. */
+        SET_LABEL("production");
+        ASSERT("Prefix does not match", !P11_TokenLabelMatches(lbl, "prod"));
+        ASSERT("Full label matches",
+            P11_TokenLabelMatches(lbl, "production"));
+        SET_LABEL("prod");
+        ASSERT("Shorter label does not match a longer request",
+            !P11_TokenLabelMatches(lbl, "production"));
+        ASSERT("...but matches its own value",
+            P11_TokenLabelMatches(lbl, "prod"));
+
+        /* A label occupying the whole field has no padding to trim. */
+        memset(lbl, 'x', sizeof lbl);
+        {
+            char szFull[P11_TOKEN_LABEL_LEN + 1];
+            memset(szFull, 'x', P11_TOKEN_LABEL_LEN);
+            szFull[P11_TOKEN_LABEL_LEN] = '\0';
+            ASSERT("Full-width label matches",
+                P11_TokenLabelMatches(lbl, szFull));
+        }
+
+        /* An all-space label is the empty string once trimmed. */
+        memset(lbl, ' ', sizeof lbl);
+        ASSERT("All-space label equals the empty string",
+            P11_TokenLabelMatches(lbl, ""));
+        ASSERT("All-space label does not match a real name",
+            !P11_TokenLabelMatches(lbl, "token"));
+
+        /* Interior spaces must survive trimming. */
+        SET_LABEL("my token");
+        ASSERT("Interior space preserved",
+            P11_TokenLabelMatches(lbl, "my token"));
+        ASSERT("Interior space is not collapsed",
+            !P11_TokenLabelMatches(lbl, "mytoken"));
+
+        /* Trailing spaces the caller supplies are theirs, not padding. */
+        SET_LABEL("tok");
+        ASSERT("Caller's trailing space is significant",
+            !P11_TokenLabelMatches(lbl, "tok "));
+
+        ASSERT("NULL label rejected", !P11_TokenLabelMatches(NULL, "tok"));
+        ASSERT("NULL request rejected", !P11_TokenLabelMatches(lbl, NULL));
+
+        #undef SET_LABEL
+    }
 
     TEST_REPORT();
     TEST_EXIT();

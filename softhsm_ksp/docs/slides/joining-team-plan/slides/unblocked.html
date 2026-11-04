@@ -1,0 +1,44 @@
+<section id="unblocked" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:34px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:26px;font-weight:600;letter-spacing:4px;text-transform:uppercase;color:#B3561A">The free win</p>
+<h2 style="font-size:60px;font-weight:600;line-height:1.1;width:1620px">Part of the backlog is blocked only by where it was built</h2>
+<p style="font-size:30px;line-height:1.4;width:1620px;color:#44525E">This project was written in a sandbox whose network policy blocks Microsoft Learn. Several findings were therefore recorded as open <b>rather than guessed at</b> — the right call, and one a team with a browser and a partner account retires in an afternoon.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:26px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:34%;color:#F7F7F4;font-size:26px;text-align:left;padding:16px 18px">Open item</th>
+<th style="width:30%;color:#F7F7F4;font-size:26px;text-align:left">What it is waiting on</th>
+<th style="width:36%;color:#F7F7F4;font-size:26px;text-align:left">What it costs if left alone</th>
+</tr>
+<tr>
+<td>16 entry points answer NTE_INVALID_PARAMETER for a bad handle; 7 answer NTE_INVALID_HANDLE</td>
+<td>Microsoft's documented error mapping</td>
+<td>An inconsistency a conformance reviewer will find. Deliberately unchanged — altering 16 call sites on a recalled contract is how the SHA-224 mistake happened</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>No CNG post-quantum algorithm identifier is declared</td>
+<td>The documented spellings, currently grade-B evidence from search summaries</td>
+<td>ML-DSA stays a provider extension, reachable only from an application coded against this KSP</td>
+</tr>
+<tr>
+<td>ML-DSA public key export is refused on purpose</td>
+<td>The PQC blob layout, in a Windows SDK header</td>
+<td>One matrix row stays Partial. A guessed blob would pass every test here and fail only on Windows</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td>ML-KEM is recognised and not offered</td>
+<td>Nothing — there is no slot for encapsulation in the key-storage function table</td>
+<td>Nothing. Record it as a deliberate position and stop revisiting it</td>
+</tr>
+<tr>
+<td>Where ncrypt_provider.h actually comes from</td>
+<td>A definitive answer from Microsoft or a partner channel</td>
+<td><b style="color:#B3561A">The project. This is the critical path</b></td>
+</tr>
+</table>
+<div style="display:flex;gap:20px;align-items:center;background:#111E2B;color:#F7F7F4;padding:28px 34px;border-radius:14px">
+<p style="flex:1;font-size:27px;line-height:1.45">Keep the habit that produced this list. <b style="color:#E08A4A">Every one of these was left open rather than filled in from memory</b>, and the two times this project did guess at a Microsoft constant, both guesses were wrong and both passed the whole test suite.</p>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">5 / 10</p>
+<aside>Worth dwelling on, because it is the cheapest value in the plan and it is invisible unless somebody points at it. The pattern to preserve: when the authoritative source is unreachable, record the gap instead of filling it with recall. The temptation on arriving will be to close these from memory, which is precisely the failure mode that put a non-existent SHA-224 identifier and two invented mock constants into this codebase.</aside>
+</section>

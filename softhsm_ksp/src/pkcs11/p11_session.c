@@ -1,22 +1,180 @@
 /* p11_session.c — PKCS#11 session pool implementation */
 #include "p11_session.h"
 #include "p11_context.h"
+#include "p11_credential.h"
 #include "p11_utils.h"
 #include "../common/config.h"
 #include "../common/logging.h"
 #include <string.h>
 #include <stdlib.h>
 
-/* Static session pool */
-static P11_SESSION_ENTRY g_aPool[P11_SESSION_POOL_SIZE];
-static HANDLE            g_hSemaphore = NULL;
+/* Static session pools — one per scope (LIFE-08).
+ *
+ * A session belongs to a token, so two scopes on two tokens cannot share a
+ * pool: a pooled session logged in to the user token can never serve a
+ * machine-scope operation, and handing it over would read the wrong token's
+ * keys under a successful status.
+ *
+ * Both pools exist unconditionally and the second is simply unused when the
+ * deployment has one token — PoolFor() collapses every scope onto pool 0.
+ * That collapse is the reason a single-token deployment still opens at most
+ * P11_SESSION_POOL_SIZE sessions rather than twice that, and the reason it
+ * is a property of one function instead of a rule to remember at every call
+ * site. */
+static P11_SESSION_ENTRY g_aPool[P11_SCOPE_COUNT][P11_SESSION_POOL_SIZE];
+static HANDLE            g_ahSemaphore[P11_SCOPE_COUNT];
 static CRITICAL_SECTION  g_csPool;
 static BOOL              g_bPoolInit  = FALSE;
+
+/* Which pool serves a scope.
+ *
+ * Without per-scope tokens every scope uses pool 0, because there is only
+ * one token and splitting the pool would halve the concurrency for no
+ * reason. P11_SCOPE_USER is 0 precisely so this is the identity in the
+ * common case. */
+static int PoolFor(int nScope)
+{
+    if (nScope < 0 || nScope >= P11_SCOPE_COUNT)
+        return P11_SCOPE_USER;
+    if (!P11_HasPerScopeTokens())
+        return P11_SCOPE_USER;
+    return nScope;
+}
+
+/* PIN override set through NCryptSetProperty(NCRYPT_PIN_PROPERTY).
+ * Guarded by g_csPin because it is read on every lazy session open and can
+ * be written from any thread. Zeroed, not just freed, when cleared. */
+static char              g_szPin[P11_MAX_PIN_LEN + 1];
+static BOOL              g_bPinSet    = FALSE;
+static CRITICAL_SECTION  g_csPin;
+static INIT_ONCE         g_pinOnce    = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK InitPinLock(PINIT_ONCE o, PVOID p, PVOID *c)
+{
+    (void)o; (void)p; (void)c;
+    InitializeCriticalSection(&g_csPin);
+    return TRUE;
+}
+
+SECURITY_STATUS P11_SetPin(const char *szPin)
+{
+    size_t cb;
+
+    InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    if (!szPin) {
+        P11_ClearPin();
+        return ERROR_SUCCESS;
+    }
+
+    cb = strlen(szPin);
+    if (cb > P11_MAX_PIN_LEN)
+        return NTE_INVALID_PARAMETER;
+
+    EnterCriticalSection(&g_csPin);
+    SecureZeroMemory(g_szPin, sizeof(g_szPin));
+    memcpy(g_szPin, szPin, cb);
+    g_szPin[cb] = '\0';
+    g_bPinSet   = TRUE;
+    LeaveCriticalSection(&g_csPin);
+
+    /* Deliberately not logged, not even its length. */
+    LOG_INFO("PIN set through the provider property");
+    return ERROR_SUCCESS;
+}
+
+void P11_ClearPin(void)
+{
+    InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    EnterCriticalSection(&g_csPin);
+    SecureZeroMemory(g_szPin, sizeof(g_szPin));
+    g_bPinSet = FALSE;
+    LeaveCriticalSection(&g_csPin);
+}
+
+/* Copy the PIN to use for a scope into the caller's buffer.
+ *
+ * Preference: the scope's own PIN variable, then the value set through the
+ * provider property, then SOFTHSM2_PIN, then the compiled-in default.
+ *
+ * The scope's own variable comes FIRST, ahead of the provider property. That
+ * ordering is deliberate and is the opposite of the usual rule here, where a
+ * property outranks the environment because a property is a deliberate act
+ * by the process and a variable is ambient. It is inverted because the two
+ * are not answers to the same question: the property carries ONE PIN and
+ * cannot distinguish the scopes, so treating it as an override would send
+ * the user PIN to the machine token — exactly the failure that per-scope
+ * tokens exist to prevent, and it would fail closed as a login error rather
+ * than loudly.
+ *
+ * With per-scope tokens configured and no per-scope PINs, both tokens are
+ * logged into with the same credential. That is correct for two tokens
+ * initialised identically and is NOT isolation: two tokens sharing one PIN
+ * share one credential. The documentation says so rather than the code
+ * guessing. */
+static BOOL GetEffectivePin(int nScope, char *pszOut, size_t cbOut)
+{
+    DWORD       dwLen;
+    const char *szVar;
+
+    InitOnceExecuteOnce(&g_pinOnce, InitPinLock, NULL, NULL);
+
+    if (P11_HasPerScopeTokens()) {
+        szVar = (nScope == P11_SCOPE_MACHINE) ? KSP_MACHINE_PIN_ENV
+                                              : KSP_USER_PIN_ENV;
+        dwLen = GetEnvironmentVariableA(szVar, pszOut, (DWORD)cbOut);
+        if (dwLen > 0 && dwLen < cbOut)
+            return TRUE;
+    }
+
+    EnterCriticalSection(&g_csPin);
+    if (g_bPinSet) {
+        strcpy_s(pszOut, cbOut, g_szPin);
+        LeaveCriticalSection(&g_csPin);
+        return TRUE;
+    }
+    LeaveCriticalSection(&g_csPin);
+
+    /* A DPAPI-protected blob outranks the ambient environment variable,
+     * and the direction matters.
+     *
+     * If an administrator has gone to the trouble of provisioning a
+     * protected credential, a machine-wide variable left over from a lab
+     * must not silently take precedence — that would downgrade the
+     * deployment to the very thing C-b exists to replace, while appearing
+     * to work. The provider prefers the more protected source and says
+     * which one it used.
+     *
+     * Below the property, though: NCRYPT_PIN_PROPERTY is a deliberate act
+     * by the calling process, and a caller that sets it is asking for that
+     * PIN specifically.
+     *
+     * On Linux this returns FALSE unconditionally, so every suite here
+     * exercises the remaining sources exactly as before. */
+    if (P11_ReadProtectedPin(nScope, pszOut, cbOut)) {
+        LOG_INFO("PIN source: DPAPI-protected blob (scope %d)", nScope);
+        return TRUE;
+    }
+
+    dwLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, pszOut, (DWORD)cbOut);
+    if (dwLen > 0 && dwLen < cbOut)
+        return TRUE;
+
+#if KSP_ALLOW_DEFAULT_PIN
+    strcpy_s(pszOut, cbOut, SOFTHSM2_PIN_DEFAULT);
+    return TRUE;
+#else
+    /* Fail closed. See KSP_ALLOW_DEFAULT_PIN in config.h. */
+    pszOut[0] = '\0';
+    return FALSE;
+#endif
+}
 
 /* Initialise the session pool */
 SECURITY_STATUS P11_SessionPool_Initialize(void)
 {
-    int i;
+    int i, p;
 
     if (g_bPoolInit)
         return ERROR_SUCCESS;
@@ -24,14 +182,27 @@ SECURITY_STATUS P11_SessionPool_Initialize(void)
     InitializeCriticalSection(&g_csPool);
     memset(g_aPool, 0, sizeof(g_aPool));
 
-    for (i = 0; i < P11_SESSION_POOL_SIZE; i++)
-        InitializeCriticalSection(&g_aPool[i].cs);
+    for (p = 0; p < P11_SCOPE_COUNT; p++) {
+        for (i = 0; i < P11_SESSION_POOL_SIZE; i++)
+            InitializeCriticalSection(&g_aPool[p][i].cs);
 
-    g_hSemaphore = CreateSemaphoreW(NULL, P11_SESSION_POOL_SIZE,
-                                    P11_SESSION_POOL_SIZE, NULL);
-    if (!g_hSemaphore) {
-        DeleteCriticalSection(&g_csPool);
-        return NTE_NO_MEMORY;
+        g_ahSemaphore[p] = CreateSemaphoreW(NULL, P11_SESSION_POOL_SIZE,
+                                            P11_SESSION_POOL_SIZE, NULL);
+        if (!g_ahSemaphore[p]) {
+            /* Unwind what this call created, so a failed initialise leaves
+             * nothing behind for the retry OPS-08 exists to allow. */
+            int q, j;
+            for (q = 0; q <= p; q++) {
+                for (j = 0; j < P11_SESSION_POOL_SIZE; j++)
+                    DeleteCriticalSection(&g_aPool[q][j].cs);
+                if (g_ahSemaphore[q]) {
+                    CloseHandle(g_ahSemaphore[q]);
+                    g_ahSemaphore[q] = NULL;
+                }
+            }
+            DeleteCriticalSection(&g_csPool);
+            return NTE_NO_MEMORY;
+        }
     }
 
     g_bPoolInit = TRUE;
@@ -41,7 +212,7 @@ SECURITY_STATUS P11_SessionPool_Initialize(void)
 /* Destroy the session pool */
 void P11_SessionPool_Finalize(void)
 {
-    int i;
+    int i, p;
     P11_CONTEXT *pCtx;
 
     if (!g_bPoolInit)
@@ -49,33 +220,39 @@ void P11_SessionPool_Finalize(void)
 
     pCtx = P11_GetContext();
 
-    for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (g_aPool[i].hSession != CK_INVALID_HANDLE && pCtx->pFunctionList) {
-            pCtx->pFunctionList->C_CloseSession(g_aPool[i].hSession);
-            g_aPool[i].hSession = CK_INVALID_HANDLE;
+    for (p = 0; p < P11_SCOPE_COUNT; p++) {
+        for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
+            if (g_aPool[p][i].hSession != CK_INVALID_HANDLE &&
+                pCtx->pFunctionList) {
+                pCtx->pFunctionList->C_CloseSession(g_aPool[p][i].hSession);
+                g_aPool[p][i].hSession = CK_INVALID_HANDLE;
+            }
+            DeleteCriticalSection(&g_aPool[p][i].cs);
         }
-        DeleteCriticalSection(&g_aPool[i].cs);
-    }
-
-    if (g_hSemaphore) {
-        CloseHandle(g_hSemaphore);
-        g_hSemaphore = NULL;
+        if (g_ahSemaphore[p]) {
+            CloseHandle(g_ahSemaphore[p]);
+            g_ahSemaphore[p] = NULL;
+        }
     }
 
     DeleteCriticalSection(&g_csPool);
+    P11_ClearPin();
     g_bPoolInit = FALSE;
 }
 
 /* Open a new PKCS#11 session and perform login */
-static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
+static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry,
+                                           int nScope)
 {
     P11_CONTEXT *pCtx = P11_GetContext();
     CK_RV        rv;
-    char         szPin[128] = {0};
-    DWORD        dwPinLen;
+    char         szPin[P11_MAX_PIN_LEN + 1] = {0};
 
+    /* The scope's token, not the context's. With one token these are the
+     * same slot; with two, using pCtx->slotId here would put every machine
+     * key on the user token and report success. */
     rv = pCtx->pFunctionList->C_OpenSession(
-        pCtx->slotId,
+        P11_GetScopeSlot(nScope),
         CKF_SERIAL_SESSION | CKF_RW_SESSION,
         NULL, NULL,
         &pEntry->hSession);
@@ -85,10 +262,84 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
         return P11RvToSecStatus(rv);
     }
 
-    /* Read the PIN from the environment variable */
-    dwPinLen = GetEnvironmentVariableA(SOFTHSM2_PIN_ENV, szPin, sizeof(szPin));
-    if (dwPinLen == 0 || dwPinLen >= sizeof(szPin))
-        strcpy_s(szPin, sizeof(szPin), SOFTHSM2_PIN_DEFAULT);
+    /* Ask the token how it wants to be authenticated before assuming.
+     *
+     * Three models, and this provider used to implement only the third:
+     *
+     *   no CKF_LOGIN_REQUIRED      the token wants no C_Login at all. The
+     *                              control lives in its own policy.
+     *   CKF_PROTECTED_AUTHENTICATION_PATH
+     *                              the user authenticates by the token's
+     *                              own means — a PIN pad, a reader, a
+     *                              biometric — and PKCS#11 v2.40 §11.6
+     *                              says pPin must be NULL_PTR.
+     *   otherwise                  a PIN, which is where the fail-closed
+     *                              rule belongs and only there.
+     *
+     * A token info call that FAILS falls through to the PIN model rather
+     * than guessing something laxer: an unreadable answer must not be the
+     * reason a credential stops being required.
+     */
+    {
+        CK_TOKEN_INFO ti;
+        CK_FLAGS      fl = CKF_LOGIN_REQUIRED;   /* the strict assumption */
+
+        memset(&ti, 0, sizeof(ti));
+        if (pCtx->pFunctionList->C_GetTokenInfo(
+                P11_GetScopeSlot(nScope), &ti) == CKR_OK)
+            fl = ti.flags;
+
+        if ((fl & CKF_LOGIN_REQUIRED) == 0) {
+            /* C-d: the token does not want a login. Calling C_Login anyway
+             * is not harmless — a token entitled to refuse it would fail a
+             * session that was already usable. */
+            LOG_INFO("Token on slot %lu does not set CKF_LOGIN_REQUIRED; "
+                     "no C_Login is performed",
+                     (unsigned long)P11_GetScopeSlot(nScope));
+            SecureZeroMemory(szPin, sizeof(szPin));
+            pEntry->bLoggedIn = TRUE;
+            LOG_INFO("Session opened: handle=0x%lX on slot %lu (scope %d)",
+                     (unsigned long)pEntry->hSession,
+                     (unsigned long)P11_GetScopeSlot(nScope), nScope);
+            return ERROR_SUCCESS;
+        }
+
+        if (fl & CKF_PROTECTED_AUTHENTICATION_PATH) {
+            /* C-c: the credential never travels through Windows at all,
+             * which is why this is the option worth asking an HSM vendor
+             * for. A configured PIN is deliberately NOT sent — the standard
+             * says NULL, and a token that received one might well refuse —
+             * but it is reported, because an administrator who set a PIN
+             * should know it is unused rather than wonder which one is in
+             * force. */
+            if (GetEffectivePin(nScope, szPin, sizeof(szPin))) {
+                LOG_INFO("Token on slot %lu has a protected authentication "
+                         "path; the configured PIN is NOT sent and is not "
+                         "needed", (unsigned long)P11_GetScopeSlot(nScope));
+                SecureZeroMemory(szPin, sizeof(szPin));
+            }
+            rv = pCtx->pFunctionList->C_Login(pEntry->hSession, CKU_USER,
+                                              NULL, 0);
+            goto login_done;
+        }
+    }
+
+    if (!GetEffectivePin(nScope, szPin, sizeof(szPin))) {
+        /* No credential at all. Said plainly, because the administrator is
+         * about to search for why a service will not start, and "wrong PIN"
+         * would send them looking in the wrong place.
+         *
+         * Reached only when the token actually asked for a PIN: a token
+         * with a protected authentication path returned above, so a
+         * hardware HSM with a PIN pad is no longer refused for having no
+         * PIN configured. That is what this branch used to do to it. */
+        LOG_ERROR("No token PIN configured: set " SOFTHSM2_PIN_ENV ", or "
+                  "NCRYPT_PIN_PROPERTY on the provider, or the per-scope PIN "
+                  "variable. There is no default", NTE_PERM);
+        pCtx->pFunctionList->C_CloseSession(pEntry->hSession);
+        pEntry->hSession = CK_INVALID_HANDLE;
+        return NTE_PERM;
+    }
 
     rv = pCtx->pFunctionList->C_Login(
         pEntry->hSession,
@@ -97,6 +348,8 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
         (CK_ULONG)strlen(szPin));
 
     SecureZeroMemory(szPin, sizeof(szPin));
+
+login_done:
 
     /* Ignore if already logged in (can happen with shared sessions) */
     if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN) {
@@ -107,22 +360,91 @@ static SECURITY_STATUS OpenAndLoginSession(P11_SESSION_ENTRY *pEntry)
     }
 
     pEntry->bLoggedIn = TRUE;
-    LOG_INFO("Session opened: handle=0x%lX", (unsigned long)pEntry->hSession);
+    LOG_INFO("Session opened: handle=0x%lX on slot %lu (scope %d)",
+             (unsigned long)pEntry->hSession,
+             (unsigned long)P11_GetScopeSlot(nScope), nScope);
     return ERROR_SUCCESS;
 }
 
+/* Is this pooled session still usable?
+ *
+ * A pooled session is long-lived, and plenty can happen to it between one
+ * operation and the next: the token can be removed and reinserted, another
+ * process can call C_Finalize, or an administrator can log the token out.
+ * The handle stays numerically valid through all of that, so the first
+ * symptom used to be a confusing CKR_USER_NOT_LOGGED_IN from whatever
+ * operation happened to run next.
+ *
+ * C_GetSessionInfo is cheap and answers both questions at once: whether
+ * the handle still resolves, and whether it is still logged in. */
+static BOOL SessionIsUsable(P11_SESSION_ENTRY *pEntry)
+{
+    P11_CONTEXT     *pCtx = P11_GetContext();
+    CK_SESSION_INFO  info;
+    CK_RV            rv;
+
+    if (pEntry->hSession == CK_INVALID_HANDLE)
+        return FALSE;
+
+    memset(&info, 0, sizeof(info));
+    rv = pCtx->pFunctionList->C_GetSessionInfo(pEntry->hSession, &info);
+    if (rv != CKR_OK) {
+        LOG_INFO("Session 0x%lX no longer valid (rv=0x%lX)",
+                 (unsigned long)pEntry->hSession, (unsigned long)rv);
+        return FALSE;
+    }
+
+    /* A read-write user session is what OpenAndLoginSession creates. The
+     * public states mean the token logged out underneath us. */
+    if (info.state != CKS_RW_USER_FUNCTIONS &&
+        info.state != CKS_RO_USER_FUNCTIONS) {
+        LOG_INFO("Session 0x%lX is no longer logged in (state=%lu)",
+                 (unsigned long)pEntry->hSession, (unsigned long)info.state);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* Drop a session that has gone bad, so the next acquire reopens it.
+ *
+ * C_CloseSession is attempted but its result ignored: the usual reason for
+ * being here is that the handle is already invalid, and failing to close
+ * something that is already gone is not an error worth propagating. */
+static void DiscardSession(P11_SESSION_ENTRY *pEntry)
+{
+    P11_CONTEXT *pCtx = P11_GetContext();
+
+    if (pEntry->hSession != CK_INVALID_HANDLE)
+        (void)pCtx->pFunctionList->C_CloseSession(pEntry->hSession);
+
+    pEntry->hSession  = CK_INVALID_HANDLE;
+    pEntry->bLoggedIn = FALSE;
+}
+
 /* Acquire a session from the pool */
-SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
+SECURITY_STATUS P11_AcquireSession(int nScope, CK_SESSION_HANDLE *phSession)
 {
     DWORD  dwWait;
-    int    i;
+    int    i, p;
     SECURITY_STATUS ss;
 
     if (!phSession)
         return NTE_INVALID_PARAMETER;
 
+    /* Bind the slot if nothing has yet. This is the point at which token
+     * selection closes — a session belongs to a token, so there is no
+     * later moment at which the choice could still be honoured. It also
+     * has to happen before PoolFor(), which asks whether the deployment
+     * has per-scope tokens, and that is not known until the slots resolve. */
+    ss = P11_EnsureSlotSelected();
+    if (ss != ERROR_SUCCESS)
+        return ss;
+
+    p = PoolFor(nScope);
+
     /* Wait for a session to become available (5 s timeout) */
-    dwWait = WaitForSingleObject(g_hSemaphore, 5000);
+    dwWait = WaitForSingleObject(g_ahSemaphore[p], 5000);
     if (dwWait != WAIT_OBJECT_0) {
         LOG_ERROR("P11_AcquireSession - timeout", NTE_NO_MEMORY);
         return NTE_NO_MEMORY;
@@ -132,45 +454,60 @@ SECURITY_STATUS P11_AcquireSession(CK_SESSION_HANDLE *phSession)
 
     /* Find a free entry */
     for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (!g_aPool[i].bInUse) {
-            g_aPool[i].bInUse = TRUE;
+        if (!g_aPool[p][i].bInUse) {
+            g_aPool[p][i].bInUse = TRUE;
             LeaveCriticalSection(&g_csPool);
 
-            /* Open the session if it does not exist yet */
-            EnterCriticalSection(&g_aPool[i].cs);
-            if (g_aPool[i].hSession == CK_INVALID_HANDLE) {
-                ss = OpenAndLoginSession(&g_aPool[i]);
+            /* Open the session if it does not exist yet, or reopen it if
+             * the one we cached has since been closed or logged out. */
+            EnterCriticalSection(&g_aPool[p][i].cs);
+            if (g_aPool[p][i].hSession != CK_INVALID_HANDLE &&
+                !SessionIsUsable(&g_aPool[p][i])) {
+                DiscardSession(&g_aPool[p][i]);
+            }
+            if (g_aPool[p][i].hSession == CK_INVALID_HANDLE) {
+                ss = OpenAndLoginSession(&g_aPool[p][i], nScope);
                 if (ss != ERROR_SUCCESS) {
-                    g_aPool[i].bInUse = FALSE;
-                    LeaveCriticalSection(&g_aPool[i].cs);
-                    ReleaseSemaphore(g_hSemaphore, 1, NULL);
+                    g_aPool[p][i].bInUse = FALSE;
+                    LeaveCriticalSection(&g_aPool[p][i].cs);
+                    ReleaseSemaphore(g_ahSemaphore[p], 1, NULL);
                     return ss;
                 }
             }
-            LeaveCriticalSection(&g_aPool[i].cs);
+            LeaveCriticalSection(&g_aPool[p][i].cs);
 
-            *phSession = g_aPool[i].hSession;
+            *phSession = g_aPool[p][i].hSession;
             return ERROR_SUCCESS;
         }
     }
 
     LeaveCriticalSection(&g_csPool);
     /* Should not happen thanks to the semaphore */
-    ReleaseSemaphore(g_hSemaphore, 1, NULL);
+    ReleaseSemaphore(g_ahSemaphore[p], 1, NULL);
     return NTE_NO_MEMORY;
 }
 
 /* Return the session to the pool */
+/* Return a session to the pool.
+ *
+ * The scope is not a parameter, and deliberately so: a caller that released
+ * under the wrong scope would return the semaphore to the wrong pool, and
+ * the pool it took from would leak a slot while the other over-counted. A
+ * PKCS#11 session handle identifies its session uniquely across the module,
+ * so searching is both correct and cheap at thirty-two entries. */
 void P11_ReleaseSession(CK_SESSION_HANDLE hSession)
 {
-    int i;
+    int i, p;
 
     EnterCriticalSection(&g_csPool);
-    for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
-        if (g_aPool[i].hSession == hSession && g_aPool[i].bInUse) {
-            g_aPool[i].bInUse = FALSE;
-            ReleaseSemaphore(g_hSemaphore, 1, NULL);
-            break;
+    for (p = 0; p < P11_SCOPE_COUNT; p++) {
+        for (i = 0; i < P11_SESSION_POOL_SIZE; i++) {
+            if (g_aPool[p][i].hSession == hSession && g_aPool[p][i].bInUse) {
+                g_aPool[p][i].bInUse = FALSE;
+                ReleaseSemaphore(g_ahSemaphore[p], 1, NULL);
+                LeaveCriticalSection(&g_csPool);
+                return;
+            }
         }
     }
     LeaveCriticalSection(&g_csPool);

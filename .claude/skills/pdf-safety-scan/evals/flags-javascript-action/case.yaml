@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: flags-javascript-action
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Reports that annual-report.pdf carries active content that runs when the
+  file is opened - embedded JavaScript reached through /OpenAction - and
+  treats that as a blocking problem rather than a note, recommending it not
+  be sent as-is. Reports cover-letter.pdf as clean. States plainly that a
+  scan by the sender is not assurance for the recipient.

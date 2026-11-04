@@ -1,14 +1,14 @@
-# Test binaries
-test_p11rv_mapping
-test_ecdsa_decode
-test_mechanism_resolve
-test_memory
-test_logging
-test_export_blobs
-test_ksp_provider
-test_ksp_key_props
-test_ksp_key_ops
-test_ksp_crypto
+# Test binaries.
+#
+# A pattern, not a list. This was a list of names, and a new suite was
+# forgotten from it three times running — test_function_table and
+# test_p11_session in session 7, four more in session 9, test_cert_subject
+# in session 10 — each time committing a multi-megabyte binary. The
+# binaries have no extension and sit beside their sources, so the rule is
+# "ignore test_*, keep the sources".
+test_*
+!test_*.c
+!test_*.h
 
 # gcov coverage data
 *.gcda

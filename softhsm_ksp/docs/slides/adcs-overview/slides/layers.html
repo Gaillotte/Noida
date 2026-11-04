@@ -1,0 +1,49 @@
+<section id="layers" data-transition="fade" style="background:#F7F7F4;color:#111E2B;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<h2 style="font-size:64px;font-weight:600;line-height:1.1">Two layers, one translation each way</h2>
+<p style="font-size:30px;line-height:1.4;width:1600px;color:#44525E">The <span style="color:#B3561A">KSP_</span> layer speaks CNG and knows nothing about Cryptoki. The <span style="color:#2F6F8F">P11_</span> layer speaks PKCS#11 and knows nothing about handles or blobs. Everything hard lives on the boundary.</p>
+</div>
+<table style="font-family:'IBM Plex Sans', Arial, sans-serif;font-size:27px;color:#111E2B;width:1664px">
+<tr style="background:#111E2B">
+<th style="width:21%;color:#F7F7F4;font-size:27px;text-align:left;padding:18px 20px">Module</th>
+<th style="width:26%;color:#F7F7F4;font-size:27px;text-align:left">Owns</th>
+<th style="width:53%;color:#F7F7F4;font-size:27px;text-align:left">The design decision inside it</th>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_provider.c</td>
+<td>Open, Close, FreeBuffer, algorithm advertisement</td>
+<td>Advertises the <b>intersection</b> of what the KSP maps and what the token has — never a list compiled into the DLL</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_key_ops.c</td>
+<td>Create, Open, Finalize, Enum, Delete</td>
+<td>A taken container name is <b>NTE_EXISTS</b>; an overwrite destroys the old objects only <i>after</i> the new key generates</td>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_crypto.c</td>
+<td>SignHash, Verify, Encrypt, Decrypt, Export, Import, ECDH</td>
+<td>Size queries answer <b>from the key</b>, never by starting a token operation that would be left unfinished</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">ksp_properties.c</td>
+<td>Get and Set, key and provider scope</td>
+<td>Export policy is writable only before FinalizeKey — the token fixes CKA_SENSITIVE at generation</td>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">p11_context.c</td>
+<td>Module load, C_Initialize, slot choice</td>
+<td>A failed initialisation is <b>retried</b>; one bad module path must not poison the provider until the host restarts</td>
+</tr>
+<tr style="background:#EDEFEA">
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">p11_session.c</td>
+<td>16 sessions, login, per-scope pools</td>
+<td>Scope is a <b>mandatory</b> parameter on acquire — a defaulted one would let a forgotten call site hit the wrong token and report success</td>
+</tr>
+<tr>
+<td style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:25px">p11_utils.c</td>
+<td>Mechanisms, DER, key export</td>
+<td>ECDSA signatures pass through raw r&#8214;s as v2.40 §2.3.1 mandates; the DER decoder is a fallback only</td>
+</tr>
+</table>
+<p style="position:absolute;left:128px;bottom:64px;font-size:24px;color:#6E7B86">Nine of ten source files compile clean under MSVC at /W3 /WX today · 4 / 15</p>
+</section>
